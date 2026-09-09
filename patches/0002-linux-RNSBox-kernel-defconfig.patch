@@ -1,0 +1,393 @@
+From e42ef2c627fe9d8792fbfce98b76f77f95faf40c Mon Sep 17 00:00:00 2001
+From: smit1237 <smit1237@gmail.com>
+Date: Tue, 8 Sep 2026 22:47:47 +0300
+Subject: [PATCH 02/20] linux: RNSBox kernel defconfig
+
+Strip media/framebuffer/sound/Bluetooth/ION/CMA and other unused subsystems;
+trim the USB gadget to CDC-NCM plus mass-storage; build cfg80211 in (=y) and
+enable RFKILL for the AIC8800 fullmac modpost; default TCP congestion control
+to BBR with fq/fq_codel for the router data plane; raise the gadget
+mass-storage buffer count. Reticulum does all crypto in userspace via PyCA
+cryptography, so the kernel crypto-API ChaCha20/Poly1305/Curve25519 symbols
+are left explicitly unset.
+---
+ .../linux/sg2002_licheervnano_sd_defconfig    | 243 ++++++++++--------
+ 1 file changed, 137 insertions(+), 106 deletions(-)
+
+diff --git a/build/boards/sg200x/sg2002_licheervnano_sd/linux/sg2002_licheervnano_sd_defconfig b/build/boards/sg200x/sg2002_licheervnano_sd/linux/sg2002_licheervnano_sd_defconfig
+index 3740c364d..52c3d1bbb 100644
+--- a/build/boards/sg200x/sg2002_licheervnano_sd/linux/sg2002_licheervnano_sd_defconfig
++++ b/build/boards/sg200x/sg2002_licheervnano_sd/linux/sg2002_licheervnano_sd_defconfig
+@@ -43,7 +43,13 @@ CONFIG_UNIX=y
+ CONFIG_INET=y
+ # CONFIG_INET_DIAG is not set
+ # CONFIG_IPV6 is not set
+-CONFIG_CFG80211=m
++# RNSBox W variant: AIC8800 is a fullmac (cfg80211) SDIO chip. cfg80211 is
++# BUILT-IN (=y, not =m) so its EXPORT_SYMBOLs land in the kernel
++# Module.symvers that the out-of-tree aic8800_fdrv modpost reads — otherwise
++# fdrv fails modpost with undefined cfg80211_* symbols. Built-in also removes
++# load-order fragility (cfg80211 always present before aic8800 insmod).
++# No mac80211 (firmware does the MAC).
++CONFIG_CFG80211=y
+ CONFIG_RFKILL=y
+ CONFIG_UEVENT_HELPER=y
+ CONFIG_DEVTMPFS=y
+@@ -135,15 +141,15 @@ CONFIG_THERMAL_NETLINK=y
+ CONFIG_THERMAL_WRITABLE_TRIPS=y
+ CONFIG_THERMAL_EMULATION=y
+ CONFIG_WATCHDOG=y
+-CONFIG_MEDIA_SUPPORT=y
+-CONFIG_VIDEO_V4L2_SUBDEV_API=y
+-CONFIG_V4L_PLATFORM_DRIVERS=y
+-CONFIG_V4L_MEM2MEM_DRIVERS=y
+-CONFIG_VIDEO_MEM2MEM_DEINTERLACE=y
+-CONFIG_VIDEO_CVITEK=m
+-CONFIG_VIDEO_CVITEK_CIF=m
+-CONFIG_VIDEO_CVITEK_SNS_I2C=m
+-CONFIG_VIDEO_CVITEK_MIPI_TX=m
++# CONFIG_MEDIA_SUPPORT is not set
++# CONFIG_VIDEO_V4L2_SUBDEV_API is not set
++# CONFIG_V4L_PLATFORM_DRIVERS is not set
++# CONFIG_V4L_MEM2MEM_DRIVERS is not set
++# CONFIG_VIDEO_MEM2MEM_DEINTERLACE is not set
++# CONFIG_VIDEO_CVITEK is not set
++# CONFIG_VIDEO_CVITEK_CIF is not set
++# CONFIG_VIDEO_CVITEK_SNS_I2C is not set
++# CONFIG_VIDEO_CVITEK_MIPI_TX is not set
+ #
+ # Media SPI Adapters
+ #
+@@ -356,28 +362,28 @@ CONFIG_VIDEO_CVITEK_MIPI_TX=m
+ # CONFIG_DVB_DYNAMIC_MINORS is not set
+ # end of Digital TV options
+ 
+-CONFIG_FB=y
++# CONFIG_FB is not set
+ # CONFIG_FB_TFT is not set
+ # CONFIG_FB_TFT_ST7789 is not set
+-CONFIG_FB_CVITEK=m
+-CONFIG_SOUND=y
+-CONFIG_SND=y
++# CONFIG_FB_CVITEK is not set
++# CONFIG_SOUND is not set
++# CONFIG_SND is not set
+ # CONFIG_SND_SUPPORT_OLD_API is not set
+ # CONFIG_SND_PROC_FS is not set
+ # CONFIG_SND_DRIVERS is not set
+-CONFIG_SND_HDA_PREALLOC_SIZE=1
++# CONFIG_SND_HDA_PREALLOC_SIZE is not set
+ # CONFIG_SND_SPI is not set
+-CONFIG_SND_USB=y
+-CONFIG_SND_USB_AUDIO=y
+-CONFIG_SND_USB_AUDIO_USE_MEDIA_CONTROLLER=y
+-CONFIG_SND_SOC=y
+-CONFIG_SND_SOC_CV182XA_CV182XAADC=y
+-CONFIG_SND_SOC_CV182XA_CV182XADAC=y
+-CONFIG_SND_CV1835_I2S=y
+-CONFIG_SND_SOC_CV182XAADC=y
+-CONFIG_SND_SOC_CV182XADAC=y
+-CONFIG_SND_SOC_CV1835_USE_AUDIO_PLL=y
+-CONFIG_CV1835_I2S_SUBSYS=y
++# CONFIG_SND_USB is not set
++# CONFIG_SND_USB_AUDIO is not set
++# CONFIG_SND_USB_AUDIO_USE_MEDIA_CONTROLLER is not set
++# CONFIG_SND_SOC is not set
++# CONFIG_SND_SOC_CV182XA_CV182XAADC is not set
++# CONFIG_SND_SOC_CV182XA_CV182XADAC is not set
++# CONFIG_SND_CV1835_I2S is not set
++# CONFIG_SND_SOC_CV182XAADC is not set
++# CONFIG_SND_SOC_CV182XADAC is not set
++# CONFIG_SND_SOC_CV1835_USE_AUDIO_PLL is not set
++# CONFIG_CV1835_I2S_SUBSYS is not set
+ CONFIG_USB=y
+ CONFIG_USB_DWC2=y
+ CONFIG_USB_GADGET=y
+@@ -396,33 +402,33 @@ CONFIG_DW_DMAC_CVITEK=y
+ CONFIG_RTC_CLASS=y
+ # CONFIG_VIRTIO_MENU is not set
+ CONFIG_STAGING=y
+-CONFIG_ION=y
+-CONFIG_ION_SYSTEM_HEAP=y
+-CONFIG_ION_CARVEOUT_HEAP=y
+-CONFIG_ION_CMA_HEAP=y
++# CONFIG_ION is not set
++# CONFIG_ION_SYSTEM_HEAP is not set
++# CONFIG_ION_CARVEOUT_HEAP is not set
++# CONFIG_ION_CMA_HEAP is not set
+ # CONFIG_IOMMU_SUPPORT is not set
+ CONFIG_CV1835_SYSDMA_REMAP=y
+ CONFIG_PWM=y
+ CONFIG_SIFIVE_PLIC=y
+-CONFIG_ANDROID=y
++# CONFIG_ANDROID is not set
+ # CONFIG_MANDATORY_FILE_LOCKING is not set
+ CONFIG_MSDOS_FS=y
+ CONFIG_VFAT_FS=y
+ # CONFIG_PROC_PAGE_MONITOR is not set
+ CONFIG_TMPFS=y
+ CONFIG_CONFIGFS_FS=y
+-CONFIG_JFFS2_FS=y
+-CONFIG_JFFS2_FS_WBUF_VERIFY=y
++# CONFIG_JFFS2_FS is not set
++# CONFIG_JFFS2_FS_WBUF_VERIFY is not set
+ CONFIG_UBIFS_FS=y
+ CONFIG_SQUASHFS=y
+ # CONFIG_SQUASHFS_ZLIB is not set
+ CONFIG_SQUASHFS_LZ4=y
+ CONFIG_SQUASHFS_XZ=y
+-CONFIG_NETWORK_FILESYSTEMS=y
+-CONFIG_NFS_FS=y
+-CONFIG_NFS_V2=y
+-CONFIG_NFS_V3=y
+-CONFIG_ROOT_NFS=y
++# CONFIG_NETWORK_FILESYSTEMS is not set
++# CONFIG_NFS_FS is not set
++# CONFIG_NFS_V2 is not set
++# CONFIG_NFS_V3 is not set
++# CONFIG_ROOT_NFS is not set
+ CONFIG_NLS_CODEPAGE_437=y
+ CONFIG_NLS_ISO8859_1=y
+ CONFIG_NLS_ISO8859_2=y
+@@ -434,7 +440,7 @@ CONFIG_CRYPTO_SHA256=y
+ # CONFIG_XZ_DEC_IA64 is not set
+ # CONFIG_XZ_DEC_ARMTHUMB is not set
+ # CONFIG_XZ_DEC_SPARC is not set
+-CONFIG_DMA_CMA=y
++# CONFIG_DMA_CMA is not set
+ CONFIG_CMA_SIZE_MBYTES=0
+ CONFIG_PRINTK_TIME=y
+ CONFIG_DYNAMIC_DEBUG=y
+@@ -462,105 +468,109 @@ CONFIG_CHR_DEV_SG=y
+ CONFIG_USB=y
+ CONFIG_USB_OTG=y
+ CONFIG_USB_OTG_FSM=y
+-CONFIG_USB_STORAGE=y
++# CONFIG_USB_STORAGE is not set
+ CONFIG_USB_LIBCOMPOSITE=y
+-CONFIG_USB_F_ACM=y
+-CONFIG_USB_U_SERIAL=y
++# CONFIG_USB_F_ACM is not set
++# CONFIG_USB_U_SERIAL is not set
+ CONFIG_USB_U_ETHER=y
+-CONFIG_USB_U_AUDIO=y
+-CONFIG_USB_F_SERIAL=y
++# CONFIG_USB_U_AUDIO is not set
++# CONFIG_USB_F_SERIAL is not set
+ CONFIG_USB_F_ECM=y
+-CONFIG_USB_F_EEM=y
+-CONFIG_USB_F_RNDIS=y
++# CONFIG_USB_F_EEM is not set
++# CONFIG_USB_F_RNDIS is not set
+ CONFIG_USB_F_MASS_STORAGE=y
+ CONFIG_USB_F_FS=y
+-CONFIG_USB_F_UAC1=y
++# CONFIG_USB_F_UAC1 is not set
+ CONFIG_USB_ROLE_SWITCH=y
+ # buggy driver, need fix
+ # CONFIG_USB_F_UVC is not set
+ CONFIG_USB_CONFIGFS=y
+-CONFIG_USB_CONFIGFS_SERIAL=y
+-CONFIG_USB_CONFIGFS_ACM=y
++# CONFIG_USB_CONFIGFS_SERIAL is not set
++# CONFIG_USB_CONFIGFS_ACM is not set
+ # CONFIG_USB_CONFIGFS_OBEX is not set
+ CONFIG_USB_CONFIGFS_NCM=y
+ CONFIG_USB_CONFIGFS_ECM=y
+ # CONFIG_USB_CONFIGFS_ECM_SUBSET is not set
+-CONFIG_USB_CONFIGFS_RNDIS=y
+-CONFIG_USB_CONFIGFS_EEM=y
++# CONFIG_USB_CONFIGFS_RNDIS is not set
++# CONFIG_USB_CONFIGFS_EEM is not set
+ CONFIG_USB_CONFIGFS_MASS_STORAGE=y
+ # CONFIG_USB_CONFIGFS_F_LB_SS is not set
+ CONFIG_USB_CONFIGFS_F_FS=y
+ CONFIG_USB_CONFIGFS_UEVENT=y
+-CONFIG_USB_CONFIGFS_F_UAC1=y
++# CONFIG_USB_CONFIGFS_F_UAC1 is not set
+ # CONFIG_USB_CONFIGFS_F_UAC1_LEGACY is not set
+ # CONFIG_USB_CONFIGFS_F_UAC2 is not set
+ # CONFIG_USB_CONFIGFS_F_MIDI is not set
+-CONFIG_USB_CONFIGFS_F_HID=y
+-CONFIG_USB_CONFIGFS_F_UVC=y
++# CONFIG_USB_CONFIGFS_F_HID is not set
++# CONFIG_USB_CONFIGFS_F_UVC is not set
+ CONFIG_BUG=n
+ CONFIG_ADVISE_SYSCALLS=n
+ CONFIG_TIMERFD=y
+ 
+ # for licheervnano
+-CONFIG_FB_SIMPLE=y
++# CONFIG_FB_SIMPLE is not set
+ CONFIG_IP_MULTICAST=y
+-CONFIG_SND_PROC_FS=y
+-CONFIG_BT=y
+-CONFIG_BT_RFCOMM=y
+-CONFIG_BT_RFCOMM_TTY=y
+-CONFIG_BT_BREDR=y
+-CONFIG_BT_BNEP=y
+-CONFIG_BT_HIDP=y
+-CONFIG_BT_HS=y
+-CONFIG_BT_LE=y
+-CONFIG_BT_HCIUART=y
+-CONFIG_BT_HCIUART_BCSP=y
+-CONFIG_BT_HCIUART_H4=y
+-CONFIG_BT_HCIUART_3WIRE=y
+-CONFIG_BT_HCIUART_RTL=y
++# CONFIG_SND_PROC_FS is not set
++# CONFIG_BT is not set
++# CONFIG_BT_RFCOMM is not set
++# CONFIG_BT_RFCOMM_TTY is not set
++# CONFIG_BT_BREDR is not set
++# CONFIG_BT_BNEP is not set
++# CONFIG_BT_HIDP is not set
++# CONFIG_BT_HS is not set
++# CONFIG_BT_LE is not set
++# CONFIG_BT_HCIUART is not set
++# CONFIG_BT_HCIUART_BCSP is not set
++# CONFIG_BT_HCIUART_H4 is not set
++# CONFIG_BT_HCIUART_3WIRE is not set
++# CONFIG_BT_HCIUART_RTL is not set
+ CONFIG_SERIAL_DEV_BUS=y
+ CONFIG_SERIAL_DEV_CTRL_TTYPORT=y
+ CONFIG_SWAP=y
+ CONFIG_USB_LIBCOMPOSITE=y
+ CONFIG_USB_CONFIGFS=y
+-CONFIG_USB_CONFIGFS_EEM=y
+-CONFIG_USB_CONFIGFS_ACM=y
+-CONFIG_USB_F_ACM=y
+-CONFIG_USB_F_EEM=y
+-CONFIG_USB_GADGET_VBUS_DRAW=500
+-CONFIG_IPV6=y
++# CONFIG_USB_CONFIGFS_EEM is not set
++# CONFIG_USB_CONFIGFS_ACM is not set
++# CONFIG_USB_F_ACM is not set
++# CONFIG_USB_F_EEM is not set
++CONFIG_USB_GADGET_VBUS_DRAW=100
++# RNSBox: mass-storage USB write perf. Default is 2 (min); 4 adds transfer
++# pipelining for the f_mass_storage data path. Paired with lun.0/nofua=1 in
++# S08usbdev (the bigger win — stops force-syncing every host write).
++CONFIG_USB_GADGET_STORAGE_NUM_BUFFERS=4
++# CONFIG_IPV6 is not set
+ # CONFIG_IPV6_SIT is not set
+ CONFIG_PACKET_DIAG=y
+ CONFIG_UNIX_DIAG=y
+ CONFIG_NETLINK_DIAG=y
+-CONFIG_AIC_WLAN_SUPPORT=y
+-CONFIG_KEYBOARD_GPIO=y
+-CONFIG_INPUT_TOUCHSCREEN=y
+-CONFIG_TOUCHSCREEN_HYNITRON_TS=y
++# CONFIG_AIC_WLAN_SUPPORT is not set
++# CONFIG_KEYBOARD_GPIO is not set
++# CONFIG_INPUT_TOUCHSCREEN is not set
++# CONFIG_TOUCHSCREEN_HYNITRON_TS is not set
+ CONFIG_MAGIC_SYSRQ=y
+-CONFIG_INPUT_MISC=y
+-CONFIG_INPUT_UINPUT=y
++# CONFIG_INPUT_MISC is not set
++# CONFIG_INPUT_UINPUT is not set
+ # CONFIG_MAGIC_SYSRQ_SERIAL is not set
+-CONFIG_NEW_LEDS=y
+-CONFIG_LEDS_CLASS=y
+-CONFIG_LEDS_CLASS_FLASH=y
+-CONFIG_LEDS_USER=y
+-CONFIG_LEDS_GPIO=y
+-CONFIG_LEDS_TRIGGERS=y
+-CONFIG_LEDS_TRIGGER_HEARTBEAT=y
+-CONFIG_LEDS_TRIGGER_CPU=y
+-CONFIG_LEDS_TRIGGER_CAMERA=y
+-CONFIG_LEDS_TRIGGER_ACTIVITY=y
+-CONFIG_LEDS_TRIGGER_NETDEV=y
+-CONFIG_LEDS_TRIGGER_PANIC=y
+-CONFIG_V4L2_FLASH_LED_CLASS=y
+-CONFIG_MEDIA_USB_SUPPORT=y
+-CONFIG_USB_VIDEO_CLASS=y
+-CONFIG_USB_VIDEO_CLASS_INPUT_EVDEV=y
+-CONFIG_VT=y
++# CONFIG_NEW_LEDS is not set
++# CONFIG_LEDS_CLASS is not set
++# CONFIG_LEDS_CLASS_FLASH is not set
++# CONFIG_LEDS_USER is not set
++# CONFIG_LEDS_GPIO is not set
++# CONFIG_LEDS_TRIGGERS is not set
++# CONFIG_LEDS_TRIGGER_HEARTBEAT is not set
++# CONFIG_LEDS_TRIGGER_CPU is not set
++# CONFIG_LEDS_TRIGGER_CAMERA is not set
++# CONFIG_LEDS_TRIGGER_ACTIVITY is not set
++# CONFIG_LEDS_TRIGGER_NETDEV is not set
++# CONFIG_LEDS_TRIGGER_PANIC is not set
++# CONFIG_V4L2_FLASH_LED_CLASS is not set
++# CONFIG_MEDIA_USB_SUPPORT is not set
++# CONFIG_USB_VIDEO_CLASS is not set
++# CONFIG_USB_VIDEO_CLASS_INPUT_EVDEV is not set
++# CONFIG_VT is not set
+ # CONFIG_LEGACY_PTYS is not set
+-CONFIG_BACKLIGHT_CLASS_DEVICE=m
+-CONFIG_BACKLIGHT_PWM=m
++# CONFIG_BACKLIGHT_CLASS_DEVICE is not set
++# CONFIG_BACKLIGHT_PWM is not set
+ CONFIG_SPI=y
+ CONFIG_SPI_MASTER=y
+ CONFIG_SPI_DESIGNWARE=y
+@@ -591,7 +601,7 @@ CONFIG_NET_NS=y
+ CONFIG_EPOLL=y
+ CONFIG_IO_URING=y
+ CONFIG_SIGNALFD=y
+-CONFIG_EXFAT_FS=y
++# CONFIG_EXFAT_FS is not set
+ 
+ #
+ # Networking options
+@@ -624,9 +634,9 @@ CONFIG_SYN_COOKIES=y
+ CONFIG_TCP_CONG_ADVANCED=y
+ CONFIG_TCP_CONG_CUBIC=y
+ CONFIG_TCP_CONG_BBR=y
+-CONFIG_DEFAULT_TCP_CONG="cubic"
++CONFIG_DEFAULT_TCP_CONG="bbr"
+ # CONFIG_TCP_MD5SIG is not set
+-CONFIG_IPV6=y
++# CONFIG_IPV6 is not set
+ # CONFIG_IPV6_ROUTER_PREF is not set
+ # CONFIG_IPV6_OPTIMISTIC_DAD is not set
+ # CONFIG_INET6_AH is not set
+@@ -636,9 +646,9 @@ CONFIG_IPV6=y
+ # CONFIG_IPV6_ILA is not set
+ # CONFIG_IPV6_VTI is not set
+ # CONFIG_IPV6_SIT is not set
+-CONFIG_IPV6_TUNNEL=y
+-CONFIG_IPV6_GRE=y
+-CONFIG_IPV6_MULTIPLE_TABLES=y
++# CONFIG_IPV6_TUNNEL is not set
++# CONFIG_IPV6_GRE is not set
++# CONFIG_IPV6_MULTIPLE_TABLES is not set
+ # CONFIG_IPV6_MROUTE is not set
+ # CONFIG_IPV6_SEG6_LWTUNNEL is not set
+ # CONFIG_IPV6_SEG6_HMAC is not set
+@@ -1010,3 +1020,24 @@ CONFIG_USB_SERIAL_OPTION=y
+ CONFIG_USB_ACM=y
+ 
+ CONFIG_VETH=y
++
++# === RNSBox: kernel-side crypto symbols left unset ===
++# Reticulum does all crypto in userspace via PyCA cryptography (OpenSSL
++# backend), so the kernel cryptoAPI ChaCha20/Poly1305/Curve25519 entries are
++# not required. Left explicitly unset so Kconfig does not silently re-enable
++# them via select chains from unrelated subsystems.
++# CONFIG_CRYPTO_CHACHA20 is not set
++# CONFIG_CRYPTO_POLY1305 is not set
++# CONFIG_CRYPTO_CHACHA20POLY1305 is not set
++# CONFIG_CRYPTO_LIB_CHACHA is not set
++# CONFIG_CRYPTO_LIB_POLY1305 is not set
++# CONFIG_CRYPTO_LIB_CHACHA20POLY1305 is not set
++# CONFIG_CRYPTO_LIB_CURVE25519 is not set
++# CONFIG_CRYPTO_LIB_CURVE25519_GENERIC is not set
++# CONFIG_CRYPTO_CURVE25519 is not set
++# BBR wants fq qdisc for pacing — keep for the router data plane too.
++CONFIG_NET_SCHED=y
++CONFIG_NET_SCH_FQ=y
++CONFIG_NET_SCH_FQ_CODEL=y
++# TUN already on; just being explicit
++CONFIG_TUN=y
+-- 
+2.47.3
+

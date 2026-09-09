@@ -1,0 +1,327 @@
+From a4bd6653a0639e3c16bfd9b9d2e5a1f12fb115b4 Mon Sep 17 00:00:00 2001
+From: smit1237 <smit1237@gmail.com>
+Date: Tue, 8 Sep 2026 22:47:49 +0300
+Subject: [PATCH 10/20] nomadnet: LXMF/pages node (opt-in)
+
+Add the python-lxmf and python-nomadnet recipes and bump python-urwid to
+2.6.16 (nomadnet floor), selecting its wcwidth and typing_extensions imports.
+S83nomadnet runs the LXMF/pages node but is disabled by default via
+/etc/rnsbox/nomadnet.conf.
+---
+ .../SG200X/overlay/etc/init.d/S83nomadnet     | 101 ++++++++++++++++++
+ .../SG200X/overlay/etc/rnsbox/nomadnet.conf   |  20 ++++
+ buildroot/package/python-lxmf/Config.in       |  11 ++
+ .../package/python-lxmf/python-lxmf.hash      |   4 +
+ buildroot/package/python-lxmf/python-lxmf.mk  |  18 ++++
+ buildroot/package/python-nomadnet/Config.in   |  16 +++
+ .../python-nomadnet/python-nomadnet.hash      |   3 +
+ .../python-nomadnet/python-nomadnet.mk        |  14 +++
+ buildroot/package/python-urwid/Config.in      |   2 +
+ .../package/python-urwid/python-urwid.hash    |   8 +-
+ .../package/python-urwid/python-urwid.mk      |  19 +++-
+ 11 files changed, 209 insertions(+), 7 deletions(-)
+ create mode 100755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/S83nomadnet
+ create mode 100644 buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/nomadnet.conf
+ create mode 100644 buildroot/package/python-lxmf/Config.in
+ create mode 100644 buildroot/package/python-lxmf/python-lxmf.hash
+ create mode 100644 buildroot/package/python-lxmf/python-lxmf.mk
+ create mode 100644 buildroot/package/python-nomadnet/Config.in
+ create mode 100644 buildroot/package/python-nomadnet/python-nomadnet.hash
+ create mode 100644 buildroot/package/python-nomadnet/python-nomadnet.mk
+
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S83nomadnet b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S83nomadnet
+new file mode 100755
+index 000000000..238a02573
+--- /dev/null
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S83nomadnet
+@@ -0,0 +1,101 @@
++#!/bin/sh
++# S83nomadnet — Nomadnet daemon (LXMF propagation node + nomadnet pages
++# server). Shipped DISABLED by default — most RNSBox owners only want
++# rnsd (S82rnsd). Enable by flipping `enabled=no` -> `enabled=yes` in
++# /etc/rnsbox/nomadnet.conf, then run this script with `start`.
++#
++# Like S82rnsd, gates on /run/clock-synced. Nomadnet stamps every LXMF
++# message + announce with wall-clock time; a 1970 clock makes peers
++# reject everything we send.
++
++NAME=nomadnet
++DAEMON=/usr/bin/nomadnet
++CONF=/etc/rnsbox/nomadnet.conf
++PIDFILE=/var/run/$NAME.pid
++LOG=/var/log/$NAME.log
++DEFAULT_CONFIGDIR=/var/lib/nomadnetwork
++
++[ -x "$DAEMON" ] || exit 0
++
++# --- read the enable flag (single key=value lines, no shell sourcing) ---
++read_conf() {
++	enabled="no"
++	configdir="$DEFAULT_CONFIGDIR"
++	if [ -r "$CONF" ]; then
++		v=$(grep -E '^[[:space:]]*enabled[[:space:]]*=' "$CONF" 2>/dev/null \
++		      | tail -1 | sed -E 's/^[[:space:]]*enabled[[:space:]]*=[[:space:]]*//' \
++		      | tr -d '"' | tr -d "'" | tr '[:upper:]' '[:lower:]' \
++		      | awk '{print $1}')
++		case "$v" in yes|true|1|on) enabled="yes" ;; esac
++		c=$(grep -E '^[[:space:]]*configdir[[:space:]]*=' "$CONF" 2>/dev/null \
++		      | tail -1 | sed -E 's/^[[:space:]]*configdir[[:space:]]*=[[:space:]]*//' \
++		      | tr -d '"' | tr -d "'" | awk '{print $1}')
++		[ -n "$c" ] && configdir="$c"
++	fi
++}
++
++start() {
++	read_conf
++	if [ "$enabled" != "yes" ]; then
++		echo "S83nomadnet: disabled in $CONF (enabled=$enabled); skipping"
++		echo "             flip to 'enabled=yes' to start at boot"
++		return 0
++	fi
++
++	mkdir -p /var/log /var/run "$configdir"
++
++	if [ -f "$PIDFILE" ] && kill -0 "$(cat $PIDFILE)" 2>/dev/null; then
++		echo "S83nomadnet: already running (pid $(cat $PIDFILE))"
++		return 0
++	fi
++
++	if [ ! -f /run/clock-synced ]; then
++		echo "S83nomadnet: refusing to start - /run/clock-synced absent"
++		echo "             (S45ntpsync did not succeed; check WAN link)"
++		return 1
++	fi
++
++	printf "Starting %s: " "$NAME"
++	"$DAEMON" --daemon --configdir "$configdir" >>"$LOG" 2>&1 &
++	PID=$!
++	echo "$PID" > "$PIDFILE"
++	sleep 0.3
++	if kill -0 "$PID" 2>/dev/null; then
++		echo "OK (pid $PID, configdir $configdir)"
++	else
++		echo "FAIL (see $LOG)"
++		rm -f "$PIDFILE"
++		return 1
++	fi
++}
++
++stop() {
++	printf "Stopping %s: " "$NAME"
++	if [ -f "$PIDFILE" ]; then
++		kill "$(cat $PIDFILE)" 2>/dev/null
++		for _ in 1 2 3 4 5; do
++			[ -f "$PIDFILE" ] && kill -0 "$(cat $PIDFILE)" 2>/dev/null || break
++			sleep 1
++		done
++		rm -f "$PIDFILE"
++		echo "OK"
++	else
++		echo "(not running)"
++	fi
++}
++
++case "${1:-start}" in
++	start)   start ;;
++	stop)    stop ;;
++	restart) stop; sleep 1; start ;;
++	status)
++		read_conf
++		echo "enabled in conf: $enabled"
++		if [ -f "$PIDFILE" ] && kill -0 "$(cat $PIDFILE)" 2>/dev/null; then
++			echo "running:         pid $(cat $PIDFILE)"
++		else
++			echo "running:         no"
++		fi
++		;;
++	*) echo "Usage: $0 {start|stop|restart|status}" >&2; exit 1 ;;
++esac
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/nomadnet.conf b/buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/nomadnet.conf
+new file mode 100644
+index 000000000..170da45ee
+--- /dev/null
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/nomadnet.conf
+@@ -0,0 +1,20 @@
++# Nomadnet daemon config — read at boot by /etc/init.d/S83nomadnet.
++#
++# Nomadnet is the Reticulum-based LXMF propagation node + page server
++# ("pages" = gopher-like browsable content over the mesh). It's shipped
++# with the image but NOT started at boot by default — most RNSBox owners
++# just want rnsd (transport), and adding nomadnet pulls another ~30 MB
++# of Python state at runtime plus listens on extra Reticulum destinations.
++#
++# To enable: change `enabled=no` to `enabled=yes` below, then either
++# reboot or run:
++#   /etc/init.d/S83nomadnet start
++#
++# Content lives under `configdir` (default /var/lib/nomadnetwork).
++# Edit page sources in $configdir/storage/pages/ — see
++# https://github.com/markqvist/NomadNet for the page format.
++
++enabled=no
++
++# Optional overrides (uncomment to use):
++#configdir=/var/lib/nomadnetwork
+diff --git a/buildroot/package/python-lxmf/Config.in b/buildroot/package/python-lxmf/Config.in
+new file mode 100644
+index 000000000..59938f5fe
+--- /dev/null
++++ b/buildroot/package/python-lxmf/Config.in
+@@ -0,0 +1,11 @@
++config BR2_PACKAGE_PYTHON_LXMF
++	bool "python-lxmf"
++	select BR2_PACKAGE_PYTHON_RNS  # runtime
++	help
++	  LXMF (Lightweight eXtensible Message Format) — the
++	  message-passing layer that nomadnet, Sideband, MeshChat
++	  and other Reticulum-based apps share. Provides delivery,
++	  storage, propagation and addressing for ~secure msg routes
++	  across the Reticulum mesh.
++
++	  https://github.com/markqvist/LXMF
+diff --git a/buildroot/package/python-lxmf/python-lxmf.hash b/buildroot/package/python-lxmf/python-lxmf.hash
+new file mode 100644
+index 000000000..d6e860762
+--- /dev/null
++++ b/buildroot/package/python-lxmf/python-lxmf.hash
+@@ -0,0 +1,4 @@
++# sha256/md5 from github.com/markqvist/LXMF/archive/0.9.8 — file saved by
++# buildroot as python-lxmf-0.9.8.tar.gz (default package name).
++md5     76be2c7281f34742892c3bc8b4915fb9                                  python-lxmf-0.9.8.tar.gz
++sha256  e5a12a0f1ead12a16c890c0a5bbe12c6fe37656a12599067a52d4fa38b5dd4c6  python-lxmf-0.9.8.tar.gz
+diff --git a/buildroot/package/python-lxmf/python-lxmf.mk b/buildroot/package/python-lxmf/python-lxmf.mk
+new file mode 100644
+index 000000000..8b33a91f6
+--- /dev/null
++++ b/buildroot/package/python-lxmf/python-lxmf.mk
+@@ -0,0 +1,18 @@
++################################################################################
++#
++# python-lxmf (Lightweight eXtensible Message Format for Reticulum)
++#
++# NOTE: PyPI dropped sdists for lxmf at 0.9.5+ — only wheels published.
++# We pull the GitHub release-tag tarball instead (same content). Using
++# the github buildroot macro so the URL composes correctly and the
++# downloaded file gets saved as python-lxmf-0.9.8.tar.gz.
++#
++################################################################################
++
++PYTHON_LXMF_VERSION = 0.9.8
++PYTHON_LXMF_SITE = $(call github,markqvist,LXMF,$(PYTHON_LXMF_VERSION))
++PYTHON_LXMF_SETUP_TYPE = setuptools
++PYTHON_LXMF_LICENSE = Reticulum License
++PYTHON_LXMF_LICENSE_FILES = LICENSE
++
++$(eval $(python-package))
+diff --git a/buildroot/package/python-nomadnet/Config.in b/buildroot/package/python-nomadnet/Config.in
+new file mode 100644
+index 000000000..387a6b518
+--- /dev/null
++++ b/buildroot/package/python-nomadnet/Config.in
+@@ -0,0 +1,16 @@
++config BR2_PACKAGE_PYTHON_NOMADNET
++	bool "python-nomadnet"
++	select BR2_PACKAGE_PYTHON_RNS         # runtime
++	select BR2_PACKAGE_PYTHON_LXMF        # runtime
++	select BR2_PACKAGE_PYTHON_URWID       # runtime (TUI)
++	select BR2_PACKAGE_PYTHON_QRCODE      # runtime (QR identity codes)
++	help
++	  Nomad Network — a Reticulum-based application stack that
++	  ships an LXMF propagation node, a nomadnet "page" server
++	  (gopher-like browsable content over Reticulum), and a
++	  terminal UI client. Installed here primarily so users can
++	  host nomadnet pages from the device; the init script
++	  S83nomadnet is shipped disabled by default and gated on a
++	  flag in /etc/rnsbox/nomadnet.conf.
++
++	  https://github.com/markqvist/NomadNet
+diff --git a/buildroot/package/python-nomadnet/python-nomadnet.hash b/buildroot/package/python-nomadnet/python-nomadnet.hash
+new file mode 100644
+index 000000000..3c5f44b04
+--- /dev/null
++++ b/buildroot/package/python-nomadnet/python-nomadnet.hash
+@@ -0,0 +1,3 @@
++# md5, sha256 from https://pypi.org/pypi/nomadnet/1.0.4/json
++md5     47eb5ad5c778444a9c8200e563fcb3fd                                  nomadnet-1.0.4.tar.gz
++sha256  a4e9bc4ee9f8a663ee886c4bc6331a3d778a706e53500dc0e6eb2c56093aa0e5  nomadnet-1.0.4.tar.gz
+diff --git a/buildroot/package/python-nomadnet/python-nomadnet.mk b/buildroot/package/python-nomadnet/python-nomadnet.mk
+new file mode 100644
+index 000000000..5fb45f6f7
+--- /dev/null
++++ b/buildroot/package/python-nomadnet/python-nomadnet.mk
+@@ -0,0 +1,14 @@
++################################################################################
++#
++# python-nomadnet (Nomad Network — Reticulum LXMF/pages server + TUI)
++#
++################################################################################
++
++PYTHON_NOMADNET_VERSION = 1.0.4
++PYTHON_NOMADNET_SOURCE = nomadnet-$(PYTHON_NOMADNET_VERSION).tar.gz
++PYTHON_NOMADNET_SITE = https://files.pythonhosted.org/packages/38/15/f187c64a4e58a89847622869468fa422f14807bbd157d5ff0ce95d5347e6
++PYTHON_NOMADNET_SETUP_TYPE = setuptools
++PYTHON_NOMADNET_LICENSE = Reticulum License
++PYTHON_NOMADNET_LICENSE_FILES = LICENSE
++
++$(eval $(python-package))
+diff --git a/buildroot/package/python-urwid/Config.in b/buildroot/package/python-urwid/Config.in
+index f584a9258..437a2710d 100644
+--- a/buildroot/package/python-urwid/Config.in
++++ b/buildroot/package/python-urwid/Config.in
+@@ -1,5 +1,7 @@
+ config BR2_PACKAGE_PYTHON_URWID
+ 	bool "python-urwid"
++	select BR2_PACKAGE_PYTHON_WCWIDTH	# runtime (urwid str_util imports it)
++	select BR2_PACKAGE_PYTHON_TYPING_EXTENSIONS	# runtime (urwid listbox/scrollable import it unguarded)
+ 	help
+ 	  Urwid is a console user interface library for Python
+ 
+diff --git a/buildroot/package/python-urwid/python-urwid.hash b/buildroot/package/python-urwid/python-urwid.hash
+index 3d7be017a..697a9c92b 100644
+--- a/buildroot/package/python-urwid/python-urwid.hash
++++ b/buildroot/package/python-urwid/python-urwid.hash
+@@ -1,5 +1,3 @@
+-# md5, sha256 from https://pypi.org/pypi/urwid/json
+-md5  f7f4e6bed9ba38965dbd619520f39287  urwid-2.1.2.tar.gz
+-sha256  588bee9c1cb208d0906a9f73c613d2bd32c3ed3702012f51efe318a3f2127eae  urwid-2.1.2.tar.gz
+-# Locally computed sha256 checksums
+-sha256  36b6d3fa47916943fd5fec313c584784946047ec1337a78b440e5992cb595f89  COPYING
++# md5, sha256 from https://pypi.org/pypi/urwid/2.6.16/json
++md5     214f9cea321ccae131cecfaef2a4aa9a                                  urwid-2.6.16.tar.gz
++sha256  93ad239939e44c385e64aa00027878b9e5c486d59e855ec8ab5b1e1adcdb32a2  urwid-2.6.16.tar.gz
+diff --git a/buildroot/package/python-urwid/python-urwid.mk b/buildroot/package/python-urwid/python-urwid.mk
+index 78b369ef8..b289057f0 100644
+--- a/buildroot/package/python-urwid/python-urwid.mk
++++ b/buildroot/package/python-urwid/python-urwid.mk
+@@ -4,11 +4,26 @@
+ #
+ ################################################################################
+ 
+-PYTHON_URWID_VERSION = 2.1.2
++# RNSBox: bumped 2.1.2 -> 2.6.16 because nomadnet 1.0.4 requires urwid>=2.6.16.
++# 2.6 needs setuptools-scm at build time; without it as a host dep the
++# urwid setup.py tries `pip wheel setuptools_scm[toml]>=7.0` which fails
++# offline. Adding host-python-setuptools-scm to DEPENDENCIES fixes it.
++PYTHON_URWID_VERSION = 2.6.16
+ PYTHON_URWID_SOURCE = urwid-$(PYTHON_URWID_VERSION).tar.gz
+-PYTHON_URWID_SITE = https://files.pythonhosted.org/packages/94/3f/e3010f4a11c08a5690540f7ebd0b0d251cc8a456895b7e49be201f73540c
++PYTHON_URWID_SITE = https://files.pythonhosted.org/packages/98/21/ad23c9e961b2d36d57c63686a6f86768dd945d406323fb58c84f09478530
+ PYTHON_URWID_LICENSE = LGPL-2.1+
+ PYTHON_URWID_LICENSE_FILES = COPYING
+ PYTHON_URWID_SETUP_TYPE = setuptools
++# Runtime deps urwid 2.6.x imports unguarded (not just under TYPE_CHECKING):
++#   - wcwidth          : `import wcwidth` in str_util.py
++#   - typing_extensions: top-level `from typing_extensions import Protocol,
++#                        runtime_checkable` in widget/listbox.py:29 +
++#                        widget/scrollable.py:28 (both core widgets nomadnet
++#                        uses). Most other urwid typing_extensions imports ARE
++#                        guarded by `if TYPE_CHECKING:`, but these two are not.
++# Without either, nomadnet dies at startup with ModuleNotFoundError.
++# host-python-setuptools-scm is build-time only (urwid's version at build).
++PYTHON_URWID_DEPENDENCIES = host-python-setuptools-scm python-wcwidth python-typing-extensions
++PYTHON_URWID_ENV += SETUPTOOLS_SCM_PRETEND_VERSION=$(PYTHON_URWID_VERSION)
+ 
+ $(eval $(python-package))
+-- 
+2.47.3
+

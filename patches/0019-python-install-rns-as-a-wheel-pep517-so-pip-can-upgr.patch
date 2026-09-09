@@ -1,0 +1,41 @@
+From ad100baf52d6c73bf7ddc3468b542e1fdacf8072 Mon Sep 17 00:00:00 2001
+From: smit1237 <smit1237@gmail.com>
+Date: Wed, 9 Sep 2026 01:58:01 +0300
+Subject: [PATCH 19/20] python: install rns as a wheel (pep517) so pip can
+ upgrade it in place
+
+The buildroot setuptools install produced an egg-info without a RECORD, which
+pip refuses to uninstall/upgrade ("distutils installed project") -- so both the
+portal Update button and a manual "pip install -U rns" would fail to replace
+it. Switch python-rns to SETUP_TYPE=pep517: buildroot builds rns's
+py3-none-any wheel and installs it with installer, producing a proper dist-info
++ RECORD, so rns is pip-managed from first boot and upgrades cleanly. rns is
+setup.py-only, so the PEP 517 build uses the setuptools legacy backend --
+host-python-setuptools + host-python-wheel are added as host-only build deps
+(no target bloat). No Rust is involved; the source-built host-rust path
+(host-rust-bin bootstrap fix, patch 0007) is untouched.
+---
+ buildroot/package/python-rns/python-rns.mk | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/buildroot/package/python-rns/python-rns.mk b/buildroot/package/python-rns/python-rns.mk
+index 107f4ca18..343e88adf 100644
+--- a/buildroot/package/python-rns/python-rns.mk
++++ b/buildroot/package/python-rns/python-rns.mk
+@@ -7,7 +7,12 @@
+ PYTHON_RNS_VERSION = 1.5.2
+ PYTHON_RNS_SOURCE = rns-$(PYTHON_RNS_VERSION).tar.gz
+ PYTHON_RNS_SITE = https://files.pythonhosted.org/packages/7e/fb/d7b0b67c0e369b8533fe14688cb2b65bff21c669b0c776759015ad3d1830
+-PYTHON_RNS_SETUP_TYPE = setuptools
++PYTHON_RNS_SETUP_TYPE = pep517
++# Install rns as a wheel (dist-info + RECORD) rather than a distutils
++# egg-info, so pip can upgrade it in place (portal Update button / manual
++# pip install -U rns). rns is setup.py-only, so the PEP 517 build uses the
++# setuptools legacy backend -- host-only build deps, no target bloat.
++PYTHON_RNS_DEPENDENCIES += host-python-setuptools host-python-wheel
+ PYTHON_RNS_LICENSE = Reticulum License
+ PYTHON_RNS_LICENSE_FILES = LICENSE
+ 
+-- 
+2.47.3
+

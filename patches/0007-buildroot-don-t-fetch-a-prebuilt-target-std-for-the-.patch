@@ -1,0 +1,49 @@
+From 7562badcff114b7963645f4c39ecbe4d6a1052c3 Mon Sep 17 00:00:00 2001
+From: smit1237 <smit1237@gmail.com>
+Date: Wed, 9 Sep 2026 00:06:02 +0300
+Subject: [PATCH 07/20] buildroot: don't fetch a prebuilt target std for the
+ host-rust-bin bootstrap
+
+When host-rust is built from source (BR2_PACKAGE_HOST_RUST=y), host-rust-bin
+is only the bootstrap compiler and does not need a prebuilt rust-std for the
+target -- host-rust produces the target std itself. rust-bin.mk gated the
+target-std download and install solely on
+BR2_PACKAGE_HOST_RUSTC_TARGET_ARCH_SUPPORTS, so enabling a Tier-3 target such
+as riscv64gc-unknown-linux-musl (no upstream prebuilt rust-std, no entry in
+rust-bin.hash) made the bootstrap try to fetch it and fail -- 404 on the
+mirrors, or "No hash found" if placed by hand. Gate those steps on the
+prebuilt bin actually being the toolchain (host-rust unset) so the bootstrap
+pulls only the host std and the source build supplies the target std.
+
+Without this, a clean "git am + build" of the RNSBox series fails at
+host-rust-bin; the previous tree only built because of a hand-seeded std and
+sticky buildroot stamps.
+---
+ buildroot/package/rust-bin/rust-bin.mk | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/buildroot/package/rust-bin/rust-bin.mk b/buildroot/package/rust-bin/rust-bin.mk
+index db31e26a7..a62b3d330 100644
+--- a/buildroot/package/rust-bin/rust-bin.mk
++++ b/buildroot/package/rust-bin/rust-bin.mk
+@@ -15,7 +15,7 @@ HOST_RUST_BIN_PROVIDES = host-rustc
+ 
+ HOST_RUST_BIN_SOURCE = rust-$(RUST_BIN_VERSION)-$(RUSTC_HOST_NAME).tar.xz
+ 
+-ifeq ($(BR2_PACKAGE_HOST_RUSTC_TARGET_ARCH_SUPPORTS),y)
++ifeq ($(BR2_PACKAGE_HOST_RUST)$(BR2_PACKAGE_HOST_RUSTC_TARGET_ARCH_SUPPORTS),y)
+ HOST_RUST_BIN_EXTRA_DOWNLOADS += rust-std-$(RUST_BIN_VERSION)-$(RUSTC_TARGET_NAME).tar.xz
+ endif
+ 
+@@ -47,7 +47,7 @@ define HOST_RUST_BIN_INSTALL_RUSTC
+ 		./install.sh $(HOST_RUST_BIN_INSTALL_OPTS))
+ endef
+ 
+-ifeq ($(BR2_PACKAGE_HOST_RUSTC_TARGET_ARCH_SUPPORTS),y)
++ifeq ($(BR2_PACKAGE_HOST_RUST)$(BR2_PACKAGE_HOST_RUSTC_TARGET_ARCH_SUPPORTS),y)
+ define HOST_RUST_BIN_INSTALL_LIBSTD_TARGET
+ 	(cd $(@D)/std/rust-std-$(RUST_BIN_VERSION)-$(RUSTC_TARGET_NAME); \
+ 		./install.sh $(HOST_RUST_BIN_INSTALL_COMMON_OPTS))
+-- 
+2.47.3
+

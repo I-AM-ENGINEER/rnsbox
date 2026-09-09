@@ -1,0 +1,558 @@
+From e21b5539c8a0eeb612cde2c9b73e0e096522b0d4 Mon Sep 17 00:00:00 2001
+From: smit1237 <smit1237@gmail.com>
+Date: Tue, 8 Sep 2026 22:47:48 +0300
+Subject: [PATCH 05/20] router: NAT data plane, LAN services and operator
+ config
+
+S60routing sets the routing sysctls (ip_forward, BBR/fq, route_localnet),
+regenerates the dnsmasq scope and the nftables ruleset via the portal nftgen
+module with validate-before-swap, and applies it. S30eth addresses eth0 by
+DHCP or static per /etc/rnsbox/wan.conf. Ship the dnsmasq/dhcpcd/nftables
+fallback/fstab configuration and the wan/portforward/openports operator files.
+---
+ .../cvitek/SG200X/overlay/etc/dhcpcd.conf     |  40 +++++
+ .../cvitek/SG200X/overlay/etc/dnsmasq.conf    |  20 +++
+ .../board/cvitek/SG200X/overlay/etc/fstab     |  17 ++
+ .../cvitek/SG200X/overlay/etc/init.d/S30eth   |  93 +++++++---
+ .../SG200X/overlay/etc/init.d/S60routing      | 167 ++++++++++++++++++
+ .../board/cvitek/SG200X/overlay/etc/inittab   |  10 +-
+ .../cvitek/SG200X/overlay/etc/nftables.conf   |  46 +++++
+ .../SG200X/overlay/etc/rnsbox/openports.conf  |  11 ++
+ .../overlay/etc/rnsbox/portforward.conf       |  12 ++
+ .../cvitek/SG200X/overlay/etc/rnsbox/wan.conf |  24 +++
+ 10 files changed, 416 insertions(+), 24 deletions(-)
+ create mode 100644 buildroot/board/cvitek/SG200X/overlay/etc/dhcpcd.conf
+ create mode 100644 buildroot/board/cvitek/SG200X/overlay/etc/dnsmasq.conf
+ create mode 100644 buildroot/board/cvitek/SG200X/overlay/etc/fstab
+ create mode 100755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/S60routing
+ create mode 100644 buildroot/board/cvitek/SG200X/overlay/etc/nftables.conf
+ create mode 100644 buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/openports.conf
+ create mode 100644 buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/portforward.conf
+ create mode 100644 buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/wan.conf
+
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/dhcpcd.conf b/buildroot/board/cvitek/SG200X/overlay/etc/dhcpcd.conf
+new file mode 100644
+index 000000000..880f344fc
+--- /dev/null
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/dhcpcd.conf
+@@ -0,0 +1,40 @@
++# dhcpcd config for the RNSBox router.
++#
++# Goal: a single persistent dhcpcd that owns eth0 (WAN) only, never touches
++# usb0 (LAN, dnsmasq territory), IPv4 only, and never falls back to
++# IPv4LL/APIPA — we'd rather have no IP than a 169.254.x.x address that
++# the kernel will helpfully install a default route through.
++
++hostname
++clientid
++
++# `persistent` keeps the daemon resident across NOCARRIER, so when the
++# Ethernet cable is plugged in (or finally provides enough power for a
++# stable link) we get a lease automatically without re-launching anything.
++persistent
++
++option rapid_commit
++option domain_name_servers, domain_name, domain_search
++option classless_static_routes
++require dhcp_server_identifier
++slaac private
++
++# We have no IPv6 upstream by default; matches the kernel sysctls and
++# the nftables rules. (Reticulum doesn't need it.)
++noipv6
++noipv6rs
++
++# No 169.254 fallback. dhcpcd's APIPA route would otherwise become the
++# default route on link-down, which is exactly the bug we hit on the
++# predecessor board.
++noipv4ll
++
++# Allowed WAN interfaces. /etc/init.d/S30eth invokes dhcpcd with the
++# chosen iface name explicitly; the allowinterfaces list still gates
++# which devices dhcpcd will ever touch. Listing both eth0 + wlan0
++# means a runtime WAN switch (edit /etc/rnsbox/wan.conf, restart
++# S30eth) works without re-editing this file.
++#
++# usb0 = LAN side, dnsmasq's territory.
++allowinterfaces eth0 wlan0
++denyinterfaces lo usb0
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/dnsmasq.conf b/buildroot/board/cvitek/SG200X/overlay/etc/dnsmasq.conf
+new file mode 100644
+index 000000000..b952b8f5a
+--- /dev/null
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/dnsmasq.conf
+@@ -0,0 +1,20 @@
++# NOTE: this file is REGENERATED AT BOOT by /etc/init.d/S60routing
++# based on /etc/rnsbox/wan.conf. Manual edits below the "AUTOGEN MARKER"
++# line are clobbered every boot.
++#
++# To change the WAN interface, edit /etc/rnsbox/wan.conf and run
++#   /etc/init.d/S60routing restart
++
++# Shared (interface-agnostic) settings.
++filter-AAAA
++cache-size=1000
++no-hosts
++# bind-dynamic = bind per-interface as they come up, not wildcard-at-start.
++# Lets the autogen section below reference usb0 even if it appears late.
++bind-dynamic
++# DNS upstream follows /etc/resolv.conf (dhcpcd manages it via openresolv).
++
++# Friendly hostnames for the portal regardless of which LAN the client is on.
++address=/rnsbox.local/setup.rnsbox/setup.lan/router.rnsbox/10.42.0.1
++
++# --- AUTOGEN MARKER --- per-LAN scopes appended at boot below ---
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/fstab b/buildroot/board/cvitek/SG200X/overlay/etc/fstab
+new file mode 100644
+index 000000000..c0f0c8e38
+--- /dev/null
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/fstab
+@@ -0,0 +1,17 @@
++# RNSBox overlay: extend microSD life by mounting log/state dirs
++# as tmpfs (writes never hit flash) and applying noatime where they would.
++# `/` is remounted rw,noatime by inittab si1 — see /etc/inittab.
++
++# <file system>	<mount pt>	<type>	<options>	<dump>	<pass>
++/dev/root	/		ext2	rw,noauto,noatime			0	1
++proc		/proc		proc	defaults				0	0
++devpts		/dev/pts	devpts	defaults,gid=5,mode=620,ptmxmode=0666	0	0
++sysfs		/sys		sysfs	defaults				0	0
++
++# Memory-backed mounts — kill SD writes from the chatty paths.
++tmpfs		/dev/shm	tmpfs	mode=0777				0	0
++tmpfs		/tmp		tmpfs	mode=1777				0	0
++tmpfs		/run		tmpfs	mode=0755,nosuid,nodev			0	0
++tmpfs		/var/log	tmpfs	mode=0755,size=4M			0	0
++tmpfs		/var/lock	tmpfs	mode=1777,size=512k			0	0
++tmpfs		/var/cache	tmpfs	mode=0755,size=512k			0	0
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S30eth b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S30eth
+index d30bc52c1..dd620e707 100755
+--- a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S30eth
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S30eth
+@@ -1,33 +1,84 @@
+ #!/bin/sh
++# S30eth — bring up the WAN interface (eth0) with either a DHCP lease or a
++# static address, per /etc/rnsbox/wan.conf.
++#
++# DHCP path: busybox udhcpc (its default.script writes the lease addr/route +
++#   /etc/resolv.conf). Backgrounded; persists, retries on late carrier.
++# Static path: `ip` assigns addr/route directly and we write resolv.conf
++#   ourselves (dnsmasq + the box's own resolver follow it).
++#
++# /boot/eth.nodhcp still forces "leave eth0 alone" (legacy escape hatch).
+ 
+ . /etc/profile
+ 
++WAN_CONF=/etc/rnsbox/wan.conf
++RESOLV=/etc/resolv.conf
++
++cfg() {
++	# value for key $1 from wan.conf (strip comments/space); empty if absent
++	grep -E "^[[:space:]]*$1[[:space:]]*=" "$WAN_CONF" 2>/dev/null | tail -1 \
++	  | sed -E "s/^[^=]*=[[:space:]]*//" | sed -E 's/[[:space:]]*#.*$//' \
++	  | sed -E 's/[[:space:]]*$//'
++}
++
++start_dhcp() {
++	# -t tries, -T timeout, -A wait-before-retry, -b background after lease fail
++	(udhcpc -i eth0 -t 10 -T 1 -A 5 -b -p /run/udhcpc.eth0.pid) &
++	echo "dhcp"
++}
++
++start_static() {
++	addr=$(cfg address); prefix=$(cfg prefix); gw=$(cfg gateway); dns=$(cfg dns)
++	[ -z "$prefix" ] && prefix=24
++	if [ -z "$addr" ]; then
++		echo "static requested but address empty — falling back to dhcp"
++		start_dhcp
++		return
++	fi
++	ip addr flush dev eth0 2>/dev/null
++	ip addr add "$addr/$prefix" dev eth0 2>/dev/null
++	ip link set eth0 up 2>/dev/null
++	if [ -n "$gw" ]; then
++		ip route del default 2>/dev/null
++		ip route add default via "$gw" dev eth0 2>/dev/null
++	fi
++	# Write resolv.conf for the static DNS servers. /etc/resolv.conf is a
++	# symlink into /tmp; rewrite the target so dnsmasq (upstream) + the box's
++	# own resolver pick the static servers up. Tag the lines so a later DHCP
++	# run on another iface can distinguish them.
++	if [ -n "$dns" ]; then
++		: > "$RESOLV"
++		for s in $dns; do echo "nameserver $s  # eth0-static" >> "$RESOLV"; done
++	fi
++	echo "static $addr/$prefix gw=${gw:-none} dns=${dns:-none}"
++}
++
+ start() {
+ 	printf "start ethernet: "
+-	if [ ! -e /boot/eth.nodhcp ]
+-	then
+-		(udhcpc -i eth0 -t 10 -T 1 -A 5 -b -p /run/udhcpc.eth0.pid) &
++	if [ -e /boot/eth.nodhcp ]; then
++		echo "skipped (/boot/eth.nodhcp present)"
++		return
+ 	fi
+-	echo "OK"
++	mode=$(cfg mode); [ -z "$mode" ] && mode=dhcp
++	case "$mode" in
++		static) start_static ;;
++		*)      start_dhcp ;;
++	esac
+ }
+ 
+ stop() {
+-	kill `cat /run/udhcpc.eth0.pid`
+-	rm /run/udhcpc.eth0.pid
+-}
+-
+-restart() {
+-	start
+-	stop
++	# Stop the DHCP client if one is running.
++	if [ -f /run/udhcpc.eth0.pid ]; then
++		kill "$(cat /run/udhcpc.eth0.pid)" 2>/dev/null
++		rm -f /run/udhcpc.eth0.pid
++	fi
++	# Drop any static addressing too, so a mode switch starts clean.
++	ip addr flush dev eth0 2>/dev/null
+ }
+ 
+-if [ "${1}" = "start" ]
+-then
+-	start
+-elif [ "${1}" = "stop" ]
+-then
+-	stop
+-elif [ "${1}" = "restart" ]
+-then
+-	restart
+-fi
++case "${1:-start}" in
++	start)   start ;;
++	stop)    stop ;;
++	restart) stop; start ;;        # NB: real order (old S30eth had it backwards)
++	*)       echo "Usage: $0 {start|stop|restart}" >&2; exit 1 ;;
++esac
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S60routing b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S60routing
+new file mode 100755
+index 000000000..7531b48bc
+--- /dev/null
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S60routing
+@@ -0,0 +1,167 @@
++#!/bin/sh
++# S60routing — kernel routing knobs + regenerate nftables.conf and the
++# per-LAN dnsmasq scope, then apply.
++#
++# Runs after S30gadget_nic (usb0), S30eth (eth0 lease) and S35wifi (so an
++# AP iface, if any, already exists and can be folded into the LAN side).
++# Re-runnable as `restart` whenever the portal edits the rnsbox configs.
++#
++# nftables ruleset comes from `python3 -m rnsbox_portal.nftgen` (single
++# source of truth shared with the Flask UI). Pre-validate with `nft -c -f`
++# (validate-before-swap discipline) before atomically swapping the live config so a bad
++# generated rule can't lock us out.
++
++WAN_CONF=/etc/rnsbox/wan.conf
++NFT_FILE=/etc/nftables.conf
++DNSMASQ_FILE=/etc/dnsmasq.conf
++NFTGEN="env PYTHONPATH=/usr/lib/rnsbox-portal python3 -m rnsbox_portal.nftgen"
++
++USB0_LAN_IP=10.42.0.1
++USB0_LAN_DHCP_START=10.42.0.10
++USB0_LAN_DHCP_END=10.42.0.20
++AUTOGEN_DNSMASQ="# --- AUTOGEN MARKER --- per-LAN scopes appended at boot below ---"
++
++# RNSBox W variant: S35wifi writes the AP iface name to /run/wifi-ap-iface
++# when a hotspot is up. Fold it into the LAN side so it gets NAT + a DHCP
++# scope automatically. WiFi subnet read from /etc/rnsbox/wifi.conf.
++WIFI_CONF=/etc/rnsbox/wifi.conf
++wifi_cfg() {
++	grep -E "^[[:space:]]*$1[[:space:]]*=" "$WIFI_CONF" 2>/dev/null | tail -1 \
++	  | sed -E "s/^[^=]*=[[:space:]]*//" | sed -E 's/[[:space:]]*#.*$//' \
++	  | sed -E 's/[[:space:]]*$//'
++}
++
++read_wan() {
++	# wan.conf is now key=value (interface=eth0). Prefer the interface= key;
++	# fall back to a legacy bare "eth0"/"wlan0" line if no key is present.
++	WAN=$(grep -E '^[[:space:]]*interface[[:space:]]*=' "$WAN_CONF" 2>/dev/null \
++	  | tail -1 | sed -E 's/^[^=]*=[[:space:]]*//' | sed -E 's/[[:space:]]*#.*$//' \
++	  | tr -d '[:space:]')
++	[ -z "$WAN" ] && WAN=$(grep -vE '^[[:space:]]*#|^[[:space:]]*$|=' "$WAN_CONF" 2>/dev/null | head -1 | tr -d '[:space:]')
++	case "$WAN" in eth0|wlan0) ;; *) WAN=eth0 ;; esac
++}
++
++read_lan() {
++	LAN_IFACES="usb0"
++	AP_IF=""
++	if [ -r /run/wifi-ap-iface ]; then
++		AP_IF=$(cat /run/wifi-ap-iface 2>/dev/null | tr -d '[:space:]')
++		[ -n "$AP_IF" ] && [ -e "/sys/class/net/$AP_IF" ] && LAN_IFACES="usb0,$AP_IF"
++	fi
++}
++
++regen_nftables() {
++	TMP=$(mktemp /tmp/nftables.conf.XXXXXX) || return 1
++	if ! $NFTGEN --wan "$WAN" --lan "$LAN_IFACES" > "$TMP" 2>/var/log/nftgen.err; then
++		echo "S60routing: nftgen failed (see /var/log/nftgen.err); keeping previous $NFT_FILE"
++		rm -f "$TMP"
++		return 1
++	fi
++	if ! nft -c -f "$TMP" >>/var/log/nftgen.err 2>&1; then
++		echo "S60routing: generated ruleset failed nft -c validation; keeping previous $NFT_FILE"
++		rm -f "$TMP"
++		return 1
++	fi
++	mv "$TMP" "$NFT_FILE"
++	chmod 0644 "$NFT_FILE"
++}
++
++regen_dnsmasq() {
++	if grep -q "$AUTOGEN_DNSMASQ" "$DNSMASQ_FILE" 2>/dev/null; then
++		sed -i "/$AUTOGEN_DNSMASQ/q" "$DNSMASQ_FILE"
++	fi
++	{
++		echo
++		echo "# WAN=$WAN (DHCP not served here — eth0 receives a lease, doesn't serve one)"
++		echo "no-dhcp-interface=$WAN"
++		echo
++		echo "# usb0 LAN"
++		echo "interface=usb0"
++		echo "dhcp-range=set:usb0,$USB0_LAN_DHCP_START,$USB0_LAN_DHCP_END,255.255.255.0,12h"
++		echo "dhcp-option=tag:usb0,3,$USB0_LAN_IP"
++		echo "dhcp-option=tag:usb0,6,$USB0_LAN_IP"
++		# RNSBox W variant: AP hotspot scope (only when S35wifi has an AP up).
++		if [ -n "$AP_IF" ] && [ -e "/sys/class/net/$AP_IF" ]; then
++			AP_IP=$(wifi_cfg ap_ip); [ -z "$AP_IP" ] && AP_IP=192.168.42.1
++			AP_DS=$(wifi_cfg ap_dhcp_start); [ -z "$AP_DS" ] && AP_DS=192.168.42.10
++			AP_DE=$(wifi_cfg ap_dhcp_end); [ -z "$AP_DE" ] && AP_DE=192.168.42.100
++			echo
++			echo "# $AP_IF WiFi AP LAN"
++			echo "interface=$AP_IF"
++			echo "dhcp-range=set:$AP_IF,$AP_DS,$AP_DE,255.255.255.0,12h"
++			echo "dhcp-option=tag:$AP_IF,3,$AP_IP"
++			echo "dhcp-option=tag:$AP_IF,6,$AP_IP"
++		fi
++	} >> "$DNSMASQ_FILE"
++}
++
++start() {
++	read_wan
++	read_lan
++	echo "S60routing: WAN=$WAN LAN=$LAN_IFACES"
++
++	# --- routing knobs ---
++	echo 1 > /proc/sys/net/ipv4/ip_forward
++	echo 0 > /proc/sys/net/ipv4/conf/all/rp_filter
++	echo 0 > /proc/sys/net/ipv4/conf/default/rp_filter
++	echo 0 > /proc/sys/net/ipv4/conf/all/accept_redirects
++	echo 0 > /proc/sys/net/ipv6/conf/all/forwarding 2>/dev/null || true
++	# route_localnet on the WAN iface: lets a port forward whose target is a
++	# loopback address (127.0.0.0/8 — e.g. a service that binds only to
++	# 127.0.0.1) actually be delivered. Without it, a packet DNAT'd to 127.x
++	# arriving on a real iface is dropped as a martian before INPUT. Forwards
++	# to the box's real LAN IP (10.42.0.1) don't need this; loopback ones do.
++	# Safe: INPUT's drop policy + the "ct status dnat" gate mean only flows
++	# our own prerouting DNAT created can reach a local service this way.
++	echo 1 > "/proc/sys/net/ipv4/conf/$WAN/route_localnet" 2>/dev/null || true
++
++	# --- throughput tuning ---
++	for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
++		[ -w "$g" ] && echo performance > "$g" 2>/dev/null
++	done
++	echo 4194304 > /proc/sys/net/core/rmem_max
++	echo 4194304 > /proc/sys/net/core/wmem_max
++	echo 1048576 > /proc/sys/net/core/rmem_default
++	echo 1048576 > /proc/sys/net/core/wmem_default
++	echo "4096 1048576 4194304" > /proc/sys/net/ipv4/tcp_rmem
++	echo "4096 524288 4194304"  > /proc/sys/net/ipv4/tcp_wmem
++	echo 4000 > /proc/sys/net/core/netdev_max_backlog
++	echo 600 > /proc/sys/net/core/netdev_budget 2>/dev/null
++	echo 8000 > /proc/sys/net/core/netdev_budget_usecs 2>/dev/null
++	echo 0 > /proc/sys/net/ipv4/tcp_slow_start_after_idle 2>/dev/null
++	echo 15 > /proc/sys/net/ipv4/tcp_fin_timeout 2>/dev/null
++	echo 1 > /proc/sys/net/ipv4/tcp_tw_reuse 2>/dev/null
++	echo 3 > /proc/sys/net/ipv4/tcp_fastopen 2>/dev/null
++	if grep -qw bbr /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null; then
++		echo bbr > /proc/sys/net/ipv4/tcp_congestion_control
++	fi
++	[ -d /sys/module/sch_fq ] || modprobe sch_fq 2>/dev/null
++	echo fq > /proc/sys/net/core/default_qdisc 2>/dev/null
++
++	# --- regenerate + apply ---
++	regen_dnsmasq
++	regen_nftables
++
++	nft flush ruleset 2>/dev/null
++	if [ -r "$NFT_FILE" ]; then
++		nft -f "$NFT_FILE"
++	fi
++
++	if [ -x /etc/init.d/S80dnsmasq ]; then
++		/etc/init.d/S80dnsmasq restart >/dev/null 2>&1 || true
++	elif pidof dnsmasq >/dev/null 2>&1; then
++		killall -HUP dnsmasq 2>/dev/null || true
++	fi
++}
++
++stop() {
++	nft flush ruleset 2>/dev/null || true
++	echo 0 > /proc/sys/net/ipv4/ip_forward
++}
++
++case "${1:-start}" in
++	start)   start ;;
++	stop)    stop ;;
++	restart) stop; start ;;
++	*) echo "Usage: $0 {start|stop|restart}" >&2; exit 1 ;;
++esac
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/inittab b/buildroot/board/cvitek/SG200X/overlay/etc/inittab
+index 5017cc5bb..01260105c 100644
+--- a/buildroot/board/cvitek/SG200X/overlay/etc/inittab
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/inittab
+@@ -5,8 +5,10 @@
+ id:3:initdefault:
+ 
+ si0::sysinit:/bin/mount -t proc proc /proc
+-si1::sysinit:/bin/mount -o remount,rw /
+-si2::sysinit:/bin/mkdir -p /dev/pts /dev/shm
++# RNSBox: rootfs remount adds `noatime` to kill read-triggered SD
++# writes (every file read otherwise stamps an updated atime back to disk).
++si1::sysinit:/bin/mount -o remount,rw,noatime /
++si2::sysinit:/bin/mkdir -p /dev/pts /dev/shm /var/log /var/lock /var/cache
+ si3::sysinit:/bin/mount -a
+ si4::sysinit:/bin/mkdir -p /run/lock/subsys
+ si5::sysinit:/sbin/swapon -a
+@@ -18,7 +20,9 @@ si10::sysinit:/bin/hostname -F /etc/hostname
+ rcS:12345:wait:/etc/init.d/rcS
+ 
+ sole::respawn:/sbin/getty -L console 0 vt100 -l /etc/console_handler.sh
+-acm::respawn:/sbin/getty -L ttyGS0 0 vt100 -l /etc/ttyGS0_handler.sh
++# RNSBox: no USB ACM gadget (USB_F_ACM disabled in kernel defconfig
++# + ttyGS0_handler.sh removed). Drop the ACM getty respawn.
++# acm::respawn:/sbin/getty -L ttyGS0 0 vt100 -l /etc/ttyGS0_handler.sh
+ 
+ # Stuff to do for the 3-finger salute
+ #ca::ctrlaltdel:/sbin/reboot
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/nftables.conf b/buildroot/board/cvitek/SG200X/overlay/etc/nftables.conf
+new file mode 100644
+index 000000000..44f06e3f0
+--- /dev/null
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/nftables.conf
+@@ -0,0 +1,46 @@
++# /etc/nftables.conf — REGENERATED AT BOOT by /etc/init.d/S60routing.
++#
++# This static fallback is only used if S60routing's call to
++# `python3 -m rnsbox_portal.nftgen` fails (defensive: keeps SSH + NAT
++# working even if the portal package is broken). The fallback intentionally
++# has NO port forwards and NO non-SSH WAN-exposed services.
++#
++# Re-render the live config (after editing /etc/rnsbox/*.conf) via:
++#   /etc/init.d/S60routing restart
++#
++# Topology assumption: WAN=eth0, LAN=usb0. If WAN is different the
++# fallback won't masquerade correctly — boot S60routing to regenerate.
++
++flush ruleset
++
++table inet filter {
++	chain input {
++		type filter hook input priority filter; policy drop;
++		ct state invalid drop
++		ct state established,related accept
++		iifname "lo" accept
++		icmp type echo-request limit rate 10/second accept
++		icmpv6 type { echo-request, nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert } accept
++		# LAN: full surface (HTTP UI, SSH, DHCP, DNS, etc.)
++		iifname "usb0" accept
++		# WAN: SSH only by default
++		iifname "eth0" tcp dport 22 accept
++	}
++	chain forward {
++		type filter hook forward priority filter; policy drop;
++		ct state invalid drop
++		ct state established,related accept
++		iifname "usb0" oifname "eth0" accept
++	}
++	chain output { type filter hook output priority filter; policy accept; }
++}
++
++table ip nat {
++	chain prerouting {
++		type nat hook prerouting priority dstnat; policy accept;
++	}
++	chain postrouting {
++		type nat hook postrouting priority srcnat; policy accept;
++		oifname "eth0" masquerade
++	}
++}
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/openports.conf b/buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/openports.conf
+new file mode 100644
+index 000000000..786abfaa5
+--- /dev/null
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/openports.conf
+@@ -0,0 +1,11 @@
++# Open ports on this device's WAN-facing interface.
++#
++# One rule per line:
++#   <proto>  <port>   [# comment]
++#
++# Examples:
++#   tcp  4242   # rnsd TCPServerInterface for external Reticulum peers
++#   udp  4242   # rnsd UDPInterface
++#
++# SSH (tcp/22) is allowed unconditionally and does NOT need an entry here.
++# Managed by the rnsbox-portal UI (Network → Open ports).
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/portforward.conf b/buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/portforward.conf
+new file mode 100644
+index 000000000..3826c60fb
+--- /dev/null
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/portforward.conf
+@@ -0,0 +1,12 @@
++# Port forwards (WAN -> LAN DNAT).
++#
++# One rule per line:
++#   <proto>  <wan_port>  <lan_ip>        <lan_port>   [# comment]
++#
++# Examples:
++#   tcp  8080  10.42.0.10  80    # expose host PC's webserver
++#   udp  4242  10.42.0.10  4242  # forward Reticulum UDP to a LAN peer
++#
++# Managed by the rnsbox-portal UI (Network → Port forwards). Hand-edits
++# survive until the next UI write. After hand-editing, apply with:
++#   /etc/init.d/S60routing restart
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/wan.conf b/buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/wan.conf
+new file mode 100644
+index 000000000..2edba0da8
+--- /dev/null
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/wan.conf
+@@ -0,0 +1,24 @@
++# WAN uplink config — managed by the rnsbox-portal Network tab.
++#
++# Flat key=value. Parsed by both the Flask portal (store.py) and the shell
++# init scripts (S30eth addresses eth0; S60routing picks the NAT iface).
++#
++# interface:  which iface acts as WAN (default route + NAT masquerade attach here)
++#   eth0    - onboard RJ45 (the only working option on the Nano-e SKU; default)
++#   wlan0   - WiFi client (W variant only; addressed by S35wifi/dhcpcd, not here)
++#
++# mode:  how eth0 gets its IPv4 address
++#   dhcp    - lease from the upstream router (default)
++#   static  - use the address/prefix/gateway/dns fields below
++#
++# Static fields (only read when mode=static, only applied to eth0):
++#   address   IPv4 address,         e.g. 192.168.1.50
++#   prefix    netmask as CIDR bits, e.g. 24  (255.255.255.0)
++#   gateway   upstream gateway,     e.g. 192.168.1.1
++#   dns       space-separated DNS servers, e.g. 1.1.1.1 8.8.8.8
++#
++# Changes take effect after `/etc/init.d/S30eth restart` +
++# `/etc/init.d/S60routing restart` (the portal does both on save), or a reboot.
++
++interface=eth0
++mode=dhcp
+-- 
+2.47.3
+

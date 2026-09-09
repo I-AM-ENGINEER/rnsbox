@@ -1,0 +1,202 @@
+From 3c23a130024cee7865feebcd16c7275c856507d4 Mon Sep 17 00:00:00 2001
+From: smit1237 <smit1237@gmail.com>
+Date: Tue, 8 Sep 2026 22:47:50 +0300
+Subject: [PATCH 16/20] docs: MIT license and apply/build guide
+
+Add the MIT LICENSE for the RNSBox code, a project README and an apply/build
+guide describing how to apply this series onto upstream d4003f15b and build the
+dvd/lite images.
+---
+ APPLYING.md      | 63 ++++++++++++++++++++++++++++++++++++++
+ LICENSE          | 21 +++++++++++++
+ README.RNSBox.md | 80 ++++++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 164 insertions(+)
+ create mode 100644 APPLYING.md
+ create mode 100644 LICENSE
+ create mode 100644 README.RNSBox.md
+
+diff --git a/APPLYING.md b/APPLYING.md
+new file mode 100644
+index 000000000..55692b2da
+--- /dev/null
++++ b/APPLYING.md
+@@ -0,0 +1,63 @@
++# Applying and building RNSBox
++
++RNSBox ships as a `git format-patch` series on top of the upstream Sipeed board
++support package. You apply the series onto a pristine upstream checkout and run
++the RNSBox build driver.
++
++## 1. Get the upstream base
++
++```
++git clone https://github.com/sipeed/LicheeRV-Nano-Build.git
++cd LicheeRV-Nano-Build
++git checkout d4003f15b35d43ad4842f427050ab2bba0114fa5
++```
++
++The series was generated against exactly this commit.
++
++## 2. Apply the RNSBox patch series
++
++```
++git am /path/to/rnsbox-patches/*.patch
++```
++
++If you would rather not create commits, `git apply` also works:
++
++```
++git apply /path/to/rnsbox-patches/*.patch
++```
++
++## 3. Build
++
++RNSBox uses the upstream CVITEK build flow with a single driver that selects
++the image variant:
++
++```
++./build-rnsbox.sh dvd     # full image + read-only clients disc (~2.8 GB)
++./build-rnsbox.sh lite    # NCM-only image, no clients disc (~217 MB)
++```
++
++Notes:
++
++- The first build compiles a **Rust host toolchain from source** (required for
++  `python-cryptography` on riscv64-musl, which in turn is required by
++  Reticulum). Expect this to take a while on the first run only.
++- The `dvd` variant expects the Reticulum client binaries under `dl/clients/`.
++  Run `./fetch-clients.sh` first and review `build/clients-stick/` — see the
++  follow-up note in [README.RNSBox.md](README.RNSBox.md). The `lite` variant
++  needs none of this.
++- Output images land under `install/soc_sg2002_licheervnano_sd/images/`,
++  suffixed `-dvd` / `-lite`.
++
++## 4. Flash
++
++```
++sudo dd if=install/soc_sg2002_licheervnano_sd/images/<image>.img \
++        of=/dev/sdX bs=4M conv=fsync status=progress
++```
++
++Make sure `/usr/sbin` is on `PATH` so genimage's `mkfs.fat` resolves. The DVD
++image needs a microSD comfortably larger than the ~3.3 GB DVD image (e.g. 8 GB); the rootfs auto-grows to fill the card
++on first boot.
++
++Then plug the board into a host over USB-C and browse to `http://10.42.0.1/`
++(admin / admin).
+diff --git a/LICENSE b/LICENSE
+new file mode 100644
+index 000000000..645d94257
+--- /dev/null
++++ b/LICENSE
+@@ -0,0 +1,21 @@
++MIT License
++
++Copyright (c) 2026 smit1237
++
++Permission is hereby granted, free of charge, to any person obtaining a copy
++of this software and associated documentation files (the "Software"), to deal
++in the Software without restriction, including without limitation the rights
++to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++copies of the Software, and to permit persons to whom the Software is
++furnished to do so, subject to the following conditions:
++
++The above copyright notice and this permission notice shall be included in all
++copies or substantial portions of the Software.
++
++THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
++SOFTWARE.
+diff --git a/README.RNSBox.md b/README.RNSBox.md
+new file mode 100644
+index 000000000..81daa4b3d
+--- /dev/null
++++ b/README.RNSBox.md
+@@ -0,0 +1,80 @@
++# RNSBox — a Reticulum router for the Sipeed LicheeRV Nano-e
++
++RNSBox turns a **Sipeed LicheeRV Nano-e** (SG2002, T-Head C906 RISC-V) into a
++small, USB-C-powered [Reticulum](https://reticulum.network/) router and
++transport node with an OpenWrt-style web admin UI.
++
++It is distributed as a **patch series on top of the upstream Sipeed board
++support package**, so this tree contains only the RNSBox delta — the Linux
++kernel, Buildroot and the CVITEK/Sipeed BSP themselves come from upstream.
++
++- **Upstream base:** [`sipeed/LicheeRV-Nano-Build`](https://github.com/sipeed/LicheeRV-Nano-Build) at commit `d4003f15b`
++- **Apply + build:** see [APPLYING.md](APPLYING.md)
++
++## What it does
++
++- **`rnsd`** (Reticulum 1.5.2) runs as the long-lived service: a transport node
++  with a `TCPServerInterface` on `0.0.0.0:4242`, an `AutoInterface` on the
++  USB-C LAN, and two public RNS-testnet uplinks preconfigured.
++- **USB-C gadget = LAN.** The board presents a CDC-NCM network interface
++  (`usb0 = 10.42.0.1/24`, dnsmasq DHCP + DNS). The DVD build additionally
++  exposes a read-only mass-storage "disc" pre-loaded with Reticulum client apps
++  for a zero-download quick start.
++- **eth0 = WAN**, DHCP or static, with NAT masquerade plus per-rule port
++  forwarding and open-port management.
++- **`rnsbox-portal`** — a Flask admin UI on `http://10.42.0.1/` for network,
++  Reticulum, WiFi and system settings. It is the single source of truth for the
++  generated `nftables` ruleset (boot and live-apply both call the same module).
++- Optional **NomadNet** LXMF / pages node (off by default) and **AIC8800 WiFi**
++  STA/AP support for the *W* board variant.
++
++The design goal throughout is a minimal OS: the camera / display / audio / NPU
++/ codec middleware of the stock BSP is stripped so nearly all of the 256 MB
++DDR is available to Linux and the router data plane.
++
++## Hardware
++
++- Sipeed LicheeRV Nano-e (no radio) or Nano-e **W** (AIC8800 WiFi). One image
++  serves both; WiFi bring-up is a clean no-op where there is no radio.
++- microSD: the DVD build's size tracks the current client releases (~3.3 GB now; use a card comfortably larger, e.g. 8 GB);
++  the lite build is ~217 MB. The rootfs auto-grows to fill the card on first
++  boot.
++
++## Default credentials
++
++| Service | User  | Password |
++|---------|-------|----------|
++| SSH     | root  | admin    |
++| Web UI  | admin | admin    |
++
++Change these on first use. The web password is stored hashed (pbkdf2) in
++`/etc/rnsbox/auth.json` after first login; the Flask session key is generated
++at runtime and never stored in the source tree.
++
++## Build variants
++
++```
++./build-rnsbox.sh dvd     # full image + read-only clients disc (~2.8 GB)
++./build-rnsbox.sh lite    # NCM-only image, no clients disc (~217 MB)
++```
++
++See [APPLYING.md](APPLYING.md) for the full flow.
++
++## Licensing
++
++- The **RNSBox code in this patch series** (the `rnsbox-portal` app, init
++  scripts, Buildroot package recipes, build scripts and configuration) is
++  released under the **MIT License** — see [LICENSE](LICENSE).
++- The **upstream BSP** (Linux kernel, Buildroot, Sipeed / CVITEK sources)
++  remains under its own respective licenses.
++- The bundled Reticulum client applications are **downloaded at build time**,
++  not redistributed in this tree. They carry their own licenses, some of which
++  are non-commercial (e.g. Sideband, CC BY-NC-SA) or copyleft (e.g. Ratspeak,
++  AGPL-3.0); review them before redistributing any built image.
++
++## Known follow-ups
++
++- `fetch-clients.sh` downloads a subset of the client apps and does not yet
++  verify pinned checksums or cover every app the DVD build stages from
++  `build/clients-stick/`. Treat the clients disc as optional and review that
++  directory before relying on it. The `lite` build does not need it.
+-- 
+2.47.3
+

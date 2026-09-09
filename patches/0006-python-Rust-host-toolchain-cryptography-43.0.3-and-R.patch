@@ -1,0 +1,247 @@
+From e323b1c864ac6e8b5b4b05fff6efb66e5f877f99 Mon Sep 17 00:00:00 2001
+From: smit1237 <smit1237@gmail.com>
+Date: Tue, 8 Sep 2026 22:47:48 +0300
+Subject: [PATCH 06/20] python: Rust host toolchain, cryptography 43.0.3 and
+ Reticulum 1.5.2
+
+Reticulum needs PyCA cryptography, which needs Rust. Enable a source-built
+Rust host toolchain for riscv64gc-unknown-linux-musl (Tier-3 upstream, no
+prebuilt std) via a rustc Config.in.host clause, bump python-cryptography to
+43.0.3 with the maturin backend and a per-package host-rust force-overwrite
+hook to resolve the rustc/rustlib mismatch, and add a libffi host-build fix.
+Add the python-rns recipe (Reticulum 1.5.2).
+---
+ ...04-tramp-declare-open_temp_exec_file.patch | 25 +++++++
+ .../package/python-cryptography/Config.in     |  4 ++
+ .../python-cryptography.hash                  |  9 +--
+ .../python-cryptography.mk                    | 71 +++++++++++++++++--
+ buildroot/package/python-rns/Config.in        | 14 ++++
+ buildroot/package/python-rns/python-rns.hash  |  3 +
+ buildroot/package/python-rns/python-rns.mk    | 14 ++++
+ buildroot/package/rustc/Config.in.host        |  9 +++
+ 8 files changed, 137 insertions(+), 12 deletions(-)
+ create mode 100644 buildroot/package/libffi/0004-tramp-declare-open_temp_exec_file.patch
+ create mode 100644 buildroot/package/python-rns/Config.in
+ create mode 100644 buildroot/package/python-rns/python-rns.hash
+ create mode 100644 buildroot/package/python-rns/python-rns.mk
+
+diff --git a/buildroot/package/libffi/0004-tramp-declare-open_temp_exec_file.patch b/buildroot/package/libffi/0004-tramp-declare-open_temp_exec_file.patch
+new file mode 100644
+index 000000000..1b0ca2037
+--- /dev/null
++++ b/buildroot/package/libffi/0004-tramp-declare-open_temp_exec_file.patch
+@@ -0,0 +1,25 @@
++tramp: forward-declare open_temp_exec_file
++
++libffi 3.4.4's tramp.c calls open_temp_exec_file() (defined extern in
++closures.c) without a prototype. Newer glibc/gcc treats implicit function
++declarations as a hard error, so the host build fails on Debian trixie
++(glibc 2.41) and similar modern distros.
++
++Upstream fixed this in 3.4.5; backport the one-line declaration here.
++
++Signed-off-by: smit1237 <smit1237@gmail.com>
++
++--- a/src/tramp.c
+++++ b/src/tramp.c
++@@ -125,6 +125,11 @@ struct tramp
++   struct tramp_parm *parm;
++ };
++
+++/* Defined in closures.c. Forward-declared here because libffi 3.4.4 forgot
+++   to expose this prototype, and newer glibc (2.34+) compiles with
+++   -Wimplicit-function-declaration as a hard error. */
+++extern int open_temp_exec_file (void);
+++
++ enum tramp_globals_status {
++ 	TRAMP_GLOBALS_UNINITIALIZED = 0,
++ 	TRAMP_GLOBALS_PASSED,
+diff --git a/buildroot/package/python-cryptography/Config.in b/buildroot/package/python-cryptography/Config.in
+index 213aa24fa..3210a3604 100644
+--- a/buildroot/package/python-cryptography/Config.in
++++ b/buildroot/package/python-cryptography/Config.in
+@@ -1,5 +1,9 @@
+ config BR2_PACKAGE_PYTHON_CRYPTOGRAPHY
+ 	bool "python-cryptography"
++	# RNSBox: depends-on restored — cryptography 43.0.3 needs Rust to build,
++	# and we now provide it via source-built host-rust. See the Kconfig
++	# patch in package/rustc/Config.in.host that flips this on for
++	# riscv64gc-unknown-linux-musl.
+ 	depends on BR2_PACKAGE_HOST_RUSTC_TARGET_ARCH_SUPPORTS
+ 	select BR2_PACKAGE_OPENSSL
+ 	select BR2_PACKAGE_PYTHON_CFFI # runtime
+diff --git a/buildroot/package/python-cryptography/python-cryptography.hash b/buildroot/package/python-cryptography/python-cryptography.hash
+index e08301475..6365e5764 100644
+--- a/buildroot/package/python-cryptography/python-cryptography.hash
++++ b/buildroot/package/python-cryptography/python-cryptography.hash
+@@ -1,6 +1,3 @@
+-# Locally calculated after vendoring
+-sha256  405c9a6271e1a088ea0b432bc2094e2e8baadb2241e192ce9c73a7cc9793b127  cryptography-39.0.2.tar.gz
+-# Locally computed sha256 checksums
+-sha256  43dad2cc752ab721cd9a9f36ece70fb53ab7713551f2d3d8694d8e8c5a06d6e2  LICENSE
+-sha256  aac73b3148f6d1d7111dbca32099f68d26c644c6813ae1e4f05f6579aa2663fe  LICENSE.APACHE
+-sha256  602c4c7482de6479dd2e9793cda275e5e63d773dacd1eca689232ab7008fb4fb  LICENSE.BSD
++# md5, sha256 from https://pypi.org/pypi/cryptography/43.0.3/json
++md5     e0669c198e0aecdcd68a2adef030f5a6                                  cryptography-43.0.3.tar.gz
++sha256  315b9001266a492a6ff443b61238f956b214dbec9910a081ba5b6646a055a805  cryptography-43.0.3.tar.gz
+diff --git a/buildroot/package/python-cryptography/python-cryptography.mk b/buildroot/package/python-cryptography/python-cryptography.mk
+index 07c88ec3d..c0ea84a8d 100644
+--- a/buildroot/package/python-cryptography/python-cryptography.mk
++++ b/buildroot/package/python-cryptography/python-cryptography.mk
+@@ -2,19 +2,78 @@
+ #
+ # python-cryptography
+ #
++# RNSBox: bumped 3.4.8 → 43.0.3 once we got host-rust (source build) working
++# for riscv64gc-unknown-linux-musl. 43.0.3 is the last release that still
++# compiles with Rust 1.71.1 (44+ bumps the minimum to 1.74). 43.0.3 works
++# cleanly against OpenSSL 3.x — no FIPS_mode_set / ERR_GET_FUNC / etc.
++# undefined-symbol nonsense the 3.4.8 ↔ OpenSSL-3 mismatch produced.
++#
++# Reticulum (>=3.4.7 required) is satisfied; tests should pass.
++#
+ ################################################################################
+ 
+-PYTHON_CRYPTOGRAPHY_VERSION = 39.0.2
++PYTHON_CRYPTOGRAPHY_VERSION = 43.0.3
+ PYTHON_CRYPTOGRAPHY_SOURCE = cryptography-$(PYTHON_CRYPTOGRAPHY_VERSION).tar.gz
+-PYTHON_CRYPTOGRAPHY_SITE = https://files.pythonhosted.org/packages/fa/f3/f4b8c175ea9a1de650b0085858059050b7953a93d66c97ed89b93b232996
+-PYTHON_CRYPTOGRAPHY_SETUP_TYPE = setuptools-rust
++PYTHON_CRYPTOGRAPHY_SITE = https://files.pythonhosted.org/packages/0d/05/07b55d1fa21ac18c3a8c79f764e2514e6f6a9698f1be44994f5adf0d29db
++# cryptography 41+ switched build backend from setuptools-rust to maturin.
++# (see pyproject.toml: `build-backend = "maturin"`). Using SETUP_TYPE
++# `setuptools-rust` produces an empty wheel — only the pure-Python files
++# get copied and no _rust.abi3.so is generated. SETUP_TYPE=maturin is the
++# correct invocation; buildroot auto-adds host-python-maturin as a
++# build-dep and routes the build through `maturin build`.
++PYTHON_CRYPTOGRAPHY_SETUP_TYPE = maturin
+ PYTHON_CRYPTOGRAPHY_LICENSE = Apache-2.0 or BSD-3-Clause
+ PYTHON_CRYPTOGRAPHY_LICENSE_FILES = LICENSE LICENSE.APACHE LICENSE.BSD
+ PYTHON_CRYPTOGRAPHY_CPE_ID_VENDOR = cryptography_project
+ PYTHON_CRYPTOGRAPHY_CPE_ID_PRODUCT = cryptography
+-PYTHON_CRYPTOGRAPHY_CARGO_MANIFEST_PATH = src/rust/Cargo.toml
+-PYTHON_CRYPTOGRAPHY_DEPENDENCIES = host-python-cffi openssl
+-HOST_PYTHON_CRYPTOGRAPHY_DEPENDENCIES = host-python-cffi host-openssl
++# RNSBox: explicit host-rust dep so the per-package host/lib/rustlib gets
++# the riscv64-musl target std rsynced in. Without this, the rsync from
++# host-python-maturin (which is a host pkg and only needed x86_64 rustlib
++# for itself) leaves cryptography's per-package host without target rustlib,
++# and cargo bails with "can't find crate for `core`" for every Rust file.
++PYTHON_CRYPTOGRAPHY_DEPENDENCIES = host-python-cffi openssl host-rust
++HOST_PYTHON_CRYPTOGRAPHY_DEPENDENCIES = host-python-cffi host-openssl host-rust
++
++# RNSBox: buildroot's per-package merge picks host-rust-bin's static rustc
++# binary (size 2.8 MB, version hash 6b40f50d) but host-rust's source-built
++# rustlibs (riscv64-musl libcore compiled by a DIFFERENT rustc, hash
++# 23f1d2d1...). cargo then errors with "found crate `core` compiled by an
++# incompatible version of rustc". Fix: before configure, overwrite this
++# package's per-package host/ with host-rust's per-package host/, which has
++# the consistent source-built wrapper rustc + matching rustlibs for both
++# x86_64-linux-gnu (host) and riscv64gc-unknown-linux-musl (target).
++PER_PACKAGE_DIR ?= $(BASE_DIR)/per-package
++define PYTHON_CRYPTOGRAPHY_FORCE_HOST_RUST
++	rsync -a $(PER_PACKAGE_DIR)/host-rust/host/bin/ \
++		$(PER_PACKAGE_DIR)/python-cryptography/host/bin/ 2>/dev/null || true
++	rsync -a $(PER_PACKAGE_DIR)/host-rust/host/lib/rustlib/ \
++		$(PER_PACKAGE_DIR)/python-cryptography/host/lib/rustlib/ 2>/dev/null || true
++endef
++PYTHON_CRYPTOGRAPHY_PRE_CONFIGURE_HOOKS += PYTHON_CRYPTOGRAPHY_FORCE_HOST_RUST
++
++define HOST_PYTHON_CRYPTOGRAPHY_FORCE_HOST_RUST
++	rsync -a $(PER_PACKAGE_DIR)/host-rust/host/bin/ \
++		$(PER_PACKAGE_DIR)/host-python-cryptography/host/bin/ 2>/dev/null || true
++	rsync -a $(PER_PACKAGE_DIR)/host-rust/host/lib/rustlib/ \
++		$(PER_PACKAGE_DIR)/host-python-cryptography/host/lib/rustlib/ 2>/dev/null || true
++endef
++HOST_PYTHON_CRYPTOGRAPHY_PRE_CONFIGURE_HOOKS += HOST_PYTHON_CRYPTOGRAPHY_FORCE_HOST_RUST
+ 
+ $(eval $(python-package))
+ $(eval $(host-python-package))
++
++# RNSBox: cryptography is a maturin/pyo3 package, so buildroot's python-package
++# infrastructure auto-sets <pkg>_DOWNLOAD_POST_PROCESS = cargo (pkg-python.mk).
++# That vendors the Rust crates and REPACKAGES the sdist at download time, so
++# the tarball landing in dl/ is no longer the upstream sdist and can never
++# match the upstream hash in the .hash file — a fresh/empty dl/ fails
++# .stamp_downloaded with "wrong md5 hash" (a pre-seeded dl/ hides it, because a
++# hash-matching file already present short-circuits the post-process). We do
++# NOT want download-time vendoring: keep dl/cryptography-*.tar.gz as the
++# pristine upstream sdist (hash-verified against PyPI) and let the maturin
++# build step fetch/vendor the crates at build time (into dl/br-cargo-home) —
++# exactly how every shipped RNSBox image was built. Clearing the post-process
++# after the $(eval) above overrides the macro's forced assignment. Both the
++# target and host variants share one dl/ download, so clear both.
++PYTHON_CRYPTOGRAPHY_DOWNLOAD_POST_PROCESS =
++HOST_PYTHON_CRYPTOGRAPHY_DOWNLOAD_POST_PROCESS =
+diff --git a/buildroot/package/python-rns/Config.in b/buildroot/package/python-rns/Config.in
+new file mode 100644
+index 000000000..3557987b7
+--- /dev/null
++++ b/buildroot/package/python-rns/Config.in
+@@ -0,0 +1,14 @@
++config BR2_PACKAGE_PYTHON_RNS
++	bool "python-rns"
++	select BR2_PACKAGE_PYTHON3_SSL
++	select BR2_PACKAGE_PYTHON3_ZLIB
++	select BR2_PACKAGE_PYTHON_CRYPTOGRAPHY  # runtime
++	select BR2_PACKAGE_PYTHON_SERIAL        # runtime
++	help
++	  Reticulum Network Stack (RNS) — a self-configuring,
++	  encrypted, resilient mesh networking stack designed to
++	  run over LoRa, packet radio, WiFi, TCP/IP, serial links
++	  and other carriers. Installs the rnsd daemon and the
++	  rnstatus / rnpath / rnid / rnodeconf CLI tools.
++
++	  https://reticulum.network/
+diff --git a/buildroot/package/python-rns/python-rns.hash b/buildroot/package/python-rns/python-rns.hash
+new file mode 100644
+index 000000000..10161d79f
+--- /dev/null
++++ b/buildroot/package/python-rns/python-rns.hash
+@@ -0,0 +1,3 @@
++# md5, sha256 from https://pypi.org/pypi/rns/1.5.2/json
++md5     07bc7b00ad58f4de313e322be40d0098                                  rns-1.5.2.tar.gz
++sha256  a7f8f0d445312fee1c4ade41178f5224fe7af8bd790a79d148696659d81cc862  rns-1.5.2.tar.gz
+diff --git a/buildroot/package/python-rns/python-rns.mk b/buildroot/package/python-rns/python-rns.mk
+new file mode 100644
+index 000000000..107f4ca18
+--- /dev/null
++++ b/buildroot/package/python-rns/python-rns.mk
+@@ -0,0 +1,14 @@
++################################################################################
++#
++# python-rns (Reticulum Network Stack)
++#
++################################################################################
++
++PYTHON_RNS_VERSION = 1.5.2
++PYTHON_RNS_SOURCE = rns-$(PYTHON_RNS_VERSION).tar.gz
++PYTHON_RNS_SITE = https://files.pythonhosted.org/packages/7e/fb/d7b0b67c0e369b8533fe14688cb2b65bff21c669b0c776759015ad3d1830
++PYTHON_RNS_SETUP_TYPE = setuptools
++PYTHON_RNS_LICENSE = Reticulum License
++PYTHON_RNS_LICENSE_FILES = LICENSE
++
++$(eval $(python-package))
+diff --git a/buildroot/package/rustc/Config.in.host b/buildroot/package/rustc/Config.in.host
+index 822de68db..f05532d82 100644
+--- a/buildroot/package/rustc/Config.in.host
++++ b/buildroot/package/rustc/Config.in.host
+@@ -108,6 +108,15 @@ config BR2_PACKAGE_HOST_RUSTC_TARGET_TIER2_PLATFORMS
+ 	default y if BR2_mipsel && BR2_TOOLCHAIN_USES_MUSL && !BR2_MIPS_CPU_MIPS32R6
+ 	# sparc64-unknown-linux-gnu
+ 	default y if BR2_sparc64 && BR2_TOOLCHAIN_USES_GLIBC
++	# RNSBox: riscv64gc-unknown-linux-musl is Tier 3 in Rust 1.71.1
++	# (no upstream prebuilt rust-std), but host-rust (source build)
++	# can produce the target std from rustc-src. Used for the SG2002
++	# T-Head C906 (RNSBox). Same imafd+c gating as the
++	# TIER2_HOST_TOOLS glibc entry above.
++	default y if BR2_RISCV_64 && BR2_RISCV_ISA_RVI && BR2_RISCV_ISA_RVM && \
++			BR2_RISCV_ISA_RVA && BR2_RISCV_ISA_RVF && \
++			BR2_RISCV_ISA_RVD && BR2_RISCV_ISA_RVC && \
++			BR2_TOOLCHAIN_USES_MUSL
+ 
+ # All target rust packages should depend on this option
+ # Note: With musl based toolchain, we need a C++ cross compiler to
+-- 
+2.47.3
+

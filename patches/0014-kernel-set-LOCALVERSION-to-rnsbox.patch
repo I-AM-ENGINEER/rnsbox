@@ -1,0 +1,36 @@
+From ba2489b762416e3ae436a840eead0ee2ad322448 Mon Sep 17 00:00:00 2001
+From: smit1237 <smit1237@gmail.com>
+Date: Tue, 8 Sep 2026 22:47:50 +0300
+Subject: [PATCH 14/20] kernel: set LOCALVERSION to -rnsbox
+
+Pin the kernel LOCALVERSION to -rnsbox (uname -r = 5.10.4-rnsbox) instead of
+the git-describe default. MODVERSIONS is off, so module vermagic is an exact
+string match: rebuild out-of-tree modules and clean-build the kernel after
+changing this.
+---
+ build/Makefile | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/build/Makefile b/build/Makefile
+index aabd1b8ff..190880827 100644
+--- a/build/Makefile
++++ b/build/Makefile
+@@ -211,7 +211,14 @@ u-boot-clean:
+ # configure kernel defconfig
+ KERNEL_CONFIG_NAME := ${PROJECT_FULLNAME}_defconfig
+ 
+-KERNEL_VERSION ?= -tag-$(shell git -C ${KERNEL_PATH} describe --exact-match HEAD 2>/dev/null)
++# RNSBox: clean kernel LOCALVERSION suffix. Stock was
++# `-tag-$(git describe --exact-match)` which yields an ugly `5.10.4-tag-`
++# in `uname -r` (the git tag is usually empty on this tree). Pin `-rnsbox`
++# so the kernel reports `5.10.4-rnsbox`. NOTE: this changes the module
++# vermagic (CONFIG_MODVERSIONS is off → exact-string match enforced at
++# insmod), so the out-of-tree osdrv modules (aic8800) MUST be rebuilt with
++# the kernel or WiFi insmod fails with "version magic mismatch".
++KERNEL_VERSION ?= -rnsbox
+ 
+ ${KERNEL_PATH}/${KERNEL_OUTPUT_FOLDER}:
+ 	${Q}mkdir -p $@
+-- 
+2.47.3
+

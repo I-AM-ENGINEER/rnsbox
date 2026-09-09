@@ -1,0 +1,484 @@
+From c660ff35f4ba1d6174dc4114a97181392058925e Mon Sep 17 00:00:00 2001
+From: smit1237 <smit1237@gmail.com>
+Date: Tue, 8 Sep 2026 22:47:48 +0300
+Subject: [PATCH 03/20] gadget: deterministic USB-C CDC-NCM (+ mass-storage)
+ composite
+
+Bring the USB-C gadget up as CDC-NCM with a fixed usb0 = 10.42.0.1/24 (dnsmasq
+owns DHCP; no udhcpd), a Windows MS-OS descriptor compat-id so usbncm.sys
+auto-binds, and a pinned device identity. S08usbdev also composes an optional
+read-only mass-storage LUN backed by the clients ISO. Carry an f_ncm TX-timer
+fix that arms the NTB flush hrtimer once per NTB instead of per datagram,
+removing a small-flow throughput stall under sustained load. genimage/sd_gen
+ship the gadget descriptor flag files on the boot FAT.
+---
+ .../common/sd_tools/genimage_rootless.cfg     |  29 ++-
+ .../sd_tools/sd_gen_burn_image_rootless.sh    |  40 +++-
+ .../SG200X/overlay/etc/init.d/S08usbdev       |  65 ++++--
+ .../SG200X/overlay/etc/init.d/S30gadget_nic   | 201 ++++--------------
+ .../drivers/usb/gadget/function/f_ncm.c       |  21 +-
+ 5 files changed, 167 insertions(+), 189 deletions(-)
+
+diff --git a/build/tools/common/sd_tools/genimage_rootless.cfg b/build/tools/common/sd_tools/genimage_rootless.cfg
+index af447e3eb..31188ae35 100644
+--- a/build/tools/common/sd_tools/genimage_rootless.cfg
++++ b/build/tools/common/sd_tools/genimage_rootless.cfg
+@@ -1,19 +1,31 @@
++# RNSBox: composite CDC-NCM + USB mass-storage gadget. /boot has the usb.*
++# flag files + descriptor strings that S08usbdev reads to compose the gadget.
++# Stock Sipeed shipped: usb.dev usb.ncm usb.rndis wifi.sta gt9xx logo.jpeg.
++# Removed: usb.rndis (NCM-only, Luckfox lesson #13), wifi.sta (-e has no
++# WiFi), gt9xx (no touchpad), logo.jpeg (no display, CONFIG_FB=n).
++# usb.disk0 → the read-only ISO9660 "DVD" of Reticulum clients (usbdisk.iso).
++
+ image boot.vfat {
+         vfat {
+                 label = "boot"
+                 files = {
+                         "fip.bin",
+                         "rawimages/boot.sd",
+-			"usb.dev",
+-			"usb.ncm",
+-                        "usb.rndis",
+-			"wifi.sta",
+-			"gt9xx",
+-			"logo.jpeg",
+-			"ver",
++                        "usb.dev",
++                        "usb.ncm",
++                        "usb.ncm.mac",
++                        "usb.disk0",
++                        "usb.disk0.size",
++                        "usb.idVendor",
++                        "usb.idProduct",
++                        "usb.bcdDevice",
++                        "usb.manufacturer",
++                        "usb.product",
++                        "hostname",
++                        "ver",
+                 }
+         }
+-        size = 16M 
++        size = 16M
+ }
+ 
+ image duo.img {
+@@ -31,4 +43,3 @@ image duo.img {
+                 image = "rootfs.sd"
+         }
+ }
+-
+diff --git a/build/tools/common/sd_tools/sd_gen_burn_image_rootless.sh b/build/tools/common/sd_tools/sd_gen_burn_image_rootless.sh
+index bfce61c3b..02f5e5573 100755
+--- a/build/tools/common/sd_tools/sd_gen_burn_image_rootless.sh
++++ b/build/tools/common/sd_tools/sd_gen_burn_image_rootless.sh
+@@ -26,15 +26,45 @@ mkdir -pv ${output_dir}/input/rawimages/
+ cp -fv ${output_dir}/fip.bin ${output_dir}/input/
+ cp -fv ${output_dir}/rawimages/boot.sd ${output_dir}/input/rawimages/
+ cp -fv ${output_dir}/rawimages/rootfs.sd ${output_dir}/input/
++# RNSBox: CDC-NCM gadget. DVD variant also adds the read-only mass-storage
++# function (usb.disk0 → the clients ISO). LITE variant ships NCM-only.
++# Controlled by RNSBOX_WITH_DVD (default 1 = DVD); the build scripts export it.
+ touch ${output_dir}/input/usb.dev
+ touch ${output_dir}/input/usb.ncm
+-touch ${output_dir}/input/usb.rndis
+-touch ${output_dir}/input/wifi.sta
+-touch ${output_dir}/input/gt9xx
+-touch ${output_dir}/input/fb
++if [ "${RNSBOX_WITH_DVD:-1}" = "1" ]; then
++	# usb.disk0 (empty value) → S08usbdev attaches the read-only clients ISO
++	# at /opt/rnsbox-clients/usbdisk.iso as an emulated DVD.
++	touch ${output_dir}/input/usb.disk0
++	echo "iso" > ${output_dir}/input/usb.disk0.size
++else
++	# LITE: NCM-only — do not ship usb.disk0, so S08usbdev's mass-storage
++	# branch (gated on /boot/usb.disk0) is skipped entirely.
++	rm -f ${output_dir}/input/usb.disk0 ${output_dir}/input/usb.disk0.size
++fi
++# Empty flags removed: usb.rndis (NCM-only, Luckfox lesson #13),
++# wifi.sta, gt9xx, fb. They each trigger S08usbdev / S30wifi / S04fb
++# branches we don't ship.
++
++# USB descriptor strings — S08usbdev reads these flag files at boot.
++# Windows caches MS_OS_DESC by (VID, PID, bcdDevice) so don't reuse a stale
++# bcdDevice when changing the gadget topology (Luckfox lesson #15, #33).
++# RNSBox: bcdDevice bumped 0x0104 → 0x0105 because adding the mass-storage
++# function changes the gadget topology — a stale Windows MS_OS_DESC cache
++# keyed on the old (VID,PID,bcdDevice) would otherwise mis-enumerate it.
++echo 0x1d6b > ${output_dir}/input/usb.idVendor
++echo 0x0105 > ${output_dir}/input/usb.idProduct
++echo 0x0105 > ${output_dir}/input/usb.bcdDevice
++echo "RNSBox" > ${output_dir}/input/usb.manufacturer
++echo "RNSBox Reticulum router (LicheeRV Nano-e)" > ${output_dir}/input/usb.product
++# Pin the device-side NCM MAC so host-side `enxXXXX` ifname is deterministic.
++echo "02:1d:6b:01:04:02" > ${output_dir}/input/usb.ncm.mac
++# Override the auto-generated `licheervnano-<keyhash>` hostname (S10uuid
++# reads /boot/hostname if present and overrides /etc/hostname with it).
++echo "rnsbox" > ${output_dir}/input/hostname
++
+ echo ${image} > ${output_dir}/input/ver
+ cp -fv ${THISDIR}/genimage_rootless.cfg ${output_dir}/genimage.cfg
+-cp -fv ${THISDIR}/logo.jpeg ${output_dir}/input/logo.jpeg
++# No boot logo — display drivers are disabled. logo.jpeg copy removed.
+ sed -i -e "s/duo.img/${image}/g" ${output_dir}/genimage.cfg
+ cd ${output_dir}/
+ ${THISDIR}/genimage
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S08usbdev b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S08usbdev
+index 7630ba409..4de12aecd 100755
+--- a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S08usbdev
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S08usbdev
+@@ -90,28 +90,40 @@ then
+ 			ln -s functions/acm.GS0 configs/c.1/
+ 		fi
+ 
++		# mass storage — present a READ-ONLY emulated DVD alongside NCM,
++		# pre-populated with the Reticulum client apps (MeshChat, MeshChatX,
++		# Columba, Sideband) + a quick-start README/index.html. The ISO9660
++		# image is built at image-build time
++		# (build/clients-stick/build-clients-img.sh, xorriso -J -r) and ships
++		# inside the rootfs at /opt/rnsbox-clients/usbdisk.iso. Presented as an
++		# optical disc (cdrom=1 below) so the host treats it as inserted media:
++		# read-only, never "format/repair", autorun-friendly.
+ 		if [ -e /boot/usb.disk0 ]
+ 		then
+-			mkdir -p functions/mass_storage.disk0
+-			rm -rf configs/c.1/mass_storage.disk0
+-			ln -s functions/mass_storage.disk0 configs/c.1/
+-			echo 1 > functions/mass_storage.disk0/lun.0/removable
+-			if [ -e /boot/usb.disk0.ro ]
++			# Backing image: explicit path in /boot/usb.disk0 wins; else the
++			# shipped read-only clients ISO.
++			disk=$(cat /boot/usb.disk0)
++			if [ -n "${disk}" ]
+ 			then
+-				echo 1 > functions/mass_storage.disk0/lun.0/ro
+-				echo 1 > functions/mass_storage.disk0/lun.0/cdrom
++				IMG="${disk}"
++			else
++				IMG=/opt/rnsbox-clients/usbdisk.iso
+ 			fi
+-			disk=$(cat /boot/usb.disk0)
+-			if [ -z "${disk}" ]
++			if [ -e "${IMG}" ]
+ 			then
+-				if [ ! -e /mnt/usbdisk.img ]
+-				then
+-					dd if=/dev/zero of=/mnt/usbdisk.img bs=1M count=16
+-					mkfs.vfat /mnt/usbdisk.img
+-				fi
+-				echo /mnt/usbdisk.img > functions/mass_storage.disk0/lun.0/file
++				mkdir -p functions/mass_storage.disk0
++				rm -rf configs/c.1/mass_storage.disk0
++				echo 1 > functions/mass_storage.disk0/lun.0/removable
++				# Read-only to the host (ro=1). cdrom=1 makes it present as a
++				# removable read-only medium, which Windows/macOS auto-open
++				# nicely and never try to "repair". The device does not mount
++				# it either — the gadget owns the image exclusively.
++				echo 1 > functions/mass_storage.disk0/lun.0/ro
++				echo 1 > functions/mass_storage.disk0/lun.0/cdrom
++				ln -s functions/mass_storage.disk0 configs/c.1/
++				echo "${IMG}" > functions/mass_storage.disk0/lun.0/file
+ 			else
+-				cat /boot/usb.disk0 > functions/mass_storage.disk0/lun.0/file
++				echo "usb.disk0: backing image ${IMG} not found — skipping mass storage"
+ 			fi
+ 		fi
+ 
+@@ -130,6 +142,20 @@ then
+ 		then
+ 			mkdir -p functions/ncm.usb0
+ 			ln -s functions/ncm.usb0 configs/c.1/
++
++			# MS-OS-DESC compat-id WINNCM — Windows 10 1709+ and 11 use the
++			# device-supplied compat-id string to auto-bind their in-box
++			# usbncm.sys driver without showing "Unknown USB Device". The
++			# literal string is "WINNCM", not "NCM" (an MS-OS-descriptor gotcha;
++			# refs: linux-usb patchwork 20190416140732 + TinyUSB #2727).
++			# Windows caches the descriptor by (VID, PID, bcdDevice), so
++			# bcdDevice must be bumped any time the gadget topology changes —
++			# we pin 0x0103 via /boot/usb.bcdDevice (set during image build).
++			echo 1       > os_desc/use
++			echo 0xcd    > os_desc/b_vendor_code
++			echo MSFT100 > os_desc/qw_sign
++			ln -sf configs/c.1 os_desc/c.1
++			echo WINNCM  > functions/ncm.usb0/os_desc/interface.ncm/compatible_id
+ 		fi
+ 
+ 		# keyboard
+@@ -230,6 +256,13 @@ then
+ 		rmdir /sys/kernel/config/usb_gadget/g0/functions/ncm.usb0
+ 	fi
+ 
++	# mass storage (the backing file is left in place — it's the persistent stick)
++	if [ -e /sys/kernel/config/usb_gadget/g0/configs/c.1/mass_storage.disk0 ]
++	then
++		unlink /sys/kernel/config/usb_gadget/g0/configs/c.1/mass_storage.disk0
++		rmdir /sys/kernel/config/usb_gadget/g0/functions/mass_storage.disk0
++	fi
++
+     # adbd
+      if [ -e /sys/kernel/config/usb_gadget/g0/configs/c.1/ffs.adb ]
+      then
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S30gadget_nic b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S30gadget_nic
+index 6ed4bb279..85a880c0a 100755
+--- a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S30gadget_nic
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S30gadget_nic
+@@ -1,176 +1,67 @@
+ #!/bin/sh
++# RNSBox: bring up the CDC-NCM gadget interface as 10.42.0.1/24.
++#
++# Stock Sipeed S30gadget_nic computed a random subnet from device_key and ran
++# udhcpd on it. We hardcode 10.42.0.1/24 so users
++# always know where to point their browser, and let dnsmasq (from
++# /etc/dnsmasq.conf, started by Buildroot's S80dnsmasq init script) own the
++# DHCP+DNS scope. The MAC address is locked via /boot/usb.ncm.mac so the
++# host-side `enxXXXX` interface name is stable across reboots.
+ 
+ . /etc/profile
+ 
+-gen_udhcpd_conf() {
+-	interface=${1}
+-	ipv4_prefix=${2}
+-	echo "start ${ipv4_prefix}.100"
+-	echo "end ${ipv4_prefix}.200"
+-	echo "interface ${interface}"
+-	echo "pidfile /var/run/udhcpd.${interface}.pid"
+-	echo "lease_file /var/lib/misc/udhcpd.${interface}.leases"
+-	echo "option subnet 255.255.255.0"
+-	echo "option lease 864000"
+-}
++USB0_IPV4=10.42.0.1/24
+ 
+ hex2mac() {
+ 	MAC=""
+-	seq 2 2 12 | while read i
+-	do
+-		echo -n ${1} | head -c $i | tail -c 2
+-		if [ $i != 12 ]
+-		then
+-			echo -n ':'
+-		fi
++	for i in $(seq 2 2 12); do
++		echo -n "${1}" | head -c $i | tail -c 2
++		[ $i -ne 12 ] && echo -n ':'
+ 	done | tr '[:upper:]' '[:lower:]'
+ }
+ 
+ start() {
+-	# S03usbdev start first
+-	if [ -e /boot/usb.dev ]
+-	then
+-		rndis_ifname=usb0
+-		# RNDIS
+-		if [ -e /boot/usb.rndis ]
+-		then
+-			# mac
+-			if [ -e /boot/usb.rndis.mac ]
+-			then
+-				new_rndismac=$(cat /boot/usb.rndis.mac)
+-			else
+-				new_rndismac=$(hex2mac 48da356f$(sha512sum /device_key_legacy | head -c 4))
+-			fi
+-			ip link set $rndis_ifname address ${new_rndismac}
+-			ifconfig $rndis_ifname up
+-			echo "rndis mac address: ${new_rndismac}"
+-
+-			# dhcp
+-			if [ ! -e /boot/rndis.nodhcpd ]
+-			then
+-				if [ -e /boot/rndis.ipv4_prefix ]
+-				then
+-					ipv4_prefix=`cat /boot/rndis.ipv4_prefix`
+-				else
+-					id2=$(printf "%d" 0x$(sha512sum /device_key_legacy | head -c 2))
+-					id3=$(printf "%d" 0x$(sha512sum /device_key_legacy | head -c 4 | tail -c 2))
+-					id3=$((id3 + 1))
+-					if [ "$id2" = "$id3" ]
+-					then
+-						id2=$((id2 + 2))
+-					fi
+-					if [ "$id2" -ge 255 ]
+-					then
+-						id2=252
+-					fi
+-					if [ "$id3" -ge 255 ]
+-					then
+-						id3=251
+-					fi
+-					ipv4_prefix=10.$id2.$id3
+-				fi
+-				gen_udhcpd_conf $rndis_ifname "${ipv4_prefix}"  > /etc/udhcpd.${rndis_ifname}.conf
+-				ip addr add $ipv4_prefix.1/24 dev $rndis_ifname
+-				udhcpd -S /etc/udhcpd.${rndis_ifname}.conf
+-			fi
+-			echo "RNDIS DHCP OK"
+-			rndis_ifname=usb1
+-		fi
++	# S08usbdev must run first (composes the gadget and writes to UDC).
++	if [ ! -e /boot/usb.dev ] || [ ! -e /boot/usb.ncm ]; then
++		echo "S30gadget_nic: usb.dev or usb.ncm flag missing; skipping" >&2
++		return 0
++	fi
+ 
+-		# CDC NCM
+-		if [ -e /boot/usb.ncm ]
+-		then
+-			# mac
+-			if [ -e /boot/usb.ncm.mac ]
+-			then
+-				new_mac=$(cat /boot/usb.ncm.mac)
+-			else
+-				new_mac=$(hex2mac 48da356e$(sha512sum /device_key_legacy | head -c 4))
+-			fi
+-			ip link set $rndis_ifname address ${new_mac}
+-			ifconfig $rndis_ifname up
+-			echo "ncm mac address: ${new_mac}"
++	# Wait briefly for usb0 to appear (configfs gadget creates it
++	# asynchronously after the UDC write in S08usbdev).
++	for _ in 1 2 3 4 5 6 7 8 9 10; do
++		[ -d /sys/class/net/usb0 ] && break
++		sleep 0.5
++	done
+ 
+-			# dhcp
+-			if [ ! -e /boot/ncm.nodhcpd ]
+-			then
+-				if [ -e /boot/ncm.ipv4_prefix ]
+-				then
+-					ipv4_prefix=`cat /boot/ncm.ipv4_prefix`
+-				else
+-					id2=$(printf "%d" 0x$(sha512sum /device_key_legacy | head -c 2))
+-					id3=$(printf "%d" 0x$(sha512sum /device_key_legacy | head -c 4 | tail -c 2))
+-					if [ "$id2" = "$id3" ]
+-					then
+-						id2=$((id2 + 1))
+-					fi
+-					if [ "$id2" -ge 255 ]
+-					then
+-						id2=253
+-					fi
+-					if [ "$id3" -ge 255 ]
+-					then
+-						id3=254
+-					fi
+-					ipv4_prefix=10.$id2.$id3
+-				fi
+-				gen_udhcpd_conf $rndis_ifname "${ipv4_prefix}"  > /etc/udhcpd.${rndis_ifname}.conf
+-				ip addr add $ipv4_prefix.1/24 dev $rndis_ifname
+-				udhcpd -S /etc/udhcpd.${rndis_ifname}.conf
+-			fi
+-			echo "CDC NCM DHCP OK"
+-		fi
++	if [ ! -d /sys/class/net/usb0 ]; then
++		echo "S30gadget_nic: usb0 not present after 5s; gadget likely failed" >&2
++		return 1
+ 	fi
+-}
+ 
+-stop() {
+-	# first card
+-	if [ -e /var/run/udhcpd.usb0.pid ]
+-	then
+-		kill $(cat "/var/run/udhcpd.usb0.pid")
+-		rm /var/run/udhcpd.usb0.pid || true
+-	fi
+-	pnum=$(ps -ef|grep udhcpd|grep -v grep| grep udhcpd.usb0.conf | awk '{print $1}' | wc -l)
+-	if [ x$pnum != x0 ]
+-	then
+-		ps -ef|grep udhcpd|grep -v grep| grep udhcpd.usb0.conf | awk '{print $1}'|xargs kill -2 || true
+-	fi
+-	usb0_info=$(ip link |grep usb0)
+-	if [ -n "$usb0_info" ]
+-	then
+-		ifconfig usb0 down
++	# Pin device-side MAC if /boot/usb.ncm.mac was shipped.
++	if [ -e /boot/usb.ncm.mac ]; then
++		new_mac=$(cat /boot/usb.ncm.mac)
++	else
++		new_mac=$(hex2mac 48da356e$(sha512sum /device_key_legacy 2>/dev/null | head -c 4))
+ 	fi
++	[ -n "$new_mac" ] && ip link set usb0 address "$new_mac" 2>/dev/null
+ 
+-	# second card
+-	if [ -e /var/run/udhcpd.usb1.pid ]
+-	then
+-		kill $(cat /var/run/udhcpd.usb1.pid)
+-		rm /var/run/udhcpd.usb1.pid || true
+-	fi
+-	pnum=$(ps -ef|grep udhcpd|grep -v grep| grep udhcpd.usb1.conf | awk '{print $1}' | wc -l)
+-	if [ x$pnum != x0 ]
+-	then
+-		ps -ef|grep udhcpd|grep -v grep| grep udhcpd.usb1.conf | awk '{print $1}'|xargs kill -2 || true
+-	fi
+-	usb0_info=$(ip link |grep usb1)
+-	if [ -n "$usb0_info" ]
+-	then
+-		ifconfig usb1 down
+-	fi
++	ip link set usb0 up
++	ip addr add "$USB0_IPV4" dev usb0
++	echo "S30gadget_nic: usb0 up, $USB0_IPV4"
+ }
+ 
+-restart() {
+-	stop
+-	start
++stop() {
++	if [ -d /sys/class/net/usb0 ]; then
++		ip addr flush dev usb0
++		ip link set usb0 down
++	fi
+ }
+ 
+-if [ "${1}" = "start" ]
+-then
+-	start
+-elif [ "${1}" = "stop" ]
+-then
+-	stop
+-elif [ "${1}" = "restart" ]
+-then
+-	restart
+-fi
++case "$1" in
++	start)   start ;;
++	stop)    stop ;;
++	restart) stop; start ;;
++	*)       echo "Usage: $0 {start|stop|restart}" >&2; exit 1 ;;
++esac
+diff --git a/linux_5.10/drivers/usb/gadget/function/f_ncm.c b/linux_5.10/drivers/usb/gadget/function/f_ncm.c
+index 019bea8e0..7c464a927 100644
+--- a/linux_5.10/drivers/usb/gadget/function/f_ncm.c
++++ b/linux_5.10/drivers/usb/gadget/function/f_ncm.c
+@@ -1101,11 +1101,24 @@ static struct sk_buff *ncm_wrap_ntb(struct gether *port,
+ 			ncm->ndp_dgram_count = 1;
+ 
+ 			/* Note: we skip opts->next_ndp_index */
+-		}
+ 
+-		/* Delay the timer. */
+-		hrtimer_start(&ncm->task_timer, TX_TIMEOUT_NSECS,
+-			      HRTIMER_MODE_REL_SOFT);
++			/* Start the timer.
++			 *
++			 * RNSBox: moved this inside
++			 * the new-NDP block. Original upstream code restarts
++			 * the hrtimer on EVERY datagram. Under sustained load
++			 * (>3-4k pkt/s),
++			 * each packet kept pushing the timer forward, so the
++			 * NTB only flushed when it hit dwNtbInMaxSize (16KB).
++			 * That stalled small flows (interactive TCP, ACKs) for
++			 * milliseconds and starved the host side of usable NCM
++			 * NTBs, hard-capping tunnel throughput at ~25 Mbps on
++			 * a 1 GHz core. Bounding the NTB age at TX_TIMEOUT_NSECS
++			 * after the FIRST datagram of an NDP fixes both.
++			 */
++			hrtimer_start(&ncm->task_timer, TX_TIMEOUT_NSECS,
++				      HRTIMER_MODE_REL_SOFT);
++		}
+ 
+ 		/* Add the datagram position entries */
+ 		ntb_ndp = skb_put_zero(ncm->skb_tx_ndp, dgram_idx_len);
+-- 
+2.47.3
+

@@ -1,0 +1,248 @@
+From 446f6dbb1bac749561ac32d72485deafb3f90a0d Mon Sep 17 00:00:00 2001
+From: smit1237 <smit1237@gmail.com>
+Date: Tue, 8 Sep 2026 22:47:48 +0300
+Subject: [PATCH 08/20] rnsd: Reticulum daemon service and shipped config
+
+S82rnsd runs rnsd once the clock is synced; S81router runs the admin portal.
+Ship an opinionated /etc/reticulum/config: transport enabled, a shared
+instance, an AutoInterface on usb0, a TCPServerInterface on 0.0.0.0:4242, and
+two public RNS-testnet TCP uplinks so the node joins the testnet with no
+manual peer configuration.
+---
+ .../SG200X/overlay/etc/init.d/S81router       | 60 ++++++++++++++
+ .../cvitek/SG200X/overlay/etc/init.d/S82rnsd  | 82 +++++++++++++++++++
+ .../SG200X/overlay/etc/reticulum/config       | 66 +++++++++++++++
+ 3 files changed, 208 insertions(+)
+ create mode 100755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/S81router
+ create mode 100755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/S82rnsd
+ create mode 100644 buildroot/board/cvitek/SG200X/overlay/etc/reticulum/config
+
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S81router b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S81router
+new file mode 100755
+index 000000000..16a86094d
+--- /dev/null
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S81router
+@@ -0,0 +1,60 @@
++#!/bin/sh
++# S81router — rnsbox-portal Flask web UI, runs as root.
++#
++# Why root: the portal exec's /etc/init.d/S60routing to apply nftables
++# changes and edits /etc/reticulum/config + /etc/rnsbox/*. Running it
++# unprivileged + shelling to sudo would just shift the trust boundary
++# without buying isolation (the unprivileged user would still need full
++# command access). The same trade-off an on-box admin portal lands on in
++# build #36+.
++#
++# Listens on 0.0.0.0:80 by default. nftables policy in S60routing only
++# accepts inbound :80 on LAN interfaces (usb0), so WAN-side is closed
++# even with the wildcard bind.
++
++NAME=rnsbox-portal
++DAEMON=/usr/sbin/$NAME
++PIDFILE=/var/run/$NAME.pid
++LOG=/var/log/$NAME.log
++
++[ -x "$DAEMON" ] || exit 0
++
++start() {
++	mkdir -p /var/log /var/run /etc/rnsbox
++
++	if [ -f "$PIDFILE" ] && kill -0 "$(cat $PIDFILE)" 2>/dev/null; then
++		echo "S81router: already running (pid $(cat $PIDFILE))"
++		return 0
++	fi
++
++	printf "Starting %s: " "$NAME"
++	"$DAEMON" >>"$LOG" 2>&1 &
++	PID=$!
++	echo "$PID" > "$PIDFILE"
++	sleep 0.3
++	if kill -0 "$PID" 2>/dev/null; then
++		echo "OK (pid $PID)"
++	else
++		echo "FAIL (see $LOG)"
++		rm -f "$PIDFILE"
++		return 1
++	fi
++}
++
++stop() {
++	printf "Stopping %s: " "$NAME"
++	if [ -f "$PIDFILE" ]; then
++		kill "$(cat $PIDFILE)" 2>/dev/null
++		rm -f "$PIDFILE"
++		echo "OK"
++	else
++		echo "(not running)"
++	fi
++}
++
++case "${1:-start}" in
++	start)   start ;;
++	stop)    stop ;;
++	restart) stop; sleep 1; start ;;
++	*) echo "Usage: $0 {start|stop|restart}" >&2; exit 1 ;;
++esac
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S82rnsd b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S82rnsd
+new file mode 100755
+index 000000000..a68497ae1
+--- /dev/null
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S82rnsd
+@@ -0,0 +1,82 @@
++#!/bin/sh
++# S82rnsd — Reticulum Network Stack daemon.
++#
++# Gated on /run/clock-synced (S45ntpsync) because Reticulum's link
++# announcements include a wall-clock timestamp and a node still at
++# 1970 will be silently filtered by every peer with a sane clock. We
++# refuse to start rather than spam invalid announcements that get
++# rate-limited.
++#
++# Config: /etc/reticulum/config (shipped as an opinionated default; the
++# rnsbox-portal UI exposes a raw editor). rnsd creates the config dir
++# + default file on first run if missing, so the placeholder we ship is
++# just a hint.
++#
++# Bind addr: rnsd listens on whatever interfaces are declared in the
++# config (typically a TCPServerInterface on 0.0.0.0:4242 + an
++# AutoInterface on usb0). The nftables INPUT chain in S60routing only
++# accepts inbound :4242 on WAN if the user added it to
++# /etc/rnsbox/openports.conf via the portal.
++
++NAME=rnsd
++DAEMON=/usr/bin/rnsd
++PIDFILE=/var/run/$NAME.pid
++LOG=/var/log/$NAME.log
++CFG_DIR=/etc/reticulum
++
++[ -x "$DAEMON" ] || exit 0
++
++start() {
++	mkdir -p /var/log /var/run "$CFG_DIR"
++
++	if [ -f "$PIDFILE" ] && kill -0 "$(cat $PIDFILE)" 2>/dev/null; then
++		echo "S82rnsd: already running (pid $(cat $PIDFILE))"
++		return 0
++	fi
++
++	if [ ! -f /run/clock-synced ]; then
++		echo "S82rnsd: refusing to start - /run/clock-synced absent"
++		echo "        (S45ntpsync did not succeed; check WAN link"
++		echo "         and /var/log/ntp-step.log)"
++		return 1
++	fi
++
++	printf "Starting %s: " "$NAME"
++	# --config points at our config dir; rnsd auto-creates files inside.
++	# -s detaches to its own process group; we still pidfile-track so
++	# the watchdog (S46wanwatch) can detect it cleanly.
++	"$DAEMON" --config "$CFG_DIR" >>"$LOG" 2>&1 &
++	PID=$!
++	echo "$PID" > "$PIDFILE"
++	sleep 0.3
++	if kill -0 "$PID" 2>/dev/null; then
++		echo "OK (pid $PID)"
++	else
++		echo "FAIL (see $LOG)"
++		rm -f "$PIDFILE"
++		return 1
++	fi
++}
++
++stop() {
++	printf "Stopping %s: " "$NAME"
++	if [ -f "$PIDFILE" ]; then
++		kill "$(cat $PIDFILE)" 2>/dev/null
++		# Reticulum drains active links cleanly on SIGTERM; give it a moment.
++		for _ in 1 2 3 4 5; do
++			[ -f "$PIDFILE" ] && kill -0 "$(cat $PIDFILE)" 2>/dev/null || break
++			sleep 1
++		done
++		rm -f "$PIDFILE"
++		echo "OK"
++	else
++		echo "(not running)"
++	fi
++}
++
++case "${1:-start}" in
++	start)   start ;;
++	stop)    stop ;;
++	restart) stop; sleep 1; start ;;
++	*) echo "Usage: $0 {start|stop|restart}" >&2; exit 1 ;;
++esac
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/reticulum/config b/buildroot/board/cvitek/SG200X/overlay/etc/reticulum/config
+new file mode 100644
+index 000000000..75382cabd
+--- /dev/null
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/reticulum/config
+@@ -0,0 +1,66 @@
++# Reticulum config — opinionated default for the RNSBox router.
++#
++# rnsd creates this file with stock defaults if it's missing. We ship
++# an opinionated version that:
++#   - enables transport (we're a fixed-location router; routing for
++#     other nodes is the whole point of running this as a service)
++#   - listens on TCP 0.0.0.0:4242 so external Reticulum peers can
++#     connect inbound (user must also add tcp/4242 to
++#     /etc/rnsbox/openports.conf via the portal UI for WAN reach)
++#   - runs an AutoInterface on usb0 so devices on the USB-tethered
++#     LAN auto-discover this node without manual config
++#
++# Edit live via the portal (Reticulum tab) or directly with SSH +
++# `/etc/init.d/S82rnsd restart` to apply.
++#
++# Full reference: https://markqvist.github.io/Reticulum/manual/
++
++[reticulum]
++  enable_transport = Yes
++  share_instance = Yes
++  shared_instance_port = 37428
++  instance_control_port = 37429
++  panic_on_interface_error = No
++
++[logging]
++  loglevel = 4
++
++[interfaces]
++
++  # LAN-side auto-discovery on the USB-C gadget network. Reticulum
++  # multicasts node announcements over usb0 so any client device
++  # tethered via USB-C finds this node with no config.
++  [[USB LAN AutoInterface]]
++    type = AutoInterface
++    enabled = True
++    devices = usb0
++
++  # Inbound TCP listener for external Reticulum peers. Bound on all
++  # interfaces; nftables limits which interfaces actually reach it.
++  # Add `tcp 4242` to /etc/rnsbox/openports.conf via the portal to
++  # make this reachable from the WAN side.
++  [[TCP Server]]
++    type = TCPServerInterface
++    enabled = True
++    listen_ip = 0.0.0.0
++    listen_port = 4242
++
++  # RNS Testnet TCP entrypoints — connect on boot to known public
++  # transport nodes so the device joins the broader Reticulum testnet
++  # without any manual peer configuration. TCPClientInterface keeps
++  # retrying indefinitely; harmless if a remote is temporarily down.
++  # Both verified reachable + actively exchanging announcements as of
++  # 2026-05-16. Earlier attempts dropped: betweentheborders.com:4242
++  # (host off the air at flash time) and rns.beleth.net:4242 (worked
++  # at first but swapped out by operator request for the .146 node).
++  [[Catz Node (TCP)]]
++    type = TCPClientInterface
++    enabled = yes
++    target_host = 77.37.146.243
++    target_port = 4242
++
++  [[RNS Node 31.129.33.146]]
++    type = TCPClientInterface
++    enabled = yes
++    target_host = 31.129.33.146
++    target_port = 4242
+-- 
+2.47.3
+

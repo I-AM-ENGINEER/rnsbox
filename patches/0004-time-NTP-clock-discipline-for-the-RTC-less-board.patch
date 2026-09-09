@@ -1,0 +1,235 @@
+From 24529594a73221ba8304d422fe8325b3595d77b9 Mon Sep 17 00:00:00 2001
+From: smit1237 <smit1237@gmail.com>
+Date: Tue, 8 Sep 2026 22:47:48 +0300
+Subject: [PATCH 04/20] time: NTP clock discipline for the RTC-less board
+
+The Nano-e has no RTC, so the clock starts in 1970. S45ntpsync steps the clock
+from anycast NTP IPs (no DNS dependency during early boot) and touches
+/run/clock-synced; S46wanwatch re-kicks it if Ethernet appears late and
+restarts rnsd once the clock is good. rnsd and nomadnet gate on
+/run/clock-synced so announcement timestamps are sane.
+---
+ .../SG200X/overlay/etc/init.d/S45ntpsync      | 84 ++++++++++++++++++
+ .../SG200X/overlay/etc/init.d/S46wanwatch     | 85 +++++++++++++++++++
+ .../board/cvitek/SG200X/overlay/etc/ntp.conf  | 26 ++++++
+ 3 files changed, 195 insertions(+)
+ create mode 100755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/S45ntpsync
+ create mode 100755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/S46wanwatch
+ create mode 100644 buildroot/board/cvitek/SG200X/overlay/etc/ntp.conf
+
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S45ntpsync b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S45ntpsync
+new file mode 100755
+index 000000000..e23019deb
+--- /dev/null
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S45ntpsync
+@@ -0,0 +1,84 @@
++#!/bin/sh
++# S45ntpsync - synchronously step the system clock from a hard-coded
++# list of NTP server IPs before any service that depends on a sane
++# clock comes up.
++#
++# Why this exists, in one paragraph:
++#   The Nano-e has no RTC; the clock starts at 1970 every boot. rnsd
++#   stamps every announcement / link probe with wall-clock time, and
++#   peers silently drop anything dated 1970. If S49ntp's daemon used
++#   pool.ntp.org it'd race against DNS — which may not work until much
++#   later in boot. So we run a one-shot `ntpd -gq` here against literal
++#   anycast NTP IPs, before anything time-sensitive starts, and signal
++#   success via /run/clock-synced. S82rnsd checks that file and refuses
++#   to start without it.
++
++FLAG=/run/clock-synced
++LOG=/var/log/ntp-step.log
++
++# IPs from operators that publish stable anycast NTP. Mix providers
++# so one being down doesn't deadlock boot.
++NTP_SERVERS="162.159.200.1 162.159.200.123 216.239.35.0 216.239.35.4 216.239.35.8 216.239.35.12"
++
++start() {
++	rm -f "$FLAG"
++
++	# Wait up to 30s for ANY default route from dhcpcd (eth0 on the
++	# Nano-e SKU; future WiFi variant would also surface here per
++	# /etc/rnsbox/wan.conf). If it never appears, fail immediately —
++	# no point trying NTP without WAN.
++	printf "Waiting for default route: "
++	have_route=0
++	for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
++		if ip -4 route show default 2>/dev/null | grep -q "^default"; then
++			have_route=1
++			break
++		fi
++		sleep 1
++	done
++	if [ $have_route -eq 0 ]; then
++		echo "TIMEOUT (no default route, skipping NTP)"
++		return 1
++	fi
++	echo "OK ($(ip -4 route show default 2>/dev/null | awk 'NR==1{print $5}'))"
++
++	# One-shot synchronous NTP step. ntpd -gq exits after the first
++	# successful sync. We can't use timeout(1) because busybox's ntpd
++	# doesn't ship it - instead we background ntpd, poll the year,
++	# and kill the daemon once we see it stepped (or after 60s).
++	printf "Stepping clock from NTP: "
++	ntpd -gq $NTP_SERVERS >>"$LOG" 2>&1 &
++	NTP_PID=$!
++	stepped=0
++	for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 \
++	         21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 \
++	         41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60; do
++		sleep 1
++		if [ "$(date +%Y)" -ge 2024 ]; then
++			stepped=1
++			break
++		fi
++		# Stop early if ntpd already exited (failure) - no point waiting.
++		kill -0 $NTP_PID 2>/dev/null || break
++	done
++	# Make sure the one-shot daemon exits before S49ntp tries to bind UDP/123.
++	kill $NTP_PID 2>/dev/null
++	wait $NTP_PID 2>/dev/null
++
++	if [ $stepped -eq 1 ]; then
++		touch "$FLAG"
++		echo "OK ($(date '+%Y-%m-%d %H:%M:%S UTC'))"
++	else
++		echo "FAIL"
++		return 1
++	fi
++}
++
++stop() { rm -f "$FLAG"; }
++
++case "${1:-start}" in
++	start)   start ;;
++	stop)    stop ;;
++	restart) stop; start ;;
++	*) echo "Usage: $0 {start|stop|restart}" >&2; exit 1 ;;
++esac
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S46wanwatch b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S46wanwatch
+new file mode 100755
+index 000000000..0cf752a83
+--- /dev/null
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S46wanwatch
+@@ -0,0 +1,85 @@
++#!/bin/sh
++# S46wanwatch — background watchdog that retries S45ntpsync + S82rnsd if
++# a default route appears AFTER the boot-time one-shot already gave up.
++#
++# Scenarios this fixes:
++#   1. Cold boot with no Ethernet cable plugged in. S45 waits 30s, no
++#      default route appears, gives up. /run/clock-synced never gets
++#      set. S82rnsd refuses to start. Later the user plugs in the
++#      cable — this watchdog notices the default route, runs S45+S82.
++#   2. Reticulum crash. rnsd's PID file goes stale; the watchdog
++#      restarts it.
++#
++# Purely additive: boot-time S45/S82 still run first. The watchdog
++# only does work when something becomes finishable that the boot
++# sequence couldn't.
++
++PIDFILE=/var/run/wanwatch.pid
++LOG=/var/log/wanwatch.log
++RNSD_PIDFILE=/var/run/rnsd.pid
++
++log() {
++	printf '%s: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG"
++}
++
++loop() {
++	log "started"
++	while sleep 10; do
++		# Step 1: if clock-synced is absent but a default route exists,
++		# try S45. We must stop the running ntpd daemon first because
++		# `ntpd -gq` binds UDP/123 and would EADDRINUSE otherwise.
++		if [ ! -f /run/clock-synced ]; then
++			if ip -4 route show default 2>/dev/null | grep -q '^default'; then
++				log "default route present, /run/clock-synced absent -> kicking S45ntpsync"
++				killall ntpd 2>/dev/null
++				sleep 1
++				/etc/init.d/S45ntpsync start >> "$LOG" 2>&1
++				/etc/init.d/S49ntp start >> "$LOG" 2>&1 || true
++			fi
++		fi
++
++		# Step 2: clock-synced but rnsd not running -> kick S82.
++		# S82rnsd refuses to start if /run/clock-synced is absent, so
++		# rerunning is cheap when it shouldn't run anyway.
++		if [ -f /run/clock-synced ]; then
++			running=0
++			if [ -f "$RNSD_PIDFILE" ] && kill -0 "$(cat "$RNSD_PIDFILE")" 2>/dev/null; then
++				running=1
++			elif pidof -x rnsd >/dev/null 2>&1; then
++				# -x: /usr/bin/rnsd is a python console-script, so its comm is
++				# "python3" and a bare `pidof rnsd` never matches. -x matches
++				# the script by argv basename.
++				running=1
++			fi
++			if [ "$running" -eq 0 ]; then
++				log "clock-synced but rnsd not running -> kicking S82rnsd"
++				/etc/init.d/S82rnsd start >> "$LOG" 2>&1
++			fi
++		fi
++	done
++}
++
++start() {
++	if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
++		echo "S46wanwatch: already running (pid $(cat "$PIDFILE"))"
++		return 0
++	fi
++	loop &
++	echo $! > "$PIDFILE"
++	echo "S46wanwatch: started (pid $(cat "$PIDFILE"))"
++}
++
++stop() {
++	if [ -f "$PIDFILE" ]; then
++		kill "$(cat "$PIDFILE")" 2>/dev/null
++		rm -f "$PIDFILE"
++	fi
++}
++
++case "${1:-start}" in
++	start)   start ;;
++	stop)    stop ;;
++	restart) stop; sleep 1; start ;;
++	*) echo "Usage: $0 {start|stop|restart}" >&2; exit 1 ;;
++esac
++exit 0
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/ntp.conf b/buildroot/board/cvitek/SG200X/overlay/etc/ntp.conf
+new file mode 100644
+index 000000000..e3dc6b144
+--- /dev/null
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/ntp.conf
+@@ -0,0 +1,26 @@
++# RNSBox ntp.conf — IP-only NTP servers, no DNS dependency.
++#
++# Why: the Nano-e has no RTC, so the clock starts at 1970 every boot.
++# rnsd refuses to start without /run/clock-synced, and S45ntpsync sets
++# that flag only after a successful step against literal NTP IPs. Using
++# pool.ntp.org from the daemon side would race DNS — which may not work
++# until much later in boot.
++#
++# Pinning IPs from operators that publish stable anycast NTP addresses
++# avoids the DNS dependency entirely. Mix providers so one going down
++# doesn't lose us sync.
++
++# Cloudflare time service (anycast, well-distributed)
++server 162.159.200.1   iburst
++server 162.159.200.123 iburst
++
++# Google public NTP (anycast)
++server 216.239.35.0   iburst
++server 216.239.35.4   iburst
++server 216.239.35.8   iburst
++server 216.239.35.12  iburst
++
++# Standard tightening - don't act as a public NTP server for anyone
++restrict default nomodify nopeer noquery limited kod
++restrict 127.0.0.1
++restrict [::1]
+-- 
+2.47.3
+

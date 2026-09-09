@@ -1,0 +1,494 @@
+From 5a6144d629450325e246a0271d3355eb734934fb Mon Sep 17 00:00:00 2001
+From: smit1237 <smit1237@gmail.com>
+Date: Tue, 8 Sep 2026 22:47:49 +0300
+Subject: [PATCH 11/20] wifi: AIC8800 STA/AP support for the W variant
+
+Build the out-of-tree AIC8800 fullmac driver from osdrv (Bluetooth disabled,
+Cvitek cross-build, other wireless vendors gated off in the M= pass) and
+enable the wifi userspace. S35wifi brings up STA/AP/concurrent modes per
+/etc/rnsbox/wifi.conf including TX-power control and HT40 inheritance, and is
+a clean no-op on the radio-less board. The board defconfig also disables the
+MIPI panel and camera sensors.
+---
+ .../sg2002_licheervnano_sd_defconfig          |  21 +-
+ .../cvitek/SG200X/overlay/etc/init.d/S35wifi  | 292 ++++++++++++++++++
+ .../SG200X/overlay/etc/rnsbox/wifi.conf       |  57 ++++
+ osdrv/extdrv/wireless/Makefile                |  23 +-
+ osdrv/extdrv/wireless/aic8800/Makefile        |   8 +-
+ .../wireless/aic8800/aic8800_fdrv/Makefile    |   2 +-
+ 6 files changed, 385 insertions(+), 18 deletions(-)
+ create mode 100755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/S35wifi
+ create mode 100644 buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/wifi.conf
+
+diff --git a/build/boards/sg200x/sg2002_licheervnano_sd/sg2002_licheervnano_sd_defconfig b/build/boards/sg200x/sg2002_licheervnano_sd/sg2002_licheervnano_sd_defconfig
+index aa1ebfb00..b8405ed67 100644
+--- a/build/boards/sg200x/sg2002_licheervnano_sd/sg2002_licheervnano_sd_defconfig
++++ b/build/boards/sg200x/sg2002_licheervnano_sd/sg2002_licheervnano_sd_defconfig
+@@ -10,20 +10,25 @@ CONFIG_TOOLCHAIN_MUSL_RISCV64=y
+ CONFIG_FLASH_SIZE_SHRINK=y
+ CONFIG_BOOT_IMAGE_SINGLE_DTB=y
+ # CONFIG_FLASH_SIZE_SHRINK is not set
++# RNSBox W variant: build the AIC8800 WiFi ext-driver from osdrv.
++# CP_EXT_WIRELESS adds `wireless`+`cp_ext_wireless` to osdrv; AIC_WLAN_SUPPORT
++# gates `obj-$(CONFIG_AIC_WLAN_SUPPORT) += aic8800/` so only AIC8800 builds.
+ CONFIG_CP_EXT_WIRELESS=y
++CONFIG_AIC_WLAN_SUPPORT=m
+ CONFIG_STORAGE_TYPE_sd=y
+-CONFIG_MIPI_PANEL_ZCT2133V1=y
+-CONFIG_SENSOR_GCORE_GC4653=y
+-CONFIG_SENSOR_OV_OV2685=y
+-CONFIG_SENSOR_OV_OS04A10=y
+-CONFIG_SENSOR_LONTIUM_LT6911=y
+-CONFIG_SENSOR_SMS_SC035GS=y
++# RNSBox: no MIPI panel, no camera sensors, no sensor-tuning blobs.
++# CONFIG_MIPI_PANEL_ZCT2133V1 is not set
++# CONFIG_SENSOR_GCORE_GC4653 is not set
++# CONFIG_SENSOR_OV_OV2685 is not set
++# CONFIG_SENSOR_OV_OS04A10 is not set
++# CONFIG_SENSOR_LONTIUM_LT6911 is not set
++# CONFIG_SENSOR_SMS_SC035GS is not set
+ CONFIG_UBOOT_2021_10=y
+ CONFIG_KERNEL_SRC_5.10=y
+ CONFIG_KERNEL_UNCOMPRESSED=y
+ # CONFIG_SKIP_RAMDISK is not set
+-CONFIG_SENSOR_TUNING_PARAM_cv181x_src_gcore_gc4653=y
+-# CONFIG_SENSOR_TUNING_PARAM_sg200x_src_ov_os04a10=y
++# CONFIG_SENSOR_TUNING_PARAM_cv181x_src_gcore_gc4653 is not set
++# CONFIG_SENSOR_TUNING_PARAM_sg200x_src_ov_os04a10 is not set
+ # CONFIG_ROOTFS_OVERLAYFS is not set
+ # CONFIG_ENABLE_FREERTOS=y
+ # CONFIG_TARGET_PACKAGE_GATORD is not set
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S35wifi b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S35wifi
+new file mode 100755
+index 000000000..48c23ad92
+--- /dev/null
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S35wifi
+@@ -0,0 +1,292 @@
++#!/bin/sh
++# S35wifi — AIC8800 WiFi bring-up for the LicheeRV Nano-e W variant.
++#
++# Runs after S30eth / S30gadget_nic (eth0 + usb0 up) and BEFORE S60routing
++# (S60 folds the AP iface into NAT/DHCP when it sees /run/wifi-ap-iface).
++# Order: load modules -> dispatch on mode (off / sta / ap / sta+ap).
++#
++# On the non-W board there's no AIC8800 and no wlanN appears; we detect
++# that and exit 0 so the same image boots on both SKUs.
++#
++# Config: /etc/rnsbox/wifi.conf (managed by the rnsbox-portal WiFi tab).
++
++CONF=/etc/rnsbox/wifi.conf
++KO3RD=/mnt/system/ko/3rd
++WPA_CONF=/var/run/wpa_supplicant-wlan0.conf
++HOSTAPD_CONF=/var/run/hostapd.conf
++STA_IF=wlan0
++AP_IF_CONCURRENT=wlan1
++LOG=/var/log/wifi.log
++
++log() { printf '%s: %s\n' "$(date '+%F %T')" "$*" >> "$LOG"; }
++
++cfg() {
++	grep -E "^[[:space:]]*$1[[:space:]]*=" "$CONF" 2>/dev/null | tail -1 \
++	  | sed -E "s/^[^=]*=[[:space:]]*//" | sed -E 's/[[:space:]]*#.*$//' \
++	  | sed -E 's/[[:space:]]*$//' | tr -d '"'
++}
++
++load_modules() {
++	if ! grep -q '^cfg80211 ' /proc/modules 2>/dev/null; then
++		for d in /mnt/system/ko /mnt/system/ko/3rd /lib/modules; do
++			KO=$(find "$d" -name 'cfg80211.ko' 2>/dev/null | head -1)
++			[ -n "$KO" ] && { insmod "$KO" 2>/dev/null && break; }
++		done
++		RK=$(find /mnt/system/ko /lib/modules -name 'rfkill.ko' 2>/dev/null | head -1)
++		[ -n "$RK" ] && ! grep -q '^rfkill ' /proc/modules && insmod "$RK" 2>/dev/null
++	fi
++	grep -q '^aic8800_bsp ' /proc/modules 2>/dev/null  || { K=$(find "$KO3RD" -name 'aic8800_bsp.ko' 2>/dev/null | head -1);  [ -n "$K" ] && insmod "$K" 2>/dev/null; }
++	sleep 1
++	grep -q '^aic8800_fdrv ' /proc/modules 2>/dev/null || { K=$(find "$KO3RD" -name 'aic8800_fdrv.ko' 2>/dev/null | head -1); [ -n "$K" ] && insmod "$K" 2>/dev/null; }
++}
++
++wait_for_iface() {
++	for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do
++		[ -e "/sys/class/net/$STA_IF" ] && return 0
++		sleep 0.5
++	done
++	return 1
++}
++
++gen_wpa_conf() {
++	ssid="$1"; psk="$2"; hidden="$3"; country="$4"
++	{
++		echo "ctrl_interface=/var/run/wpa_supplicant"
++		echo "update_config=1"
++		[ -n "$country" ] && echo "country=$country"
++		echo "network={"
++		echo "    ssid=\"$ssid\""
++		[ "$hidden" = "1" ] && echo "    scan_ssid=1"
++		if [ -n "$psk" ]; then
++			echo "    psk=\"$psk\""
++		else
++			echo "    key_mgmt=NONE"
++		fi
++		echo "}"
++	} > "$WPA_CONF"
++	chmod 600 "$WPA_CONF"
++}
++
++# gen_hostapd_conf <iface> <ssid> <psk> <chan> <hidden> <htmode> [force_off]
++#   chan      = 1..13  or  "auto" (=> hostapd ACS, channel=0; needs the driver
++#               to implement nl80211 survey — if it doesn't, start_ap falls
++#               back to a fixed channel)
++#   htmode    = ht20 | ht40   (40 MHz only emitted on 2.4 GHz with a valid
++#               secondary-channel offset for the chosen primary)
++#   force_off = HT40+ | HT40-  (optional) force this exact secondary-channel
++#               offset instead of deriving it from chan. Used by concurrent
++#               mode to match the STA's actual 40 MHz offset.
++gen_hostapd_conf() {
++	iface="$1"; ssid="$2"; psk="$3"; chan="$4"; hidden="$5"; htmode="$6"; force_off="$7"
++	{
++		echo "interface=$iface"
++		echo "driver=nl80211"
++		echo "ssid=$ssid"
++		echo "hw_mode=g"
++		if [ "$chan" = "auto" ]; then
++			# ACS: channel 0 tells hostapd to auto-select. acs_num_scans
++			# raises survey confidence; only 2.4 GHz channels are candidates.
++			echo "channel=0"
++			echo "acs_num_scans=3"
++		else
++			echo "channel=$chan"
++		fi
++		echo "ieee80211n=1"
++		echo "wmm_enabled=1"
++		# HT40 (40 MHz) — only on 2.4 GHz with a legal secondary offset:
++		#   HT40+ (secondary above) valid for primary 1..7
++		#   HT40- (secondary below) valid for primary 5..13
++		# For ACS (chan=auto) we let hostapd pick the offset itself via
++		# [HT40+] capability advertisement. In concurrent mode start_ap
++		# passes force_off = the STA's actual offset so the AP's 40 MHz
++		# lines up exactly with the STA's (single radio, same channel).
++		if [ "$htmode" = "ht40" ]; then
++			if [ -n "$force_off" ]; then
++				echo "ht_capab=[$force_off][SHORT-GI-20][SHORT-GI-40]"
++			elif [ "$chan" = "auto" ]; then
++				echo "ht_capab=[HT40+][SHORT-GI-20][SHORT-GI-40]"
++			elif [ "$chan" -ge 1 ] && [ "$chan" -le 4 ] 2>/dev/null; then
++				echo "ht_capab=[HT40+][SHORT-GI-20][SHORT-GI-40]"
++			elif [ "$chan" -ge 8 ] && [ "$chan" -le 13 ] 2>/dev/null; then
++				echo "ht_capab=[HT40-][SHORT-GI-20][SHORT-GI-40]"
++			else
++				# ch 5,6,7: either offset legal; prefer HT40- to avoid the
++				# upper edge near ch 11.
++				echo "ht_capab=[HT40-][SHORT-GI-20][SHORT-GI-40]"
++			fi
++		else
++			echo "ht_capab=[SHORT-GI-20]"
++		fi
++		echo "ignore_broadcast_ssid=${hidden:-0}"
++		echo "auth_algs=1"
++		if [ -n "$psk" ]; then
++			echo "wpa=2"
++			echo "wpa_passphrase=$psk"
++			echo "wpa_key_mgmt=WPA-PSK"
++			echo "rsn_pairwise=CCMP"
++		fi
++	} > "$HOSTAPD_CONF"
++	chmod 600 "$HOSTAPD_CONF"
++}
++
++# apply_txpower <iface>
++# Sets WiFi TX power on the (already-up) interface from `tx_power` in wifi.conf.
++#   auto / max / empty -> iw set txpower auto: the AIC8800 set_tx_power
++#       AUTOMATIC path requests 0x7f = the chip's silicon ceiling, regardless
++#       of the regulatory database (world regdom caps 2.4 GHz at 20 dBm, which
++#       is already above the D80's ~18 dBm OFDM limit, so regdb never binds).
++#   <int dBm>          -> iw set txpower fixed (dBm x100 = mBm). Firmware still
++#       applies per-rate EVM backoff below this, so it acts as a cap. Falls
++#       back to `limit` if the driver rejects `fixed`.
++# AIC8800 is a single radio; we still set per-vif (wlan0 and wlan1) explicitly.
++apply_txpower() {
++	_if="$1"; tp=$(cfg tx_power); [ -z "$tp" ] && tp=auto
++	case "$tp" in
++		auto|max)
++			iw dev "$_if" set txpower auto 2>>"$LOG" ;;
++		*[!0-9]*|"")
++			iw dev "$_if" set txpower auto 2>>"$LOG" ;;
++		*)
++			iw dev "$_if" set txpower fixed "$((tp*100))" 2>>"$LOG" \
++			  || iw dev "$_if" set txpower limit "$((tp*100))" 2>>"$LOG" ;;
++	esac
++	now=$(iw dev "$_if" info 2>/dev/null | sed -n 's/.*txpower //p' | head -1)
++	log "txpower($_if): requested=$tp actual=${now:-?}"
++}
++
++start_sta() {
++	ssid=$(cfg sta_ssid); psk=$(cfg sta_psk); hidden=$(cfg sta_hidden); country=$(cfg sta_country)
++	if [ -z "$ssid" ]; then
++		log "STA requested but sta_ssid empty; skipping"
++		return 0
++	fi
++	[ -n "$country" ] && iw reg set "$country" 2>/dev/null
++	gen_wpa_conf "$ssid" "$psk" "$hidden" "$country"
++	ip link set "$STA_IF" up 2>/dev/null
++	wpa_supplicant -B -i "$STA_IF" -c "$WPA_CONF" -P /var/run/wpa_supplicant-wlan0.pid >>"$LOG" 2>&1
++	apply_txpower "$STA_IF"
++	dhcpcd -n "$STA_IF" >>"$LOG" 2>&1 &
++	log "STA started on $STA_IF ssid=$ssid"
++}
++
++# Bring up hostapd; if it exits within ~1s (ACS survey unsupported, bad
++# channel, etc.) retry once on a safe fixed channel. Returns 0 if a hostapd
++# is running afterwards.
++_hostapd_up() {
++	hostapd -B -P /var/run/hostapd.pid "$HOSTAPD_CONF" >>"$LOG" 2>&1
++	sleep 1
++	[ -f /var/run/hostapd.pid ] && kill -0 "$(cat /var/run/hostapd.pid)" 2>/dev/null
++}
++
++start_ap() {
++	iface="$1"
++	ssid=$(cfg ap_ssid); psk=$(cfg ap_psk); chan=$(cfg ap_channel)
++	hidden=$(cfg ap_hidden); ap_ip=$(cfg ap_ip); htmode=$(cfg ap_htmode)
++	[ -z "$ssid" ] && { log "AP requested but ap_ssid empty; skipping"; return 0; }
++	[ -z "$chan" ] && chan=6
++	[ -z "$ap_ip" ] && ap_ip=192.168.42.1
++	[ -z "$htmode" ] && htmode=ht20
++
++	# Concurrent STA+AP: the AIC8800 is a single radio, so the AP must share
++	# the STA's *exact* channel AND width. Read the STA's live operating
++	# channel + width: 40 MHz => inherit HT40 with the STA's secondary-channel
++	# offset (derived from center1 vs the primary freq); otherwise HT20.
++	# A mismatched width/offset would make hostapd refuse to start, so we
++	# mirror the STA precisely. (If HT40 still fails, the fallback below
++	# retries HT20.)
++	ap_sec_off=""
++	if [ "$iface" = "$AP_IF_CONCURRENT" ]; then
++		if [ ! -e "/sys/class/net/$iface" ]; then
++			iw dev "$STA_IF" interface add "$iface" type __ap 2>>"$LOG"
++		fi
++		sta_info=$(iw dev "$STA_IF" info 2>/dev/null)
++		sta_chan=$(echo "$sta_info"  | sed -n 's/.*channel \([0-9]\+\).*/\1/p' | head -1)
++		sta_freq=$(echo "$sta_info"  | sed -n 's/.*channel [0-9]* (\([0-9]\+\) MHz).*/\1/p' | head -1)
++		sta_width=$(echo "$sta_info" | sed -n 's/.*width: \([0-9]\+\) MHz.*/\1/p' | head -1)
++		sta_cf1=$(echo "$sta_info"   | sed -n 's/.*center1: \([0-9]\+\) MHz.*/\1/p' | head -1)
++		[ -n "$sta_chan" ] && chan="$sta_chan"
++		[ "$chan" = "auto" ] && chan=6
++		if [ "$sta_width" = "40" ] && [ -n "$sta_freq" ] && [ -n "$sta_cf1" ]; then
++			htmode=ht40
++			if [ "$sta_cf1" -gt "$sta_freq" ]; then ap_sec_off="HT40+"; else ap_sec_off="HT40-"; fi
++		else
++			htmode=ht20
++		fi
++		log "concurrent mode: AP inherits STA ch=$chan width=${sta_width:-20}MHz ht=$htmode off=${ap_sec_off:-none}"
++	fi
++
++	gen_hostapd_conf "$iface" "$ssid" "$psk" "$chan" "$hidden" "$htmode" "$ap_sec_off"
++	ip addr flush dev "$iface" 2>/dev/null
++	ip addr add "$ap_ip/24" dev "$iface" 2>/dev/null
++	ip link set "$iface" up 2>/dev/null
++
++	if _hostapd_up; then
++		echo "$iface" > /run/wifi-ap-iface
++		apply_txpower "$iface"
++		log "AP started on $iface ssid=$ssid ch=$chan ht=$htmode ip=$ap_ip"
++	else
++		# Fallback: ACS or HT40 likely unsupported / mismatched. Drop to a
++		# safe HT20 config so the hotspot still comes up. In concurrent mode
++		# keep the STA's channel (single radio must stay co-channel);
++		# otherwise retry on channel 6.
++		fb_chan=6
++		[ "$iface" = "$AP_IF_CONCURRENT" ] && [ -n "$sta_chan" ] && fb_chan="$sta_chan"
++		log "AP failed on ch=$chan ht=$htmode — retrying ch$fb_chan HT20 (driver may lack ACS/HT40 survey)"
++		gen_hostapd_conf "$iface" "$ssid" "$psk" "$fb_chan" "$hidden" ht20
++		if _hostapd_up; then
++			echo "$iface" > /run/wifi-ap-iface
++			apply_txpower "$iface"
++			log "AP started on $iface ssid=$ssid ch=$fb_chan ht=ht20 ip=$ap_ip (fallback)"
++		else
++			log "AP failed to start even on ch$fb_chan HT20 — see hostapd output above"
++		fi
++	fi
++}
++
++start() {
++	mkdir -p /var/log /var/run
++	mode=$(cfg mode); [ -z "$mode" ] && mode=off
++
++	load_modules
++	if ! wait_for_iface; then
++		log "no $STA_IF after module load — non-W board or driver fault; exiting"
++		exit 0
++	fi
++
++	case "$mode" in
++		off)    log "mode=off — radio idle"; ip link set "$STA_IF" down 2>/dev/null ;;
++		sta)    start_sta ;;
++		ap)     start_ap "$STA_IF" ;;
++		sta+ap) start_sta; sleep 2; start_ap "$AP_IF_CONCURRENT" ;;
++		*)      log "unknown mode '$mode' — treating as off" ;;
++	esac
++}
++
++stop() {
++	[ -f /var/run/hostapd.pid ] && { kill "$(cat /var/run/hostapd.pid)" 2>/dev/null; rm -f /var/run/hostapd.pid; }
++	[ -f /var/run/wpa_supplicant-wlan0.pid ] && { kill "$(cat /var/run/wpa_supplicant-wlan0.pid)" 2>/dev/null; rm -f /var/run/wpa_supplicant-wlan0.pid; }
++	killall hostapd wpa_supplicant 2>/dev/null
++	dhcpcd -x "$STA_IF" 2>/dev/null
++	iw dev "$AP_IF_CONCURRENT" del 2>/dev/null
++	rm -f /run/wifi-ap-iface
++}
++
++case "${1:-start}" in
++	start)   start ;;
++	stop)    stop ;;
++	restart) stop; sleep 1; start ;;
++	scan)
++		ip link set "$STA_IF" up 2>/dev/null
++		iw dev "$STA_IF" scan 2>/dev/null | awk '
++			/^BSS/ {if(ssid)printf "%s\t%s\t%s\n",ssid,sig,sec; ssid="";sig="";sec="open"}
++			/SSID: / {s=$0; sub(/^[[:space:]]*SSID: /,"",s); ssid=s}
++			/signal: / {sig=$2}
++			/RSN:|WPA:/ {sec="secured"}
++			END {if(ssid)printf "%s\t%s\t%s\n",ssid,sig,sec}'
++		;;
++	status)
++		echo "mode: $(cfg mode)"
++		iw dev 2>/dev/null | grep -E 'Interface|ssid|type'
++		;;
++	*) echo "Usage: $0 {start|stop|restart|scan|status}" >&2; exit 1 ;;
++esac
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/wifi.conf b/buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/wifi.conf
+new file mode 100644
+index 000000000..916c306a2
+--- /dev/null
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/wifi.conf
+@@ -0,0 +1,57 @@
++# RNSBox WiFi config — read at boot by /etc/init.d/S35wifi.
++#
++# Only meaningful on the LicheeRV Nano-e **W** variant (AIC8800 chip). On
++# the non-W board there's no radio; S35wifi finds no wlan device and exits
++# cleanly, so shipping this file on both SKUs is harmless.
++#
++# mode:
++#   off       no WiFi (default)
++#   sta       client only (join a network on wlan0)
++#   ap        hotspot only (wlan0 runs hostapd)
++#   sta+ap    concurrent: wlan0 = STA, wlan1 = AP (AIC8800 single radio,
++#             time-multiplexed)
++#
++# Managed by the rnsbox-portal WiFi tab. Apply hand-edits with:
++#   /etc/init.d/S35wifi restart
++
++mode=off
++
++# --- STA (client) ---
++sta_ssid=
++sta_psk=
++# sta_hidden=0      # 1 to scan for a hidden SSID
++# sta_country=00    # regulatory domain; 00=world
++
++# --- AP (hotspot) ---
++ap_ssid=RNSBox-AP
++ap_psk=changeme123
++# ap_channel: 1..13, or "auto" (hostapd ACS picks the least-congested 2.4GHz
++# channel; falls back to ch6 if the driver can't survey). In concurrent
++# sta+ap mode the AP always follows the STA channel regardless of this
++# (single radio) — the WiFi tab locks this field while concurrent.
++ap_channel=6
++# ap_htmode: ht20 (20 MHz, default) or ht40 (40 MHz — more throughput, uses
++# 2 of 3 channels). In concurrent sta+ap mode the AP inherits the STA's
++# actual channel AND width (so it runs HT40 when the client link is HT40),
++# falling back to HT20 if the HT40 AP fails to start. Locked in the UI while
++# concurrent.
++ap_htmode=ht20
++# ap_hidden=0
++ap_ip=192.168.42.1
++ap_dhcp_start=192.168.42.10
++ap_dhcp_end=192.168.42.100
++
++# --- TX power (radio-wide; applies to STA and AP) ---
++# tx_power:
++#   auto    chip maximum, independent of the regulatory database (the
++#           AIC8800 set_tx_power AUTOMATIC path requests 0x7f = the silicon
++#           per-rate ceiling). Default.
++#   <dBm>   integer 1..18 — cap power at this level (firmware still applies
++#           per-rate EVM backoff below it). Use to reduce heat/range.
++#
++# The AIC8800D80 OFDM ceiling is ~18 dBm (datasheet: 23 dBm 11b-CCK, 18 dBm
++# MCS7). All real data (11g/n/ac/ax) is OFDM, so 18 is the practical max;
++# the per-rate txpwr_lvl table in the firmware userconfig is EVM backoff,
++# not an artificial limit. Regdb never binds here (world regdom = 20 dBm on
++# 2.4 GHz, already above 18). Managed by the rnsbox-portal WiFi tab.
++tx_power=auto
+diff --git a/osdrv/extdrv/wireless/Makefile b/osdrv/extdrv/wireless/Makefile
+index f83d22db5..7ae5bcfe6 100644
+--- a/osdrv/extdrv/wireless/Makefile
++++ b/osdrv/extdrv/wireless/Makefile
+@@ -2,13 +2,22 @@
+ # Makefile for the Linux Wireless network device drivers.
+ #
+ 
+-obj-$(CONFIG_AIC_WLAN_SUPPORT) += aic8800/
+-obj-$(CONFIG_WLAN_VENDOR_REALTEK) += realtek/
+-obj-$(CONFIG_WLAN_VENDOR_BROADCOM) += broadcom/
+-obj-$(CONFIG_WLAN_VENDOR_MEDIATEK) += mediatek/
+-obj-$(CONFIG_WLAN_VENDOR_ICOMMSEMI) += icommsemi/
+-obj-y += rtl8733bs/
+-obj-y += rtl8733bs_bt_sdio/
++# RNSBox W variant: build ONLY the AIC8800. All other vendor dirs are
++# hard-disabled (commented out), NOT CONFIG-gated. Reason: this Makefile
++# runs as a kbuild `M=` external-module pass against the kernel .config,
++# where CONFIG_WLAN_VENDOR_REALTEK happens to be =y (kernel default) and
++# CONFIG_AIC_WLAN_SUPPORT is NOT set (it lives only in the board defconfig
++# that feeds osdrv's top Makefile). So CONFIG-based gates here are
++# backwards/unreliable. The AIC8800 line is forced on with :=y-equivalent
++# literal. rtl8733bs_bt_sdio additionally can NEVER build (needs CONFIG_BT,
++# which is off) — it was the actual modpost failure (undefined hci_*).
++obj-y += aic8800/
++# obj-$(CONFIG_WLAN_VENDOR_REALTEK) += realtek/
++# obj-$(CONFIG_WLAN_VENDOR_BROADCOM) += broadcom/
++# obj-$(CONFIG_WLAN_VENDOR_MEDIATEK) += mediatek/
++# obj-$(CONFIG_WLAN_VENDOR_ICOMMSEMI) += icommsemi/
++# obj-$(CONFIG_WLAN_VENDOR_REALTEK) += rtl8733bs/
++# obj-$(CONFIG_WLAN_VENDOR_REALTEK) += rtl8733bs_bt_sdio/
+ 
+ all:
+ 	$(MAKE) ARCH=$(ARCH) CROSS_COMPILE=$(CROSS_COMPILE) -C $(KERNEL_DIR) M=$(shell pwd) modules
+diff --git a/osdrv/extdrv/wireless/aic8800/Makefile b/osdrv/extdrv/wireless/aic8800/Makefile
+index 6f02ee957..e88311ce4 100755
+--- a/osdrv/extdrv/wireless/aic8800/Makefile
++++ b/osdrv/extdrv/wireless/aic8800/Makefile
+@@ -1,4 +1,5 @@
+-CONFIG_AIC8800_BTLPM_SUPPORT := m
++# RNSBox W variant: BT off (no bluez, no BT use case) — WLAN + BSP only.
++CONFIG_AIC8800_BTLPM_SUPPORT := n
+ CONFIG_AIC8800_WLAN_SUPPORT := m
+ CONFIG_AIC_WLAN_SUPPORT := m
+ 
+@@ -22,7 +23,10 @@ export CONFIG_PLATFORM_ROCKCHIP = n
+ export CONFIG_PLATFORM_ROCKCHIP2 = n
+ export CONFIG_PLATFORM_ALLWINNER = n
+ export CONFIG_PLATFORM_AMLOGIC = n
+-export CONFIG_PLATFORM_UBUNTU = y
++# RNSBox W variant: was UBUNTU=y (native /lib/modules build). Pin CVITEK so
++# the bsp/fdrv sub-Makefiles take their riscv/musl cross branch.
++export CONFIG_PLATFORM_UBUNTU = n
++export CONFIG_PLATFORM_CVITEK = y
+ 
+ ifeq ($(CONFIG_PLATFORM_ROCKCHIP), y)
+ ARCH = arm64
+diff --git a/osdrv/extdrv/wireless/aic8800/aic8800_fdrv/Makefile b/osdrv/extdrv/wireless/aic8800/aic8800_fdrv/Makefile
+index 52b001a67..ed314f917 100755
+--- a/osdrv/extdrv/wireless/aic8800/aic8800_fdrv/Makefile
++++ b/osdrv/extdrv/wireless/aic8800/aic8800_fdrv/Makefile
+@@ -73,7 +73,7 @@ CONFIG_RADAR_OR_IR_DETECT =n
+ CONFIG_DOWNLOAD_FW =n
+ CONFIG_RFTEST=y
+ CONFIG_USB_BT =n
+-CONFIG_SDIO_BT=y
++CONFIG_SDIO_BT=n
+ CONFIG_USE_5G ?= y
+ CONFIG_CREATE_TRACE_POINTS = n
+ CONFIG_TXRX_THREAD_PRIO = y
+-- 
+2.47.3
+

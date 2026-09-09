@@ -1,0 +1,299 @@
+From 7c643089e2ecb2f9c0d7504c63e794efb51a8f51 Mon Sep 17 00:00:00 2001
+From: smit1237 <smit1237@gmail.com>
+Date: Wed, 9 Sep 2026 01:39:58 +0300
+Subject: [PATCH 18/20] portal: in-place rnsd update (pip) + pip/setuptools on
+ the rootfs
+
+Builds on the update-check notifier with an actual in-place update, since the
+rootfs is writeable and rns is a pure-Python wheel. updatecheck.apply_update()
+installs the latest rns wheel with pip (--no-deps --only-binary, so the
+compiled deps cryptography/pyserial are never rebuilt), first clearing the old
+buildroot (distutils) install that pip cannot uninstall, keeping a rollback
+tarball, and restarting + verifying rnsd -- rolling back automatically if rnsd
+does not come back. Only site-packages is touched; /etc and user config are
+never modified. A dependency pre-check refuses the update (pointing at a
+reflash) if the new rns needs a newer cryptography/pyserial than is installed.
+(pip 22.3.1 on the target predates --break-system-packages, and buildroot's
+rootfs is not PEP-668 externally-managed, so no such flag is used.)
+
+The Reticulum tab gains an "Update rnsd to X now" button (with a confirm) when
+an update is available, via a new /reticulum/applyupdate route. Enables
+python-pip + python-setuptools in the defconfig so pip is on the box for this
+and for general package management.
+---
+ .../cvitek_SG200X_musl_riscv64_defconfig      |   7 +-
+ .../rnsbox-portal/src/rnsbox_portal/app.py    |  17 ++
+ .../rnsbox_portal/templates/reticulum.html    |   8 +-
+ .../src/rnsbox_portal/updatecheck.py          | 163 ++++++++++++++++++
+ 4 files changed, 192 insertions(+), 3 deletions(-)
+
+diff --git a/buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig b/buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig
+index 6abe7c9f8..6791defee 100644
+--- a/buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig
++++ b/buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig
+@@ -1648,7 +1648,10 @@ BR2_PACKAGE_PYTHON_FLASK=y
+ # BR2_PACKAGE_PYTHON_PIEXIF is not set
+ # BR2_PACKAGE_PYTHON_PIGPIO is not set
+ # BR2_PACKAGE_PYTHON_PILLOW is not set
+-# BR2_PACKAGE_PYTHON_PIP is not set
++# RNSBox: pip + setuptools on the (writeable) rootfs so rnsd can be updated in
++# place from its PyPI wheel (the portal's "Update rnsd" button), and for general
++# on-device package management.
++BR2_PACKAGE_PYTHON_PIP=y
+ # BR2_PACKAGE_PYTHON_PLUGGY is not set
+ # BR2_PACKAGE_PYTHON_PLY is not set
+ # BR2_PACKAGE_PYTHON_PORTEND is not set
+@@ -1755,7 +1758,7 @@ BR2_PACKAGE_PYTHON_FLASK=y
+ BR2_PACKAGE_PYTHON_SERIAL=y
+ # BR2_PACKAGE_PYTHON_SERIAL_ASYNCIO is not set
+ # BR2_PACKAGE_PYTHON_SETPROCTITLE is not set
+-# BR2_PACKAGE_PYTHON_SETUPTOOLS is not set
++BR2_PACKAGE_PYTHON_SETUPTOOLS=y
+ # BR2_PACKAGE_PYTHON_SH is not set
+ # BR2_PACKAGE_PYTHON_SHUTILWHICH is not set
+ # BR2_PACKAGE_PYTHON_SIMPLEAUDIO is not set
+diff --git a/buildroot/package/rnsbox-portal/src/rnsbox_portal/app.py b/buildroot/package/rnsbox-portal/src/rnsbox_portal/app.py
+index 1fef4b5e4..dfc0be53e 100644
+--- a/buildroot/package/rnsbox-portal/src/rnsbox_portal/app.py
++++ b/buildroot/package/rnsbox-portal/src/rnsbox_portal/app.py
+@@ -283,6 +283,23 @@ def create_app():
+                   "success")
+         return redirect(url_for("reticulum"))
+ 
++    @app.route("/reticulum/applyupdate", methods=["POST"])
++    @login_required
++    def reticulum_applyupdate():
++        # In-place update of the rns package (site-packages only; /etc config
++        # untouched). Backs up first and rolls back if rnsd fails to restart.
++        res = updatecheck.apply_update()
++        if res.get("ok"):
++            flash("rnsd updated %s → %s and restarted."
++                  % (res.get("from"), res.get("to")), "success")
++        elif res.get("rolled_back"):
++            flash("Update failed (%s) — rolled back to %s."
++                  % (res.get("error"), res.get("from")), "error")
++        else:
++            flash("Update not applied: %s."
++                  % (res.get("error") or "unknown error"), "error")
++        return redirect(url_for("reticulum"))
++
+     @app.route("/reticulum/autoupdate", methods=["POST"])
+     @login_required
+     def reticulum_autoupdate():
+diff --git a/buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/reticulum.html b/buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/reticulum.html
+index dc51858d0..0202f8a1a 100644
+--- a/buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/reticulum.html
++++ b/buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/reticulum.html
+@@ -26,12 +26,18 @@
+   <form method="post" action="{{ url_for('reticulum_checkupdate') }}" class="inline">
+     <button type="submit" class="btn">Check for updates</button>
+   </form>
++  {% if update and update.update_available %}
++  <form method="post" action="{{ url_for('reticulum_applyupdate') }}" class="inline"
++        onsubmit="return confirm('Update rnsd to {{ update.latest }} now?\n\nThe rns package is replaced in place and rnsd restarts. Your config is not touched, and it rolls back automatically if rnsd fails to come up.');">
++    <button type="submit" class="btn-primary">Update rnsd to {{ update.latest }} now</button>
++  </form>
++  {% endif %}
+ 
+   <form method="post" action="{{ url_for('reticulum_autoupdate') }}" class="row-form" style="margin-top:10px">
+     <label style="margin:0"><input type="checkbox" name="auto_update"
+       {{ 'checked' if auto_update else '' }} onchange="this.form.submit()"> check for updates daily</label>
+     <noscript><button type="submit" class="btn">Save</button></noscript>
+-    <span class="muted">notify-only — a newer rnsd means reflashing the latest RNSBox image; nothing here changes your config</span>
++    <span class="muted">in-place update replaces only the rnsd package (pure-Python); your config is untouched and it rolls back if rnsd fails to restart</span>
+   </form>
+ 
+   <form method="post" action="{{ url_for('reticulum_autorestart') }}" class="row-form" style="margin-top:10px">
+diff --git a/buildroot/package/rnsbox-portal/src/rnsbox_portal/updatecheck.py b/buildroot/package/rnsbox-portal/src/rnsbox_portal/updatecheck.py
+index b04c855cb..8b7de40c9 100644
+--- a/buildroot/package/rnsbox-portal/src/rnsbox_portal/updatecheck.py
++++ b/buildroot/package/rnsbox-portal/src/rnsbox_portal/updatecheck.py
+@@ -10,15 +10,23 @@ Deliberately a *notifier only*:
+   * network failures are non-fatal (the box may be offline) -- check() never
+     raises and preserves the last known result.
+ """
++import glob
+ import json
+ import os
++import shutil
++import subprocess
++import sys
++import tarfile
+ import time
+ import urllib.request
+ 
+ PKG = "rns"                       # rnsd is provided by the Reticulum 'rns' pkg
+ STATE_DIR = "/var/lib/rnsbox"
+ STATE_FILE = STATE_DIR + "/update.json"
++ROLLBACK_TAR = STATE_DIR + "/rns-rollback.tar"
+ PYPI_URL = "https://pypi.org/pypi/{pkg}/json"
++RNSD_INIT = "/etc/init.d/S82rnsd"
++RNSD_PIDFILE = "/var/run/rnsd.pid"
+ TIMEOUT = 8
+ 
+ 
+@@ -107,6 +115,161 @@ def check(pkg=PKG):
+     return state
+ 
+ 
++# --------------------------------------------------------------------------
++# In-place update (rootfs is writeable). rns is a pure-Python wheel, so we can
++# update it without a compiler. We use pip with --no-deps + wheel-only so the
++# compiled deps (cryptography/pyserial) are never rebuilt, clear the old
++# buildroot (distutils) install first (pip cannot uninstall it), keep a
++# rollback tarball, and restart+verify rnsd -- rolling back if it fails.
++# Only site-packages is touched; /etc and user config are never modified.
++# --------------------------------------------------------------------------
++
++def _pypi_json(pkg=PKG, timeout=TIMEOUT):
++    req = urllib.request.Request(
++        PYPI_URL.format(pkg=pkg),
++        headers={"User-Agent": "rnsbox-update-check", "Accept": "application/json"})
++    with urllib.request.urlopen(req, timeout=timeout) as r:
++        return json.load(r)
++
++
++def _dep_floor(req):
++    """'cryptography>=3.4.7' -> ('cryptography', '3.4.7'); skip optional extras."""
++    parts = req.split(";")
++    if len(parts) > 1 and "extra" in parts[1]:
++        return None, None
++    spec = parts[0].strip()
++    name = ""
++    for ch in spec:
++        if ch.isalnum() or ch in "_.-":
++            name += ch
++        else:
++            break
++    floor = ""
++    i = spec.find(">=")
++    if i >= 0:
++        for ch in spec[i + 2:].strip():
++            if ch.isdigit() or ch == ".":
++                floor += ch
++            else:
++                break
++    return (name or None), (floor or None)
++
++
++def _unmet_deps(requires_dist):
++    """Runtime deps whose installed version is below the new release's floor."""
++    unmet = []
++    for req in (requires_dist or []):
++        name, floor = _dep_floor(req)
++        if not name:
++            continue
++        inst = installed_version(name)
++        if inst is None:
++            unmet.append("%s (missing)" % name)
++        elif floor and _vtuple(inst) < _vtuple(floor):
++            unmet.append("%s %s < %s" % (name, inst, floor))
++    return unmet
++
++
++def _site_base(pkg=PKG):
++    import importlib.metadata as md
++    return str(md.distribution(pkg).locate_file(""))
++
++
++def _pkg_paths(site, pkg):
++    """Package dirs + metadata for `pkg` under site-packages (best-effort)."""
++    import importlib.metadata as md
++    tops = set()
++    try:
++        tl = md.distribution(pkg).read_text("top_level.txt") or ""
++        tops = {t.strip() for t in tl.splitlines() if t.strip()}
++    except Exception:
++        pass
++    if not tops:
++        tops = {"RNS", "CRNS"}                 # known top-levels for rns
++    paths = [os.path.join(site, t) for t in tops
++             if os.path.exists(os.path.join(site, t))]
++    paths += glob.glob(os.path.join(site, pkg + "-*.egg-info"))
++    paths += glob.glob(os.path.join(site, pkg + "-*.dist-info"))
++    return paths
++
++
++def _rnsd_up(timeout=15):
++    for _ in range(timeout):
++        try:
++            with open(RNSD_PIDFILE) as f:
++                pid = f.read().strip()
++            if pid and os.path.exists("/proc/" + pid):
++                return True
++        except Exception:
++            pass
++        time.sleep(1)
++    return False
++
++
++def apply_update(pkg=PKG):
++    """Update `pkg` in place from its PyPI wheel. Returns a result dict; never
++    raises. On any failure after the tree is touched, restores the rollback
++    tarball and restarts rnsd."""
++    res = {"ok": False, "from": installed_version(pkg), "to": None,
++           "error": "", "rolled_back": False}
++    site = None
++    touched = False
++    try:
++        data = _pypi_json(pkg)
++        ver = data["info"]["version"]
++        res["to"] = ver
++        if not _newer(ver, res["from"]):
++            res["error"] = "already up to date"
++            return res
++        unmet = _unmet_deps(data["info"].get("requires_dist"))
++        if unmet:
++            res["error"] = ("%s %s needs a newer %s than is installed — reflash "
++                            "the image to update" % (pkg, ver, ", ".join(unmet)))
++            return res
++        site = _site_base(pkg)
++        remove = _pkg_paths(site, pkg)
++        os.makedirs(STATE_DIR, exist_ok=True)
++        with tarfile.open(ROLLBACK_TAR, "w") as tf:
++            for p in remove:
++                tf.add(p, arcname=os.path.relpath(p, site))
++        touched = True
++        for p in remove:                       # clear the old distutils install
++            shutil.rmtree(p) if os.path.isdir(p) else os.remove(p)
++        # --no-deps + wheel-only so the compiled deps (cryptography/pyserial) are
++        # never rebuilt; buildroot's rootfs is not PEP-668 externally-managed, so
++        # pip installs into the system site-packages as root without extra flags.
++        cp = subprocess.run(
++            [sys.executable, "-m", "pip", "install", "--no-deps",
++             "--only-binary=:all:", "--no-input", "--disable-pip-version-check",
++             "%s==%s" % (pkg, ver)],
++            capture_output=True, text=True, timeout=180)
++        if cp.returncode != 0:
++            raise RuntimeError("pip install failed: "
++                               + (cp.stderr or cp.stdout or "")[-300:].strip())
++        subprocess.run([RNSD_INIT, "restart"], check=False, timeout=25)
++        if not _rnsd_up(15):
++            raise RuntimeError("rnsd did not come back after the update")
++        res["ok"] = True
++        _write_state({"package": pkg, "installed": ver, "latest": ver,
++                      "update_available": False, "error": "",
++                      "checked_at": int(time.time())})
++        return res
++    except Exception as e:
++        res["error"] = str(e) if isinstance(e, RuntimeError) \
++            else "%s: %s" % (type(e).__name__, e)
++        if touched and site:                   # roll back to the saved package
++            try:
++                for p in _pkg_paths(site, pkg):
++                    shutil.rmtree(p) if os.path.isdir(p) else os.remove(p)
++                with tarfile.open(ROLLBACK_TAR) as tf:
++                    tf.extractall(site)
++                subprocess.run([RNSD_INIT, "restart"], check=False, timeout=25)
++                res["rolled_back"] = True
++            except Exception:
++                pass
++        return res
++
++
+ if __name__ == "__main__":
+     st = check()
+     if st.get("error"):
+-- 
+2.47.3
+

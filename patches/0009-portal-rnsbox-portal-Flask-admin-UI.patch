@@ -1,0 +1,2411 @@
+From a283778fc8e7200d875a102fff3a2d687fde3412 Mon Sep 17 00:00:00 2001
+From: smit1237 <smit1237@gmail.com>
+Date: Tue, 8 Sep 2026 22:47:49 +0300
+Subject: [PATCH 09/20] portal: rnsbox-portal Flask admin UI
+
+Add the rnsbox-portal Buildroot package: an OpenWrt-style Flask web UI on
+0.0.0.0:80 for network, Reticulum, WiFi and system settings. It owns the
+single-source-of-truth nftables generator (rnsbox_portal.nftgen), stores the
+admin password hashed in /etc/rnsbox/auth.json, and generates its Flask
+session key at runtime. MIT licensed.
+---
+ buildroot/package/rnsbox-portal/Config.in     |  19 +
+ .../package/rnsbox-portal/rnsbox-portal.mk    |  34 ++
+ buildroot/package/rnsbox-portal/src/LICENSE   |  21 +
+ .../rnsbox-portal/src/bin/rnsbox-portal       |   6 +
+ .../src/rnsbox_portal/__init__.py             |   0
+ .../src/rnsbox_portal/__main__.py             |  16 +
+ .../rnsbox-portal/src/rnsbox_portal/app.py    | 429 ++++++++++++++++++
+ .../rnsbox-portal/src/rnsbox_portal/auth.py   |  57 +++
+ .../rnsbox-portal/src/rnsbox_portal/nftgen.py | 136 ++++++
+ .../src/rnsbox_portal/static/style.css        | 309 +++++++++++++
+ .../rnsbox-portal/src/rnsbox_portal/store.py  | 265 +++++++++++
+ .../src/rnsbox_portal/sysinfo.py              | 223 +++++++++
+ .../src/rnsbox_portal/templates/base.html     |  46 ++
+ .../rnsbox_portal/templates/dashboard.html    |  76 ++++
+ .../src/rnsbox_portal/templates/login.html    |  20 +
+ .../src/rnsbox_portal/templates/network.html  | 169 +++++++
+ .../rnsbox_portal/templates/reticulum.html    |  63 +++
+ .../src/rnsbox_portal/templates/settings.html |  40 ++
+ .../src/rnsbox_portal/templates/wifi.html     | 142 ++++++
+ .../rnsbox-portal/src/rnsbox_portal/wifi.py   | 167 +++++++
+ 20 files changed, 2238 insertions(+)
+ create mode 100644 buildroot/package/rnsbox-portal/Config.in
+ create mode 100644 buildroot/package/rnsbox-portal/rnsbox-portal.mk
+ create mode 100644 buildroot/package/rnsbox-portal/src/LICENSE
+ create mode 100755 buildroot/package/rnsbox-portal/src/bin/rnsbox-portal
+ create mode 100644 buildroot/package/rnsbox-portal/src/rnsbox_portal/__init__.py
+ create mode 100644 buildroot/package/rnsbox-portal/src/rnsbox_portal/__main__.py
+ create mode 100644 buildroot/package/rnsbox-portal/src/rnsbox_portal/app.py
+ create mode 100644 buildroot/package/rnsbox-portal/src/rnsbox_portal/auth.py
+ create mode 100644 buildroot/package/rnsbox-portal/src/rnsbox_portal/nftgen.py
+ create mode 100644 buildroot/package/rnsbox-portal/src/rnsbox_portal/static/style.css
+ create mode 100644 buildroot/package/rnsbox-portal/src/rnsbox_portal/store.py
+ create mode 100644 buildroot/package/rnsbox-portal/src/rnsbox_portal/sysinfo.py
+ create mode 100644 buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/base.html
+ create mode 100644 buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/dashboard.html
+ create mode 100644 buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/login.html
+ create mode 100644 buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/network.html
+ create mode 100644 buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/reticulum.html
+ create mode 100644 buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/settings.html
+ create mode 100644 buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/wifi.html
+ create mode 100644 buildroot/package/rnsbox-portal/src/rnsbox_portal/wifi.py
+
+diff --git a/buildroot/package/rnsbox-portal/Config.in b/buildroot/package/rnsbox-portal/Config.in
+new file mode 100644
+index 000000000..b8fbefbdf
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/Config.in
+@@ -0,0 +1,19 @@
++config BR2_PACKAGE_RNSBOX_PORTAL
++	bool "rnsbox-portal"
++	select BR2_PACKAGE_PYTHON3
++	select BR2_PACKAGE_PYTHON_FLASK
++	help
++	  OpenWrt-style admin web UI for the RNSBox router build.
++
++	  Features:
++	    - Dashboard: system + Reticulum status at a glance
++	    - Network: WAN/LAN status, dnsmasq leases, port forwards
++	      (WAN -> LAN DNAT), WAN-side open ports (input ACCEPT)
++	    - Reticulum: live rnsd status, raw config editor, restart
++	    - Settings: admin password + hostname
++
++	  Stores port-forward / open-port / auth state under
++	  /etc/rnsbox/ and regenerates /etc/nftables.conf via
++	  rnsbox_portal.nftgen (called by /etc/init.d/S60routing).
++
++	  Pure-Python; no Go/Node toolchain needed. Source is local.
+diff --git a/buildroot/package/rnsbox-portal/rnsbox-portal.mk b/buildroot/package/rnsbox-portal/rnsbox-portal.mk
+new file mode 100644
+index 000000000..93c9afed8
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/rnsbox-portal.mk
+@@ -0,0 +1,34 @@
++################################################################################
++#
++# rnsbox-portal — Flask admin UI for the RNSBox router build
++#
++# Pure-Python package, installed manually under /usr/lib/rnsbox-portal/ with
++# a launcher script at /usr/sbin/rnsbox-portal that sets PYTHONPATH and
++# execs `python3 -m rnsbox_portal`. Avoids setuptools because the package
++# isn't pip-published — local source only.
++#
++# nftables generation also lives in this package (rnsbox_portal.nftgen) so
++# the same single source of truth feeds both the UI and the init scripts.
++#
++################################################################################
++
++RNSBOX_PORTAL_VERSION = 0.1.0
++RNSBOX_PORTAL_SITE = $(TOPDIR)/package/rnsbox-portal/src
++RNSBOX_PORTAL_SITE_METHOD = local
++RNSBOX_PORTAL_LICENSE = MIT
++RNSBOX_PORTAL_LICENSE_FILES = LICENSE
++
++define RNSBOX_PORTAL_INSTALL_TARGET_CMDS
++	mkdir -p $(TARGET_DIR)/usr/lib/rnsbox-portal/rnsbox_portal/templates
++	mkdir -p $(TARGET_DIR)/usr/lib/rnsbox-portal/rnsbox_portal/static
++	$(INSTALL) -m 0644 $(@D)/rnsbox_portal/*.py \
++		$(TARGET_DIR)/usr/lib/rnsbox-portal/rnsbox_portal/
++	$(INSTALL) -m 0644 $(@D)/rnsbox_portal/templates/*.html \
++		$(TARGET_DIR)/usr/lib/rnsbox-portal/rnsbox_portal/templates/
++	$(INSTALL) -m 0644 $(@D)/rnsbox_portal/static/* \
++		$(TARGET_DIR)/usr/lib/rnsbox-portal/rnsbox_portal/static/
++	$(INSTALL) -D -m 0755 $(@D)/bin/rnsbox-portal \
++		$(TARGET_DIR)/usr/sbin/rnsbox-portal
++endef
++
++$(eval $(generic-package))
+diff --git a/buildroot/package/rnsbox-portal/src/LICENSE b/buildroot/package/rnsbox-portal/src/LICENSE
+new file mode 100644
+index 000000000..645d94257
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/LICENSE
+@@ -0,0 +1,21 @@
++MIT License
++
++Copyright (c) 2026 smit1237
++
++Permission is hereby granted, free of charge, to any person obtaining a copy
++of this software and associated documentation files (the "Software"), to deal
++in the Software without restriction, including without limitation the rights
++to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++copies of the Software, and to permit persons to whom the Software is
++furnished to do so, subject to the following conditions:
++
++The above copyright notice and this permission notice shall be included in all
++copies or substantial portions of the Software.
++
++THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
++SOFTWARE.
+diff --git a/buildroot/package/rnsbox-portal/src/bin/rnsbox-portal b/buildroot/package/rnsbox-portal/src/bin/rnsbox-portal
+new file mode 100755
+index 000000000..f60e34033
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/bin/rnsbox-portal
+@@ -0,0 +1,6 @@
++#!/bin/sh
++# Launcher for the rnsbox-portal Flask app.
++#
++# Flags forwarded to python -m rnsbox_portal (no flags supported yet; the
++# app reads listen address from $RNSBOX_LISTEN, defaulting to 0.0.0.0:80).
++exec env PYTHONPATH=/usr/lib/rnsbox-portal python3 -m rnsbox_portal "$@"
+diff --git a/buildroot/package/rnsbox-portal/src/rnsbox_portal/__init__.py b/buildroot/package/rnsbox-portal/src/rnsbox_portal/__init__.py
+new file mode 100644
+index 000000000..e69de29bb
+diff --git a/buildroot/package/rnsbox-portal/src/rnsbox_portal/__main__.py b/buildroot/package/rnsbox-portal/src/rnsbox_portal/__main__.py
+new file mode 100644
+index 000000000..c77677f07
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/rnsbox_portal/__main__.py
+@@ -0,0 +1,16 @@
++import os
++
++from .app import create_app
++
++
++def main():
++    listen = os.environ.get("RNSBOX_LISTEN", "0.0.0.0:80")
++    host, _, port = listen.rpartition(":")
++    if not host:
++        host = "0.0.0.0"
++    app = create_app()
++    app.run(host=host, port=int(port), threaded=True, debug=False)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/buildroot/package/rnsbox-portal/src/rnsbox_portal/app.py b/buildroot/package/rnsbox-portal/src/rnsbox_portal/app.py
+new file mode 100644
+index 000000000..970d1ca2c
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/rnsbox_portal/app.py
+@@ -0,0 +1,429 @@
++"""Flask app for the RNSBox admin UI."""
++import os
++import secrets
++import subprocess
++from functools import wraps
++
++from flask import (
++    Flask, flash, redirect, render_template, request, session, url_for,
++)
++
++from . import auth, store, sysinfo, wifi
++
++SECRET_FILE = "/run/rnsbox-portal.secret"
++ROUTING_INIT = "/etc/init.d/S60routing"
++RNSD_INIT = "/etc/init.d/S82rnsd"
++RETICULUM_CFG = "/etc/reticulum/config"
++
++
++def _load_or_create_secret():
++    try:
++        with open(SECRET_FILE, "rb") as f:
++            data = f.read()
++        if len(data) >= 32:
++            return data
++    except FileNotFoundError:
++        pass
++    data = secrets.token_bytes(64)
++    os.makedirs(os.path.dirname(SECRET_FILE), exist_ok=True)
++    old_umask = os.umask(0o077)
++    try:
++        with open(SECRET_FILE, "wb") as f:
++            f.write(data)
++    finally:
++        os.umask(old_umask)
++    return data
++
++
++def login_required(view):
++    @wraps(view)
++    def wrapped(*args, **kwargs):
++        if not session.get("user"):
++            return redirect(url_for("login", next=request.path))
++        return view(*args, **kwargs)
++    return wrapped
++
++
++def _apply_routing():
++    """Regenerate nftables + dnsmasq via the init script."""
++    subprocess.run([ROUTING_INIT, "restart"], check=False, timeout=10)
++
++
++def create_app():
++    app = Flask(__name__, template_folder="templates", static_folder="static")
++    app.config["SECRET_KEY"] = _load_or_create_secret()
++    app.config["SESSION_COOKIE_HTTPONLY"] = True
++    app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
++    app.config["MAX_CONTENT_LENGTH"] = 256 * 1024  # 256 KiB plenty for forms
++
++    @app.context_processor
++    def inject_globals():
++        return {"hostname": sysinfo.hostname()}
++
++    # ---- auth ----
++
++    @app.route("/login", methods=["GET", "POST"])
++    def login():
++        if request.method == "POST":
++            user = request.form.get("username", "").strip()
++            pw = request.form.get("password", "")
++            if auth.verify(user, pw):
++                session.clear()
++                session["user"] = user
++                nxt = request.args.get("next") or url_for("dashboard")
++                return redirect(nxt)
++            flash("Invalid credentials", "error")
++        return render_template("login.html")
++
++    @app.route("/logout")
++    def logout():
++        session.clear()
++        return redirect(url_for("login"))
++
++    # ---- dashboard ----
++
++    @app.route("/")
++    @login_required
++    def dashboard():
++        return render_template(
++            "dashboard.html",
++            sys=sysinfo.summary(),
++            rnsd=sysinfo.rnsd_status(),
++            net=sysinfo.network_summary(),
++            wan=store.read_wan(),
++        )
++
++    # ---- network ----
++
++    @app.route("/network")
++    @login_required
++    def network():
++        wan_cfg = store.read_wan_config()
++        return render_template(
++            "network.html",
++            wan=wan_cfg["interface"],
++            wan_cfg=wan_cfg,
++            forwards=store.read_portforwards(),
++            openports=store.read_openports(),
++            leases=sysinfo.dnsmasq_leases(),
++            net=sysinfo.network_summary(),
++        )
++
++    @app.route("/network/wan", methods=["POST"])
++    @login_required
++    def wan_set():
++        import ipaddress
++        iface = request.form.get("wan", "eth0").strip()
++        mode = request.form.get("wan_mode", "dhcp").strip()
++        try:
++            if iface == "wlan0" and not wifi.present():
++                flash("No WiFi radio — wlan0 WAN needs the W variant.", "error")
++                return redirect(url_for("network"))
++            if mode not in ("dhcp", "static"):
++                mode = "dhcp"
++            cfg = {"interface": iface, "mode": mode}
++            if mode == "static":
++                addr = request.form.get("wan_address", "").strip()
++                prefix = request.form.get("wan_prefix", "").strip()
++                gw = request.form.get("wan_gateway", "").strip()
++                dns_raw = request.form.get("wan_dns", "").strip()
++                # Validate via the ipaddress module (rejects bad octets, etc.).
++                ipaddress.IPv4Address(addr)               # raises on bad addr
++                if not (prefix.isdigit() and 1 <= int(prefix) <= 32):
++                    raise ValueError("netmask/prefix must be 1-32")
++                if gw:
++                    ipaddress.IPv4Address(gw)              # gateway optional but if set must be valid
++                dns_list = dns_raw.replace(",", " ").split()
++                for d in dns_list:
++                    ipaddress.IPv4Address(d)               # each DNS must be valid
++                cfg.update(address=addr, prefix=prefix, gateway=gw,
++                           dns=" ".join(dns_list))
++            store.write_wan_config(cfg)
++            # Re-address eth0 (DHCP vs static) then re-point NAT + dnsmasq.
++            subprocess.run(["/etc/init.d/S30eth", "restart"], check=False, timeout=20)
++            _apply_routing()
++            if iface == "wlan0":
++                flash("WAN set to wlan0 (WiFi). Make sure WiFi is connected "
++                      "as a client (WiFi tab → mode sta or sta+ap).", "success")
++            elif mode == "static":
++                flash(f"WAN set to eth0 static {cfg['address']}/{cfg['prefix']}.",
++                      "success")
++            else:
++                flash("WAN set to eth0 (DHCP).", "success")
++        except ipaddress.AddressValueError:
++            flash("Bad input: invalid IPv4 address in one of the static fields.",
++                  "error")
++        except (KeyError, ValueError) as e:
++            flash(f"Bad input: {e}", "error")
++        except Exception as e:
++            flash(f"Error: {e}", "error")
++        return redirect(url_for("network"))
++
++    @app.route("/network/portforward/add", methods=["POST"])
++    @login_required
++    def pf_add():
++        try:
++            store.add_portforward(
++                request.form["proto"],
++                int(request.form["wan_port"]),
++                request.form["lan_ip"].strip(),
++                int(request.form["lan_port"]),
++                request.form.get("comment", "").strip(),
++            )
++            _apply_routing()
++            flash("Port forward added", "success")
++        except (KeyError, ValueError) as e:
++            flash(f"Bad input: {e}", "error")
++        except Exception as e:
++            flash(f"Error: {e}", "error")
++        return redirect(url_for("network"))
++
++    @app.route("/network/portforward/delete", methods=["POST"])
++    @login_required
++    def pf_del():
++        try:
++            store.delete_portforward(int(request.form["idx"]))
++            _apply_routing()
++            flash("Port forward removed", "success")
++        except (KeyError, ValueError) as e:
++            flash(f"Bad input: {e}", "error")
++        return redirect(url_for("network"))
++
++    @app.route("/network/openport/add", methods=["POST"])
++    @login_required
++    def op_add():
++        try:
++            store.add_openport(
++                request.form["proto"],
++                int(request.form["port"]),
++                request.form.get("comment", "").strip(),
++            )
++            _apply_routing()
++            flash("Open port added", "success")
++        except (KeyError, ValueError) as e:
++            flash(f"Bad input: {e}", "error")
++        return redirect(url_for("network"))
++
++    @app.route("/network/openport/delete", methods=["POST"])
++    @login_required
++    def op_del():
++        try:
++            store.delete_openport(int(request.form["idx"]))
++            _apply_routing()
++            flash("Open port removed", "success")
++        except (KeyError, ValueError) as e:
++            flash(f"Bad input: {e}", "error")
++        return redirect(url_for("network"))
++
++    # ---- reticulum ----
++
++    @app.route("/reticulum")
++    @login_required
++    def reticulum():
++        try:
++            with open(RETICULUM_CFG) as f:
++                cfg = f.read()
++        except FileNotFoundError:
++            cfg = "# /etc/reticulum/config not present yet — rnsd creates a\n" \
++                  "# default on first start. Edit here to override.\n"
++        # Cheap liveness only (running/pid/rss from /proc) so the page paints
++        # instantly. The expensive `rnstatus -a` block (a ~5 s cold-start of
++        # the RNS stack) is fetched separately by the page via /reticulum/status
++        # and dropped in once it arrives — see reticulum.html.
++        return render_template(
++            "reticulum.html",
++            rnsd=sysinfo.rnsd_status(),
++            cfg=cfg,
++            restart_days=store.read_rnsd_restart_days(),
++        )
++
++    @app.route("/reticulum/autorestart", methods=["POST"])
++    @login_required
++    def reticulum_autorestart():
++        try:
++            days = int(request.form.get("days", "0"))
++            store.write_rnsd_restart_days(days)
++            # Regenerate the crontab + reload crond live.
++            subprocess.run(["/etc/init.d/S84cron", "reload"], check=False, timeout=10)
++            if days == 0:
++                flash("rnsd auto-restart disabled.", "success")
++            else:
++                flash(f"rnsd will auto-restart every {days} day(s) at 04:00.",
++                      "success")
++        except (KeyError, ValueError) as e:
++            flash(f"Bad input: {e}", "error")
++        except Exception as e:
++            flash(f"Error: {e}", "error")
++        return redirect(url_for("reticulum"))
++
++    @app.route("/reticulum/status")
++    @login_required
++    def reticulum_status():
++        # AJAX endpoint for the Reticulum page. This is the call that pays the
++        # `rnstatus -a` cost; it runs in the background so no page ever blocks.
++        from flask import jsonify
++        return jsonify(sysinfo.rnsd_status(with_raw=True))
++
++    @app.route("/reticulum/config", methods=["POST"])
++    @login_required
++    def reticulum_config_save():
++        body = request.form.get("config", "")
++        try:
++            os.makedirs(os.path.dirname(RETICULUM_CFG), exist_ok=True)
++            tmp = RETICULUM_CFG + ".tmp"
++            with open(tmp, "w") as f:
++                f.write(body)
++            os.rename(tmp, RETICULUM_CFG)
++            flash("Config saved — restart rnsd to apply.", "success")
++        except Exception as e:
++            flash(f"Error: {e}", "error")
++        return redirect(url_for("reticulum"))
++
++    @app.route("/reticulum/restart", methods=["POST"])
++    @login_required
++    def reticulum_restart():
++        try:
++            subprocess.run([RNSD_INIT, "restart"], check=False, timeout=10)
++            flash("rnsd restart requested", "success")
++        except Exception as e:
++            flash(f"Error: {e}", "error")
++        return redirect(url_for("reticulum"))
++
++    # ---- settings ----
++
++    @app.route("/settings")
++    @login_required
++    def settings():
++        return render_template("settings.html", wan=store.read_wan())
++
++    @app.route("/settings/password", methods=["POST"])
++    @login_required
++    def settings_password():
++        old = request.form.get("old", "")
++        new = request.form.get("new", "")
++        confirm = request.form.get("confirm", "")
++        if new != confirm:
++            flash("New password and confirmation do not match", "error")
++        elif not auth.verify(session["user"], old):
++            flash("Current password is incorrect", "error")
++        elif len(new) < 6:
++            flash("New password must be at least 6 characters", "error")
++        else:
++            auth.set_password(session["user"], new)
++            flash("Password changed", "success")
++        return redirect(url_for("settings"))
++
++    @app.route("/settings/hostname", methods=["POST"])
++    @login_required
++    def settings_hostname():
++        new = request.form.get("hostname", "").strip()
++        ok = (
++            new
++            and len(new) <= 63
++            and all(c.isalnum() or c in "-_" for c in new)
++            and not new.startswith("-")
++        )
++        if not ok:
++            flash("Invalid hostname (alphanumerics, -, _; max 63 chars)", "error")
++            return redirect(url_for("settings"))
++        try:
++            with open("/etc/hostname", "w") as f:
++                f.write(new + "\n")
++            subprocess.run(["hostname", new], check=False)
++            flash(f"Hostname changed to '{new}'. Reboot to apply everywhere.", "success")
++        except Exception as e:
++            flash(f"Error: {e}", "error")
++        return redirect(url_for("settings"))
++
++    # ---- wifi (W variant only) ----
++
++    @app.route("/wifi")
++    @login_required
++    def wifi_page():
++        return render_template("wifi.html", present=wifi.present(),
++                               cfg=wifi.read_conf(), status=wifi.status())
++
++    @app.route("/wifi/scan")
++    @login_required
++    def wifi_scan():
++        from flask import jsonify
++        return jsonify(wifi.scan())
++
++    @app.route("/wifi/connect", methods=["POST"])
++    @login_required
++    def wifi_connect():
++        ssid = request.form.get("ssid", "").strip()
++        psk = request.form.get("psk", "")
++        if not ssid:
++            flash("SSID required", "error")
++            return redirect(url_for("wifi_page"))
++        cur = wifi.read_conf()
++        mode = "sta+ap" if cur["mode"] in ("ap", "sta+ap") else "sta"
++        wifi.write_conf({"mode": mode, "sta_ssid": ssid, "sta_psk": psk})
++        wifi.apply()
++        flash(f"Connecting to '{ssid}'…", "success")
++        return redirect(url_for("wifi_page"))
++
++    @app.route("/wifi/ap", methods=["POST"])
++    @login_required
++    def wifi_ap():
++        ssid = request.form.get("ap_ssid", "").strip()
++        psk = request.form.get("ap_psk", "")
++        enable = request.form.get("ap_enable") == "on"
++        if enable and (not ssid or len(psk) < 8):
++            flash("AP needs an SSID and a password of at least 8 chars", "error")
++            return redirect(url_for("wifi_page"))
++        cur = wifi.read_conf()
++        sta_on = cur["mode"] in ("sta", "sta+ap") and cur["sta_ssid"]
++        if enable:
++            mode = "sta+ap" if sta_on else "ap"
++        else:
++            mode = "sta" if sta_on else "off"
++        updates = {"mode": mode, "ap_ssid": ssid, "ap_psk": psk}
++        # Channel + width are user-settable only in AP-only mode. In concurrent
++        # sta+ap the single radio forces the AP onto the STA's channel/width, so
++        # the WiFi tab disables those controls — and a disabled <select> submits
++        # nothing. Key the decision off the *rendered* mode (cur), not the new
++        # one, so we never clobber the stored AP-only values with form defaults.
++        if cur["mode"] != "sta+ap":
++            chan = request.form.get("ap_channel", "6").strip()
++            htmode = request.form.get("ap_htmode", "ht20").strip()
++            if chan != "auto" and not (chan.isdigit() and 1 <= int(chan) <= 13):
++                flash("AP channel must be 1-13 or auto", "error")
++                return redirect(url_for("wifi_page"))
++            if htmode not in ("ht20", "ht40"):
++                htmode = "ht20"
++            updates["ap_channel"] = chan
++            updates["ap_htmode"] = htmode
++        wifi.write_conf(updates)
++        wifi.apply()
++        flash("AP settings applied", "success")
++        return redirect(url_for("wifi_page"))
++
++    @app.route("/wifi/txpower", methods=["POST"])
++    @login_required
++    def wifi_txpower():
++        tp = request.form.get("tx_power", "auto").strip().lower()
++        if tp in ("auto", "max", ""):
++            tp = "auto"
++        elif not (tp.isdigit() and 1 <= int(tp) <= 18):
++            # 18 dBm = AIC8800D80 OFDM ceiling (datasheet); auto = chip max.
++            flash("TX power must be 'auto' or an integer 1-18 dBm", "error")
++            return redirect(url_for("wifi_page"))
++        wifi.write_conf({"tx_power": tp})
++        wifi.apply()
++        flash("TX power set to " + (tp if tp == "auto" else tp + " dBm"), "success")
++        return redirect(url_for("wifi_page"))
++
++    @app.route("/wifi/mode", methods=["POST"])
++    @login_required
++    def wifi_mode():
++        mode = request.form.get("mode", "off")
++        if mode not in ("off", "sta", "ap", "sta+ap"):
++            mode = "off"
++        wifi.write_conf({"mode": mode})
++        wifi.apply()
++        flash(f"WiFi mode set to {mode}", "success")
++        return redirect(url_for("wifi_page"))
++
++    return app
+diff --git a/buildroot/package/rnsbox-portal/src/rnsbox_portal/auth.py b/buildroot/package/rnsbox-portal/src/rnsbox_portal/auth.py
+new file mode 100644
+index 000000000..38aa8dc49
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/rnsbox_portal/auth.py
+@@ -0,0 +1,57 @@
++"""Password hashing + verification.
++
++Storage: /etc/rnsbox/auth.json — a flat {username: hash} dict.
++Hashing: werkzeug.security (ships with Flask) — pbkdf2-sha256 by default,
++no extra dep on bcrypt/argon2. The hash format embeds the algorithm so
++upgrades are forward-compatible.
++"""
++import json
++import os
++
++from werkzeug.security import check_password_hash, generate_password_hash
++
++AUTH_FILE = "/etc/rnsbox/auth.json"
++DEFAULT_USER = "admin"
++DEFAULT_PASS = "admin"
++
++
++def _read():
++    try:
++        with open(AUTH_FILE) as f:
++            return json.load(f)
++    except (FileNotFoundError, json.JSONDecodeError):
++        return None
++
++
++def _write(data):
++    os.makedirs(os.path.dirname(AUTH_FILE), exist_ok=True)
++    tmp = AUTH_FILE + ".tmp"
++    old_umask = os.umask(0o077)
++    try:
++        with open(tmp, "w") as f:
++            json.dump(data, f)
++        os.rename(tmp, AUTH_FILE)
++    finally:
++        os.umask(old_umask)
++
++
++def _ensure():
++    data = _read()
++    if not data:
++        data = {DEFAULT_USER: generate_password_hash(DEFAULT_PASS)}
++        _write(data)
++    return data
++
++
++def verify(user, password):
++    data = _ensure()
++    h = data.get(user)
++    if not h:
++        return False
++    return check_password_hash(h, password)
++
++
++def set_password(user, password):
++    data = _ensure()
++    data[user] = generate_password_hash(password)
++    _write(data)
+diff --git a/buildroot/package/rnsbox-portal/src/rnsbox_portal/nftgen.py b/buildroot/package/rnsbox-portal/src/rnsbox_portal/nftgen.py
+new file mode 100644
+index 000000000..69043da2e
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/rnsbox_portal/nftgen.py
+@@ -0,0 +1,136 @@
++"""Single source of truth for nftables ruleset.
++
++Called two ways:
++  - Library: rnsbox_portal.app `_apply_routing()` invokes generate() and
++    feeds the output to `nft -f -`.
++  - CLI: `python3 -m rnsbox_portal.nftgen --wan eth0 --lan usb0` — used by
++    /etc/init.d/S60routing so the boot path doesn't depend on the Flask
++    app being running.
++
++Topology:
++  - WAN: a single iface (eth0 by default; wlan0 if we ever ship the
++    WiFi-add-on variant).
++  - LAN: a set; usb0 always, plus optional aux LAN interfaces.
++  - NAT: masquerade on WAN, port forwards as DNAT in `ip nat prerouting`.
++  - Filter: input policy drop with LAN-side full access, WAN-side limited
++    to SSH + user-managed open ports.
++
++Reticulum-specific: the user is expected to add an open port for the
++rnsd TCPServerInterface (default 4242) via the Open Ports UI if they
++want external Reticulum peers reachable. We don't enable it by default
++because not every deployment wants to be an inbound transport node.
++"""
++import sys
++
++from . import store
++
++DEFAULT_LAN_IFACES = ["usb0"]
++
++
++def generate(wan_iface, lan_ifaces=None):
++    lan_ifaces = lan_ifaces or DEFAULT_LAN_IFACES
++    forwards = store.read_portforwards()
++    openports = store.read_openports()
++
++    lan_set = ", ".join(f'"{i}"' for i in lan_ifaces)
++
++    L = []
++    L.append("# Generated by rnsbox_portal.nftgen — do not hand-edit.")
++    L.append("# Re-render with: /etc/init.d/S60routing restart\n")
++    L.append("flush ruleset\n")
++
++    # IPv4-only filter. The `inet` family would cover v4 + v6 in one
++    # place, but Sipeed's 5.10 kernel doesn't build the nft_chain_filter
++    # module for the inet family even with NF_TABLES_INET=y — base chains
++    # of type filter fail with "Chain of type filter is not supported"
++    # on the device. Use `ip` (which always works) and accept that this
++    # device is v4-only. Reticulum + the router workload don't need v6.
++    L.append("table ip filter {")
++    L.append(f"\tset lan_ifaces {{ type ifname; elements = {{ {lan_set} }} }}\n")
++
++    L.append("\tchain input {")
++    L.append("\t\ttype filter hook input priority filter; policy drop;")
++    L.append("\t\tct state invalid drop")
++    L.append("\t\tct state established,related accept")
++    L.append('\t\tiifname "lo" accept')
++    L.append("\t\ticmp type echo-request limit rate 10/second accept")
++    # IPv6 rules dropped — `ip` family doesn't process v6 packets at all
++    # (kernel ipv6 conntrack table is separate). Belt-and-braces v6 drop
++    # would be a separate `table ip6 filter`; we don't ship one because
++    # eth0 doesn't get a v6 address from the upstream by default and
++    # IPv6 is disabled at sysctl in S60routing.
++    L.append("\t\t# LAN: full management surface (HTTP UI on :80, DHCP/DNS, SSH, etc.)")
++    L.append("\t\tiifname @lan_ifaces accept")
++    L.append("\t\t# WAN: SSH always allowed (matches the LAN-side convenience).")
++    L.append(f'\t\tiifname "{wan_iface}" tcp dport 22 accept')
++    if forwards:
++        # Port forwards whose destination is the router ITSELF (e.g.
++        # 10.42.0.1 or 127.0.0.1): the prerouting DNAT rewrites the dest to a
++        # local address, so the kernel routes the packet to INPUT, not
++        # FORWARD. Without an accept here it dies on INPUT's drop policy —
++        # this is the classic "port-forward-to-self silently fails" bug.
++        # `ct status dnat` matches exactly the flows our own prerouting DNAT
++        # created (nothing else DNATs), and is inert for forwards aimed at LAN
++        # hosts since those traverse FORWARD instead and never reach INPUT.
++        L.append("\t\t# port forwards whose target is the device itself (DNAT -> INPUT)")
++        L.append(f'\t\tiifname "{wan_iface}" ct status dnat accept')
++    if openports:
++        proto_ports = {}
++        for op in openports:
++            proto_ports.setdefault(op["proto"], []).append(op["port"])
++        for proto in sorted(proto_ports):
++            ports = sorted(set(proto_ports[proto]))
++            ports_str = ", ".join(str(p) for p in ports)
++            L.append("\t\t# user-managed open ports")
++            L.append(f'\t\tiifname "{wan_iface}" {proto} dport {{ {ports_str} }} accept')
++    L.append("\t}\n")
++
++    L.append("\tchain forward {")
++    L.append("\t\ttype filter hook forward priority filter; policy drop;")
++    L.append("\t\tct state invalid drop")
++    L.append("\t\tct state established,related accept")
++    L.append("\t\t# LAN -> WAN (free egress)")
++    L.append(f'\t\tiifname @lan_ifaces oifname "{wan_iface}" accept')
++    if forwards:
++        L.append("\t\t# WAN -> LAN, post-DNAT (port forward destinations)")
++        for fw in forwards:
++            L.append(
++                f'\t\tiifname "{wan_iface}" oifname @lan_ifaces '
++                f'ip daddr {fw["lan_ip"]} {fw["proto"]} dport {fw["lan_port"]} accept'
++            )
++    L.append("\t}\n")
++
++    L.append("\tchain output { type filter hook output priority filter; policy accept; }")
++    L.append("}\n")
++
++    # NAT is v4-only on this device (no IPv6 prefix from the upstream by default).
++    L.append("table ip nat {")
++    L.append("\tchain prerouting {")
++    L.append("\t\ttype nat hook prerouting priority dstnat; policy accept;")
++    for fw in forwards:
++        L.append(
++            f'\t\tiifname "{wan_iface}" {fw["proto"]} dport {fw["wan_port"]} '
++            f'dnat to {fw["lan_ip"]}:{fw["lan_port"]}'
++        )
++    L.append("\t}\n")
++    L.append("\tchain postrouting {")
++    L.append("\t\ttype nat hook postrouting priority srcnat; policy accept;")
++    L.append(f'\t\toifname "{wan_iface}" masquerade')
++    L.append("\t}")
++    L.append("}")
++    return "\n".join(L) + "\n"
++
++
++def main(argv=None):
++    import argparse
++    p = argparse.ArgumentParser(description="Generate nftables ruleset for rnsbox.")
++    p.add_argument("--wan", required=True, help="WAN interface (e.g. eth0)")
++    p.add_argument("--lan", default="usb0",
++                   help="comma-separated LAN interfaces (default usb0)")
++    args = p.parse_args(argv)
++    lan = [x.strip() for x in args.lan.split(",") if x.strip()]
++    sys.stdout.write(generate(args.wan, lan))
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/buildroot/package/rnsbox-portal/src/rnsbox_portal/static/style.css b/buildroot/package/rnsbox-portal/src/rnsbox_portal/static/style.css
+new file mode 100644
+index 000000000..de564600a
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/rnsbox_portal/static/style.css
+@@ -0,0 +1,309 @@
++/* RNSBox portal — OpenWrt-inspired admin UI */
++:root {
++  --bg:        #f3f4f6;
++  --card:      #ffffff;
++  --text:      #1f2937;
++  --muted:     #6b7280;
++  --border:    #e5e7eb;
++  --primary:   #0d3e54;       /* dark teal — header / sidebar */
++  --primary-2: #155873;       /* mid teal — hover */
++  --accent:    #10bbff;       /* bright cyan — links / active */
++  --ok:        #10b981;
++  --warn:      #f59e0b;
++  --err:       #ef4444;
++  --tcp:       #2563eb;
++  --udp:       #7c3aed;
++  --mono:      ui-monospace, "SF Mono", Menlo, Consolas, monospace;
++}
++
++* { box-sizing: border-box; }
++html, body {
++  margin: 0;
++  padding: 0;
++  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
++  color: var(--text);
++  background: var(--bg);
++}
++a { color: var(--accent); text-decoration: none; }
++a:hover { text-decoration: underline; }
++code { font-family: var(--mono); font-size: 12.5px; background: #f1f5f9; padding: 1px 4px; border-radius: 3px; }
++strong { font-weight: 600; }
++
++/* ---- Top bar ---- */
++.topbar {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  background: var(--primary);
++  color: #fff;
++  padding: 0 18px;
++  height: 52px;
++  box-shadow: 0 1px 0 rgba(0,0,0,0.1);
++}
++.topbar .brand { display: flex; align-items: baseline; gap: 10px; }
++.topbar .logo { color: var(--accent); font-size: 20px; line-height: 1; }
++.topbar .brand-name { font-weight: 600; font-size: 16px; letter-spacing: 0.5px; }
++.topbar .brand-host { color: #9fbed0; font-size: 13px; }
++.topbar .topnav { display: flex; align-items: center; gap: 14px; }
++.topbar .user { color: #9fbed0; font-size: 13px; }
++.topbar .logout {
++  color: #fff;
++  padding: 5px 12px;
++  border: 1px solid rgba(255,255,255,0.25);
++  border-radius: 3px;
++  font-size: 13px;
++}
++.topbar .logout:hover { background: var(--primary-2); text-decoration: none; }
++
++/* ---- Layout ---- */
++.page { display: flex; min-height: calc(100vh - 52px); }
++.sidebar {
++  background: #1f2937;
++  width: 200px;
++  padding: 16px 0;
++  flex-shrink: 0;
++}
++.sidebar a {
++  display: block;
++  padding: 10px 18px;
++  color: #cbd5e1;
++  border-left: 3px solid transparent;
++  font-size: 14px;
++}
++.sidebar a:hover {
++  background: #2c3a4c;
++  color: #fff;
++  text-decoration: none;
++}
++.sidebar a.active {
++  background: #111827;
++  color: #fff;
++  border-left-color: var(--accent);
++}
++
++.content { flex: 1; padding: 22px 28px; max-width: 1200px; }
++.content h2 { margin: 0 0 14px; font-size: 22px; font-weight: 600; }
++.content h3 { margin: 0 0 12px; font-size: 16px; font-weight: 600; color: var(--primary); }
++.content h4 { margin: 18px 0 6px; font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
++
++/* ---- Cards ---- */
++.card {
++  background: var(--card);
++  border: 1px solid var(--border);
++  border-radius: 5px;
++  padding: 18px 20px;
++  margin-bottom: 18px;
++}
++.cards {
++  display: grid;
++  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
++  gap: 14px;
++}
++.cards .card { margin-bottom: 0; }
++
++/* ---- Tables ---- */
++table.kv { width: 100%; border-collapse: collapse; }
++table.kv th, table.kv td { padding: 6px 8px; vertical-align: top; }
++table.kv th {
++  font-weight: 500;
++  color: var(--muted);
++  text-align: left;
++  width: 32%;
++  white-space: nowrap;
++}
++table.kv td { color: var(--text); }
++table.kv tr + tr th, table.kv tr + tr td { border-top: 1px solid var(--border); }
++
++table.data {
++  width: 100%;
++  border-collapse: collapse;
++  margin: 4px 0 12px;
++  font-size: 13.5px;
++}
++table.data th {
++  text-align: left;
++  font-weight: 500;
++  color: var(--muted);
++  padding: 6px 10px;
++  border-bottom: 2px solid var(--border);
++  background: #fafafa;
++}
++table.data td {
++  padding: 8px 10px;
++  border-bottom: 1px solid var(--border);
++  vertical-align: middle;
++}
++table.data tr:hover td { background: #fafbfc; }
++
++/* ---- Badges ---- */
++.badge {
++  display: inline-block;
++  padding: 2px 8px;
++  font-size: 11.5px;
++  font-weight: 600;
++  border-radius: 3px;
++  text-transform: uppercase;
++  letter-spacing: 0.4px;
++  color: #fff;
++  background: var(--muted);
++}
++.badge.ok   { background: var(--ok); }
++.badge.warn { background: var(--warn); }
++.badge.err  { background: var(--err); }
++.badge.tcp  { background: var(--tcp); }
++.badge.udp  { background: var(--udp); }
++
++/* ---- Forms ---- */
++label {
++  display: block;
++  margin-bottom: 10px;
++  font-size: 13px;
++  color: var(--muted);
++}
++label > input,
++label > select,
++label > textarea {
++  display: block;
++  margin-top: 4px;
++}
++input[type=text], input[type=password], input[type=number], select, textarea {
++  border: 1px solid var(--border);
++  border-radius: 3px;
++  padding: 7px 10px;
++  font: inherit;
++  background: #fff;
++  color: var(--text);
++  width: 100%;
++  max-width: 360px;
++}
++input:focus, select:focus, textarea:focus {
++  outline: none;
++  border-color: var(--accent);
++  box-shadow: 0 0 0 2px rgba(16,187,255,0.15);
++}
++textarea {
++  font-family: var(--mono);
++  font-size: 12.5px;
++  width: 100%;
++  max-width: 100%;
++  resize: vertical;
++  min-height: 200px;
++}
++
++button, .btn, .btn-primary, .btn-danger {
++  border: 1px solid var(--border);
++  background: #fff;
++  color: var(--text);
++  padding: 7px 14px;
++  border-radius: 3px;
++  cursor: pointer;
++  font: inherit;
++  font-weight: 500;
++  display: inline-block;
++}
++button:hover, .btn:hover { background: #f1f5f9; text-decoration: none; }
++.btn-primary {
++  background: var(--primary);
++  color: #fff;
++  border-color: var(--primary);
++}
++.btn-primary:hover { background: var(--primary-2); color: #fff; }
++.btn-danger {
++  background: #fff;
++  color: var(--err);
++  border-color: var(--err);
++}
++.btn-danger:hover { background: var(--err); color: #fff; }
++form.inline { display: inline; }
++
++.row-form {
++  display: flex;
++  gap: 8px;
++  flex-wrap: wrap;
++  align-items: center;
++  padding: 10px;
++  background: #fafbfc;
++  border: 1px solid var(--border);
++  border-radius: 3px;
++}
++.row-form input, .row-form select { max-width: 180px; }
++.row-form input[name=comment] { flex: 1; min-width: 180px; max-width: none; }
++
++/* ---- Flash ---- */
++.flash {
++  padding: 10px 14px;
++  border-radius: 3px;
++  margin-bottom: 14px;
++  font-size: 13.5px;
++}
++.flash.success { background: #d1fae5; color: #065f46; border: 1px solid #34d399; }
++.flash.error   { background: #fee2e2; color: #991b1b; border: 1px solid #f87171; }
++.flash.warn    { background: #fef3c7; color: #92400e; border: 1px solid #fbbf24; }
++
++/* ---- Misc ---- */
++.muted { color: var(--muted); font-size: 13px; }
++pre.log {
++  background: #0b1220;
++  color: #d1d5db;
++  padding: 12px 14px;
++  border-radius: 4px;
++  font-family: var(--mono);
++  font-size: 12.5px;
++  overflow-x: auto;
++  max-height: 360px;
++}
++
++/* ---- Login screen ---- */
++body.login-screen { background: var(--primary); }
++.login-page {
++  display: flex;
++  justify-content: center;
++  align-items: center;
++  min-height: 100vh;
++  padding: 20px;
++}
++.login-box {
++  background: #fff;
++  border-radius: 6px;
++  padding: 30px 36px;
++  width: 100%;
++  max-width: 360px;
++  box-shadow: 0 10px 40px rgba(0,0,0,0.25);
++}
++.login-brand {
++  display: flex;
++  align-items: baseline;
++  gap: 8px;
++  justify-content: center;
++  margin-bottom: 6px;
++}
++.login-brand .logo { color: var(--accent); font-size: 22px; }
++.login-brand .brand-name { font-weight: 600; font-size: 18px; color: var(--primary); }
++.login-box h1 { margin: 0 0 18px; font-size: 18px; font-weight: 500; text-align: center; color: var(--muted); }
++.login-box button { width: 100%; }
++.login-box .muted { margin-top: 14px; text-align: center; font-size: 12px; }
++
++/* ---- RAM / resource meter (dashboard) ---- */
++.meter-label {
++  display: flex;
++  justify-content: space-between;
++  font-size: 12.5px;
++  color: var(--muted);
++  margin: 10px 0 4px;
++}
++.meter {
++  height: 14px;
++  background: #e9edf1;
++  border: 1px solid var(--border);
++  border-radius: 7px;
++  overflow: hidden;
++}
++.meter-fill {
++  height: 100%;
++  border-radius: 7px 0 0 7px;
++  transition: width 0.4s ease;
++  min-width: 2px;
++}
++.meter-fill.ok   { background: var(--ok); }
++.meter-fill.warn { background: var(--warn); }
++.meter-fill.crit { background: var(--err); }
+diff --git a/buildroot/package/rnsbox-portal/src/rnsbox_portal/store.py b/buildroot/package/rnsbox-portal/src/rnsbox_portal/store.py
+new file mode 100644
+index 000000000..e35f1024b
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/rnsbox_portal/store.py
+@@ -0,0 +1,265 @@
++"""Read/write the user-managed router config files under /etc/rnsbox/.
++
++Format choice: flat, line-oriented text. Easy to inspect with cat, edit
++by hand if the UI is unavailable, diff cleanly under git, and parse without
++JSON-load overhead at boot.
++"""
++import os
++
++CONF_DIR = "/etc/rnsbox"
++PF_FILE = f"{CONF_DIR}/portforward.conf"
++OP_FILE = f"{CONF_DIR}/openports.conf"
++WAN_FILE = f"{CONF_DIR}/wan.conf"
++CRON_FILE = f"{CONF_DIR}/cron.conf"
++
++
++def _read_lines(path):
++    try:
++        with open(path) as f:
++            return [ln.rstrip("\n") for ln in f]
++    except FileNotFoundError:
++        return []
++
++
++def _write_lines(path, lines):
++    os.makedirs(os.path.dirname(path), exist_ok=True)
++    tmp = path + ".tmp"
++    with open(tmp, "w") as f:
++        for ln in lines:
++            f.write(ln + "\n")
++    os.rename(tmp, path)
++
++
++def _valid_ipv4(s):
++    parts = s.split(".")
++    if len(parts) != 4:
++        return False
++    for p in parts:
++        if not p.isdigit():
++            return False
++        n = int(p)
++        if n < 0 or n > 255:
++            return False
++    return True
++
++
++# ---- port forwards ----
++
++def read_portforwards():
++    out = []
++    for ln in _read_lines(PF_FILE):
++        s = ln.strip()
++        if not s or s.startswith("#"):
++            continue
++        head, _, comment = s.partition("#")
++        parts = head.split()
++        if len(parts) < 4:
++            continue
++        proto, wan_port, lan_ip, lan_port = parts[:4]
++        try:
++            out.append({
++                "proto": proto,
++                "wan_port": int(wan_port),
++                "lan_ip": lan_ip,
++                "lan_port": int(lan_port),
++                "comment": comment.strip(),
++            })
++        except ValueError:
++            continue
++    return out
++
++
++def write_portforwards(items):
++    lines = [
++        "# proto  wan_port  lan_ip          lan_port  [# comment]",
++        "# managed by rnsbox-portal — hand-edits clobbered when UI saves",
++    ]
++    for it in items:
++        ln = f"{it['proto']} {it['wan_port']} {it['lan_ip']} {it['lan_port']}"
++        if it.get("comment"):
++            ln += f"  # {it['comment']}"
++        lines.append(ln)
++    _write_lines(PF_FILE, lines)
++
++
++def add_portforward(proto, wan_port, lan_ip, lan_port, comment=""):
++    if proto not in ("tcp", "udp"):
++        raise ValueError("proto must be tcp or udp")
++    if not (1 <= wan_port <= 65535):
++        raise ValueError("wan_port out of range")
++    if not (1 <= lan_port <= 65535):
++        raise ValueError("lan_port out of range")
++    if not _valid_ipv4(lan_ip):
++        raise ValueError("lan_ip is not a valid IPv4 address")
++    items = read_portforwards()
++    items.append({
++        "proto": proto, "wan_port": wan_port, "lan_ip": lan_ip,
++        "lan_port": lan_port, "comment": comment,
++    })
++    write_portforwards(items)
++
++
++def delete_portforward(idx):
++    items = read_portforwards()
++    if 0 <= idx < len(items):
++        del items[idx]
++        write_portforwards(items)
++
++
++# ---- open ports (WAN-side INPUT accepts) ----
++
++def read_openports():
++    out = []
++    for ln in _read_lines(OP_FILE):
++        s = ln.strip()
++        if not s or s.startswith("#"):
++            continue
++        head, _, comment = s.partition("#")
++        parts = head.split()
++        if len(parts) < 2:
++            continue
++        try:
++            out.append({
++                "proto": parts[0],
++                "port": int(parts[1]),
++                "comment": comment.strip(),
++            })
++        except ValueError:
++            continue
++    return out
++
++
++def write_openports(items):
++    lines = [
++        "# proto  port  [# comment]",
++        "# managed by rnsbox-portal",
++    ]
++    for it in items:
++        ln = f"{it['proto']} {it['port']}"
++        if it.get("comment"):
++            ln += f"  # {it['comment']}"
++        lines.append(ln)
++    _write_lines(OP_FILE, lines)
++
++
++def add_openport(proto, port, comment=""):
++    if proto not in ("tcp", "udp"):
++        raise ValueError("proto must be tcp or udp")
++    if not (1 <= port <= 65535):
++        raise ValueError("port out of range")
++    items = read_openports()
++    items.append({"proto": proto, "port": port, "comment": comment})
++    write_openports(items)
++
++
++def delete_openport(idx):
++    items = read_openports()
++    if 0 <= idx < len(items):
++        del items[idx]
++        write_openports(items)
++
++
++# ---- WAN interface + addressing ----
++#
++# wan.conf is flat key=value (interface/mode + static fields), parsed by BOTH
++# this module and the shell init scripts (S30eth addresses eth0; S60routing's
++# read_wan picks the NAT/masquerade iface). It also tolerates the legacy
++# single-line "eth0" format so an old hand-edited file still resolves.
++
++WAN_IFACES = ("eth0", "wlan0")
++_WAN_KEYS = ("interface", "mode", "address", "prefix", "gateway", "dns")
++
++
++def read_wan_config():
++    """Full WAN config dict. mode is 'dhcp' or 'static'; static adds
++    address/prefix/gateway/dns (dns = space-separated list)."""
++    cfg = {"interface": "eth0", "mode": "dhcp",
++           "address": "", "prefix": "", "gateway": "", "dns": ""}
++    for ln in _read_lines(WAN_FILE):
++        s = ln.strip()
++        if not s or s.startswith("#"):
++            continue
++        if "=" in s:
++            k, _, v = s.partition("=")
++            k = k.strip()
++            v = v.split("#", 1)[0].strip()
++            if k in cfg:
++                cfg[k] = v
++        elif s in WAN_IFACES:
++            cfg["interface"] = s          # legacy single-line format
++    if cfg["interface"] not in WAN_IFACES:
++        cfg["interface"] = "eth0"
++    if cfg["mode"] not in ("dhcp", "static"):
++        cfg["mode"] = "dhcp"
++    return cfg
++
++
++def read_wan():
++    """Back-compat: the WAN interface name as a bare string (4 template callers)."""
++    return read_wan_config()["interface"]
++
++
++def write_wan_config(cfg):
++    """Persist WAN config. Validates interface + mode; static fields are
++    validated by the caller (app.py uses the `ipaddress` module)."""
++    iface = cfg.get("interface", "eth0")
++    if iface not in WAN_IFACES:
++        raise ValueError("WAN interface must be eth0 or wlan0")
++    mode = cfg.get("mode", "dhcp")
++    if mode not in ("dhcp", "static"):
++        raise ValueError("WAN mode must be dhcp or static")
++    lines = [
++        "# WAN uplink config — managed by the rnsbox-portal Network tab.",
++        "# interface: eth0 (wired RJ45) or wlan0 (WiFi client, requires STA mode).",
++        "# mode:      dhcp (lease from upstream) or static.",
++        "# Static mode (applied to eth0 by S30eth): address/prefix/gateway/dns.",
++        f"interface={iface}",
++        f"mode={mode}",
++    ]
++    if mode == "static":
++        lines += [
++            f"address={cfg.get('address', '')}",
++            f"prefix={cfg.get('prefix', '')}",
++            f"gateway={cfg.get('gateway', '')}",
++            f"dns={cfg.get('dns', '')}",
++        ]
++    _write_lines(WAN_FILE, lines)
++
++
++def write_wan(iface):
++    """Back-compat: set only the interface, preserving any static fields."""
++    cfg = read_wan_config()
++    cfg["interface"] = iface
++    write_wan_config(cfg)
++
++
++# ---- scheduled tasks (rnsd auto-restart cron) ----
++
++def read_rnsd_restart_days():
++    """Return the rnsd auto-restart interval in days (0 = disabled)."""
++    for ln in _read_lines(CRON_FILE):
++        s = ln.strip()
++        if s.startswith("#") or "=" not in s:
++            continue
++        k, _, v = s.partition("=")
++        if k.strip() == "rnsd_restart_days":
++            v = v.split("#", 1)[0].strip()
++            try:
++                n = int(v)
++            except ValueError:
++                return 0
++            return n if 0 <= n <= 7 else 0
++    return 0
++
++
++def write_rnsd_restart_days(days):
++    """Persist the rnsd auto-restart interval (0 = off, 1..7 days)."""
++    days = int(days)
++    if not (0 <= days <= 7):
++        raise ValueError("rnsd_restart_days must be 0..7")
++    _write_lines(CRON_FILE, [
++        "# RNSBox scheduled tasks — managed by the rnsbox-portal Reticulum tab.",
++        "# rnsd_restart_days: 0 = disabled (default); N = restart rnsd every N",
++        "# days at 04:00 (memory hygiene). Applied by S84cron + live by the UI.",
++        f"rnsd_restart_days={days}",
++    ])
+diff --git a/buildroot/package/rnsbox-portal/src/rnsbox_portal/sysinfo.py b/buildroot/package/rnsbox-portal/src/rnsbox_portal/sysinfo.py
+new file mode 100644
+index 000000000..9471b6de5
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/rnsbox_portal/sysinfo.py
+@@ -0,0 +1,223 @@
++"""Read-only views over /proc, /sys, and a few external command outputs."""
++import os
++import socket
++import subprocess
++
++
++def hostname():
++    try:
++        return socket.gethostname()
++    except Exception:
++        return "(unknown)"
++
++
++def _slurp(p, default=""):
++    try:
++        with open(p) as f:
++            return f.read()
++    except (FileNotFoundError, PermissionError):
++        return default
++
++
++def summary():
++    out = {"uptime": "", "load": [], "mem": {}, "kernel": ""}
++    try:
++        up = float(_slurp("/proc/uptime").split()[0])
++        d, r = divmod(int(up), 86400)
++        h, r = divmod(r, 3600)
++        m, _ = divmod(r, 60)
++        out["uptime"] = f"{d}d {h}h {m}m"
++    except Exception:
++        pass
++    try:
++        out["load"] = _slurp("/proc/loadavg").split()[0:3]
++    except Exception:
++        pass
++    try:
++        raw = {}
++        for ln in _slurp("/proc/meminfo").splitlines():
++            if ":" not in ln:
++                continue
++            k, v = ln.split(":", 1)
++            k = k.strip()
++            if k in ("MemTotal", "MemFree", "MemAvailable", "Buffers", "Cached"):
++                out["mem"][k] = v.strip()           # keep human "NNNN kB" strings
++                try:
++                    raw[k] = int(v.split()[0])      # kB as int
++                except (ValueError, IndexError):
++                    pass
++        # Computed meter fields (MiB + used%). "used" = total - available,
++        # which is the figure that actually matters on a 245 MB box (it
++        # already discounts reclaimable buff/cache, matching `free -m`'s
++        # "available" column).
++        total = raw.get("MemTotal", 0)
++        avail = raw.get("MemAvailable", raw.get("MemFree", 0))
++        if total:
++            used = total - avail
++            out["mem"]["total_mb"] = round(total / 1024)
++            out["mem"]["avail_mb"] = round(avail / 1024)
++            out["mem"]["used_mb"] = round(used / 1024)
++            out["mem"]["buffcache_mb"] = round(
++                (raw.get("Buffers", 0) + raw.get("Cached", 0)) / 1024)
++            out["mem"]["used_pct"] = round(100.0 * used / total, 1)
++    except Exception:
++        pass
++    out["kernel"] = _slurp("/proc/sys/kernel/osrelease").strip()
++    return out
++
++
++def _proc_rss_mb(pid):
++    """Resident set size of a PID in MiB (from /proc/<pid>/status VmRSS)."""
++    if not pid:
++        return None
++    for ln in _slurp(f"/proc/{pid}/status").splitlines():
++        if ln.startswith("VmRSS:"):
++            try:
++                return round(int(ln.split()[1]) / 1024)
++            except (ValueError, IndexError):
++                return None
++    return None
++
++
++def _run(cmd, timeout=2):
++    try:
++        return subprocess.run(cmd, capture_output=True, text=True,
++                              timeout=timeout).stdout
++    except Exception:
++        return ""
++
++
++def _ip_addrs(dev):
++    out = _run(["ip", "-4", "addr", "show", "dev", dev])
++    addrs = []
++    for ln in out.splitlines():
++        ln = ln.strip()
++        if ln.startswith("inet "):
++            addrs.append(ln.split()[1])
++    return addrs
++
++
++def _human_bytes(s):
++    try:
++        n = int(s)
++    except (TypeError, ValueError):
++        return s
++    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
++        if n < 1024:
++            return f"{n:.1f} {unit}" if unit != "B" else f"{n} B"
++        n /= 1024
++    return f"{n:.1f} PiB"
++
++
++def network_summary():
++    ifaces = {}
++    try:
++        dev_list = sorted(d for d in os.listdir("/sys/class/net") if d != "lo")
++    except FileNotFoundError:
++        dev_list = []
++    for d in dev_list:
++        base = f"/sys/class/net/{d}"
++        ifaces[d] = {
++            "addrs": _ip_addrs(d),
++            "state": _slurp(f"{base}/operstate").strip(),
++            "mac": _slurp(f"{base}/address").strip(),
++            "mtu": _slurp(f"{base}/mtu").strip(),
++            "rx": _human_bytes(_slurp(f"{base}/statistics/rx_bytes").strip()),
++            "tx": _human_bytes(_slurp(f"{base}/statistics/tx_bytes").strip()),
++        }
++    gw = ""
++    for ln in _run(["ip", "-4", "route", "show", "default"]).splitlines():
++        parts = ln.split()
++        if len(parts) >= 5 and parts[0] == "default":
++            gw = parts[2]
++            break
++    dns = []
++    for ln in _slurp("/etc/resolv.conf").splitlines():
++        ln = ln.strip()
++        if ln.startswith("nameserver "):
++            dns.append(ln.split()[1])
++    return {"ifaces": ifaces, "default_gateway": gw, "dns": dns}
++
++
++def _rnsd_pid():
++    """Find the running rnsd PID.
++
++    /usr/bin/rnsd is a Python console-script: its kernel `comm` is "python3",
++    so a plain `pidof rnsd` (which matches by executable basename) returns
++    NOTHING even though rnsd is running — that's why the UI used to show
++    STOPPED while `ps` clearly showed `/usr/bin/rnsd …`. We check, in order:
++      1. the pidfile S82rnsd writes (authoritative, holds the real PID),
++      2. `pidof -x rnsd` (the -x flag also matches script names via argv),
++      3. scan /proc cmdlines for one containing 'rnsd' (last-ditch).
++    """
++    # 1. pidfile
++    try:
++        with open("/var/run/rnsd.pid") as f:
++            pid = f.read().strip()
++        if pid and os.path.exists(f"/proc/{pid}"):
++            return pid
++    except (FileNotFoundError, ValueError):
++        pass
++    # 2. pidof -x (matches interpreted scripts by argv basename)
++    out = _run(["pidof", "-x", "rnsd"]).strip()
++    if out:
++        return out.split()[0]
++    # 3. /proc cmdline scan
++    try:
++        for d in os.listdir("/proc"):
++            if not d.isdigit():
++                continue
++            try:
++                with open(f"/proc/{d}/cmdline", "rb") as f:
++                    cl = f.read().replace(b"\x00", b" ").decode("utf-8", "replace")
++            except (FileNotFoundError, PermissionError):
++                continue
++            if "/rnsd" in cl or cl.strip().endswith("rnsd") or " rnsd " in cl:
++                return d
++    except FileNotFoundError:
++        pass
++    return None
++
++
++def rnsd_status(with_raw=False):
++    """Liveness + (optionally) the full `rnstatus -a` text block.
++
++    The running/pid/rss fields are all cheap /proc reads. The `raw` block
++    shells out to `rnstatus -a`, which attaches to the shared rnsd instance
++    over its local socket and can take seconds to respond (5 s timeout) —
++    that's the "uncomfortably long login" cost. Only the Reticulum tab
++    actually *displays* `raw`, so only it passes with_raw=True. The dashboard
++    (the login landing page) calls this with the default and stays instant.
++    """
++    info = {"running": False, "pid": None, "raw": ""}
++    pid = _rnsd_pid()
++    if pid:
++        info["running"] = True
++        info["pid"] = pid
++        info["rss_mb"] = _proc_rss_mb(pid)   # the figure we hand-tracked for days
++        if with_raw:
++            # rnstatus -a prints all interfaces + paths in a single block
++            info["raw"] = _run(["rnstatus", "-a"], timeout=5) or "(rnstatus not available)"
++    return info
++
++
++def dnsmasq_leases():
++    # busybox/dnsmasq default lease file
++    out = []
++    for path in ("/var/lib/misc/dnsmasq.leases", "/tmp/dnsmasq.leases"):
++        try:
++            with open(path) as f:
++                for ln in f:
++                    parts = ln.split()
++                    if len(parts) >= 5:
++                        out.append({
++                            "expires": parts[0],
++                            "mac": parts[1],
++                            "ip": parts[2],
++                            "name": parts[3] if parts[3] != "*" else "(no name)",
++                            "client_id": parts[4],
++                        })
++            break
++        except FileNotFoundError:
++            continue
++    return out
+diff --git a/buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/base.html b/buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/base.html
+new file mode 100644
+index 000000000..6cfcb98aa
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/base.html
+@@ -0,0 +1,46 @@
++<!doctype html>
++<html lang="en">
++<head>
++  <meta charset="utf-8">
++  <meta name="viewport" content="width=device-width, initial-scale=1">
++  <title>{% block title %}RNSBox{% endblock %} — {{ hostname }}</title>
++  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
++</head>
++<body class="{% if not session.get('user') %}login-screen{% endif %}">
++{% if session.get('user') %}
++<header class="topbar">
++  <div class="brand">
++    <span class="logo">⬢</span>
++    <span class="brand-name">RNSBox</span>
++    <span class="brand-host">{{ hostname }}</span>
++  </div>
++  <nav class="topnav">
++    <span class="user">{{ session.user }}</span>
++    <a class="logout" href="{{ url_for('logout') }}">Logout</a>
++  </nav>
++</header>
++<div class="page">
++  <aside class="sidebar">
++    <a href="{{ url_for('dashboard') }}" class="{{ 'active' if request.endpoint == 'dashboard' else '' }}">Dashboard</a>
++    <a href="{{ url_for('network') }}" class="{{ 'active' if request.endpoint and request.endpoint.startswith('network') or request.endpoint in ['pf_add','pf_del','op_add','op_del'] else '' }}">Network</a>
++    <a href="{{ url_for('wifi_page') }}" class="{{ 'active' if request.endpoint and request.endpoint.startswith('wifi') else '' }}">WiFi</a>
++    <a href="{{ url_for('reticulum') }}" class="{{ 'active' if request.endpoint and request.endpoint.startswith('reticulum') else '' }}">Reticulum</a>
++    <a href="{{ url_for('settings') }}" class="{{ 'active' if request.endpoint and request.endpoint.startswith('settings') else '' }}">Settings</a>
++  </aside>
++  <main class="content">
++    {% with msgs = get_flashed_messages(with_categories=true) %}
++      {% for cat, msg in msgs %}<div class="flash {{ cat }}">{{ msg }}</div>{% endfor %}
++    {% endwith %}
++    {% block content %}{% endblock %}
++  </main>
++</div>
++{% else %}
++<main class="login-page">
++  {% with msgs = get_flashed_messages(with_categories=true) %}
++    {% for cat, msg in msgs %}<div class="flash {{ cat }}">{{ msg }}</div>{% endfor %}
++  {% endwith %}
++  {% block login %}{% endblock %}
++</main>
++{% endif %}
++</body>
++</html>
+diff --git a/buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/dashboard.html b/buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/dashboard.html
+new file mode 100644
+index 000000000..ec61a7019
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/dashboard.html
+@@ -0,0 +1,76 @@
++{% extends "base.html" %}
++{% block title %}Dashboard{% endblock %}
++{% block content %}
++<h2>Dashboard</h2>
++
++<div class="cards">
++
++  <section class="card">
++    <h3>System</h3>
++    <table class="kv">
++      <tr><th>Hostname</th><td>{{ hostname }}</td></tr>
++      <tr><th>Kernel</th><td>{{ sys.kernel }}</td></tr>
++      <tr><th>Uptime</th><td>{{ sys.uptime }}</td></tr>
++      <tr><th>Load avg</th><td>{{ sys.load|join(' / ') }}</td></tr>
++    </table>
++    {% set m = sys.mem %}
++    {% if m.get('total_mb') %}
++    {% set pct = m.get('used_pct', 0) %}
++    <div class="meter-label">
++      <span>RAM</span>
++      <span>{{ m.used_mb }} / {{ m.total_mb }} MB &middot; {{ m.avail_mb }} MB free</span>
++    </div>
++    <div class="meter">
++      <div class="meter-fill {{ 'crit' if pct >= 90 else 'warn' if pct >= 75 else 'ok' }}"
++           style="width: {{ pct }}%"></div>
++    </div>
++    <p class="muted" style="margin-top:4px">
++      {{ pct }}% used &middot; {{ m.buffcache_mb }} MB buff/cache (reclaimable)
++    </p>
++    {% else %}
++    <p class="muted">{{ m.get('MemAvailable','?') }} free of {{ m.get('MemTotal','?') }}</p>
++    {% endif %}
++  </section>
++
++  <section class="card">
++    <h3>WAN ({{ wan }})</h3>
++    {% set wif = net.ifaces.get(wan, {}) %}
++    <table class="kv">
++      <tr><th>State</th><td>
++        {% if wif.state == 'up' %}<span class="badge ok">UP</span>{% else %}<span class="badge err">{{ wif.state or 'DOWN' }}</span>{% endif %}
++      </td></tr>
++      <tr><th>Address</th><td>{{ wif.addrs|join(', ') if wif.addrs else '(none)' }}</td></tr>
++      <tr><th>Gateway</th><td>{{ net.default_gateway or '(none)' }}</td></tr>
++      <tr><th>DNS</th><td>{{ net.dns|join(', ') if net.dns else '(none)' }}</td></tr>
++      <tr><th>RX / TX</th><td>{{ wif.rx or '0' }} / {{ wif.tx or '0' }}</td></tr>
++    </table>
++  </section>
++
++  <section class="card">
++    <h3>LAN (usb0)</h3>
++    {% set lif = net.ifaces.get('usb0', {}) %}
++    <table class="kv">
++      <tr><th>State</th><td>
++        {% if lif.state == 'up' %}<span class="badge ok">UP</span>{% else %}<span class="badge warn">{{ lif.state or 'DOWN' }}</span>{% endif %}
++      </td></tr>
++      <tr><th>Address</th><td>{{ lif.addrs|join(', ') if lif.addrs else '(none)' }}</td></tr>
++      <tr><th>MAC</th><td>{{ lif.mac }}</td></tr>
++      <tr><th>RX / TX</th><td>{{ lif.rx or '0' }} / {{ lif.tx or '0' }}</td></tr>
++    </table>
++  </section>
++
++  <section class="card">
++    <h3>Reticulum</h3>
++    <table class="kv">
++      <tr><th>Status</th><td>
++        {% if rnsd.running %}<span class="badge ok">RUNNING</span> (pid {{ rnsd.pid }}){% else %}<span class="badge err">STOPPED</span>{% endif %}
++      </td></tr>
++      {% if rnsd.running and rnsd.rss_mb %}
++      <tr><th>rnsd RAM</th><td>{{ rnsd.rss_mb }} MB RSS</td></tr>
++      {% endif %}
++    </table>
++    <p><a class="btn" href="{{ url_for('reticulum') }}">Manage →</a></p>
++  </section>
++
++</div>
++{% endblock %}
+diff --git a/buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/login.html b/buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/login.html
+new file mode 100644
+index 000000000..96634afbf
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/login.html
+@@ -0,0 +1,20 @@
++{% extends "base.html" %}
++{% block login %}
++<div class="login-box">
++  <div class="login-brand">
++    <span class="logo">⬢</span>
++    <span class="brand-name">RNSBox</span>
++  </div>
++  <h1>Sign in</h1>
++  <form method="post">
++    <label>Username
++      <input type="text" name="username" autofocus autocomplete="username" value="admin">
++    </label>
++    <label>Password
++      <input type="password" name="password" autocomplete="current-password">
++    </label>
++    <button type="submit" class="btn-primary">Sign in</button>
++  </form>
++  <p class="muted">Default credentials: <strong>admin</strong> / <strong>admin</strong>. Change them after first login.</p>
++</div>
++{% endblock %}
+diff --git a/buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/network.html b/buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/network.html
+new file mode 100644
+index 000000000..f2db32c7b
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/network.html
+@@ -0,0 +1,169 @@
++{% extends "base.html" %}
++{% block title %}Network{% endblock %}
++{% block content %}
++<h2>Network</h2>
++<p class="muted">WAN: <strong>{{ wan }}</strong> &middot; LAN: <strong>usb0</strong> &middot; default gateway: <strong>{{ net.default_gateway or '(none)' }}</strong></p>
++
++<section class="card">
++  <h3>WAN uplink</h3>
++  <p class="muted">Which interface reaches the internet, and how it gets its
++  address. NAT masquerade + the default route follow this choice.
++  <strong>wlan0</strong> requires the WiFi client to be connected (WiFi tab →
++  mode <em>sta</em> or <em>sta+ap</em>) and is always DHCP-addressed by the WiFi
++  stack — the static fields below apply to <strong>eth0</strong> only.</p>
++  <form method="post" action="{{ url_for('wan_set') }}">
++    <label>Interface
++      <select name="wan">
++        <option value="eth0"  {{ 'selected' if wan == 'eth0'  else '' }}>eth0 — wired Ethernet</option>
++        <option value="wlan0" {{ 'selected' if wan == 'wlan0' else '' }}>wlan0 — WiFi client</option>
++      </select>
++    </label>
++    <label>Addressing
++      <select name="wan_mode" id="wan_mode" onchange="wanModeToggle()">
++        <option value="dhcp"   {{ 'selected' if wan_cfg.mode != 'static' else '' }}>DHCP (automatic)</option>
++        <option value="static" {{ 'selected' if wan_cfg.mode == 'static' else '' }}>Static IP</option>
++      </select>
++    </label>
++    <div id="wan_static" style="{{ '' if wan_cfg.mode == 'static' else 'display:none' }}">
++      <label>IP address
++        <input type="text" name="wan_address" value="{{ wan_cfg.address }}" placeholder="192.168.1.50">
++      </label>
++      <label>Netmask (CIDR prefix, 1–32)
++        <input type="number" name="wan_prefix" min="1" max="32" value="{{ wan_cfg.prefix or 24 }}" placeholder="24">
++      </label>
++      <label>Gateway
++        <input type="text" name="wan_gateway" value="{{ wan_cfg.gateway }}" placeholder="192.168.1.1">
++      </label>
++      <label>DNS servers (space- or comma-separated)
++        <input type="text" name="wan_dns" value="{{ wan_cfg.dns }}" placeholder="1.1.1.1 8.8.8.8">
++      </label>
++    </div>
++    <button type="submit" class="btn-primary">Set WAN</button>
++  </form>
++  <script>
++    function wanModeToggle(){
++      var m = document.getElementById('wan_mode').value;
++      document.getElementById('wan_static').style.display = (m === 'static') ? '' : 'none';
++    }
++  </script>
++</section>
++
++<section class="card">
++  <h3>Port forwards (WAN → LAN)</h3>
++  <p class="muted">Inbound TCP/UDP traffic arriving on the WAN port is DNAT'd to the LAN host:port. The matching FORWARD rule is added automatically.</p>
++  <table class="data">
++    <thead>
++      <tr><th>Proto</th><th>WAN port</th><th>LAN target</th><th>Comment</th><th></th></tr>
++    </thead>
++    <tbody>
++      {% for fw in forwards %}
++      <tr>
++        <td><span class="badge {{ fw.proto }}">{{ fw.proto|upper }}</span></td>
++        <td>{{ fw.wan_port }}</td>
++        <td>{{ fw.lan_ip }}:{{ fw.lan_port }}</td>
++        <td>{{ fw.comment }}</td>
++        <td>
++          <form method="post" action="{{ url_for('pf_del') }}" class="inline">
++            <input type="hidden" name="idx" value="{{ loop.index0 }}">
++            <button type="submit" class="btn-danger">Remove</button>
++          </form>
++        </td>
++      </tr>
++      {% else %}
++      <tr><td colspan="5" class="muted">No port forwards configured.</td></tr>
++      {% endfor %}
++    </tbody>
++  </table>
++
++  <form method="post" action="{{ url_for('pf_add') }}" class="row-form">
++    <select name="proto" required>
++      <option value="tcp">TCP</option>
++      <option value="udp">UDP</option>
++    </select>
++    <input name="wan_port" type="number" min="1" max="65535" placeholder="WAN port" required>
++    <input name="lan_ip" type="text" placeholder="LAN IP (e.g. 10.42.0.10)" required>
++    <input name="lan_port" type="number" min="1" max="65535" placeholder="LAN port" required>
++    <input name="comment" type="text" placeholder="comment (optional)">
++    <button type="submit" class="btn-primary">Add</button>
++  </form>
++</section>
++
++<section class="card">
++  <h3>Open ports (services on this router exposed on WAN)</h3>
++  <p class="muted">Allows inbound connections on the WAN to services bound on this device. SSH (tcp/22) is always open. Add rnsd's TCPServerInterface port here if you want external Reticulum peers to reach you.</p>
++  <table class="data">
++    <thead>
++      <tr><th>Proto</th><th>Port</th><th>Comment</th><th></th></tr>
++    </thead>
++    <tbody>
++      {% for op in openports %}
++      <tr>
++        <td><span class="badge {{ op.proto }}">{{ op.proto|upper }}</span></td>
++        <td>{{ op.port }}</td>
++        <td>{{ op.comment }}</td>
++        <td>
++          <form method="post" action="{{ url_for('op_del') }}" class="inline">
++            <input type="hidden" name="idx" value="{{ loop.index0 }}">
++            <button type="submit" class="btn-danger">Remove</button>
++          </form>
++        </td>
++      </tr>
++      {% else %}
++      <tr><td colspan="4" class="muted">No open ports configured (SSH still allowed by default).</td></tr>
++      {% endfor %}
++    </tbody>
++  </table>
++
++  <form method="post" action="{{ url_for('op_add') }}" class="row-form">
++    <select name="proto" required>
++      <option value="tcp">TCP</option>
++      <option value="udp">UDP</option>
++    </select>
++    <input name="port" type="number" min="1" max="65535" placeholder="Port" required>
++    <input name="comment" type="text" placeholder="comment (optional)">
++    <button type="submit" class="btn-primary">Add</button>
++  </form>
++</section>
++
++<section class="card">
++  <h3>LAN clients (DHCP leases)</h3>
++  <table class="data">
++    <thead>
++      <tr><th>IP</th><th>MAC</th><th>Name</th><th>Expires (epoch)</th></tr>
++    </thead>
++    <tbody>
++      {% for l in leases %}
++      <tr>
++        <td>{{ l.ip }}</td>
++        <td><code>{{ l.mac }}</code></td>
++        <td>{{ l.name }}</td>
++        <td>{{ l.expires }}</td>
++      </tr>
++      {% else %}
++      <tr><td colspan="4" class="muted">No active leases.</td></tr>
++      {% endfor %}
++    </tbody>
++  </table>
++</section>
++
++<section class="card">
++  <h3>All interfaces</h3>
++  <table class="data">
++    <thead>
++      <tr><th>Iface</th><th>State</th><th>Address</th><th>MAC</th><th>MTU</th><th>RX / TX</th></tr>
++    </thead>
++    <tbody>
++      {% for name, i in net.ifaces.items() %}
++      <tr>
++        <td><strong>{{ name }}</strong></td>
++        <td>{% if i.state == 'up' %}<span class="badge ok">UP</span>{% else %}<span class="badge warn">{{ i.state or '?' }}</span>{% endif %}</td>
++        <td>{{ i.addrs|join(', ') }}</td>
++        <td><code>{{ i.mac }}</code></td>
++        <td>{{ i.mtu }}</td>
++        <td>{{ i.rx }} / {{ i.tx }}</td>
++      </tr>
++      {% endfor %}
++    </tbody>
++  </table>
++</section>
++{% endblock %}
+diff --git a/buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/reticulum.html b/buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/reticulum.html
+new file mode 100644
+index 000000000..5e32f8a16
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/reticulum.html
+@@ -0,0 +1,63 @@
++{% extends "base.html" %}
++{% block title %}Reticulum{% endblock %}
++{% block content %}
++<h2>Reticulum</h2>
++
++<section class="card">
++  <h3>rnsd status</h3>
++  <table class="kv">
++    <tr><th>State</th><td id="rnsd-state">
++      {% if rnsd.running %}<span class="badge ok">RUNNING</span> (pid {{ rnsd.pid }}){% else %}<span class="badge err">STOPPED</span>{% endif %}
++    </td></tr>
++  </table>
++  <form method="post" action="{{ url_for('reticulum_restart') }}" class="inline">
++    <button type="submit" class="btn-primary">Restart rnsd</button>
++  </form>
++  <button type="button" class="btn" onclick="loadRnstatus()">Refresh</button>
++
++  <form method="post" action="{{ url_for('reticulum_autorestart') }}" class="row-form" style="margin-top:10px">
++    <label for="rnsd_days" style="margin:0">Auto-restart rnsd</label>
++    <select id="rnsd_days" name="days">
++      <option value="0" {{ 'selected' if restart_days == 0 else '' }}>None (default)</option>
++      {% for d in range(1, 8) %}
++      <option value="{{ d }}" {{ 'selected' if restart_days == d else '' }}>every {{ d }} day{{ 's' if d > 1 else '' }}</option>
++      {% endfor %}
++    </select>
++    <button type="submit" class="btn">Save schedule</button>
++    <span class="muted">restarts at 04:00 — bounds rnsd's announce-cache RAM growth</span>
++  </form>
++
++  <h4>rnstatus -a</h4>
++  <pre class="log" id="rnstatus"><span class="muted">loading… (querying the rnsd instance, can take a few seconds)</span></pre>
++</section>
++
++<section class="card">
++  <h3>/etc/reticulum/config</h3>
++  <p class="muted">Hand-edit the rnsd configuration. Comments and interface declarations are passed verbatim to Reticulum. Click <em>Save</em> then <em>Restart rnsd</em> to apply.</p>
++  <form method="post" action="{{ url_for('reticulum_config_save') }}">
++    <textarea name="config" rows="24" spellcheck="false">{{ cfg }}</textarea>
++    <button type="submit" class="btn-primary">Save</button>
++  </form>
++</section>
++
++<script>
++function loadRnstatus(){
++  var pre = document.getElementById('rnstatus');
++  var st  = document.getElementById('rnsd-state');
++  pre.innerHTML = '<span class="muted">loading… (querying the rnsd instance, can take a few seconds)</span>';
++  fetch('{{ url_for("reticulum_status") }}').then(function(r){ return r.json(); }).then(function(d){
++    // refresh the state badge too (it's free and may have changed since load)
++    if (d.running) {
++      st.innerHTML = '<span class="badge ok">RUNNING</span> (pid ' + d.pid + ')' +
++                     (d.rss_mb ? ' · ' + d.rss_mb + ' MB RSS' : '');
++    } else {
++      st.innerHTML = '<span class="badge err">STOPPED</span>';
++    }
++    pre.textContent = d.raw ? d.raw : (d.running ? '(rnstatus returned nothing)' : 'rnsd is not running.');
++  }).catch(function(){
++    pre.textContent = 'failed to fetch rnstatus (request timed out or rnsd unreachable).';
++  });
++}
++document.addEventListener('DOMContentLoaded', loadRnstatus);
++</script>
++{% endblock %}
+diff --git a/buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/settings.html b/buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/settings.html
+new file mode 100644
+index 000000000..ba2c4023f
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/settings.html
+@@ -0,0 +1,40 @@
++{% extends "base.html" %}
++{% block title %}Settings{% endblock %}
++{% block content %}
++<h2>Settings</h2>
++
++<section class="card">
++  <h3>Change admin password</h3>
++  <form method="post" action="{{ url_for('settings_password') }}">
++    <label>Current password
++      <input type="password" name="old" autocomplete="current-password" required>
++    </label>
++    <label>New password (≥6 chars)
++      <input type="password" name="new" autocomplete="new-password" required minlength="6">
++    </label>
++    <label>Confirm new password
++      <input type="password" name="confirm" autocomplete="new-password" required minlength="6">
++    </label>
++    <button type="submit" class="btn-primary">Change password</button>
++  </form>
++</section>
++
++<section class="card">
++  <h3>Hostname</h3>
++  <form method="post" action="{{ url_for('settings_hostname') }}">
++    <label>New hostname
++      <input type="text" name="hostname" value="{{ hostname }}" maxlength="63" required>
++    </label>
++    <button type="submit" class="btn-primary">Apply</button>
++    <p class="muted">Alphanumerics, dashes, underscores. Effective immediately for new connections; reboot for SSH banners + log file naming.</p>
++  </form>
++</section>
++
++<section class="card">
++  <h3>WAN interface</h3>
++  <p>Currently: <strong>{{ wan }}</strong></p>
++  <p class="muted">Switch the WAN uplink (eth0 wired ↔ wlan0 WiFi) from the
++  <a href="{{ url_for('network') }}">Network</a> tab. On the W variant, wlan0
++  WAN also needs the WiFi client connected (<a href="{{ url_for('wifi_page') }}">WiFi</a> tab).</p>
++</section>
++{% endblock %}
+diff --git a/buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/wifi.html b/buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/wifi.html
+new file mode 100644
+index 000000000..bb93ea14e
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/wifi.html
+@@ -0,0 +1,142 @@
++{% extends "base.html" %}
++{% block title %}WiFi{% endblock %}
++{% block content %}
++<h2>WiFi</h2>
++
++{% if not present %}
++<section class="card">
++  <p class="muted">No WiFi radio detected. This is the non-W board, or the
++  AIC8800 driver hasn't loaded. Check <code>/var/log/wifi.log</code> and
++  <code>dmesg | grep aic</code>.</p>
++</section>
++{% else %}
++
++<section class="card">
++  <h3>Status</h3>
++  <table class="kv">
++    <tr><th>Mode</th><td><span class="badge">{{ status.mode }}</span></td></tr>
++    <tr><th>Client (STA)</th><td>
++      {% if status.sta.connected %}
++        <span class="badge ok">CONNECTED</span> {{ status.sta.ssid }}
++        ({{ status.sta.signal }} dBm){% if status.sta.width %}, {{ status.sta.width }} MHz{% endif %} — {{ status.sta.ip or 'no IP' }}
++      {% else %}<span class="badge warn">not connected</span>{% endif %}
++    </td></tr>
++    <tr><th>Hotspot (AP)</th><td>
++      {% if status.ap.active %}
++        <span class="badge ok">UP</span> on {{ status.ap.iface }},
++        {{ status.ap.clients }} client(s){% if status.ap.width %}, {{ status.ap.width }} MHz{% endif %}, {{ status.ap.ip }}
++      {% else %}<span class="badge warn">off</span>{% endif %}
++    </td></tr>
++    <tr><th>TX power</th><td>
++      configured <span class="badge">{{ status.tx_power }}</span>{% if status.sta.connected and status.sta.txpower %} · STA {{ status.sta.txpower }} dBm{% endif %}{% if status.ap.active and status.ap.txpower %} · AP {{ status.ap.txpower }} dBm{% endif %}
++    </td></tr>
++  </table>
++  <form method="post" action="{{ url_for('wifi_mode') }}" class="row-form">
++    <select name="mode">
++      {% for m in ['off','sta','ap','sta+ap'] %}
++      <option value="{{ m }}" {{ 'selected' if cfg.mode==m else '' }}>{{ m }}</option>
++      {% endfor %}
++    </select>
++    <button type="submit" class="btn">Set mode</button>
++  </form>
++</section>
++
++<section class="card">
++  <h3>Join a network (client)</h3>
++  <button type="button" class="btn" onclick="doScan()">Scan</button>
++  <span id="scanmsg" class="muted"></span>
++  <table class="data" id="scantbl" style="margin-top:8px; display:none">
++    <thead><tr><th>SSID</th><th>Signal</th><th>Ch</th><th>Security</th><th></th></tr></thead>
++    <tbody></tbody>
++  </table>
++  <form method="post" action="{{ url_for('wifi_connect') }}" class="row-form" style="margin-top:10px">
++    <input name="ssid" id="ssid" type="text" placeholder="SSID" value="{{ cfg.sta_ssid }}" required>
++    <input name="psk" id="sta_psk" type="password" placeholder="password (blank = open)">
++    <button type="button" class="btn" onclick="togglePw('sta_psk', this)">Show</button>
++    <button type="submit" class="btn-primary">Connect</button>
++  </form>
++</section>
++
++<section class="card">
++  <h3>Hotspot (access point)</h3>
++  <p class="muted">Runs concurrently with the client connection (AIC8800
++  single radio, time-shared). AP clients are NAT'd to the WAN and get DHCP
++  from the AP subnet in <code>/etc/rnsbox/wifi.conf</code>.</p>
++  <form method="post" action="{{ url_for('wifi_ap') }}">
++    <label><input type="checkbox" name="ap_enable" {{ 'checked' if cfg.mode in ['ap','sta+ap'] else '' }}> Enable hotspot</label>
++    <label>SSID <input type="text" name="ap_ssid" value="{{ cfg.ap_ssid }}"></label>
++    <label>Password (≥8 chars)
++      <input type="password" id="ap_psk" name="ap_psk" value="{{ cfg.ap_psk }}">
++      <button type="button" class="btn" onclick="togglePw('ap_psk', this)">Show</button>
++    </label>
++    {% set concurrent = cfg.mode == 'sta+ap' %}
++    <label>Channel{% if concurrent %} <span class="muted">(locked — follows client link)</span>{% endif %}
++      <select name="ap_channel" {{ 'disabled' if concurrent else '' }}>
++        <option value="auto" {{ 'selected' if cfg.ap_channel == 'auto' else '' }}>auto (ACS)</option>
++        {% for c in range(1, 14) %}
++        <option value="{{ c }}" {{ 'selected' if cfg.ap_channel == c|string else '' }}>{{ c }}</option>
++        {% endfor %}
++      </select>
++    </label>
++    <label>Width{% if concurrent %} <span class="muted">(locked — follows client link)</span>{% endif %}
++      <select name="ap_htmode" {{ 'disabled' if concurrent else '' }}>
++        <option value="ht20" {{ 'selected' if cfg.ap_htmode != 'ht40' else '' }}>20 MHz (HT20)</option>
++        <option value="ht40" {{ 'selected' if cfg.ap_htmode == 'ht40' else '' }}>40 MHz (HT40)</option>
++      </select>
++    </label>
++    <button type="submit" class="btn-primary">Apply hotspot</button>
++  </form>
++  <p class="muted" style="margin-top:8px">In concurrent <em>sta+ap</em> mode the
++  hotspot inherits the client's channel <em>and</em> width (single radio), so it
++  runs at 40 MHz whenever the client link is 40 MHz. <em>auto</em> channel and a
++  manually chosen 40 MHz apply only in AP-only mode; if the radio can't honor
++  them the hotspot falls back to a 20 MHz channel.</p>
++</section>
++
++<section class="card">
++  <h3>TX power</h3>
++  <p class="muted">Radio-wide — applies to both client and hotspot (single
++  radio). <strong>auto</strong> = chip maximum, independent of the regulatory
++  database. A number caps power; firmware still applies per-rate EVM backoff
++  below it. The AIC8800D80 OFDM ceiling is ~18&nbsp;dBm (datasheet: 23&nbsp;dBm
++  11b-CCK, 18&nbsp;dBm MCS7), so values above ~18 only affect legacy 11b, not
++  data-rate throughput. Set lower to cut heat/range.</p>
++  <form method="post" action="{{ url_for('wifi_txpower') }}" class="row-form">
++    <select name="tx_power">
++      <option value="auto" {{ 'selected' if cfg.tx_power in ['auto','max',''] else '' }}>auto (chip max ≈ 18 dBm)</option>
++      {% for d in range(18, 0, -1) %}
++      <option value="{{ d }}" {{ 'selected' if cfg.tx_power == d|string else '' }}>{{ d }} dBm{{ ' (max)' if d == 18 else '' }}</option>
++      {% endfor %}
++    </select>
++    <button type="submit" class="btn-primary">Set TX power</button>
++  </form>
++</section>
++
++<script>
++// Show/hide a password field. Flips the input type and the button label.
++function togglePw(id, btn){
++  var el = document.getElementById(id);
++  if (!el) return;
++  if (el.type === 'password'){ el.type = 'text';  btn.textContent = 'Hide'; }
++  else                       { el.type = 'password'; btn.textContent = 'Show'; }
++}
++function doScan(){
++  var msg=document.getElementById('scanmsg'); msg.textContent='scanning…';
++  fetch('{{ url_for("wifi_scan") }}').then(r=>r.json()).then(function(nets){
++    var tbl=document.getElementById('scantbl'), tb=tbl.querySelector('tbody');
++    tb.innerHTML='';
++    if(!nets.length){ msg.textContent='no networks found'; return; }
++    msg.textContent=nets.length+' found'; tbl.style.display='';
++    nets.forEach(function(n){
++      var tr=document.createElement('tr');
++      tr.innerHTML='<td>'+(n.ssid||'(hidden)')+'</td><td>'+n.signal+' dBm</td><td>'+
++        (n.channel||'')+'</td><td>'+n.security+'</td>'+
++        '<td><button type="button" class="btn">Use</button></td>';
++      tr.querySelector('button').onclick=function(){ document.getElementById('ssid').value=n.ssid; };
++      tb.appendChild(tr);
++    });
++  }).catch(function(){ msg.textContent='scan failed'; });
++}
++</script>
++{% endif %}
++{% endblock %}
+diff --git a/buildroot/package/rnsbox-portal/src/rnsbox_portal/wifi.py b/buildroot/package/rnsbox-portal/src/rnsbox_portal/wifi.py
+new file mode 100644
+index 000000000..ecf8ebbcd
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/rnsbox_portal/wifi.py
+@@ -0,0 +1,167 @@
++"""WiFi management for the AIC8800 (LicheeRV Nano-e W variant).
++
++Reads/writes /etc/rnsbox/wifi.conf (flat key=value, shared with S35wifi),
++runs `iw` for scanning, and shells /etc/init.d/S35wifi to apply changes.
++Degrades gracefully on the non-W board (no wlan device): present() is
++False and the UI shows a "no radio" state.
++"""
++import os
++import re
++import subprocess
++
++CONF = "/etc/rnsbox/wifi.conf"
++INIT = "/etc/init.d/S35wifi"
++STA_IF = "wlan0"
++
++_KEYS = (
++    "mode", "sta_ssid", "sta_psk", "sta_hidden", "sta_country",
++    "ap_ssid", "ap_psk", "ap_channel", "ap_htmode", "ap_hidden",
++    "ap_ip", "ap_dhcp_start", "ap_dhcp_end",
++    "tx_power",
++)
++
++
++def present():
++    try:
++        return any(d.startswith("wlan") for d in os.listdir("/sys/class/net"))
++    except FileNotFoundError:
++        return False
++
++
++def read_conf():
++    cfg = {k: "" for k in _KEYS}
++    cfg.update(mode="off", ap_ssid="RNSBox-AP", ap_channel="6",
++               ap_htmode="ht20", ap_ip="192.168.42.1", tx_power="auto")
++    try:
++        with open(CONF) as f:
++            for ln in f:
++                s = ln.strip()
++                if not s or s.startswith("#") or "=" not in s:
++                    continue
++                k, _, v = s.partition("=")
++                k = k.strip()
++                v = v.split("#", 1)[0].strip().strip('"').strip("'")
++                if k in cfg:
++                    cfg[k] = v
++    except FileNotFoundError:
++        pass
++    return cfg
++
++
++def write_conf(updates):
++    cfg = read_conf()
++    cfg.update({k: v for k, v in updates.items() if k in _KEYS})
++    os.makedirs(os.path.dirname(CONF), exist_ok=True)
++    tmp = CONF + ".tmp"
++    with open(tmp, "w") as f:
++        f.write("# RNSBox WiFi config — managed by rnsbox-portal.\n")
++        f.write("# mode: off | sta | ap | sta+ap\n\n")
++        f.write(f"mode={cfg['mode']}\n\n")
++        f.write("# --- STA (client) ---\n")
++        for k in ("sta_ssid", "sta_psk", "sta_hidden", "sta_country"):
++            f.write(f"{k}={cfg[k]}\n")
++        f.write("\n# --- AP (hotspot) ---\n")
++        for k in ("ap_ssid", "ap_psk", "ap_channel", "ap_htmode", "ap_hidden",
++                  "ap_ip", "ap_dhcp_start", "ap_dhcp_end"):
++            f.write(f"{k}={cfg[k]}\n")
++        f.write("\n# --- TX power (radio-wide): auto = chip max, or 1..20 dBm ---\n")
++        f.write(f"tx_power={cfg['tx_power']}\n")
++    os.rename(tmp, CONF)
++
++
++def _run(cmd, timeout=20):
++    try:
++        return subprocess.run(cmd, capture_output=True, text=True,
++                              timeout=timeout).stdout
++    except Exception:
++        return ""
++
++
++def scan():
++    """List of {ssid, signal, channel, security} from `iw scan`."""
++    if not present():
++        return []
++    subprocess.run(["ip", "link", "set", STA_IF, "up"], check=False)
++    out = _run(["iw", "dev", STA_IF, "scan"], timeout=15)
++    nets = {}
++    for block in re.split(r"\nBSS ", "\n" + out):
++        m = re.search(r"\n\s*SSID: (.*)", block)
++        if not m:
++            continue
++        ssid = m.group(1).strip()
++        if not ssid:
++            continue
++        sig = re.search(r"signal: (-?\d+\.?\d*)", block)
++        ch = re.search(r"channel (\d+)", block)
++        secured = ("RSN:" in block) or ("WPA:" in block)
++        entry = {
++            "ssid": ssid,
++            "signal": sig.group(1) if sig else "",
++            "channel": ch.group(1) if ch else "",
++            "security": "secured" if secured else "open",
++        }
++        prev = nets.get(ssid)
++        if not prev or (entry["signal"] and prev["signal"] and
++                        float(entry["signal"]) > float(prev["signal"])):
++            nets[ssid] = entry
++    return sorted(nets.values(),
++                  key=lambda e: float(e["signal"]) if e["signal"] else -999,
++                  reverse=True)
++
++
++def _ip_of(dev):
++    m = re.search(r"inet (\d+\.\d+\.\d+\.\d+)",
++                  _run(["ip", "-4", "addr", "show", "dev", dev], timeout=5))
++    return m.group(1) if m else ""
++
++
++def _txpower_of(info):
++    """Parse 'txpower 18.00 dBm' from `iw dev <if> info` output."""
++    m = re.search(r"txpower (-?\d+\.?\d*) dBm", info)
++    return m.group(1) if m else ""
++
++
++def _width_of(info):
++    """Parse 'width: 40 MHz' from `iw dev <if> info` output."""
++    m = re.search(r"width: (\d+) MHz", info)
++    return m.group(1) if m else ""
++
++
++def status():
++    cfg = read_conf()
++    info = {"present": present(), "mode": cfg["mode"],
++            "tx_power": cfg["tx_power"] or "auto",
++            "sta": {"connected": False}, "ap": {"active": False}}
++    if not info["present"]:
++        return info
++    link = _run(["iw", "dev", STA_IF, "link"], timeout=5)
++    if "Connected to" in link:
++        ssid = re.search(r"SSID: (.*)", link)
++        sig = re.search(r"signal: (-?\d+)", link)
++        sta_info = _run(["iw", "dev", STA_IF, "info"], timeout=5)
++        info["sta"] = {"connected": True,
++                       "ssid": ssid.group(1).strip() if ssid else "",
++                       "signal": sig.group(1) if sig else "",
++                       "ip": _ip_of(STA_IF),
++                       "width": _width_of(sta_info),
++                       "txpower": _txpower_of(sta_info)}
++    ap_if = None
++    try:
++        with open("/run/wifi-ap-iface") as f:
++            ap_if = f.read().strip()
++    except FileNotFoundError:
++        pass
++    if ap_if and os.path.exists(f"/sys/class/net/{ap_if}"):
++        clients = _run(["iw", "dev", ap_if, "station", "dump"], timeout=5)
++        ap_info = _run(["iw", "dev", ap_if, "info"], timeout=5)
++        info["ap"] = {"active": True, "iface": ap_if,
++                      "clients": clients.count("Station "), "ip": _ip_of(ap_if),
++                      "width": _width_of(ap_info),
++                      "txpower": _txpower_of(ap_info)}
++    return info
++
++
++def apply():
++    """Restart S35wifi, then re-run routing so the AP iface joins NAT/DHCP."""
++    subprocess.run([INIT, "restart"], check=False, timeout=30)
++    subprocess.run(["/etc/init.d/S60routing", "restart"], check=False, timeout=15)
+-- 
+2.47.3
+

@@ -1,0 +1,1898 @@
+From 9436542ee236a239f6dcb688780b202c70836a98 Mon Sep 17 00:00:00 2001
+From: smit1237 <smit1237@gmail.com>
+Date: Tue, 8 Sep 2026 22:47:47 +0300
+Subject: [PATCH 01/20] strip: reduce the LicheeRV Nano-e BSP to a headless
+ router base
+
+RNSBox is a headless USB-tethered Reticulum router: no display, camera,
+audio, NPU, codec or touch input. Remove the stock overlay pieces and
+on-device self-test scripts for those subsystems, no-op the osdrv and media
+middleware module builds (they depend on ION/dma-buf symbols this config does
+not build), fix a duplicate ion_carveout_heap_create inline that breaks the
+build when ION_CVITEK is selected without ION_CARVEOUT_HEAP, disable the
+framebuffer/camera nodes in the board DTS, and zero the multimedia and
+coprocessor DRAM carve-outs in memmap.py (~127 MB returned to Linux).
+---
+ .../dts_riscv/sg2002_licheervnano_sd.dts      |  22 +-
+ .../sg200x/sg2002_licheervnano_sd/memmap.py   |  25 +-
+ .../cvitek/SG200X/overlay/etc/adbd_monitor.sh |  16 -
+ .../overlay/etc/avahi/avahi-daemon.conf       |  69 -----
+ .../board/cvitek/SG200X/overlay/etc/gui.sh    |  27 --
+ .../SG200X/overlay/etc/init.d/S04backlight    |  33 ---
+ .../cvitek/SG200X/overlay/etc/init.d/S04fb    |  21 --
+ .../cvitek/SG200X/overlay/etc/init.d/S05tp    |  29 --
+ .../SG200X/overlay/etc/init.d/S25wifimod      |  14 -
+ .../cvitek/SG200X/overlay/etc/init.d/S30wifi  | 168 -----------
+ .../SG200X/overlay/etc/init.d/S99audtest      |  42 ---
+ .../SG200X/overlay/etc/init.d/S99camtest      |  31 --
+ .../SG200X/overlay/etc/init.d/S99ednctest     |  39 ---
+ .../SG200X/overlay/etc/init.d/S99ivetest      |  38 ---
+ .../SG200X/overlay/etc/init.d/S99lcdtest      |  39 ---
+ .../SG200X/overlay/etc/init.d/S99loadtest     |  36 ---
+ .../cvitek/SG200X/overlay/etc/init.d/S99local |   9 -
+ .../SG200X/overlay/etc/init.d/S99modeltest    |  35 ---
+ .../SG200X/overlay/etc/init.d/S99nntest       |  35 ---
+ .../SG200X/overlay/etc/init.d/S99temptest     |  47 ---
+ .../overlay/etc/init.d/uvc-gadget-server.elf  | Bin 26712 -> 0 bytes
+ .../etc/init.d/uvc-gadget-server.tar.xz       | Bin 11148 -> 0 bytes
+ .../SG200X/overlay/etc/init.d/uvc_tool.sh     | 274 ------------------
+ .../overlay/etc/input-event-daemon.conf       |   9 -
+ .../SG200X/overlay/etc/profile.d/app_store.sh |   1 -
+ .../board/cvitek/SG200X/overlay/etc/rc.local  |   8 -
+ .../SG200X/overlay/etc/ttyGS0_handler.sh      |   7 -
+ linux_5.10/drivers/staging/android/ion/ion.h  |  17 +-
+ middleware/v2/Makefile                        |  49 +---
+ osdrv/Makefile                                |  14 +-
+ 30 files changed, 58 insertions(+), 1096 deletions(-)
+ delete mode 100755 buildroot/board/cvitek/SG200X/overlay/etc/adbd_monitor.sh
+ delete mode 100644 buildroot/board/cvitek/SG200X/overlay/etc/avahi/avahi-daemon.conf
+ delete mode 100755 buildroot/board/cvitek/SG200X/overlay/etc/gui.sh
+ delete mode 100755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/S04backlight
+ delete mode 100755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/S04fb
+ delete mode 100755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/S05tp
+ delete mode 100755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/S25wifimod
+ delete mode 100755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/S30wifi
+ delete mode 100755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/S99audtest
+ delete mode 100755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/S99camtest
+ delete mode 100755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/S99ednctest
+ delete mode 100755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/S99ivetest
+ delete mode 100755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/S99lcdtest
+ delete mode 100755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/S99loadtest
+ delete mode 100755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/S99local
+ delete mode 100755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/S99modeltest
+ delete mode 100755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/S99nntest
+ delete mode 100755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/S99temptest
+ delete mode 100755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/uvc-gadget-server.elf
+ delete mode 100644 buildroot/board/cvitek/SG200X/overlay/etc/init.d/uvc-gadget-server.tar.xz
+ delete mode 100755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/uvc_tool.sh
+ delete mode 100644 buildroot/board/cvitek/SG200X/overlay/etc/input-event-daemon.conf
+ delete mode 100644 buildroot/board/cvitek/SG200X/overlay/etc/profile.d/app_store.sh
+ delete mode 100755 buildroot/board/cvitek/SG200X/overlay/etc/rc.local
+ delete mode 100755 buildroot/board/cvitek/SG200X/overlay/etc/ttyGS0_handler.sh
+
+diff --git a/build/boards/sg200x/sg2002_licheervnano_sd/dts_riscv/sg2002_licheervnano_sd.dts b/build/boards/sg200x/sg2002_licheervnano_sd/dts_riscv/sg2002_licheervnano_sd.dts
+index 411a81587..e4eff4fc1 100644
+--- a/build/boards/sg200x/sg2002_licheervnano_sd/dts_riscv/sg2002_licheervnano_sd.dts
++++ b/build/boards/sg200x/sg2002_licheervnano_sd/dts_riscv/sg2002_licheervnano_sd.dts
+@@ -173,17 +173,17 @@
+         /delete-property/ mute-gpio-r;
+ };
+ 
+-&fb_reserved {
+-        status = "okay";
+-};
+-
+-&cvi_fb {
+-        status = "okay";
+-};
+-
+-&mipi_rx {
+-        snsr-reset = <&porte 1 GPIO_ACTIVE_LOW>;
+-};
++// RNSBox: fb_reserved + cvi_fb labels are not defined in
++// soph_base_riscv.dtsi (only in soph_base.dtsi, which Linux kernel DTS
++// uses but U-Boot DTS does not). The stock board DTS references them
++// anyway — a latent bug that surfaces when building U-Boot from scratch
++// (the sg2002_duo_sd / sg2000_duo_sd siblings don't reference them).
++// We disable the framebuffer (CONFIG_FB=n in kernel defconfig) and have
++// no camera/display use case here, so just drop the references.
++// mipi_rx reset GPIO is also dropped — no camera sensor connected.
++// &fb_reserved { status = "okay"; };
++// &cvi_fb { status = "okay"; };
++// &mipi_rx { snsr-reset = <&porte 1 GPIO_ACTIVE_LOW>; };
+ 
+ / {
+         model = "LicheeRv Nano";
+diff --git a/build/boards/sg200x/sg2002_licheervnano_sd/memmap.py b/build/boards/sg200x/sg2002_licheervnano_sd/memmap.py
+index 678edf174..74c507b97 100755
+--- a/build/boards/sg200x/sg2002_licheervnano_sd/memmap.py
++++ b/build/boards/sg200x/sg2002_licheervnano_sd/memmap.py
+@@ -13,9 +13,11 @@ class MemoryMap:
+     DRAM_SIZE = 256 * SIZE_1M
+ 
+     # ==============
+-    # C906L FreeRTOS
++    # C906L FreeRTOS — UNUSED (small-core coprocessor not needed).
++    # Size = 0 reclaims 2 MB. Address still computed for downstream math
++    # (ION_ADDR = FREERTOS_ADDR - ION_SIZE), valid even when both are 0.
+     # ==============
+-    FREERTOS_SIZE = 2 * SIZE_1M
++    FREERTOS_SIZE = 0
+     # FreeRTOS is at the end of DRAM
+     FREERTOS_ADDR = DRAM_BASE + DRAM_SIZE - FREERTOS_SIZE
+     FSBL_C906L_START_ADDR = FREERTOS_ADDR
+@@ -38,12 +40,13 @@ class MemoryMap:
+     KERNEL_MEMORY_SIZE = DRAM_SIZE - FREERTOS_SIZE
+ 
+     # =================
+-    # Multimedia buffer. Used by u-boot/kernel/FreeRTOS
++    # Multimedia buffer — UNUSED (no camera/codec/ISP).
++    # Stock sizes reclaimed: ION 105 MB + ISP 20 MB + H26X 2 MB = 127 MB → Linux.
+     # =================
+-    ION_SIZE = 105 * SIZE_1M
+-    H26X_BITSTREAM_SIZE = 2 * SIZE_1M
++    ION_SIZE = 0
++    H26X_BITSTREAM_SIZE = 0
+     H26X_ENC_BUFF_SIZE = 0
+-    ISP_MEM_BASE_SIZE = 20 * SIZE_1M
++    ISP_MEM_BASE_SIZE = 0
+     FREERTOS_RESERVED_ION_SIZE = H26X_BITSTREAM_SIZE + H26X_ENC_BUFF_SIZE + ISP_MEM_BASE_SIZE
+ 
+     # ION after FreeRTOS
+@@ -56,9 +59,13 @@ class MemoryMap:
+ 
+     assert ISP_MEM_BASE_ADDR + ISP_MEM_BASE_SIZE <= ION_ADDR + ION_SIZE
+ 
+-    # Boot logo is after the ION buffer
+-    # Framebuffer uses boot logo's reserved memory
+-    BOOTLOGO_SIZE = 8000 * SIZE_1K
++    # Boot logo / framebuffer — UNUSED (no display).
++    # ENABLE_BOOTLOGO=0 in cvisetup.sh + CONFIG_FB=n in kernel kills the
++    # consumers. 8 MB reclaimed.
++    # UIMAG buffer assert below uses BOOTLOGO_ADDR as upper bound; with
++    # ION_SIZE=0 and BOOTLOGO_SIZE=0, BOOTLOGO_ADDR = end-of-DRAM, so the
++    # assert UIMAG_ADDR + UIMAG_SIZE (40 MB) <= 256 MB still holds.
++    BOOTLOGO_SIZE = 0
+     BOOTLOGO_ADDR = ION_ADDR - BOOTLOGO_SIZE
+     FRAMEBUFFER_SIZE = BOOTLOGO_SIZE
+     FRAMEBUFFER_ADDR = BOOTLOGO_ADDR
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/adbd_monitor.sh b/buildroot/board/cvitek/SG200X/overlay/etc/adbd_monitor.sh
+deleted file mode 100755
+index 1b8752620..000000000
+--- a/buildroot/board/cvitek/SG200X/overlay/etc/adbd_monitor.sh
++++ /dev/null
+@@ -1,16 +0,0 @@
+-#!/bin/bash
+-
+-UDC_PATH=/sys/kernel/config/usb_gadget/g0/UDC
+-if [ -f /boot/usb.adbd ] && [ -f /boot/usb.dev ];
+-then
+-    while true; do
+-        if [ -z "$(cat $UDC_PATH | tr -d '[:space:]')" ];
+-        then
+-            echo "try restart usb device"
+-            /etc/init.d/S08usbdev stop
+-            /etc/init.d/S08usbdev start
+-            /etc/init.d/S30gadget_nic restart
+-        fi
+-        sleep 5
+-    done
+-fi
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/avahi/avahi-daemon.conf b/buildroot/board/cvitek/SG200X/overlay/etc/avahi/avahi-daemon.conf
+deleted file mode 100644
+index 6a9a8880f..000000000
+--- a/buildroot/board/cvitek/SG200X/overlay/etc/avahi/avahi-daemon.conf
++++ /dev/null
+@@ -1,69 +0,0 @@
+-# This file is part of avahi.
+-#
+-# avahi is free software; you can redistribute it and/or modify it
+-# under the terms of the GNU Lesser General Public License as
+-# published by the Free Software Foundation; either version 2 of the
+-# License, or (at your option) any later version.
+-#
+-# avahi is distributed in the hope that it will be useful, but WITHOUT
+-# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+-# or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public
+-# License for more details.
+-#
+-# You should have received a copy of the GNU Lesser General Public
+-# License along with avahi; if not, write to the Free Software
+-# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
+-# USA.
+-
+-# See avahi-daemon.conf(5) for more information on this configuration
+-# file!
+-
+-[server]
+-#host-name=foo
+-#domain-name=local
+-#browse-domains=0pointer.de, zeroconf.org
+-use-ipv4=yes
+-use-ipv6=yes
+-#allow-interfaces=eth0
+-#deny-interfaces=eth1
+-#check-response-ttl=no
+-#use-iff-running=no
+-#enable-dbus=yes
+-#disallow-other-stacks=no
+-#allow-point-to-point=no
+-#cache-entries-max=4096
+-#clients-max=4096
+-#objects-per-client-max=1024
+-#entries-per-entry-group-max=32
+-ratelimit-interval-usec=1000000
+-ratelimit-burst=1000
+-
+-[wide-area]
+-enable-wide-area=yes
+-
+-[publish]
+-#disable-publishing=no
+-#disable-user-service-publishing=no
+-#add-service-cookie=no
+-publish-addresses=yes
+-publish-hinfo=yes
+-publish-workstation=yes
+-#publish-domain=yes
+-#publish-dns-servers=192.168.50.1, 192.168.50.2
+-#publish-resolv-conf-dns-servers=yes
+-#publish-aaaa-on-ipv4=yes
+-#publish-a-on-ipv6=no
+-
+-[reflector]
+-#enable-reflector=no
+-#reflect-ipv=no
+-#reflect-filters=_airplay._tcp.local,_raop._tcp.local
+-
+-[rlimits]
+-#rlimit-as=
+-#rlimit-core=0
+-#rlimit-data=8388608
+-#rlimit-fsize=0
+-#rlimit-nofile=768
+-#rlimit-stack=8388608
+-#rlimit-nproc=3
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/gui.sh b/buildroot/board/cvitek/SG200X/overlay/etc/gui.sh
+deleted file mode 100755
+index 63cbaf929..000000000
+--- a/buildroot/board/cvitek/SG200X/overlay/etc/gui.sh
++++ /dev/null
+@@ -1,27 +0,0 @@
+-#!/bin/sh
+-
+-lock=$(ps | grep gui.sh | grep -v 'grep' | wc -l)
+-if [ $lock -gt 2 ]
+-then
+-	exit 1
+-fi
+-started=$(ps | grep fingerpaint | grep -v 'grep' | wc -l)
+-
+-if [ "${started}" -eq 0 ]
+-then
+-	for i in /etc/init.d/S99*test
+-	do
+-		# stop other program use framebuffer
+-		$i stop
+-	done
+-	(/usr/lib/qt/examples/widgets/touch/fingerpaint/fingerpaint) &
+-else
+-	killall fingerpaint
+-	# clean framebuffer
+-	cat /dev/zero > /dev/fb0
+-	for i in /etc/init.d/S99*test
+-	do
+-		# restore
+-		$i start
+-	done
+-fi
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S04backlight b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S04backlight
+deleted file mode 100755
+index 227b0b4d0..000000000
+--- a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S04backlight
++++ /dev/null
+@@ -1,33 +0,0 @@
+-#!/bin/sh
+-
+-if [ "$1" = "start" ]
+-then
+-	# . /etc/profile
+-	if [ ! -e /boot/alpha ]
+-	then
+-		devmem 0x030010AC 32 0x04 # PINMUX PWM10
+-		blpwm="/sys/class/pwm/pwmchip8/pwm2/"
+-		if [ ! -e "${blpwm}" ]
+-		then
+-			echo 2 > /sys/class/pwm/pwmchip8/export
+-		fi
+-		echo 0 > $blpwm/enable
+-		echo "10000" > ${blpwm}/period # 100KHZ
+-		panel_value=""
+-		if [ -e /boot/board ]
+-		then
+-			panel_value=$(grep '^panel=' /boot/board | cut -d '=' -f 2)
+-		elif [ -e /boot/uEnv.txt ]
+-		then
+-			panel_value=$(grep '^panel=' /boot/uEnv.txt | cut -d '=' -f 2)
+-		fi
+-		if [ "$panel_value" = "st7701_hd228001c31" ]  || [ "$panel_value" = "st7701_lct024bsi20" ]
+-		then
+-			echo "2000" > ${blpwm}/duty_cycle # 20%
+-		else
+-			echo "5000" > ${blpwm}/duty_cycle
+-		fi
+-		echo 1 > $blpwm/enable
+-	fi
+-	exit 0
+-fi
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S04fb b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S04fb
+deleted file mode 100755
+index 39ae6e746..000000000
+--- a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S04fb
++++ /dev/null
+@@ -1,21 +0,0 @@
+-#!/bin/sh
+-
+-if [ "$1" = "start" ]
+-then
+-	. /etc/profile
+-	if [ -e /boot/fb ]
+-	then
+-		echo "framebuffer enable"
+-		insmod /mnt/system/ko/soph_fb.ko
+-		# we need keep node /dev/fb0 open
+-		# graphic layer will disable after node /dev/fb0 is closed
+-		(
+-		exec 3<>/dev/fb0
+-		while true
+-		do
+-			sleep 65535
+-		done
+-		) &
+-	fi
+-	exit 0
+-fi
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S05tp b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S05tp
+deleted file mode 100755
+index 5478f5cec..000000000
+--- a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S05tp
++++ /dev/null
+@@ -1,29 +0,0 @@
+-#!/bin/sh
+-
+-if [ "$1" = "start" ]
+-then
+-	. /etc/profile
+-	panel_value=""
+-	if [ -e /boot/board ]
+-	then
+-		panel_value=$(grep '^panel=' /boot/board | cut -d '=' -f 2)
+-	elif [ -e /boot/uEnv.txt ]
+-	then
+-		panel_value=$(grep '^panel=' /boot/uEnv.txt | cut -d '=' -f 2)
+-	fi
+-	if [ "$panel_value" = "st7701_lct024bsi20" ] # MaixCAM-Pro
+-	then
+-		echo "load cst7xx touchscreen driver"
+-		insmod /mnt/system/ko/hynitron_touch_new.ko
+-	elif [ "$panel_value" = "st7701_hd228001c31" ] # MaixCAM
+-	then
+-		echo "load cst3xx touchscreen driver"
+-		insmod /mnt/system/ko/hynitron_touch.ko
+-	fi
+-	elif [ "$panel_value" = "mtd700920b" ] # 7-inch touchscreen
+-	then
+-		echo "load gt9xx touchscreen driver"
+-		insmod /mnt/system/ko/3rd/gt9xx.ko
+-	fi
+-	exit 0
+-fi
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S25wifimod b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S25wifimod
+deleted file mode 100755
+index b287dd4a0..000000000
+--- a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S25wifimod
++++ /dev/null
+@@ -1,14 +0,0 @@
+-#!/bin/sh
+-
+-if [ "$1" = "start" ]
+-then
+-	. /etc/profile
+-	printf "load wifi kernel module: "
+-	cd /mnt/system/ko/
+-	insmod cfg80211.ko
+-	insmod 3rd/aic8800_bsp.ko
+-	insmod 3rd/aic8800_fdrv.ko
+-	insmod 3rd/8733bs.ko
+-	echo "OK"
+-	exit 0
+-fi
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S30wifi b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S30wifi
+deleted file mode 100755
+index 9c4df0f22..000000000
+--- a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S30wifi
++++ /dev/null
+@@ -1,168 +0,0 @@
+-#!/bin/sh
+-
+-. /etc/profile
+-
+-gen_hostapd_conf() {
+-	ssid="${1}"
+-	pass="${2}"
+-	echo "ctrl_interface=/var/run/hostapd"
+-	echo "ctrl_interface_group=0"
+-	echo "ssid=${ssid}"
+-	echo "hw_mode=g"
+-	echo "channel=1"
+-	echo "beacon_int=100"
+-	echo "dtim_period=2"
+-	echo "max_num_sta=255"
+-	echo "rts_threshold=-1"
+-	echo "fragm_threshold=-1"
+-	echo "macaddr_acl=0"
+-	echo "auth_algs=3"
+-	echo "wpa=2"
+-	echo "wpa_passphrase=${pass}"
+-	echo "ieee80211n=1"
+-}
+-
+-
+-
+-gen_udhcpd_conf() {
+-        interface=${1}
+-        ipv4_prefix=${2}
+-        echo "start ${ipv4_prefix}.100"
+-        echo "end ${ipv4_prefix}.200"
+-        echo "interface ${interface}"
+-        echo "pidfile /var/run/udhcpd.${interface}.pid"
+-        echo "lease_file /var/lib/misc/udhcpd.${interface}.leases"
+-        echo "option subnet 255.255.255.0"
+-        echo "option lease 864000"
+-}
+-
+-start() {
+-	if [ -e /boot/wifi.sta ]
+-	then
+-		echo "wifi mode: sta"
+-		if [ -e /boot/wpa_supplicant.conf ]
+-		then
+-			cp /boot/wpa_supplicant.conf /etc/wpa_supplicant.conf
+-		else
+-			ssid=""
+-			pass=""
+-			if [ -e /boot/wifi.ssid ]
+-			then
+-				echo -n "ssid: "
+-				cat /boot/wifi.ssid
+-				ssid=`cat /boot/wifi.ssid`
+-			fi
+-			if [ -e /boot/wifi.pass ]
+-			then
+-				echo -n "wifi.pass: "
+-				cat /boot/wifi.pass
+-				pass=`cat /boot/wifi.pass`
+-			fi
+-			if [ ! -z "${ssid}${pass}" ]
+-			then
+-				echo "ctrl_interface=/var/run/wpa_supplicant" > /etc/wpa_supplicant.conf
+-				wpa_passphrase "$ssid" "$pass" >> /etc/wpa_supplicant.conf
+-			fi
+-		fi
+-		wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant.conf
+-		if [ ! -e /boot/wifi.nodhcp ]
+-		then
+-			(udhcpc -i wlan0 -t 10 -T 1 -A 5 -b -p /run/udhcpc.wlan0.pid) &
+-		fi
+-	elif [ -e /boot/wifi.ap ]
+-	then
+-		echo "wifi mode: ap"
+-		if [ -e /boot/hostapd.conf ]
+-		then
+-			cp /boot/hostapd.conf /etc/hostapd.conf
+-		else
+-			id2=$(printf "%d" 0x$(sha512sum /device_key_legacy | head -c 2))
+-			id3=$(printf "%d" 0x$(sha512sum /device_key_legacy | head -c 4 | tail -c 2))
+-			if [ "$id2" = "$id3" ]
+-			then
+-				id2=$((id2 + 1))
+-			fi
+-			if [ "$id2" -ge 255 ]
+-			then
+-				id2=253
+-			fi
+-			if [ "$id3" -ge 255 ]
+-			then
+-				id3=254
+-			fi
+-			ssid="licheervnano-${id2}${id3}"
+-			pass="licheervnano"
+-			if [ -e /boot/wifi.ssid ]
+-			then
+-				echo -n "ssid: "
+-				cat /boot/wifi.ssid
+-				ssid=`cat /boot/wifi.ssid`
+-			fi
+-			if [ -e /boot/wifi.pass ]
+-			then
+-				echo -n "wifi.pass: "
+-				cat /boot/wifi.pass
+-				pass=`cat /boot/wifi.pass`
+-			fi
+-			gen_hostapd_conf "$ssid" "$pass" > /etc/hostapd.conf
+-		fi
+-		if [ -e /boot/wifi.ipv4_prefix ]
+-		then
+-			ipv4_prefix=`cat /boot/wifi.ipv4_prefix`
+-		else
+-			ipv4_prefix=10.$id3.$id2
+-		fi
+-		if [ ! -e /etc/udhcpd.wlan0.conf ]
+-		then
+-			gen_udhcpd_conf wlan0 "${ipv4_prefix}"  > /etc/udhcpd.wlan0.conf
+-		fi
+-		ifconfig wlan0 up
+-		ip route del default || true
+-		# routes=$(ip route show | grep 'dev wlan0' | awk '{print $1}')
+-		# for route in $routes; do
+-		# 	ip route del $route dev wlan0
+-		# 	echo "Deleted route $route dev wlan0"
+-		# done
+-		ip add flush dev wlan0
+-		ip addr add $ipv4_prefix.1/24 dev wlan0
+-		hostapd -B -i wlan0 /etc/hostapd.conf
+-		udhcpd -S /etc/udhcpd.wlan0.conf
+-	elif [ -e /boot/wifi.mon ]
+-	then
+-		echo "wifi mode: mon"
+-		airmon-ng start wlan0
+-	fi
+-}
+-
+-stop() {
+-	ps -ef|grep hostapd|grep -v grep|awk '{print $1}'|xargs kill -2 || true
+-	ps -ef|grep "udhcpd -S /etc/udhcpd.wlan0.conf" |grep -v grep|awk '{print $1}'|xargs kill -2 || true
+-	killall wpa_supplicant || true
+-	if [ -e /run/udhcpc.wlan0.pid ]
+-	then
+-		kill `cat /run/udhcpc.wlan0.pid` || true
+-		rm -f /run/udhcpc.wlan0.pid
+-	fi
+-	if [ -e /var/run/udhcpd.wlan0.pid ]
+-	then
+-		kill `cat /var/run/udhcpd.wlan0.pid`  || true
+-		rm -f /var/run/udhcpd.wlan0.pid
+-	fi
+-	airmon-ng stop wlan0mon || true
+-}
+-
+-restart() {
+-	stop
+-	start
+-}
+-
+-if [ "${1}" = "start" ]
+-then
+-	start
+-elif [ "${1}" = "stop" ]
+-then
+-	stop
+-elif [ "${1}" = "restart" ]
+-then
+-	restart
+-fi
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S99audtest b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S99audtest
+deleted file mode 100755
+index 5aaa9ea2d..000000000
+--- a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S99audtest
++++ /dev/null
+@@ -1,42 +0,0 @@
+-#!/bin/sh
+-
+-case "$1" in
+-  start)
+-    printf "Starting audtest: "
+-    if [ -e /boot/audtest ]
+-    then
+-	    touch /tmp/audtest
+-    fi
+-    (
+-    if [ -e /tmp/audtest ]
+-    then
+-	    sleep 20
+-    fi
+-    while true
+-    do
+-	    if [ ! -e /tmp/audtest ]
+-	    then
+-		break
+-	    fi
+-	    . /etc/profile
+-	    export HOME=/root
+-	    rm /tmp/rec.wav
+-	    arecord -f S16_LE -d 1 /tmp/rec.wav
+-	    aplay -f S16_LE -Dhw:1,0 /tmp/rec.wav
+-	    sleep 0.5
+-    done
+-    ) &
+-    [ $? = 0 ] && echo "OK" || echo "FAIL"
+-  ;;
+-  stop)
+-    printf "Stopping audtest: "
+-    rm /tmp/audtest
+-    echo "OK"
+-  ;;
+-  restart)
+-    printf "Restart audtest: "
+-    $(realpath ${0}) stop
+-    $(realpath ${0}) start
+-    echo "OK"
+-  ;;
+-esac
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S99camtest b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S99camtest
+deleted file mode 100755
+index ff0683078..000000000
+--- a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S99camtest
++++ /dev/null
+@@ -1,31 +0,0 @@
+-#!/bin/sh
+-
+-case "$1" in
+-  start)
+-    printf "Starting camtest: "
+-    if [ -e /boot/camtest ]
+-    then
+-	    touch /tmp/camtest
+-    fi
+-    if [ ! -e /tmp/camtest ]
+-    then
+-	exit 0
+-else
+-	sleep 1
+-    fi
+-    (nice -n 17 /mnt/system/usr/bin/sample_vio 6 &> /dev/null) &
+-    [ $? = 0 ] && echo "OK" || echo "FAIL"
+-  ;;
+-  stop)
+-    printf "Stopping camtest: "
+-    rm /tmp/camtest
+-    killall sample_vio
+-    echo "OK"
+-  ;;
+-  restart)
+-    printf "Restart camtest: "
+-    $(realpath ${0}) stop
+-    $(realpath ${0}) start
+-    echo "OK"
+-  ;;
+-esac
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S99ednctest b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S99ednctest
+deleted file mode 100755
+index 9a3ed269d..000000000
+--- a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S99ednctest
++++ /dev/null
+@@ -1,39 +0,0 @@
+-#!/bin/sh
+-
+-case "$1" in
+-  start)
+-    printf "Starting ednctest: "
+-    if [ -e /boot/ednctest ]
+-    then
+-	    touch /tmp/ednctest
+-    fi
+-    . /etc/profile
+-    (
+-    while true
+-    do
+-	    if [ ! -e /tmp/ednctest ]
+-	    then
+-		break
+-	    fi
+-	    if [ ! -e /tmp/rand.h264 ]
+-	    then
+-	    	dd if=/dev/urandom of=/tmp/rand.yuv bs=1M count=2
+-		/mnt/system/usr/bin/sample_venc -h 1080 -w 1080 -c 264 -i rand.yuv -o /tmp/rand
+-	    fi
+-	    /mnt/system/usr/bin/sample_vcodec sample_vdec -c 264 -i rand.h264 -o rand
+-    done
+-    ) &
+-    [ $? = 0 ] && echo "OK" || echo "FAIL"
+-  ;;
+-  stop)
+-    printf "Stopping ednctest: "
+-    rm /tmp/ednctest
+-    echo "OK"
+-  ;;
+-  restart)
+-    printf "Restart ednctest: "
+-    $(realpath ${0}) stop
+-    $(realpath ${0}) start
+-    echo "OK"
+-  ;;
+-esac
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S99ivetest b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S99ivetest
+deleted file mode 100755
+index 1312c928e..000000000
+--- a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S99ivetest
++++ /dev/null
+@@ -1,38 +0,0 @@
+-#!/bin/sh
+-
+-case "$1" in
+-  start)
+-    printf "Starting ivetest: "
+-    if [ -e /boot/ivetest ]
+-    then
+-	    touch /tmp/ivetest
+-    fi
+-    . /etc/profile
+-    (
+-    while true
+-    do
+-	    if [ ! -e /tmp/ivetest ]
+-	    then
+-		break
+-	    fi
+-	    if [ ! -e /tmp/rand2MiB ]
+-	    then
+-	    	dd if=/dev/urandom of=/tmp/rand2MiB bs=1M count=2
+-	    fi
+-	    /mnt/system/usr/bin/ive_stress 1920 1080 /tmp/rand2MiB 1000
+-    done
+-    ) &
+-    [ $? = 0 ] && echo "OK" || echo "FAIL"
+-  ;;
+-  stop)
+-    printf "Stopping ivetest: "
+-    rm /tmp/ivetest
+-    echo "OK"
+-  ;;
+-  restart)
+-    printf "Restart ivetest: "
+-    $(realpath ${0}) stop
+-    $(realpath ${0}) start
+-    echo "OK"
+-  ;;
+-esac
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S99lcdtest b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S99lcdtest
+deleted file mode 100755
+index dac111629..000000000
+--- a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S99lcdtest
++++ /dev/null
+@@ -1,39 +0,0 @@
+-#!/bin/sh
+-
+-case "$1" in
+-  start)
+-    printf "Starting lcdtest: "
+-    if [ -e /boot/lcdtest ]
+-    then
+-	    touch /tmp/lcdtest
+-    fi
+-    if [ -e /tmp/lcdtest ]
+-    then
+-	    sleep 2
+-        fbpattern
+-    fi
+-    (
+-    while true
+-    do
+-	    if [ ! -e /tmp/lcdtest ]
+-	    then
+-		break
+-	    fi
+-	date | fbbar 0 0xFFFFFFFF 0xFF000000
+-	sleep 1
+-    done
+-    ) &
+-    [ $? = 0 ] && echo "OK" || echo "FAIL"
+-  ;;
+-  stop)
+-    printf "Stopping lcdtest: "
+-    rm /tmp/lcdtest
+-    echo "OK"
+-  ;;
+-  restart)
+-    printf "Restart lcdtest: "
+-    $(realpath ${0}) stop
+-    $(realpath ${0}) start
+-    echo "OK"
+-  ;;
+-esac
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S99loadtest b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S99loadtest
+deleted file mode 100755
+index c128d88b6..000000000
+--- a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S99loadtest
++++ /dev/null
+@@ -1,36 +0,0 @@
+-#!/bin/sh
+-
+-case "$1" in
+-  start)
+-    printf "Starting loadtest: "
+-    if [ -e /boot/loadtest ]
+-    then
+-	    touch /tmp/loadtest
+-    fi
+-    (
+-    while true
+-    do
+-	    if [ ! -e /tmp/loadtest ]
+-	    then
+-		break
+-	    fi
+-	    colorbg=0xFF000000
+-	    colorfg=0xFFFFFFFF
+-	    echo "tpu_clk: $(cat /sys/kernel/debug/clk/clk_tpu/clk_rate)" | fbbar 16 $colorfg $colorbg
+-            sleep 1
+-    done
+-    ) &
+-    [ $? = 0 ] && echo "OK" || echo "FAIL"
+-  ;;
+-  stop)
+-    printf "Stopping loadtest: "
+-    rm /tmp/loadtest
+-    echo "OK"
+-  ;;
+-  restart)
+-    printf "Restart loadtest: "
+-    $(realpath ${0}) stop
+-    $(realpath ${0}) start
+-    echo "OK"
+-  ;;
+-esac
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S99local b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S99local
+deleted file mode 100755
+index fd7a21aea..000000000
+--- a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S99local
++++ /dev/null
+@@ -1,9 +0,0 @@
+-#!/bin/sh
+-
+-if [ "${1}" = "start" ]
+-then
+-	if [ ! -e /boot/rclocal.disable ]
+-	then
+-		sh /etc/rc.local &
+-	fi
+-fi
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S99modeltest b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S99modeltest
+deleted file mode 100755
+index d97a23f83..000000000
+--- a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S99modeltest
++++ /dev/null
+@@ -1,35 +0,0 @@
+-#!/bin/sh
+-
+-case "$1" in
+-  start)
+-    printf "Starting modeltest: "
+-    if [ -e /boot/modeltest ]
+-    then
+-	    touch /tmp/modeltest
+-    fi
+-    (
+-    while true
+-    do
+-	    if [ ! -e /tmp/modeltest ]
+-	    then
+-		break
+-	    fi
+-	    cd /usr/bin/
+-	nice -n 19 model_runner_test 10000
+-    done
+-    ) &
+-    [ $? = 0 ] && echo "OK" || echo "FAIL"
+-  ;;
+-  stop)
+-    printf "Stopping modeltest: "
+-    rm /tmp/modeltest
+-    killall model_runner
+-    echo "OK"
+-  ;;
+-  restart)
+-    printf "Restart modeltest: "
+-    $(realpath ${0}) stop
+-    $(realpath ${0}) start
+-    echo "OK"
+-  ;;
+-esac
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S99nntest b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S99nntest
+deleted file mode 100755
+index 5c1f26920..000000000
+--- a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S99nntest
++++ /dev/null
+@@ -1,35 +0,0 @@
+-#!/bin/sh
+-
+-case "$1" in
+-  start)
+-    printf "Starting nntest: "
+-    if [ -e /boot/nntest ]
+-    then
+-	    touch /tmp/nntest
+-    fi
+-    (
+-    while true
+-    do
+-	    if [ ! -e /tmp/nntest ]
+-	    then
+-		break
+-	    fi
+-	    cd /usr/bin/
+-	nice -n 19 nn_runner_test 1000
+-    done
+-    ) &
+-    [ $? = 0 ] && echo "OK" || echo "FAIL"
+-  ;;
+-  stop)
+-    printf "Stopping nntest: "
+-    rm /tmp/nntest
+-    killall nn_runner_test
+-    echo "OK"
+-  ;;
+-  restart)
+-    printf "Restart nntest: "
+-    $(realpath ${0}) stop
+-    $(realpath ${0}) start
+-    echo "OK"
+-  ;;
+-esac
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S99temptest b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S99temptest
+deleted file mode 100755
+index 882456ab4..000000000
+--- a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S99temptest
++++ /dev/null
+@@ -1,47 +0,0 @@
+-#!/bin/sh
+-
+-GREEN=0xFF00FF00
+-RED=0xFFFF0000
+-
+-case "$1" in
+-  start)
+-    printf "Starting temptest: "
+-    if [ -e /boot/temptest ]
+-    then
+-	    touch /tmp/temptest
+-    fi
+-    (
+-    while true
+-    do
+-	    if [ ! -e /tmp/temptest ]
+-	    then
+-		break
+-	    fi
+-	    colorbg=0xFF000000
+-	    soc_temp=$(cat /sys/class/thermal/thermal_zone0/temp)
+-	    if [ "${soc_temp}" -le 75000 ]
+-	    then
+-		    colorfg=$GREEN
+-	    else
+-		    colorfg=$RED
+-	    fi
+-	    echo "soc temp: $soc_temp" | fbbar 32 $colorfg $colorbg
+-	    colorfg=0xFFFFFFFF
+-      echo "soc id: $(cat /device_key_legacy)" | fbbar 48 $colorfg $colorbg
+-      sleep 1
+-    done
+-    ) &
+-    [ $? = 0 ] && echo "OK" || echo "FAIL"
+-  ;;
+-  stop)
+-    printf "Stopping temptest: "
+-    rm /tmp/temptest
+-    echo "OK"
+-  ;;
+-  restart)
+-    printf "Restart temptest: "
+-    $(realpath ${0}) stop
+-    $(realpath ${0}) start
+-    echo "OK"
+-  ;;
+-esac
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/uvc-gadget-server.elf b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/uvc-gadget-server.elf
+deleted file mode 100755
+index b08f776fa7b766ad42e0110def6e7c39358e6be0..0000000000000000000000000000000000000000
+GIT binary patch
+literal 0
+HcmV?d00001
+
+literal 26712
+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
+QWnIECUXqC7YHa_10P(=s&;S4c
+
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/uvc-gadget-server.tar.xz b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/uvc-gadget-server.tar.xz
+deleted file mode 100644
+index 41ef4d4212f83dd8bbf29738b3f703b3cb9e075c..0000000000000000000000000000000000000000
+GIT binary patch
+literal 0
+HcmV?d00001
+
+literal 11148
+zcmV;7D|6KSH+ooF000E$*0e?f03iVu0001VFXf})<^L;5T>v_rh=uZmB4B(}+R7OI
+zATImBh77*pM|qS==@9LoaRQCIkR+J-uYIW>Z0%$Jl;@^R+c6G&t$DZObLY$d-q)Hr
+zeXKoBueDw-NW$2;Oxs-Te@`=#m@s@5uP$1;i%t<{*(kEkAvR;ANOJ`1iQ?sI#YByc
+z>iHv2^WH;%DPvyfC}$Di-?ClePtPz}?0OB{Y6@plBD1mu??vu=I51ESbXbnJPc`S9
+z!C!oDR3ku9;1%-@Ov>0c&e4zxFcI0t^l*eHHoRTBzj_ctt7ySNmI!^qg?}2ZKR2V@
+zW76}=4sXomQotzdyBtgb_?8-hG8b(c28gCBRmbKnbduP$sN7Mz6WX7GdF3zY5Zp#w
+zkzx6FIM>O(8m_r@7EQ{B9P&wrKPz?-KJ&fIqb~HSDJw^Fi);32dh~{WsgkVX@+xdC
+zSK`MwG{kQXL4Yb!S>|6VhV~U*bt02Er$^|Ds<8tbT#wuXw>SBz%2cEqNC&izqmC+y
+z0}cCwG<jbcEtYHLG{eckYytIkEhir5QDnV+pncoa%)GXW-0``wG55{6gXYVy02`tq
+zxCXSks{L%MnfDCiT|t91R%H6GN$L|^7soW{{6nO1X5$W7bW+np-G6M!t$pPFqB!_e
+zPK94cdAAJ5n<_|kUGRU$_xp~L^h9C1<vd!b6JBsavU+Riq{^&Er6=wC!g#xls5Q2O
+zU4L$;-y0^w<P~=lgFzsF2cmT1bXYtrji+ONQE~>&Vo>bxLH_iI_cZ-a3cr-crTUwa
+z+L3qyO#u30KXs!V3Xlu5r(M{Kg-Mw0rZ-R&U3H{LzuQKO(ZJ(d25JUg(`_2*!jl;#
+zXE!eb+)2_a+xbP5$LQmb87d5YMRq}~RiCN$wB^71DJPFTMlOA{SxBVjvjDpLgLu;n
+zE;M879ezTd>6u<Y7)?@kq_M0ZV|#f@=2pqN#X{!pviixmDf+5dRGp#P0wuIB-e_om
+z-OxZ(gC~XI#M1@&4g1IFSE1;2P3NMv5(s1sb;_4E3P>>c|Mk&Py=#<$_K=7mhAIV{
+zCO7LDbz=F}PFiG`$PhvsgJmt@cbBJG|JxU&{#7Z@+Fa~e({XMo2VCn<jWzZ>G^4d&
+z5(1QkrQaODQeGUv<3Dc*E&;kx%|Dq!mQT@`H?sWD4WaojY`!KvnyC{jqcf~@Zd+ZZ
+z+U9Gj7iaGP9kS0+B4v7+6^c>`Rfrn4KX(7&LAqjcrfR@TAO94><xMx8C-$sqnOnj4
+z&g8PM+{(iG-ghze>Z5Cgj9O2W!!Mu7Z@zNe_NDeHlzrs)P{VMW|ME4yMl>oe8^B^9
+z903RZDUz(>t(&`83NRcx>@^;$z9gkFka`5PV6y|iZAPt9KQBmP(b!Wz9?q;a0pdR6
+zxfFq1RbcLz{tRtWTwkKK2_~V%H?d~j2vW<N3zhwA)UyQ}R2p6&xyhdP{S&@U2?mzh
+ziOU#k2?c>e6+AuM6Ay$xK}ndWNb)3;huwEo(BDfVF@JMH-Z3E*HH?P1^YRdeL7-*5
+z2)R_@)?^SOwg-bRJ2(XVstF-<DehwsA3GOCw`|$0StJXySg&+XM9sM4-e)Rxtm)<U
+zbw_{BVpaLh32w;Bt6wi(JrzzTNmkBoM5a|U@LJB+$@Qh@Fra$%1a%u5p`%K)w6CC4
+zI3`?ltFYX24o%4L0fdErh+uv8P#1j6D}UE~Qv!0;@p`h)CLMh@b|Xewgf(W|(n4Yg
+zR&yTCV`V8!JIq~bh0x7RIO7fCL~gKk+y%?t%eB=K;t8qgNPyN;JlDC%Vy3=PKo#>_
+zSA<KmJ?K^D9!^5qf1M;2E26mX6I)(<uyB#Kb{$KChp}x<VdV=EC5wTYN;GQN1Zk~u
+zo7%7wWEVH;EGW$K3{Y9^#YEHY{VRGvQgt6gz=YG(Ph5e<I+eEDQ=LJ;Z<mt`33;bo
+zN7F~zG~eUyc#8Pq?fRHm7YsXCb++SSoYRw|BTm(~%lY(ooI@0^r&H8b`U6r`fSNZW
+z`&XGT?Z4k&kiJ3$sNYt~W^Rc-ETs?4BR)AmGV-`^om(7L=p-^Hin|<)jAQdD@mETz
+zbm|Z_vPBYu{HEfE#r@s6kf(>Fx$$3-m6P_-JJWhApGYh-)JHe;mW(fI%ph@66%8Ty
+zhkb3zE%$16t)HQu+tAh3+na)q26p6lz>0d}|5OCgax4O<9?>9xJbm$qWOaJ%eJ%Ka
+zWA>Px(J!N<wEJ;3ly7+l6I9G3O7(vqr@4fl31ZuabCQ+mL}9M4HjQH~UbHiLj-cKw
+zR2hec;g;F%Dr_#pllQxaC_SQZz2NvRw%0o70;12aFRMiGwKUm!ZnKqy*=r^Rpav^p
+z%ZGaGUen9pR6)ARL-ig)I~A6Ci=UDm%uh-A&(`(Gyu!fd@82Gqys2G>8}3@~|1H*S
+zCEH25rew~2Nq=~nMWBYzRw8{lc#RJ#TxWI7jDlhUsk-R-?Osfn7}0g|HGGwoq{lOd
+z^T_hQoxe-&I_Z=?lYb+PjI!bnyyFc}!qW!dn9-B+PpQQ;D52=XwkuOwBZ5ne&mt}q
+zreA5VJl4PLi{pJgYD;c+1t6{(MdZcE3Ho6qK1c-(h{GrKx;mrxs`Pt|QK!Swt;UHK
+z7+CCxa<bU8N9n$tkXNJSQ_9!=1_r&}I{YdqOL#mXiPE!>8lT;tsQP+M=#XU(X6VCe
+zb(tKKi)=qoz?1X?(q@S_MIwNxCi#i>%)fYk0?;#N`J%p*7I@^+TSFI>C174$0q*S}
+z;ps{gN*a66=1=#q91i>CRoJ?it5LKwoy<<1TOtnD&i3FAVQvaJ<ee5}E6(Y8RxBDZ
+zEg$D7pxR`Z1UuRi;D^Yj(4*T?l5B)^ee<w*Ep{rU4XbPhytkw`#HKpsy+z+#vF2aG
+zndhX#^`55nCGP~xYO4ahQQNUaoz)MVz=h0M=v1>^!oG7i-bZL8h&V_;q<4F|A>n!|
+z&+=6KDCOLjaY#Bn)&~tjtV^1U*wNA?rE)Yp*3~4B&81&zYTqhPy8>8{T1t{31QW&x
+zT4VRm3CuLeac0ZW=wF-a>p)?kmDEmbi36&T>D-$t1%GP9P&vrr6feT_vGHY!Y5)L~
+z(Wc%$mgE%t?RmArf7yEZRYJ;Ass9}uq+4RRMqQuwYi5(zeUJi#5#CMu&-e6@bxXXw
+z2j>s0nii%2Z@i~Tv7esKRpcG|R_fXni7;bym;MmL)}DPfD3)nUlaUc(5IoRj;yv&n
+z@j7g)fu*_Fx?GrW^Imq$^Ec89`8<_!moF+@>5<mCM*&7Pcs!+^J%JeFYD1a;tuQo?
+z>TxH3#j2L5D%tQfH2B)mqv1|kf#B9vxh&1@k<PZ-@cvNNX=+@d@v%rYh`l%{#7VIH
+zm~sG^@8%L0@7En(iE`IUGv4s11K0vP7HuZvjslp9A56i~1O{tCZJ<EC2T(b7Y~72{
+z#F63xo1l66w&)>^U6L<B-f85;5q*EOE2AZK<XR51U;`mL;T}aeeuyT2e3R`sW>K52
+zZOD3LD?jlw8e;{#@C!;48K|a437Cm@uhSG&<UQR*cC*~gkGy;u+qt67O{t)U3OuVH
+ziA>x;lqpQt{lwJQJ5_Nwk-W85xQl(^@bAhfe8}pZkNKqh2$NZ**;VGp*R5~PWo*1H
+z>Nm~C@{dk8lgqv0=e}*(h~+WwSZ=Pfo13eu28l{{*x!5}z-D{w+VeBu#G{0x!TSWJ
+zGlW$~f4M^;&$<3K#4zht&rm0SUHhqaNzyF2m<cgK#WyoVDw$ktk%<<`0DL26&diMg
+z<J<dynE22^-Zvoel-Ms#(%GH;r1ifK3d-ZA0`?PYBMaBK@x)Li8C>y@n9PI0CfHnN
+z<tq!5>ai8hv_Y7!0q)v8)w$tNrKarGfEQ-`Yy2ZvS$EnaMKbx*7zKF4GEL|!AGaTT
+zg<@p%fn|>1dKXQpgeAflQ2&9=AgZac``$4rLNY?0Gy?VfPp>HM$5XOFe+B_BkU!zF
+zIeXguuVAk-`E@H9xF!LzLV~Ee$*)|Bc+BT=3S+l?)ckaD-D;J<5?s@{pQnr$t{IM_
+zn2V#SmZ9fKnR7z$lIMgps;6U7fRfE~{@wQYz1%s|(SHI*UWbyama$m!T@#>3;E1(&
+z_5Vwv)3HF9zC;%HSUPomMH**QWWG-jj0Gez`uDvcBaBF{GWa*SNEaQt^<)Cnz=~&H
+z^n^v}Z6SAn-Z9W$oX8@j)Nr_8Z(wAZD&h4Mw`gt~nmo9b0j{p})pub_80_6xnew>;
+z!_?96Q*YQLB}R))lxH<`%u)Xm=ZvyVhT!H!T$nmH|I8L_bcnJMEY9ob;L1oDap3t&
+zw13~dUSkI<+{+NumtB!JJ#kzXqa;555|g#JichsDPpmy`(MT58Y9ZYUN0QoZ>t26h
+z7QVVMQO<do!LLg1<BwbpxQ-Yv@J&SQ7n6X|-G)a5pTA`XP$B+_4oWp?Ncw=#a0y$w
+zpvR&ks0h71qJO!3v03zv@aU=X7Rn7I!z&a-PxNoZ08`Lt2wOE%uC6I7j<;DQMz0P}
+zP2u9S2gFBs=L4Wk^yn47kn*-$H0J9}=YM7Dio%^XU{gj8&r>c9S#<wk7t+ax)Q*vH
+z2p6)BzZ7Wl>+0QCv=jP9arQvxugA4)M8DF1f{+iBHMi)Z!V-QOF)7LnRngXz6@mzA
+z2j??5I~ng9kW^oKwG2Wl!pyV0I)sB#RV2(vD9L<x^3jfJP65hb4f}LRDM+>xKfoad
+zl09K;LsGq#BI%Xj4pd|4(9K7Ni^MT;1Efh%&0t%o<Azg1`UWNSc5zTzd2zPs-Ih;T
+z;%J}FC&>gc4OCZy=lob25}Ev8F%wE*N0Jl)oAZN4I$icO*KBQg*RMmee!EG$v)|=~
+zW!|;Vo18sp@xb%Bf~jU?kBG|@Y|`7jE>8!s9)wxXL3~*q4WOnE<c&6AA03;yLeh1t
+z{tdo)I?PiHdu7)O!&{efcHHExQa}kelnWI&d=!p`vj=?X7{!)z(1FbEt|ITku(NR!
+zrtZHtUoE0!WS68i(v4a3#)+pKW1{s`{G_!g14l{B&^DaZq1+xDQ07>yl6y-sQd25-
+z_HE)UO!4{RP<8CpHy>Y>V*a?rn12puLOj76(_O3Cju;rEFdQ9sO=NVAYL2o_h}&uv
+ze<(|2bYy+;@U|AjMvPoy=R$_EMPYBo=*2`&mT*aa(_yMo%pz}1|B$Dvh~C1e?ov$V
+z38}FagORlueg=uXWPta1YO0y0Estij?TiYY*xaWu$E!d%zCk)K)Aa-HCp#X+e*!5~
+zgd<G*RRQ-_M37;sQr7*8qB-<^q0wU*C##+VzV=hg`=V>rnVA9I91>RgSmYd*FBG9t
+zh2I3w^2rBqFil#o>m`364M+xd9jrSSE7FZaEsZrIahitAV&EmM)sWSCyw?{%U@EG>
+z&s&i?wQ6x+hohxt@%cr%E!tdp4m|DKMh|IyrKH&di+i_v0dD=ZJ*+%g4v{|}8QHvB
+zVn}d1#CN7#Wx++94J*912(tFv<+Xw<j*PlFj}a`GC9Z=qi+8lpm6cyvUP(-MrUef*
+zA8}PD$MhF(R^tP|J}e>=J1QNLEcgJTmGHhz=EJI;>tNMFW)5!KU)@f*<Yueo_?$a~
+z4A(IRRtE`$GL2=@fgRpfjB?2m&N_#QP;X6e^Ye&x0j>v<`6Rix!Nr1!w7#=(oZx!9
+zf2ewDsBN9Kl+W}_P5hgS1&m+Ev-+wwgV{doqYpUPLSL|n^r!Jz=Xz~Rr%R8hK`Yj)
+zT8jwID(upPW;n!)J0aiCe~(TNsICGcb`%&ioyd;x2+$`7@LF63^7DQ)GwNkB<i`)a
+zbfd~HNs}wrCp>~9h((nMNIc3#p>P*`=uRYv9b2_^YC`IwFDsA$c*O(GL?L~f6Hagt
+z0k!Feb2PI_C!(=g=RU`LBD7RbPvwpyn+Uxh7bwY62w)M+;@jJVRv_MK_Av@NI`JaS
+zN|=}n8s5wzob(Xm7MGrqvMBHWdX^YAl*}XnEMP#nW0r)jldgEHzOMHA#HKzUoINN9
+zz8E2Y9)RO8@Ai-|+uwH9uR4Jz{}~8tNtVGeOC*2cy51ysp7XL&Hr!gaxFgKHTX(oJ
+z7x8WN3_Nb`NSKuiLFQ6Me_|X6x#)dcE}5Ih>QWjsgtF<h^o)Cv@h{&Cql+(|vQHz8
+zOo-e@2MNf}If)?ABRRSkuJlPXK^VGTp#%D@1CcX;t;%&twY8)q3*_^2W@xAYv}R`Q
+z?kOWP*($#w2Q7Vn)-wJI()H}vw!N9nCV@;B=*XL{KOxirb<jV(r8rq}OrtzKd_5tn
+zm~c*SXPo#^BMIkuy~GTe&*q~vMy7Iv<F*U<MWSNlK}i)}m(*HqkyuWaWJRLeAD?TM
+zr|~)z)OBLa@+rrc+7^M;<zqg;#vZ^Uzs|fqstK%h^TAiv$AnTisu-6k5}KCQ{NoLe
+z5ad6ZtGqtxFB_Q5bjHJ0sbo^<_vYzzt|E`w3p{AGtYyrBP~Z!SnMZPNk`BCg^S_uP
+zKu$kLA_v>ton_Kd_RK7F(-!BIq9?U&i<n;ZY8ryk+hFEGnnTZv)6p)O3m`GxR2G+B
+z<ERW7P1i917_-HJ$N-<1*03&M4yeyCrL;X0TV;UA-ll`{Zm?mgkHUo;dJH8V&pB13
+z=#y1rFMAjL(pj)tKLkiylDS(kr#9%QGU6=3JPAi6Tz5YH5OV!K*smWzbjEihx+>6g
+z$g=Wh$K8K5QUm~hDy<qzQ22K(c{rP`Qm5DO?V%qpWP4ET$BM+bcj`FuHW#YM1=y8>
+zQP~oYd6~DP>ca~D{N0UU5|rT;ujV%-YtrA#sMmmtzp!`eZj!L~gaX|}tU>|dsTR{(
+z0Q0)B^^Eo=Apx-f0sXd>qE&njq0VX{;Nfv}Ng3XSF{J8Qn8c`MdiC%?a1GAwi0u8D
+z%9E=`!^|W1(ZqRyvi8<A(u==A+rKTNES`&n!l#R6ai36G;8u3YOoY}<`_{#Q!{A*V
+z`Szy6$Ra}H<bfO*4RgL`DarSnCh4Rr`Te`>hX)$+Jp+T4NKyW|#_X*_ylNA77!0d`
+zry8wUe=s}%-ahxSkWEg01KQm-w?}jZ;t*H~aGWzCvt#qnxz?WQ!kD6m=_}FG8lId!
+zeh*{Da6_jF-YN;M&YD>Qm{V8$R!B0^4eP4`k0n@yr-yt1x7o;B&iT9G)X9MiCDb9b
+zVAjD8Ig9FpMFB5YqI#^g(hA$stx3wQu9qk8*k+(4`7qHj>kPfwN<?0zaHJ}@ylQkH
+z$+FcE7-7=H>p+*|hF&)S%5+Nk;_c9B+h)q3!+9W1G&WYHmG`qJ+iX*_!8+(%5axIL
+z`YUh0Nwvip5L<PYBmszcW9;QflBWvGB@(A=Rkzg(&*$zIc>x0NlwZ^QU^j~>c$FME
+z@SRbO+y=t&<7xMNu~3v3zP}r#koKEk8$YFhJhKghn8w**@>lh0pcy$|+Cv0h)|`D0
+zL1r4!?wckwggDoRM@C3Sf6~%v(DRPzST`}Gd@|%(ygaEKPt(}-cr?yaKU4f%d@y3w
+zKDxm(d?L{JM37%!az~ilt>=`l{TOMmh!0J;h(W~0G%eT58x2lsz1j6z2&GAoKBIT@
+zD`pwecM(_I7&Y<r)Yw2APgKL-W8b9qNV_+h!|Um6B08oM^bgez{_x!dIBtWV2-|IY
+zzy)4h$)qKCzT>*j0dSWF_#^f7Sr|hkN9SvB`6#7jarDTTrbIi#T!)$uosOGWMB{Jb
+zGXwHH|Gj8H?1B$l#DuNLvuf=Af^Lv$C+gDML$?K82-Er%>|`3VgR<+C&e;1XFS&T>
+zJ_>Lfwqq0>DrM}vF33gH0nO1G<P3<cK9;u-D9sOLO6ypm*?gF-=cN4a#nOtwO?%?u
+zuc=XZb$TQOpXQt<rDq2X-RWwx#ScSx<6IVR-Jj1A6AAL`@$*5Pv}j1QA)m(Ms@K;4
+za<Y~B6Pq7G4w6l(z=Oe8>tz$~s*b1G6f<8?;PEu){$U-}y$&3!9E9zK!zxW-H<p*0
+zHgYGO?rI3UI3}S70e6PpV|+fRwvIwxUqsLNR)YRnW62*{>*>Akn13(r(&7*5H!@n9
+zG3nYB7csq*D;~~yHTSsQ$oc>p=b}sHK612q?Ix!J*-=D2u#C(3+qI|ikbDGva&C>Z
+znl>w}nipuQN$2eF{(O41mi>9i32PAR?l#;ieQ?sz87$0$CI=}cZ{)=Z3JPCe_Cn+Z
+z3Q8H>0qNn=m2D^noENb2Z0PaU68qo`$nQ6`Kn6ME3gGDQ;LRraJy&`6w8ysxx>uNW
+z9sO;5^{2LlJxK#Wh~o?TVwz>+u>Sp_V(L_Iy`Fsg-CghzFin}i|E2X_5oIerq;EX+
+zN)7WX1ynn0(d%LQy0b424wp*^`wF9P=@dhhb!Se7;22DM&C0Q#ZE#{DjM-ooAp}NR
+zEw_#5plL=BtP7>vCXzW3&E-gJKDj#!lOH0SY{B|5)XyMAR!*wn=TjFZ6v8qq(H0>!
+zHr8My_cKT%7wnyql72kHjY&FO`?6+t{M5u+)-?`>^na=^8J1>)+~Uk}6qOFc!S&~}
+zD(Aqgu$s!H^yv?zji=oA$^uQ~BqbZv+td%tE6sRE%i3dJJvUsM>mqc#WH1MYfkzN9
+zLeC;=w}F`hQ@W~^-c%~7OoX7T9rqTvq+`Hs>GW%upCWNk`v@jgL*FHZWoqy9Yo2_^
+zmCPUwS56G!sPn@l@_mfYS}a$yq|JA4v{o@nh-|~czhshY!vV`+Dj>_n+~QO4&-rY|
+zu#Za00g?aqB_Lk>vOn($VZOOD*Rduy03nC;30tFsx!NB^`*Q|wuXJI`;!%+H(!4;=
+zPIV8&kNuC_jIYpe#b}}aa$VBdm!siU<I>%r2|~z2bN6mzEpx^N5=*Zk=G!V2jOrZn
+z*8@rcu#|xFmM+)}u8r_A1GWtmrjclS8kB6A!;3Bh2qVM1@R86&zc9B(4dyx?jH2-!
+z`4=*T%U5HSLZ_EWg)s?`ly9pqWkJ`>@@G_Un2nu=5x<*$gP9rg2i|><t(rvtPL_hZ
+z5Y^6{q>z>Hj5|12<5e1ot2o^g-e3K1K@^q#yZx2KP3f3{%FqBmS+97YQ9jABs^&v2
+z<F64Ic9I*Z3iHQ%hzH~Qdt;m^JYN=J#kl!lTPr^7Nw&zlkjx@~eE?`99OSu%^|ey;
+z)%_IOzk<J4D5Xj@WP0H{dZWtPb%lgR{XqqWrtwSGuXYt=VQ>x_Y82-M=TJ7t4s+1=
+z$;mE0O=rE)FD`=5)G!#i(4J&5)rDR@Bs!zwrEN55g`*zUBb`PT=zeC+Sl81>IW`T(
+zkUj8#K2Hj}gG=ax87;?omXiijCNQZVXwtvrY0u_p-Y;)AFDdnp;1Au3k|T@VaYLOW
+zYe@q4^5o2iC5dw3&>8@4FVu*>x2`R|3e(WP&xF1>D8~Y3_qKtEH+yWKJ1<9`m~fsG
+zZ2K<MGMMf?SPyp04m4A{1&eqmd-@?zAW3>25(`J$r==;4j)hAQK!~ULK#*YD;2o_l
+z_a${_Y1CWB2vGMgfPOECJ>Po96eI+7(XA#@5k?@B`o)Z3#gNiZmtBW~F1|>UuYrVb
+z<E8$zD7L8E$A%V_3J;Vv*7#FAuqRzKXB)@^oNV4Pr#`aWBiYsS*DWUphe$b$hXJ6)
+z^FvioXqZT1g3#QvO<oDy2kutHsT)`kN0E7iRzY3^OdA4rJvWP*p(;qh!BZD_@LDSP
+zcchSzkuA^p{XOQZs#?ge%c6}4*qP%+-_Bi4H*8RCbumG{w&wZ8o`S2K`Um;W5@qu&
+zG%AWPuN+Heo@Ox-swVeJ^00ix0gcFAxN7a&F(gc6!185Hgn~xuN1yT6v(|Q)olmaa
+zQ2~=GD@8Q>6YDtF#hD>p!20zPQ?!rGs2!ILIYuW$*3iVL{SmgHP6vl367HK(&;bST
+zjxQ%amL>#TCKlOdz(kLl0))l9!3Mg)%z7pFe&0r9`2~nHQG*D6l*^d$F!IQD^lhK?
+zvrOf9h~-dzp@I0yjQn$GMZ!8!M*aF$q>Dg;++?^$L@sX0%-V!>7+38?K1++|z^W&J
+zkANLzu&HL8=S<1!$Pn<n1BjLPb8b2;p^+;LS*I@i9;iw}O+RtnhS9(!kqYYzBk3ez
+zzrn)-WHVBcQ(@3ecEJOw1Gk@}EN^IU<;c_ATHIh}+?d$X@FuZA5DjZJ=6v>~5W)&f
+zSs^B6V`q;tGXBeLC=@5qS&<tYCBPiu?OjRUQ&mH@x$*e)J2}+i6NLrn^po0&(FG+T
+zrk3R*F_@B%mA=~sEniFC##MnGFbcJYRmtMKG2Is9rVrSn+;ooCTh?;7i8@!0Mziq-
+z4B`XKmb36Rh}+OLMA}EuJ6beDy%)hgFYD#d<L$C;3(0D)`&5Kzs2m`Sz*Zf5TOoZ=
+z{eaFd`>w1QC8I8a3mk&vz&8j8T?N}u&oM3k{g1fjloo4!;^}%)yx`Na5*`6259GO&
+zlrMPv^8MKXvcOKh#w=pibHn=|KE{Km(%#*!_+=PES&F1!B5)0i2&|^Ei~s-B{ys^F
+z5;Vzz!(+BE5)`mYrx*`|2<*GUa2$kLRprP_;PlF<6F;w$Vv}I1_^Yn9vSRQ<I}HvE
+zs>a>4IYT-|<P6U{drvbN6cn~%<}nMU3Wj_}XJxN3Tai=#xC)5Pc9d%XwJpxqbu^k^
+zjj2doe3fHAvH>P4R~j_Hmr%-oT;hOd*V55eZQ)(@YR^bqqRta@znCClT?lT;`H13(
+zEHZJ%NwG*#%{h-Mzkup9QePBXg;LskIJBvq@^MQ7y5qf)*>SA>TpfE~;80swlX;lH
+z^OA1)?U0J{_jjjrhZ<NR1*tb?MnBzIUN463o$a<wLG&hhB~`jGK@vtV8@whtxVNXf
+z^T)q+g0`bXZPfe`<v#R7>2BUETv+>XFhr3DViN>0o|{%Wv{e_*4!zns60IEh8~<aL
+zxreoWJ|gI3Kyli`jT@;Oini+<@-aBZ-wZXr6ZwnPbhdN4P!%R!pU#kTHR}drhj8)@
+zvU8#tkC$z9n$*S$9o0_7>3{3*;U{-)yeVe}&c%!L<<$Xw^+s6tKWfB>jZFv<_`6En
+z)hpGLj_*#$MlIpT`2$zExN=jvSn(ZYYkZ!qS>(QCjxYgrQ{*0zZm<^g`+R}Wx+n%)
+z@)o8BzYO`uz(Jz4Sx;%%4I3dQQy?$T(z*LUf{1udK}wvLdY@&90EGQ5Q2u37R*pOa
+zR(I;yR*WRDP6wk->vGvIb|FNA0eXC0w$$$4@`-f@w1W{;-wBe{&DA44n+QAOP)&d*
+z>WBj<WuGTIyki?vm2=p*W>|qY8floA4OJ+pFltGY(-}H_b9g$(uPqxxLB;;K{<_7q
+zr&CMinxT&`Ee@Ut38$?`b>s|M%qi0ni1C3rY|XTi7Cs?B3X3sETx1Be!k3&6*$Fzs
+z+uNl36YdzgKe+j$=eTQI+W621gJTwQTyb%Hk4-EF67<~a=iFO(CEyBzZ7%Hw#4dZ#
+zAeHVrOz@v_5F!^KY^1R^v}0aqQ~$xaW7Ky(OKNtR0~J9Ql$NI#wwrzLMR+yk^S3M5
+z-7WCCt4XNgY(r|>Am{ZZdz=SyBdc{=()V}d(N6oW{f6Sn`elNa!Yk?qsUoDHfkOcc
+z+4eqAdA6iU#r`VY2gSDWe7QQyOK0QuvH-&aMX$1TH+`4@wcf>#uB5(j5~vQKo$?RG
+zkQ8`)X>}PN8v2Vqgs!G5@GA>7$gPhKHM?c<p?zG*DldeXo>~8M?(_y)phU}n3InKu
+zVJa-a(Vzz>V4U@K1yAkV*L8Gor3o!7%pBD4u_o)Qapz1UO~DUh`eGg37elbigUHtK
+zC-jM0wcH`YM^mpd3As8dj6;45Id}@+X_UdUW-3&Ft|!}agfEi5>BSE3a*}^Sd^=Ek
+zPEJW7`TC*_lyRtdIYjL7IIA}wR!p%zm=$KqpvyGWG`sefY)AW~CKv6v$p62LH56-n
+z%(Hk=h(Hoo#{-uOG&GlH@-~eQ9>U7q7?Y5bOS%6(Tz>DfX`I3jNNgJr4*sbDLS_bd
+zK)Frf2&sS0Lhag4tcpeTj|XIsF#ey0#4y?I)qQN9fJkA;BF-|+dSqt^#}LIrY}fa1
+z#*=^-IC3P>IOP{|tk~OIAs)>}XxlD8Z9#4DxMXI>R2-;Y4BWnkG-Bhh7mF;tj}L4b
+zr|(-K);1HRl|uh~HYc&~QLQJW%g=mO!AwXUqT*e~oc`ue{5}3SSM)}STvASLhkPv3
+zF1Ls@OH^Q}J$Kq4>PTkO#2%6h>Te=&&e{g!>&*U<J^K7;bVY&*CHL}Ii4u$hM`a%$
+zy1>*{>DAQDm{tBhyeE`s4PRhGp;U^Lli&Khi~kl*YhDNnGV*O6E+Ap8S*$0mwEeDp
+zli<0dpD}wmNdL%G_ZEStbS?hGehhaIL*TZ57yTrwA8*d%J5f<0&w_|^Wg=uTzsQfc
+zbhG8uxJ~?tn|Q7b;qH>mPBTU+@R<H{N0us+x|ts1p<A$zX9ggDxv|J*+c<b3Sz`0f
+z{ENWo!yi-aO~^uR;J5mr25NC#&I9n=IlM!bP8i{r;6Nar5)P?pD>Aq{qryd=uQH|;
+zCGJZ9P`L<twx<jC6*;7Sc3w?HNs4EKOy6ssrA5QnR-XG=ADnktG(bjud?;xCt!0y(
+z2zKY_Q#Mm-+&=n)%>+w(t<IBx{^~gN7i?co>LrYiEG5ZxWM*P$9ttn6Fj=#B2B0{S
+zFDCp2Z!$Xdzt@;)jj|T<e=)<!EHHmTtYjLOi}Xk6b>&$RvQpo1?J<@@Dlbi#O%c@P
+zc9cVXU9kXXv+l7<P^g;VC>&9C&5j$cX<|U|NE^_edzdpa<sbU={9jl_^XQSg58J$n
+z{;(XPqeBu#Gi+SaO2s{v4_Q~x%_;JpB2KGe{-tf7!~4>Y=AY(rIsY$tEs{$%9d~@U
+zYqxsKyJ0?qyW{xE_B#T1j%&6BIRe>C-VZK?bXZ1MzQyO=Y}b$^BeO;Pe0yuJc#{hl
+zq>u=uK-cBM+91=83g7+ppT$Umb-Slx!7CC~Ya3DfEmVyn!3a!jkEHZRE4V-GPvo>Q
+z!RADvM}hLmAOdoe^8U@ayD3WHlbI_JV|2S_JjwMrMLNg(kM}f7&#zXb<lIb9o$j@h
+z|9$y#_t%gBo;^d(P}qLybrnYs?p*hXa`(;<*Is~ZTN5Uz{Xg&O=XJpEt7fv~JE0Kr
+zMfJ<aNRlI+%*XsyX1mj<&+FbAB3H+76*a1Bpwrj>S7(g*ipi%|v?|O<q_7gY8wf$O
+z7u9$JE1`IsogIR<v)ZBkQLLZ;9E6UT*g`C?vFV#so#%g{=~xU8rQ?k@?d^9;FpPM?
+zi84jTM749h#42+F*)vNNlx8qNxo^dl#kSJaFp8dQUTnLM+7DE)8iK3qmP4a_?a;-{
+z<>-<y=S@n~ap|>y&udcB?4($iV1?Lz>oE_RQ87+I20k{xW!p7ziIf!lhJr>7GBr_u
+z{`q{CQ*MQ-;?@s9g!Z0)Z7iGGjJ`4+ItV*C3E*SL^5VGuA0c)#3TR)M&mOEPU%W2n
+zB0--N<7C;ayFO_!J{*odX&POzI}e@-5(Nd=*~tLY94pOxp#6d*uT&WXF?wmbR`!#k
+z6L$<Y1^L2IUsCimcCeVUDE!UgPr*+zNer0MJ-yRsHKHOa8Z~PmnoD`MsDaKINTMMV
+z4_R}wk>w6|6=Gya5?>Z6;pXZA_X;U6=aed9Q@lN2M+}+Fk7xNje$;a)yq%hIW%=@$
+zCTB=CjE2o##*;cX=kG_<;D?WlB4OpmecU*f=oxz%L}!dr7*2?oYGT#Fk;82ny75e=
+zK_1PSzJ>wS-PA_7MqS28QVLWc6ndc&5F`#(_UyfvD$4g)Sb)}uJEnuWk98xD3AWy=
+zE)BqB#bFS$sBGBbe&y=<^(bxTl0{bRc-<icYLp9OMa&0792hsxd!%HKoju`Fc^76@
+z0$t8EEeaaRS{&is6Lp4YH^3|?deXZ5q_uy;Byi|W!Hc|eszlRj28Mq%wu&L{{CeDi
+zP=^J|Zvhn}fUwySU~gC^#u2~~;(LwWDSEQg0KzMY3mjhEtzz2J^E2b~;|mD$L>y-p
+z8SVT%9P}L7FSkf8Qs<jT=q!6;ZWsMg2j?{@lAM8(aoU0J{9Jujga0cvk&{u(OLM*M
+zOLeFT=th?JSzm(_3H?OersUwv>SbqyQUon)qX6MU+GbUhTyn)j_LLyIO)aT~QV!M`
+zw|m>(>*Vbgs=ihrTM!aOWK}Dl95wc{3Q`C1(N9(cgXFIW`&fOCE23QUrArRhRkG=Q
+za5H#gXo8>-LNC&G`HfGgdy1U<RLDPuD;b%pzSSoMe*xlYRs7E@)Q$syc?E7Ta6<J5
+zg>o}0Vpg#-F8{`Y8A5_vo=iB03vb5Qq4uu?;SY$dUG1XdzVM3eWxa+ZII-Hm;1aLZ
+zmiS|BlI8Z^`pqhLLc3Tb%1JJ*gE0xOX6}gpm|-F)S5^YK#q|LUk9dek&c|o^nDL9n
+z<4O+!Y!;Lf&Jt<E<fn&&hGo@wC^jBl{qQmGl1n;_i)oH`+6Ff$x(WaQ0001$_-8OT
+e2n7uQ0p(VJ%mV;h?oMp6#Ao{g000001X)@g$j+4j
+
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/uvc_tool.sh b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/uvc_tool.sh
+deleted file mode 100755
+index 63fe20350..000000000
+--- a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/uvc_tool.sh
++++ /dev/null
+@@ -1,274 +0,0 @@
+-#! /bin/sh
+-
+-# 支持的格式，可以通过修改这个变量自定义支持的格式
+-# Supported formats, you can customize the list by modifying this variable
+-supported_formats="yuyv mjpg"
+-
+-# 支持的分辨率，可以通过修改这个变量自定义支持的分辨率
+-# Supported resolutions, you can customize the list by modifying this variable
+-supported_resolutions="480x320 640x360 640x480 1280x720 1920x1080 2560x1440"
+-
+-
+-parse_uvc_config() {
+-	input_file="$1"  # 传入的文件路径 / Path to the input file
+-	parsed_data=""  # 初始化 parsed_data 为空 / Initialize parsed_data as empty
+-
+-	# 检查文件是否存在并可读取 / Check if the file exists and is readable
+-	if [ -z "$input_file" ]; then
+-		# 没有提供文件路径 / No input file provided
+-		echo "Warn: No input file provided for config." 1>&2  # 输出到标准错误 / Output to stderr
+-	elif [ ! -f "$input_file" ]; then
+-		# 文件不存在 / File does not exist
+-		echo "Warn: File '$input_file' does not exist." 1>&2  # 输出到标准错误 / Output to stderr
+-	elif [ ! -r "$input_file" ]; then
+-		# 文件不可读取 / File is not readable
+-		echo "Warn: File '$input_file' is not readable." 1>&2  # 输出到标准错误 / Output to stderr
+-	else
+-		# 使用 awk 处理文件内容 / Using awk to process the file content
+-		parsed_data=$(awk -v resolutions="$supported_resolutions" -v formats="$supported_formats" '
+-		BEGIN {
+-			OFS = " ";
+-			split(resolutions, supported_res, " ");  # 将支持的分辨率放入数组 / Split the supported resolutions into an array
+-			split(formats, supported_fmt, " ");  # 将支持的格式放入数组 / Split the supported formats into an array
+-		}
+-		/^[^#]/ {  # 只处理非 # 开头的行 / Process lines that do not start with #
+-			fmt = $1;
+-			res = $2;
+-
+-			# 检查格式是否在支持的格式列表中 / Check if the format is in the supported formats list
+-			is_supported_fmt = 0;
+-			for (i in supported_fmt) {
+-				if (fmt == supported_fmt[i]) {
+-					is_supported_fmt = 1;
+-					break;
+-				}
+-			}
+-			if (!is_supported_fmt) {
+-				print "Unsupported format:", fmt > "/dev/stderr";  # 输出不支持的格式到标准错误 / Output unsupported format to stderr
+-				next;
+-			}
+-
+-			if (res ~ /^[0-9]+x[0-9]+$/) {  # 匹配 640x360/1280x720 这种格式 / Match the format like 640x360 or 1280x720
+-				is_supported_res = 0;
+-				for (i in supported_res) {
+-					if (res == supported_res[i]) {
+-						is_supported_res = 1;
+-						break;
+-					}
+-				}
+-				if (!is_supported_res) {
+-					print "Unsupported resolution:", res > "/dev/stderr";  # 输出不支持的分辨率到标准错误 / Output unsupported resolution to stderr
+-					next;
+-				}
+-				split(res, dims, "x");  # 将 1280x720 按 "x" 分割成宽高 / Split 1280x720 into width and height
+-				w = dims[1];
+-				h = dims[2];
+-			} else {
+-				print "Invalid resolution format:", res > "/dev/stderr";  # 输出无效的分辨率格式到标准错误 / Output invalid resolution format to stderr
+-				next;
+-			}
+-			print fmt, w, h;  # 输出格式 fmt, w, h / Output fmt, w, h
+-		}
+-		' "$input_file")
+-	fi
+-
+-	# 确保至少包含 'mjpg' 和 'yuyv' 格式 / Ensure at least one 'mjpg' and 'yuyv' format exists
+-	has_mjpg=$(echo "$parsed_data" | grep -w "mjpg")
+-	has_yuyv=$(echo "$parsed_data" | grep -w "yuyv")
+-
+-	if [ -z "$has_mjpg" ]; then
+-		default_mjpg=$'\nmjpg 480x320\nmjpg 640x360\nmjpg 640x480\nmjpg 1280x720\nmjpg 1920x1080\nmjpg 2560x1440\n'
+-        echo "Warn: No 'mjpg' config found, adding default: $default_mjpg" 1>&2
+-		parsed_data="$parsed_data""$(echo "$default_mjpg" | sed 's/x/ /g')"
+-	fi
+-
+-	if [ -z "$has_yuyv" ]; then
+-		default_yuyv=$'\nyuyv 480x320\nyuyv 640x360\nyuyv 640x480\nyuyv 1280x720\nyuyv 1920x1080\nyuyv 2560x1440\n'
+-        echo "Warn: No 'yuyv' config found, adding default: $default_yuyv" 1>&2
+-		parsed_data="$parsed_data""$(echo "$default_yuyv" | sed 's/x/ /g')"
+-	fi
+-
+-	parsed_data=$(echo "$parsed_data" | sed '/^$/d')  # 删除空行
+-
+-	echo "$parsed_data"  # 返回解析的数据 / Return the parsed data
+-}
+-
+-
+-
+-
+-##########################################################################
+-# UVC
+-
+-CONFIGFS_PATH="/sys/kernel/config/usb_gadget/g0"
+-ORIGINAL_DIR=$(pwd)  # 记录脚本启动时的目录 / Record the original working directory
+-
+-create_frame() {
+-	# Example usage:
+-	# create_frame <width> <height> <format name>
+-
+-	WIDTH=$1
+-	HEIGHT=$2
+-	FORMAT=$3
+-
+-	if [ "$FORMAT" == "yuyv" ]; then
+-		wdir=streaming/uncompressed/u/${HEIGHT}p
+-	elif [ "$FORMAT" == "mjpg" ]; then
+-		wdir=streaming/mjpeg/m/${HEIGHT}p
+-	else
+-		echo "only support format yuyv/mjpeg!"
+-		exit 1
+-	fi
+-
+-	mkdir -p $wdir
+-	echo $WIDTH > $wdir/wWidth
+-	echo $HEIGHT > $wdir/wHeight
+-	echo $(( $WIDTH * $HEIGHT * 2 )) > $wdir/dwMaxVideoFrameBufferSize
+-	echo $(( $WIDTH * $HEIGHT * 2 * 8 * 5  )) > $wdir/dwMinBitRate
+-	echo $(( $WIDTH * $HEIGHT * 2 * 8 * 60 )) > $wdir/dwMaxBitRate
+-
+-	cat > $wdir/dwFrameInterval <<EOF
+-166666
+-333333
+-400000
+-500000
+-666666
+-1000000
+-2000000
+-EOF
+-	echo "333333" > $wdir/dwDefaultFrameInterval
+-
+-<< EOF
+-    configure FrameRate
+-    dwFrameInterfal is in 100-ns units (fps = 1/(dwFrameInterval * 10000000))
+-      166666 -> 60 fps
+-      333333 -> 30 fps
+-      400000 -> 25 fps
+-      500000 -> 20 fps
+-      666666 -> 15 fps
+-     1000000 -> 10 fps
+-     2000000 ->  5 fps
+-     5000000 ->  2 fps
+-    10000000 ->  1 fps
+-EOF
+-}
+-
+-
+-# 挂载 UVC ConfigFS / Mount the UVC ConfigFS
+-mount_uvc_configfs() {
+-	echo "Mounting UVC ConfigFS in $(pwd)"
+-
+-	# 创建 functions/uvc.usb0 目录 / Create the directory for uvc.usb0
+-	mkdir -p functions/uvc.usb0
+-	cd functions/uvc.usb0
+-
+-	# 在 functions/uvc.usb0 目录中创建控制头和符号链接 / Create control header and symlink it in uvc.usb0
+-	mkdir -p control/header/h
+-		ln -s control/header/h/ control/class/fs/
+-		ln -s control/header/h/ control/class/ss/
+-
+-	# streaming_maxpacket sets wMaxPacketSize. Valid values are 1024/2048/3072
+-	echo 1024 > streaming_maxpacket
+-	# streaming_interval sets bInterval. Values range from 1..255
+-	echo 1 > streaming_interval
+-	# streaming_maxburst sets bMaxBurst. Valid values are 1..15
+-	echo 1 > streaming_maxburst
+-
+-	# 在 functions/uvc.usb0 目录中创建流媒体路径 / Create streaming paths in uvc.usb0
+-	mkdir -p streaming/uncompressed/u  # YUV 目录 / YUV directory
+-	mkdir -p streaming/mjpeg/m         # MJPEG 目录 / MJPEG directory
+-		# 执行解析并直接传递给 while 循环进行处理 / Execute parsing and directly pass to while loop for processing
+-		parse_uvc_config "$1" | while read fmt w h; do
+-			echo "Adding: Format: $fmt, Width: $w, Height: $h"  # 输出格式、宽和高 / Output fmt, width, and height
+-			create_frame $w $h $fmt
+-		done
+-	mkdir -p streaming/header/h
+-		# 将 YUV 和 MJPEG 目录链接到流媒体头中 / Link YUV and MJPEG to streaming header
+-		ln -s streaming/uncompressed/u/ streaming/header/h/
+-		ln -s streaming/mjpeg/m/ streaming/header/h/
+-		# 将 header 链接到 class 中 / Link header to classes
+-		ln -s streaming/header/h/ streaming/class/fs
+-		ln -s streaming/header/h/ streaming/class/hs
+-		ln -s streaming/header/h/ streaming/class/ss
+-
+-	cd ../..
+-	ln -s functions/uvc.usb0 configs/c.1
+-
+-    echo "UVC ConfigFS mounted successfully in $(pwd)"
+-}
+-
+-# 卸载 UVC ConfigFS / Unmount the UVC ConfigFS
+-unmount_uvc_configfs() {
+-	echo "Unmounting UVC ConfigFS in $(pwd)"
+-
+-	unlink configs/c.1/uvc.usb0
+-
+-	cd functions/uvc.usb0
+-
+-	# 删除流媒体目录 / Remove streaming directories
+-	unlink streaming/class/fs/h
+-	unlink streaming/class/hs/h
+-	unlink streaming/class/ss/h
+-
+-	unlink streaming/header/h/u
+-	unlink streaming/header/h/m
+-	rmdir streaming/header/h
+-
+-	rmdir streaming/uncompressed/u/*p
+-	rmdir streaming/mjpeg/m/*p
+-	rmdir streaming/uncompressed/u
+-	rmdir streaming/mjpeg/m
+-
+-	unlink control/class/fs/h
+-	unlink control/class/ss/h
+-	rmdir control/header/h
+-
+-	cd ../..
+-	# 删除 functions/uvc.usb0 目录 / Remove the uvc.usb0 directory
+-	rmdir functions/uvc.usb0
+-
+-	echo UVC ConfigFS unmounted successfully in $(pwd)
+-}
+-
+-# 进入工作目录 / Enter the working directory
+-cd "$CONFIGFS_PATH" || return 1
+-
+-# 处理传入的参数
+-# Process the input arguments
+-case "$1" in
+-	"mount")
+-		mount_uvc_configfs "$2"
+-        ;;
+-	"unmount")
+-		unmount_uvc_configfs
+-        ;;
+-	"server")
+-		if [ -z "$(fuser /etc/init.d/uvc-gadget-server.elf)" ]; then
+-			(	
+-				echo "Waiting for UDC start..."
+-				while [ -z "$(cat /sys/kernel/config/usb_gadget/g0/UDC)" ]; do
+-					echo -n "."
+-					sleep 1
+-				done
+-				sleep 3	# necessary delay time
+-				if [ -z "$(fuser /etc/init.d/uvc-gadget-server.elf)" ]; then
+-					echo -e "\nServer is starting..."  # 输出选择了 server 模式 / Output that the server mode is selected
+-					echo -e "===============================\n\n\n"
+-					# 在这里添加你希望在 server 模式下执行的其他操作 / Add other operations you want to perform in server mode here
+-					/etc/init.d/uvc-gadget-server.elf  -u /dev/$(basename /sys/class/udc/*/device/gadget/video4linux/video*)  -d -i /bin/cat_224.jpg 
+-				else
+-					echo -e "\nServer has started..."
+-					echo -e "===============================\n\n\n"
+-				fi
+-			) >/tmp/uvc-gadget.log 2>&1 &
+-		fi
+-	;;
+-	"stop_server")
+-		fuser -k /etc/init.d/uvc-gadget-server.elf
+-	;;
+-	*)
+-		echo "Usage: $0 {mount <file>|unmount|server|stop_server}"  # 提示正确的使用方式 / Prompt the correct usage
+-	;;
+-esac
+-
+-# 返回原始目录 / Return to the original directory
+-cd "$ORIGINAL_DIR" || return 1
+\ No newline at end of file
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/input-event-daemon.conf b/buildroot/board/cvitek/SG200X/overlay/etc/input-event-daemon.conf
+deleted file mode 100644
+index 9baddae23..000000000
+--- a/buildroot/board/cvitek/SG200X/overlay/etc/input-event-daemon.conf
++++ /dev/null
+@@ -1,9 +0,0 @@
+-#
+-# /etc/input-event-daemon.conf
+-#
+-
+-[Global]
+-listen = /dev/input/event0
+-
+-[Keys]
+-DISPLAYTOGGLE = /etc/gui.sh
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/profile.d/app_store.sh b/buildroot/board/cvitek/SG200X/overlay/etc/profile.d/app_store.sh
+deleted file mode 100644
+index 48bc6376d..000000000
+--- a/buildroot/board/cvitek/SG200X/overlay/etc/profile.d/app_store.sh
++++ /dev/null
+@@ -1 +0,0 @@
+-export PATH=/maixapp/apps/app_store/app_store:$PATH
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/rc.local b/buildroot/board/cvitek/SG200X/overlay/etc/rc.local
+deleted file mode 100755
+index a46a94677..000000000
+--- a/buildroot/board/cvitek/SG200X/overlay/etc/rc.local
++++ /dev/null
+@@ -1,8 +0,0 @@
+-#!/bin/sh
+-
+-echo "HELLO WORLD"
+-
+-if [ -e /boot/maixcam ]
+-then
+-	/maixapp/apps/launcher/launcher &
+-fi
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/ttyGS0_handler.sh b/buildroot/board/cvitek/SG200X/overlay/etc/ttyGS0_handler.sh
+deleted file mode 100755
+index fed539c0e..000000000
+--- a/buildroot/board/cvitek/SG200X/overlay/etc/ttyGS0_handler.sh
++++ /dev/null
+@@ -1,7 +0,0 @@
+-#!/bin/sh
+-
+-. /etc/profile
+-if [ -e /dev/ttyGS0 ]
+-then
+-	login
+-fi
+diff --git a/linux_5.10/drivers/staging/android/ion/ion.h b/linux_5.10/drivers/staging/android/ion/ion.h
+index 939764cc4..908452011 100644
+--- a/linux_5.10/drivers/staging/android/ion/ion.h
++++ b/linux_5.10/drivers/staging/android/ion/ion.h
+@@ -368,15 +368,14 @@ void ion_free_nofd(struct ion_buffer *buffer);
+ int ion_buf_begin_cpu_access(struct ion_buffer *buffer);
+ int ion_buf_end_cpu_access(struct ion_buffer *buffer);
+ 
+-#ifdef CONFIG_ION_CARVEOUT_HEAP
+-struct ion_heap *ion_carveout_heap_create(struct ion_platform_heap *heap_data);
+-#else
+-static inline struct ion_heap
+-*ion_carveout_heap_create(struct ion_platform_heap *heap_data)
+-{
+-	return ERR_PTR(-EINVAL);
+-}
+-#endif
++/* RNSBox patch: removed a second copy of the CONFIG_ION_CARVEOUT_HEAP
++ * #ifdef block that was duplicated here. The earlier block (around line
++ * 342) already provides the static-inline fallback when the symbol is
++ * off; defining it twice produces "redefinition of
++ * 'ion_carveout_heap_create'". This bites whenever CONFIG_ION_CVITEK is
++ * force-selected by mach-cvitek/Kconfig without CONFIG_ION_CARVEOUT_HEAP
++ * also being set — i.e. on any build with the BSP stripped of the
++ * camera/CMA stack, like the RNSBox router. */
+ #endif
+ #ifdef CONFIG_ION_CHUNK_HEAP
+ struct ion_heap
+diff --git a/middleware/v2/Makefile b/middleware/v2/Makefile
+index 1edf78fe1..59334646f 100644
+--- a/middleware/v2/Makefile
++++ b/middleware/v2/Makefile
+@@ -29,14 +29,21 @@ endef
+ 
+ .PHONY: clean all module component sample install uninstall package 3rdparty
+ 
+-all: prepare 3rdparty module component sample
++# RNSBox: original `all` (and its install pair) below have been no-op'd.
++# The Cvitek media middleware (3rdparty + modules + isp components +
++# sample binaries) is camera-IPC code with hard deps on kernel headers
++# (linux/vi_snsr.h etc.) and modules we don't build. None of the
++# resulting binaries/libs are referenced by any RNSBox init script.
++# Original `all` target preserved as a comment for reference:
++#   all: prepare 3rdparty module component sample
++all: prepare
+ 
+ module: prepare 3rdparty
+ 	@make -C modules/
+ 
+ prepare:
+ 	@mkdir -p include/isp
+-	@cp -rf modules/isp/include/* include/isp
++	@if [ -d modules/isp/include ]; then cp -rf modules/isp/include/* include/isp 2>/dev/null || true; fi
+ 3rdparty:
+ 	@make -C 3rdparty/
+ 
+@@ -52,43 +59,7 @@ ifneq ($(SUBTYPE), fpga)
+ install:
+ 	@mkdir -p $(DESTDIR)/usr/bin
+ 	@mkdir -p $(DESTDIR)/usr/lib/3rd
+-ifneq ($(FLASH_SIZE_SHRINK),y)
+-	# copy sample_xxx
+-	@cp -f sample/mipi_tx/sample_dsi $(DESTDIR)/usr/bin
+-	@cp -f sample/vio/sample_vio $(DESTDIR)/usr/bin
+-	@cp -f sample/sensor_test/sensor_test $(DESTDIR)/usr/bin
+-	@cp -f sample/test_mmf/test_mmf $(DESTDIR)/usr/bin
+-	@cp -f sample/audio/sample_audio $(DESTDIR)/usr/bin
+-	#@cp -f sample/cipher/sample_cipher $(DESTDIR)/usr/bin
+-	#@cp -f sample/cvg/sample_cvg $(DESTDIR)/usr/bin
+-	@cp -f sample/venc/sample_venc $(DESTDIR)/usr/bin
+-	@cp -f sample/venc/sample_vcodec $(DESTDIR)/usr/bin
+-	@cp -f sample/vdec/sample_vdec $(DESTDIR)/usr/bin
+-	@cp -f sample/ive/sample_* $(DESTDIR)/usr/bin
+-	@cp -f sample/ive/ive_stress $(DESTDIR)/usr/bin
+-	@cp -f sample/region/sample_region $(DESTDIR)/usr/bin
+-	@cp -f sample/vdecvo/sample_vdecvo $(DESTDIR)/usr/bin
+-	@cp -f sample/overlay/sample_overlay $(DESTDIR)/usr/bin
+-	@cp -f sample/fisheye/sample_fisheye $(DESTDIR)/usr/bin
+-endif
+-
+-ifneq ($(FLASH_SIZE_SHRINK),y)
+-	# copy venc
+-	#@cp -f modules/venc/vc_lib/bin/cvi_h265_enc_test $(DESTDIR)/usr/bin
+-	#@cp -f modules/venc/vc_lib/bin/cvi_h265_dec $(DESTDIR)/usr/bin
+-	#@cp -f modules/venc/vc_lib/bin/cvi_h264_dec $(DESTDIR)/usr/bin
+-	#@cp -f modules/venc/vc_lib/bin/cvi_jpg_codec $(DESTDIR)/usr/bin
+-endif
+-
+-ifneq ($(FLASH_SIZE_SHRINK),y)
+-	# copy audio libs and elf
+-	@cp -f sample/audio/sample_audio*  $(DESTDIR)/usr/bin
+-	@if [ -e "sample/audio/cvi_mp3player" ]; then cp -f sample/audio/cvi_mp3player $(DESTDIR)/usr/bin; fi
+-endif
+-
+-	# copy mw lib
+-	@cp -a lib/*.so*  $(DESTDIR)/usr/lib
+-	@cp -a lib/3rd/*.so*  $(DESTDIR)/usr/lib/3rd
++	@echo "RNSBox: middleware install is a no-op (see all-target comment above)"
+ 
+ uninstall:
+ 	@rm $(DESTDIR) -rf
+diff --git a/osdrv/Makefile b/osdrv/Makefile
+index 6ff782744..132f39c24 100644
+--- a/osdrv/Makefile
++++ b/osdrv/Makefile
+@@ -97,7 +97,19 @@ export CROSS_COMPILE=$(patsubst "%",%,$(CONFIG_CROSS_COMPILE_KERNEL))
+ export ARCH=$(patsubst "%",%,$(CONFIG_ARCH))
+ 
+ .PHONY : prepare clean all
+-all: prepare $(KO_LIST) $(OTHERS)
++# RNSBox: the original `all` target builds the Cvitek out-of-tree
++# multimedia kernel modules (vcodec/jpeg/tpu/vi/vpss/dwa/rgn/vo/ive/cif/…),
++# every one of which is camera-IPC code with hard deps on ION + dma-buf
++# kernel symbols that we strip for the router build. None of these .ko
++# files are loaded by any RNSBox boot script, so dropping them is a
++# pure win — image gets ~5 MB smaller and `build_osdrv` stops blocking
++# the build. Original line saved below.
++# all: prepare $(KO_LIST) $(OTHERS)
++# RNSBox W variant: build ONLY the wireless (AIC8800) ext driver, still
++# skipping all the camera/codec KO_LIST modules. `wireless` + the
++# `cp_ext_wireless` copy step are gated on CONFIG_CP_EXT_WIRELESS=y in the
++# board defconfig; if that's unset these targets do nothing harmful.
++all: prepare wireless cp_ext_wireless
+ 
+ prepare:
+ 	@mkdir -p $(INSTALL_DIR)/3rd
+-- 
+2.47.3
+

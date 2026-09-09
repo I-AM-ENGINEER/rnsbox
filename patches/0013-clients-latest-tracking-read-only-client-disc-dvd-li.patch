@@ -1,0 +1,808 @@
+From a6060559a28e1baa1ad45f1a4f08ccfcf77a2cdd Mon Sep 17 00:00:00 2001
+From: smit1237 <smit1237@gmail.com>
+Date: Tue, 8 Sep 2026 22:47:49 +0300
+Subject: [PATCH 13/20] clients: latest-tracking read-only client disc +
+ dvd/lite variants
+
+fetch-clients.sh resolves each Reticulum client's latest stable GitHub release
+at run time (no pinned versions), downloads a curated one-per-OS set, and
+verifies against upstream checksums where published (records the rest in a
+MANIFEST). The disc is built version-agnostically (build-clients-img.sh globs
+dl/clients/<App>/), and build-rnsbox.sh's dvd path auto-sizes the rootfs to the
+actual ISO so any "latest" fits under the image packer's ~4 GiB per-partition
+limit. Client binaries are downloaded at build time and git-ignored; build-host
+paths are derived from the script location. dvd = NCM + clients disc, lite =
+NCM-only.
+---
+ .gitignore                                    |   6 +
+ build-rnsbox-clients.sh                       |  44 ++++++
+ build-rnsbox-kclean.sh                        |  61 ++++++++
+ build-rnsbox-massstorage.sh                   |  70 ++++++++++
+ build-rnsbox-wifi.sh                          |  39 ++++++
+ build-rnsbox.sh                               |  96 +++++++++++++
+ .../partition/partition_sd.xml                |   8 +-
+ build/clients-stick/build-clients-img.sh      |  64 +++++++++
+ build/clients-stick/extra/README.txt          |  79 +++++++++++
+ build/clients-stick/extra/index.html          |  98 +++++++++++++
+ fetch-clients.sh                              | 132 ++++++++++++++++++
+ 11 files changed, 696 insertions(+), 1 deletion(-)
+ create mode 100755 build-rnsbox-clients.sh
+ create mode 100755 build-rnsbox-kclean.sh
+ create mode 100755 build-rnsbox-massstorage.sh
+ create mode 100755 build-rnsbox-wifi.sh
+ create mode 100755 build-rnsbox.sh
+ create mode 100755 build/clients-stick/build-clients-img.sh
+ create mode 100644 build/clients-stick/extra/README.txt
+ create mode 100644 build/clients-stick/extra/index.html
+ create mode 100755 fetch-clients.sh
+
+diff --git a/.gitignore b/.gitignore
+index ce0f83185..9deeae5f6 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -422,3 +422,9 @@ middleware/v2/lib
+ host-tools/
+ kvm/
+ .vscode*
++dl/clients/
++buildroot/board/cvitek/SG200X/overlay/opt/rnsbox-clients/usbdisk.iso
++
++# Python bytecode (rnsbox-portal ships .py sources only)
++__pycache__/
++*.pyc
+diff --git a/build-rnsbox-clients.sh b/build-rnsbox-clients.sh
+new file mode 100755
+index 000000000..b510ae928
+--- /dev/null
++++ b/build-rnsbox-clients.sh
+@@ -0,0 +1,44 @@
++#!/bin/bash
++# Build the RNSBox image with the read-only pre-populated clients stick.
++# Regenerates the FAT image from dl/clients/, then packs. No kernel rebuild
++# (mass-storage gadget config already in; only S08usbdev overlay + the
++# BR2_TARGET_ROOTFS_EXT2_SIZE bump changed — both picked up by defconfig+pack).
++set -o pipefail
++LOG=/tmp/rnsbox-build.log
++: > "$LOG"
++exec > >(tee -a "$LOG") 2>&1
++
++echo "=================== RNSBox clients-stick build $(date) ==================="
++cd "$(dirname "$(readlink -f "$0")")" || exit 90
++
++echo "--- (re)build the read-only clients ISO9660 image ---"
++bash build/clients-stick/build-clients-img.sh || { echo "FATAL: clients image build failed"; exit 92; }
++
++echo "--- source cvisetup + defconfig (picks up ROOTFS_EXT2_SIZE=1500M) ---"
++source build/cvisetup.sh || { echo "FATAL: cvisetup"; exit 93; }
++defconfig sg2002_licheervnano_sd || { echo "FATAL: defconfig"; exit 94; }
++BRD="${BR_DIR:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/buildroot}"
++
++echo "--- assert the clients image is staged in the overlay ---"
++OIMG="buildroot/board/cvitek/SG200X/overlay/opt/rnsbox-clients/usbdisk.iso"
++sz=$(stat -c %s "$OIMG" 2>/dev/null || echo 0)
++[ "$sz" -gt 900000000 ] || { echo "FATAL: $OIMG missing or too small ($sz bytes)"; exit 95; }
++echo "clients image: $((sz/1024/1024)) MiB"
++
++echo "--- force-refresh local rnsbox-portal pkg ---"
++rm -rf "$BRD"/output/build/rnsbox-portal-0.1.0
++export PATH=/usr/sbin:/sbin:$PATH
++
++echo "--- pack_rootfs (overlay → rootfs.ext4, now sized 1500M) ---"
++pack_rootfs || { echo "FATAL: pack_rootfs"; exit 96; }
++
++echo "--- pack_burn_image ---"
++pack_burn_image || { echo "FATAL: pack_burn_image"; exit 97; }
++
++echo "--- assert: clients image actually landed in the packed rootfs ---"
++RFS="install/soc_sg2002_licheervnano_sd/rootfs/opt/rnsbox-clients/usbdisk.iso"
++[ -e "$RFS" ] && echo "in rootfs: $(du -h "$RFS" | cut -f1)" || echo "WARN: not found at $RFS (check rootfs path)"
++
++echo "=================== BUILD OK $(date) ==================="
++ls -lh $(ls -t install/soc_sg2002_licheervnano_sd/images/*.img | head -1)
++echo "DONE-SENTINEL-OK"
+diff --git a/build-rnsbox-kclean.sh b/build-rnsbox-kclean.sh
+new file mode 100755
+index 000000000..c241dc2c5
+--- /dev/null
++++ b/build-rnsbox-kclean.sh
+@@ -0,0 +1,61 @@
++#!/bin/bash
++# Clean kernel + osdrv rebuild so EVERY shipped .ko carries the new
++# 5.10.4-rnsbox vermagic. The previous (incremental) build re-stamped only the
++# modules it recompiled (aic8800 via osdrv) and left in-tree ones like
++# cfg80211.ko at the stale 5.10.4-tag- vermagic — which the -rnsbox kernel
++# would refuse to insmod (CONFIG_MODVERSIONS off → exact-string match).
++set -o pipefail
++LOG=/tmp/rnsbox-build.log
++: > "$LOG"
++exec > >(tee -a "$LOG") 2>&1
++
++echo "=================== RNSBox clean-kernel rebuild $(date) ==================="
++cd "$(dirname "$(readlink -f "$0")")" || exit 90
++
++echo "--- source cvisetup ---"
++source build/cvisetup.sh || { echo "FATAL: cvisetup failed"; exit 91; }
++echo "--- defconfig ---"
++defconfig sg2002_licheervnano_sd || { echo "FATAL: defconfig failed"; exit 92; }
++
++BRD="${BR_DIR:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/buildroot}"
++KCFG=linux_5.10/build/sg2002_licheervnano_sd/.config
++KREL_FILE=linux_5.10/build/sg2002_licheervnano_sd/include/config/kernel.release
++
++echo "--- clean_kernel (distclean → full module recompile, re-stamps vermagic) ---"
++clean_kernel || { echo "FATAL: clean_kernel failed"; exit 93; }
++
++echo "--- build_kernel ---"
++build_kernel || { echo "FATAL: build_kernel failed"; exit 94; }
++
++echo "--- assert kernel release + mass storage ---"
++KREL=$(cat "$KREL_FILE" 2>/dev/null)
++echo "kernel.release = ${KREL:-<unknown>}"
++case "$KREL" in *-rnsbox) echo "tag OK" ;; *) echo "FATAL: release '$KREL' != *-rnsbox"; exit 95 ;; esac
++grep -q '^CONFIG_USB_CONFIGFS_MASS_STORAGE=y' "$KCFG" || { echo "FATAL: no mass storage in .config"; exit 96; }
++
++echo "--- clean_osdrv + build_osdrv (aic8800 against the clean kernel) ---"
++clean_osdrv || echo "warn: clean_osdrv returned nonzero (continuing)"
++build_osdrv || { echo "FATAL: build_osdrv failed"; exit 97; }
++
++echo "--- VERMAGIC CONSISTENCY: every shipped .ko must be 5.10.4-rnsbox ---"
++BADV=0
++for f in $(find buildroot/board/cvitek/SG200X/overlay/mnt/system/ko -name '*.ko' 2>/dev/null); do
++	vm=$(strings "$f" 2>/dev/null | grep -m1 '^vermagic=' | sed 's/vermagic=//;s/ .*//')
++	if [ "$vm" != "$KREL" ]; then
++		echo "  MISMATCH: $(basename "$f") = $vm (expected $KREL)"
++		BADV=1
++	fi
++done
++[ "$BADV" = 0 ] && echo "all overlay .ko vermagic == $KREL  OK" || { echo "FATAL: vermagic mismatch — WiFi would fail to load"; exit 98; }
++
++echo "--- force-refresh local rnsbox-portal pkg ---"
++rm -rf "$BRD"/output/build/rnsbox-portal-0.1.0
++export PATH=/usr/sbin:/sbin:$PATH
++
++echo "--- pack_rootfs + pack_burn_image ---"
++pack_rootfs || { echo "FATAL: pack_rootfs failed"; exit 99; }
++pack_burn_image || { echo "FATAL: pack_burn_image failed"; exit 100; }
++
++echo "=================== BUILD OK $(date) ==================="
++ls -t install/soc_sg2002_licheervnano_sd/images/*.img 2>/dev/null | head -2
++echo "DONE-SENTINEL-OK"
+diff --git a/build-rnsbox-massstorage.sh b/build-rnsbox-massstorage.sh
+new file mode 100755
+index 000000000..daca9cc76
+--- /dev/null
++++ b/build-rnsbox-massstorage.sh
+@@ -0,0 +1,70 @@
++#!/bin/bash
++# Rebuild RNSBox for the composite NCM + USB mass-storage gadget.
++# This touches the KERNEL defconfig (USB_F_MASS_STORAGE / CONFIGFS_MASS_STORAGE)
++# AND the buildroot defconfig (dosfstools), so unlike the portal-only rebuilds
++# this needs build_kernel + a fresh buildroot pass, not just pack_rootfs.
++set -o pipefail
++LOG=/tmp/rnsbox-build.log
++: > "$LOG"
++exec > >(tee -a "$LOG") 2>&1
++
++echo "=================== RNSBox mass-storage rebuild $(date) ==================="
++cd "$(dirname "$(readlink -f "$0")")" || exit 90
++
++echo "--- source cvisetup ---"
++source build/cvisetup.sh || { echo "FATAL: cvisetup failed"; exit 91; }
++
++echo "--- defconfig sg2002_licheervnano_sd ---"
++defconfig sg2002_licheervnano_sd || { echo "FATAL: defconfig failed"; exit 92; }
++
++echo "BR_DIR=$BR_DIR  OUTPUT_DIR=$OUTPUT_DIR"
++BRD="${BR_DIR:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/buildroot}"
++
++# Kernel defconfig changed → force the kernel .config to regenerate from the
++# board defconfig. The build/Makefile copies the board linux defconfig to the
++# kernel output .config when the source defconfig is newer; touch to be sure.
++echo "--- force kernel reconfigure (mass-storage gadget + -rnsbox localversion) ---"
++# The build Makefile makes the kernel output .config depend on the board
++# linux defconfig (cmp -s || cp). Removing the output .config guarantees a
++# clean recopy from our edited defconfig. Real kernel output .config lives at
++# linux_5.10/build/sg2002_licheervnano_sd/.config (NOT linux_5.10/build/.config).
++KCFG=linux_5.10/build/sg2002_licheervnano_sd/.config
++rm -f "$KCFG" 2>/dev/null
++build_kernel || { echo "FATAL: build_kernel failed"; exit 93; }
++
++echo "--- assert mass storage + -rnsbox tag made it into the built kernel ---"
++if ! grep -q '^CONFIG_USB_CONFIGFS_MASS_STORAGE=y' "$KCFG"; then
++	echo "FATAL: USB_CONFIGFS_MASS_STORAGE not enabled in $KCFG"; exit 96
++fi
++KREL=$(cat linux_5.10/build/sg2002_licheervnano_sd/include/config/kernel.release 2>/dev/null)
++echo "kernel release string: ${KREL:-<unknown>}"
++case "$KREL" in
++	*-rnsbox) echo "kernel tag = -rnsbox: OK" ;;
++	*) echo "FATAL: kernel release is '$KREL', expected *-rnsbox"; exit 97 ;;
++esac
++
++echo "--- rebuild osdrv (aic8800 WiFi .ko) against the new vermagic ---"
++# LOCALVERSION change alters module vermagic; CONFIG_MODVERSIONS is off, so the
++# out-of-tree modules must match the kernel's release string exactly or insmod
++# rejects them. Rebuild so the shipped aic8800_*.ko carry 5.10.4-rnsbox.
++build_osdrv || { echo "FATAL: build_osdrv failed"; exit 98; }
++VM=$(find buildroot/board/cvitek/SG200X/overlay/mnt/system/ko -name 'aic8800_fdrv.ko' 2>/dev/null | head -1)
++if [ -n "$VM" ]; then
++	echo "aic8800_fdrv.ko vermagic: $(strings "$VM" | grep -m1 '5.10')"
++fi
++
++echo "--- force-refresh local rnsbox-portal pkg (cached by VERSION) ---"
++rm -rf "$BRD"/output/build/rnsbox-portal-0.1.0
++
++echo "--- PATH fix so genimage's mkdosfs resolves ---"
++export PATH=/usr/sbin:/sbin:$PATH
++
++echo "--- pack_rootfs (buildroot pass picks up dosfstools + overlay S08usbdev) ---"
++pack_rootfs || { echo "FATAL: pack_rootfs failed"; exit 94; }
++
++echo "--- pack_burn_image ---"
++pack_burn_image || { echo "FATAL: pack_burn_image failed"; exit 95; }
++
++echo "=================== BUILD OK $(date) ==================="
++ls -t install/soc_sg2002_licheervnano_sd/images/*.img 2>/dev/null | head -3
++echo "DONE-SENTINEL-OK"
+diff --git a/build-rnsbox-wifi.sh b/build-rnsbox-wifi.sh
+new file mode 100755
+index 000000000..3db23c45b
+--- /dev/null
++++ b/build-rnsbox-wifi.sh
+@@ -0,0 +1,39 @@
++#!/bin/bash
++# Rebuild RNSBox rootfs + image after WiFi TX-power / HT40-inheritance edits.
++# Pure userspace changes (S35wifi overlay + rnsbox-portal pkg), so no kernel
++# or osdrv rebuild — just refresh the cached local portal pkg + repack.
++set -o pipefail
++LOG=/tmp/rnsbox-build.log
++: > "$LOG"
++exec > >(tee -a "$LOG") 2>&1
++
++echo "=================== RNSBox WiFi rebuild $(date) ==================="
++cd "$(dirname "$(readlink -f "$0")")" || exit 90
++
++echo "--- source cvisetup ---"
++source build/cvisetup.sh || { echo "FATAL: cvisetup failed"; exit 91; }
++
++echo "--- defconfig sg2002_licheervnano_sd ---"
++defconfig sg2002_licheervnano_sd || { echo "FATAL: defconfig failed"; exit 92; }
++
++echo "BR_DIR=$BR_DIR"
++echo "BR_DEFCONFIG=$BR_DEFCONFIG"
++echo "OUTPUT_DIR=$OUTPUT_DIR"
++BRD="${BR_DIR:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/buildroot}"
++
++echo "--- force-refresh local rnsbox-portal pkg (VERSION cached otherwise) ---"
++rm -rf "$BRD"/output/build/rnsbox-portal-0.1.0
++echo "removed: $BRD/output/build/rnsbox-portal-0.1.0 (rc=$?)"
++
++echo "--- PATH fix so genimage's mkdosfs resolves ---"
++export PATH=/usr/sbin:/sbin:$PATH
++
++echo "--- pack_rootfs (= make rootfs: br-rootfs-prepare + br-rootfs-pack) ---"
++pack_rootfs || { echo "FATAL: pack_rootfs failed"; exit 93; }
++
++echo "--- pack_burn_image ---"
++pack_burn_image || { echo "FATAL: pack_burn_image failed"; exit 94; }
++
++echo "=================== BUILD OK $(date) ==================="
++ls -t install/soc_sg2002_licheervnano_sd/images/*.img 2>/dev/null | head -3
++echo "DONE-SENTINEL-OK"
+diff --git a/build-rnsbox.sh b/build-rnsbox.sh
+new file mode 100755
+index 000000000..bd7a4f80b
+--- /dev/null
++++ b/build-rnsbox.sh
+@@ -0,0 +1,96 @@
++#!/bin/bash
++# Unified RNSBox build — DVD or LITE variant from one switch.
++#
++#   ./build-rnsbox.sh dvd     (default) — composite NCM + read-only clients
++#                                          DVD (ISO9660 in rootfs); ~2.8 GB img.
++#   ./build-rnsbox.sh lite              — NCM-only gadget, no clients drive;
++#                                          ~226 MB img (the lighter download).
++#
++# The variant touches four spots; this script sets them all, builds, then
++# restores the in-tree files so the tree is left clean for the next run:
++#   1. overlay ISO        /opt/rnsbox-clients/usbdisk.iso  (present | absent)
++#   2. defconfig ext4     BR2_TARGET_ROOTFS_EXT2_SIZE       (2800M | 200M)
++#   3. partition XML      ROOTFS size_in_kb                 (3072000 | 1638400)
++#   4. genimage boot.vfat usb.disk0 / usb.disk0.size lines  (kept | removed)
++#   + sd_gen honors RNSBOX_WITH_DVD to ship (or not) the usb.disk0 flag.
++set -o pipefail
++ROOT="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
++cd "$ROOT" || exit 90
++
++VARIANT="${1:-dvd}"
++case "$VARIANT" in dvd|lite) ;; *) echo "usage: $0 {dvd|lite}"; exit 1 ;; esac
++LOG=/tmp/rnsbox-build.log; : > "$LOG"; exec > >(tee -a "$LOG") 2>&1
++echo "=================== RNSBox build [$VARIANT] $(date) ==================="
++
++DEFCONFIG=buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig
++PARTXML=build/boards/sg200x/sg2002_licheervnano_sd/partition/partition_sd.xml
++GENIMG=build/tools/common/sd_tools/genimage_rootless.cfg
++ISO_OVERLAY=buildroot/board/cvitek/SG200X/overlay/opt/rnsbox-clients/usbdisk.iso
++ISO_STASH=/tmp/rnsbox-usbdisk.iso.stash
++
++restore() {
++	# put the tree back to the committed DVD-shaped state
++	sed -i 's/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE="2800M"/' "$DEFCONFIG"
++	sed -i 's#\(<partition label="ROOTFS" size_in_kb=\)"[0-9]*"#\1"3072000"#' "$PARTXML"
++	# ensure the usb.disk0 lines are present in genimage (DVD shape)
++	grep -q '"usb.disk0"' "$GENIMG" || sed -i 's#\("usb.ncm.mac",\)#\1\n                        "usb.disk0",\n                        "usb.disk0.size",#' "$GENIMG"
++	# restore the ISO into the overlay if we stashed it
++	[ -f "$ISO_STASH" ] && [ ! -f "$ISO_OVERLAY" ] && { mkdir -p "$(dirname "$ISO_OVERLAY")"; mv "$ISO_STASH" "$ISO_OVERLAY"; }
++}
++trap restore EXIT
++
++if [ "$VARIANT" = dvd ]; then
++	export RNSBOX_WITH_DVD=1
++	echo "--- DVD: (re)build the clients ISO ---"
++	bash build/clients-stick/build-clients-img.sh || { echo "FATAL: ISO build"; exit 92; }
++	# auto-size rootfs to fit the (dynamic, latest) clients ISO: ISO + ~400M for
++	# the OS, partition = ext4 + 200 MiB headroom. S99resizefs still grows the
++	# rootfs to fill the card on first boot, so this only sets the shipped size.
++	ISO=buildroot/board/cvitek/SG200X/overlay/opt/rnsbox-clients/usbdisk.iso
++	ISO_MB=$(( ($(stat -c%s "$ISO") + 1048575) / 1048576 ))
++	EXT2_MB=$(( ISO_MB + 400 ))
++	PART_KB=$(( (EXT2_MB + 200) * 1024 ))
++	echo "--- DVD: ISO ${ISO_MB}M -> rootfs ${EXT2_MB}M, partition $(( PART_KB / 1024 ))MiB ---"
++	sed -i "s/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE=\"${EXT2_MB}M\"/" "$DEFCONFIG"
++	sed -i "s#\(<partition label=\"ROOTFS\" size_in_kb=\)\"[0-9]*\"#\1\"${PART_KB}\"#" "$PARTXML"
++	grep -q '"usb.disk0"' "$GENIMG" || sed -i 's#\("usb.ncm.mac",\)#\1\n                        "usb.disk0",\n                        "usb.disk0.size",#' "$GENIMG"
++	SUFFIX=dvd
++else
++	export RNSBOX_WITH_DVD=0
++	echo "--- LITE: NCM-only, strip ISO + shrink sizes ---"
++	# stash the big ISO out of the overlay so it doesn't bloat the lite rootfs
++	[ -f "$ISO_OVERLAY" ] && mv "$ISO_OVERLAY" "$ISO_STASH"
++	rm -f buildroot/output/target/opt/rnsbox-clients/usbdisk.iso 2>/dev/null
++	sed -i 's/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE="200M"/' "$DEFCONFIG"
++	sed -i 's#\(<partition label="ROOTFS" size_in_kb=\)"[0-9]*"#\1"1638400"#' "$PARTXML"
++	# drop the usb.disk0 lines from the genimage boot.vfat list (would error if absent)
++	sed -i '/"usb.disk0",/d; /"usb.disk0.size",/d' "$GENIMG"
++	SUFFIX=lite
++fi
++
++echo "--- ensure all overlay init scripts are executable ---"
++# The Write/Edit tooling doesn't preserve the +x bit, so a newly-authored
++# init script can ship as rw-r--r-- — which both the boot rc and the portal's
++# subprocess execve() reject (EACCES). Force +x on every S* init script so a
++# missing execute bit can never reach the image again.
++chmod 0755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/S* 2>/dev/null
++
++echo "--- source cvisetup + defconfig ---"
++source build/cvisetup.sh || { echo "FATAL: cvisetup"; exit 93; }
++defconfig sg2002_licheervnano_sd || { echo "FATAL: defconfig"; exit 94; }
++BRD="${BR_DIR:-$ROOT/buildroot}"
++rm -rf "$BRD"/output/build/rnsbox-portal-0.1.0
++export PATH=/usr/sbin:/sbin:$PATH
++
++echo "--- pack_rootfs ---"
++pack_rootfs || { echo "FATAL: pack_rootfs"; exit 95; }
++echo "--- pack_burn_image ---"
++pack_burn_image || { echo "FATAL: pack_burn_image"; exit 96; }
++
++# tag the produced image with the variant suffix
++NEW=$(ls -t install/soc_sg2002_licheervnano_sd/images/*.img | head -1)
++TAGGED="${NEW%.img}-${SUFFIX}.img"
++cp -f "$NEW" "$TAGGED"
++echo "=================== BUILD OK [$VARIANT] $(date) ==================="
++ls -lh "$TAGGED" | awk '{print "  "$5"  "$NF}'
++echo "DONE-SENTINEL-OK"
+diff --git a/build/boards/sg200x/sg2002_licheervnano_sd/partition/partition_sd.xml b/build/boards/sg200x/sg2002_licheervnano_sd/partition/partition_sd.xml
+index a75f252b4..fbbf6a760 100644
+--- a/build/boards/sg200x/sg2002_licheervnano_sd/partition/partition_sd.xml
++++ b/build/boards/sg200x/sg2002_licheervnano_sd/partition/partition_sd.xml
+@@ -1,4 +1,10 @@
+ <physical_partition type="sd">
+     <partition label="BOOT" size_in_kb="80960" readonly="false" file="boot.sd"/>
+-    <partition label="ROOTFS" size_in_kb="1638400" readonly="false" file="rootfs.sd" />
++    <!-- RNSBox: 1638400 (1600 MiB) -> 3072000 (3000 MiB) so the rootfs.sd
++         partition can hold the ~2.8 GB ext4 that now carries the 2.1 GB
++         read-only clients ISO. Must be >= BR2_TARGET_ROOTFS_EXT2_SIZE.
++         S99resizefs grows partition 2 to fill the card at first boot, so
++         this only sets the SHIPPED partition size. The card must be > ~3 GB
++         (any modern microSD is). -->
++    <partition label="ROOTFS" size_in_kb="3072000" readonly="false" file="rootfs.sd" />
+ </physical_partition>
+diff --git a/build/clients-stick/build-clients-img.sh b/build/clients-stick/build-clients-img.sh
+new file mode 100755
+index 000000000..1dfa6da25
+--- /dev/null
++++ b/build/clients-stick/build-clients-img.sh
+@@ -0,0 +1,64 @@
++#!/bin/bash
++# Build the read-only, pre-populated ISO9660 "DVD" client image from whatever
++# binaries fetch-clients.sh placed under dl/clients/<App>/ (version-agnostic --
++# no filenames are hardcoded, so bumping to newer upstream releases needs no
++# change here). Emulated as an optical disc by f_mass_storage (lun.0/cdrom=1),
++# so the host treats it as read-only media and never offers to format it.
++#
++# xorriso flags: -J Joliet (Windows long names), -r Rock Ridge (Unix names +
++# perms), -V volume id RNSBOX. Output ships inside rootfs at
++# /opt/rnsbox-clients/usbdisk.iso; S08usbdev points the mass-storage LUN at it.
++set -u
++ROOT="$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)"
++cd "$ROOT" || exit 90
++SRC="$ROOT/dl/clients"
++EXTRA="$ROOT/build/clients-stick/extra"
++OUTDIR="$ROOT/buildroot/board/cvitek/SG200X/overlay/opt/rnsbox-clients"
++OUTISO="$OUTDIR/usbdisk.iso"
++LABEL="RNSBOX"
++APPS="MeshChat MeshChatX Ratspeak Columba Sideband"
++# installer/binary extensions we ship (everything else in dl/clients is skipped:
++# .sha256, checksums*, .rsg, .yml, .json, .whl, .aab, .blockmap, .plan, ...)
++FIND_BINS=( -type f \( -name '*.exe' -o -name '*.msi' -o -name '*.dmg' \
++	-o -name '*.AppImage' -o -name '*.appimage' -o -name '*.deb' -o -name '*.rpm' \
++	-o -name '*.apk' -o -name '*.zip' -o -name '*.flatpak' \) )
++
++echo "=== build-clients-img (ISO9660) $(date) ==="
++command -v xorriso >/dev/null 2>&1 || { echo "FATAL: xorriso not on host (apt-get install xorriso)"; exit 91; }
++
++# --- require at least one binary per app (fail loudly otherwise) ---
++miss=0
++for a in $APPS; do
++	n=$(find "$SRC/$a" "${FIND_BINS[@]}" 2>/dev/null | wc -l)
++	echo "  $a: $n binaries"
++	[ "$n" -ge 1 ] || { echo "    MISSING binaries for $a"; miss=1; }
++done
++[ "$miss" = 0 ] || { echo "FATAL: missing client binaries (run ./fetch-clients.sh first)"; exit 92; }
++
++# --- stage a tree, one dir per app ---
++STAGE=$(mktemp -d)
++for a in $APPS; do
++	mkdir -p "$STAGE/$a"
++	find "$SRC/$a" "${FIND_BINS[@]}" -exec cp {} "$STAGE/$a/" \;
++done
++[ -f "$SRC/MANIFEST.txt" ] && cp "$SRC/MANIFEST.txt" "$STAGE/SHA256SUMS.txt"
++cp "$EXTRA/README.txt" "$EXTRA/index.html" "$STAGE/" 2>/dev/null || true
++
++echo "  staged $(du -sh "$STAGE" | cut -f1) across $APPS"
++
++mkdir -p "$OUTDIR"
++rm -f "$OUTISO"
++xorriso -as mkisofs \
++	-V "$LABEL" \
++	-J -joliet-long -r \
++	-o "$OUTISO" \
++	"$STAGE" 2>/tmp/xorriso.log
++rc=$?
++if [ $rc -ne 0 ]; then echo "FATAL: xorriso rc=$rc"; tail -8 /tmp/xorriso.log; rm -rf "$STAGE"; exit 93; fi
++
++echo "=== verify ISO ==="
++echo "  size: $(du -h "$OUTISO" | cut -f1)"
++file "$OUTISO" | sed 's/^/  /'
++xorriso -indev "$OUTISO" -toc 2>/dev/null | grep -iE 'Volume id|Media' | sed 's/^/    /'
++rm -rf "$STAGE"
++echo "CLIENTS-IMG-DONE"
+diff --git a/build/clients-stick/extra/README.txt b/build/clients-stick/extra/README.txt
+new file mode 100644
+index 000000000..0c6fd78ad
+--- /dev/null
++++ b/build/clients-stick/extra/README.txt
+@@ -0,0 +1,79 @@
++===============================================================================
++  RNSBox  --  Reticulum Network Router  --  Quick Start
++===============================================================================
++
++This USB drive is shipped with your RNSBox router and contains the messaging
++apps you need to start using the Reticulum network. The drive is READ-ONLY.
++
++Open  index.html  in a web browser for a clickable version of this guide.
++
++The exact version and SHA-256 of every file on this drive are listed in
++SHA256SUMS.txt (the apps are the latest stable releases at build time).
++
++-------------------------------------------------------------------------------
++  WHAT IS THIS BOX?
++-------------------------------------------------------------------------------
++RNSBox runs "rnsd", the Reticulum Network Stack daemon, as a transport node.
++When you plug it into a computer over USB-C, the computer gets a network
++connection to the box, and through it, to the wider Reticulum network.
++
++  - Admin web UI:   http://10.42.0.1/        (login: admin / admin)
++  - The box on the network:
++        AutoInterface      -> auto-discovered by apps on the USB link (easiest)
++        TCPServerInterface -> 10.42.0.1 : 4242   (use this if you set up an
++                                                  interface by hand)
++
++-------------------------------------------------------------------------------
++  PICK AN APP   (each folder holds installers for every platform)
++-------------------------------------------------------------------------------
++
++  \MeshChat\    Reticulum MeshChat -- easiest, recommended start. Windows
++                installer or portable .exe, macOS .dmg, Linux .AppImage.
++
++  \MeshChatX\   MeshChatX -- feature-rich MeshChat fork (RNS + LXMF + LXST in
++                one app). Windows, macOS, Linux (AppImage/deb/rpm/flatpak),
++                Android APK.
++
++  \Ratspeak\    Account-free LXMF messenger with voice (experimental) + games.
++                Windows .exe/.msi, macOS .dmg, Linux AppImage/.deb/.rpm,
++                Android APKs. NOTE: alpha software; the macOS build is
++                unsigned. AGPL-3.0 (source at the project page below).
++
++  \Columba\     Native Android client (Material Design). Install the APK that
++                matches your phone (arm64-v8a for most modern phones, or the
++                universal APK).
++
++  \Sideband\    Advanced client (voice calls, telemetry). Windows .zip, Linux
++                AppImage, Android APK. NOTE: licensed CC BY-NC-SA 4.0
++                (NonCommercial).
++
++ON THE BOX ITSELF
++  NomadNet (terminal LXMF + pages client) is already installed on RNSBox.
++  SSH in (root / admin) and run:  nomadnet
++  (It is disabled as a background service by default; running it interactively
++   is fine.)
++
++-------------------------------------------------------------------------------
++  CONNECTING AN APP TO THIS BOX
++-------------------------------------------------------------------------------
++1. Plug RNSBox into your computer with USB-C. Your OS gets a new network
++   connection (the box is 10.42.0.1).
++2. Open the app. Most will AUTO-DISCOVER the box via the AutoInterface on the
++   USB link -- nothing to configure.
++3. If you need to add it by hand, add a TCP Client interface pointing at:
++        Host: 10.42.0.1     Port: 4242
++4. You're on Reticulum. Find a peer's address and start messaging.
++
++-------------------------------------------------------------------------------
++  APPS & LICENSES
++-------------------------------------------------------------------------------
++  MeshChat    (MIT)              github.com/liamcottle/reticulum-meshchat
++  MeshChatX   (0BSD + MIT)       github.com/Quad4-Software/MeshChatX
++  Ratspeak    (AGPL-3.0, alpha)  github.com/ratspeak/Ratspeak
++  Columba     (MPL-2.0)          github.com/torlando-tech/columba
++  Sideband    (CC BY-NC-SA 4.0)  github.com/markqvist/Sideband
++  NomadNet    (on the device)    github.com/markqvist/NomadNet
++
++  Exact versions + SHA-256 for every file are in  SHA256SUMS.txt.
++  For newer versions, visit the project pages above.
++===============================================================================
+diff --git a/build/clients-stick/extra/index.html b/build/clients-stick/extra/index.html
+new file mode 100644
+index 000000000..914e7a2fa
+--- /dev/null
++++ b/build/clients-stick/extra/index.html
+@@ -0,0 +1,98 @@
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<title>RNSBox — Quick Start</title>
++<style>
++  :root{--teal:#0d3e54;--accent:#10bbff;--bg:#f3f4f6;--card:#fff;--mut:#6b7280;--bd:#e5e7eb}
++  *{box-sizing:border-box}
++  body{margin:0;font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:#1f2937;background:var(--bg)}
++  header{background:var(--teal);color:#fff;padding:22px 28px}
++  header h1{margin:0;font-size:22px}header .s{color:#9fbed0;font-size:14px}
++  main{max-width:880px;margin:0 auto;padding:22px}
++  .card{background:var(--card);border:1px solid var(--bd);border-radius:7px;padding:18px 22px;margin:0 0 18px}
++  h2{font-size:17px;color:var(--teal);margin:0 0 12px}
++  a{color:#1577a8}code{background:#eef2f5;padding:1px 6px;border-radius:4px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px}
++  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
++  .app{border:1px solid var(--bd);border-radius:6px;padding:14px}
++  .app h3{margin:0 0 6px;font-size:15px}.app .p{color:var(--mut);font-size:13px;margin:0 0 8px}
++  .dl{display:inline-block;margin:6px 0 0;font-size:14px;font-weight:600}
++  .plat{color:var(--mut);font-size:12.5px;margin:6px 0 0}
++  .tag{display:inline-block;background:var(--accent);color:#04323f;font-size:11px;font-weight:600;padding:1px 7px;border-radius:10px;vertical-align:middle}
++  .nc{background:#fde68a;color:#7c5e00}
++  table{border-collapse:collapse;width:100%;font-size:13.5px}td,th{text-align:left;padding:5px 8px;border-bottom:1px solid var(--bd)}
++  .mut{color:var(--mut);font-size:13px}
++  ol{margin:6px 0 0;padding-left:20px}ol li{margin:4px 0}
++</style>
++</head>
++<body>
++<header>
++  <h1>&#9678; RNSBox &mdash; Quick Start</h1>
++  <div class="s">Reticulum Network Router &middot; messaging apps on this read-only drive</div>
++</header>
++<main>
++
++  <div class="card">
++    <h2>Your box on the network</h2>
++    <table>
++      <tr><th>Admin web UI</th><td><a href="http://10.42.0.1/">http://10.42.0.1/</a> &nbsp;<span class="mut">(login admin / admin)</span></td></tr>
++      <tr><th>Auto-discovery</th><td>AutoInterface on the USB link &mdash; most apps find the box with no setup</td></tr>
++      <tr><th>Manual TCP interface</th><td>Host <code>10.42.0.1</code> &nbsp; Port <code>4242</code></td></tr>
++    </table>
++  </div>
++
++  <div class="card">
++    <h2>Pick an app <span class="mut" style="font-weight:400">&mdash; open a folder and choose the installer for your platform</span></h2>
++    <div class="grid">
++      <div class="app">
++        <h3>MeshChat <span class="tag">recommended</span></h3>
++        <p class="p">Easiest start. MIT.</p>
++        <a class="dl" href="MeshChat/">Open MeshChat/ &rarr;</a>
++        <p class="plat">Windows (installer / portable) &middot; macOS &middot; Linux AppImage</p>
++      </div>
++      <div class="app">
++        <h3>MeshChatX</h3>
++        <p class="p">Feature-rich MeshChat fork (RNS + LXMF + LXST). 0BSD + MIT.</p>
++        <a class="dl" href="MeshChatX/">Open MeshChatX/ &rarr;</a>
++        <p class="plat">Windows &middot; macOS &middot; Linux (AppImage/deb/rpm/flatpak) &middot; Android</p>
++      </div>
++      <div class="app">
++        <h3>Sideband <span class="tag nc">NonCommercial</span></h3>
++        <p class="p">Advanced: voice calls, telemetry. CC BY-NC-SA 4.0.</p>
++        <a class="dl" href="Sideband/">Open Sideband/ &rarr;</a>
++        <p class="plat">Windows (.zip) &middot; Linux AppImage &middot; Android</p>
++      </div>
++      <div class="app">
++        <h3>Ratspeak <span class="tag nc">alpha</span></h3>
++        <p class="p">Account-free LXMF messenger, voice + games. AGPL-3.0. macOS build is unsigned.</p>
++        <a class="dl" href="Ratspeak/">Open Ratspeak/ &rarr;</a>
++        <p class="plat">Windows (.exe/.msi) &middot; macOS &middot; Linux (AppImage/deb/rpm) &middot; Android</p>
++      </div>
++      <div class="app">
++        <h3>Columba</h3>
++        <p class="p">Native Android client, Material Design. MPL-2.0.</p>
++        <a class="dl" href="Columba/">Open Columba/ &rarr;</a>
++        <p class="plat">Android APK (arm64-v8a for most phones, or universal)</p>
++      </div>
++    </div>
++  </div>
++
++  <div class="card">
++    <h2>Connect an app to this box</h2>
++    <ol>
++      <li>Plug RNSBox into your computer with USB-C &mdash; your OS gets a new network connection (the box is <code>10.42.0.1</code>).</li>
++      <li>Open MeshChat (or Sideband). It usually <b>auto-discovers</b> the box over the USB link &mdash; nothing to configure.</li>
++      <li>To add it by hand: add a <b>TCP Client</b> interface &rarr; Host <code>10.42.0.1</code>, Port <code>4242</code>.</li>
++      <li>You're on Reticulum. (NomadNet is also already on the box &mdash; SSH in as root/admin and run <code>nomadnet</code>.)</li>
++    </ol>
++  </div>
++
++  <div class="card">
++    <h2 style="margin-bottom:6px">On this drive</h2>
++    <p class="mut">Apps are the latest stable releases at build time. Exact versions and SHA-256 for every file are in <code>SHA256SUMS.txt</code>. Sources: MeshChat (github.com/liamcottle/reticulum-meshchat), MeshChatX (github.com/Quad4-Software/MeshChatX), Ratspeak (github.com/ratspeak/Ratspeak), Columba (github.com/torlando-tech/columba), Sideband (github.com/markqvist/Sideband).</p>
++  </div>
++
++</main>
++</body>
++</html>
+diff --git a/fetch-clients.sh b/fetch-clients.sh
+new file mode 100755
+index 000000000..1e884132a
+--- /dev/null
++++ b/fetch-clients.sh
+@@ -0,0 +1,132 @@
++#!/bin/bash
++# Download the LATEST STABLE release of each Reticulum client into dl/clients/
++# for the read-only quick-start DVD. Versions are resolved dynamically from
++# each project's GitHub "latest" (non-prerelease) release at run time -- nothing
++# is version-pinned here, so re-running picks up new upstream releases.
++#
++# Where a release publishes checksums (per-file *.sha256 or a checksums file),
++# each download is verified against them; otherwise the computed sha256 is
++# recorded. A per-run dl/clients/MANIFEST.txt captures app/version/file/sha256.
++set -u
++cd "$(dirname "$(readlink -f "$0")")" || exit 90
++DEST=dl/clients
++LOG=/tmp/fetch-clients.log; : > "$LOG"; exec > >(tee -a "$LOG") 2>&1
++echo "=== fetch-clients (latest stable) $(date) ==="
++command -v python3 >/dev/null || { echo "FATAL: python3 required"; exit 90; }
++command -v curl    >/dev/null || { echo "FATAL: curl required"; exit 90; }
++mkdir -p "$DEST"
++
++# 1) resolve latest-stable releases + curated asset lists.
++#    Emits: BIN|app|version|url|filename   and   SUM|app|version|url|filename
++PLAN="$DEST/.plan"
++python3 - "$PLAN" <<'PY'
++import json, urllib.request, urllib.error, sys
++out = open(sys.argv[1], "w")
++def api(url):
++    req = urllib.request.Request(url, headers={"User-Agent": "rnsbox-fetch",
++                                               "Accept": "application/vnd.github+json"})
++    return json.load(urllib.request.urlopen(req, timeout=60))
++def latest(repo):
++    try:
++        return api(f"https://api.github.com/repos/{repo}/releases/latest")
++    except urllib.error.HTTPError:            # no stable release marked -> newest
++        rels = api(f"https://api.github.com/repos/{repo}/releases?per_page=1")
++        return rels[0] if rels else None
++def pick(app, names):        # lean: one primary installer per OS family
++    INST = ('.exe', '.msi', '.dmg', '.AppImage', '.appimage', '.deb', '.rpm', '.apk', '.zip', '.flatpak')
++    names = [n for n in names if n.endswith(INST)]   # real installers only -- drop .blockmap/.cosign.bundle/.yml/.json/.sha256/.rsg sidecars
++    e = lambda n, x: n.endswith(x)
++    if app == "MeshChat":    # win installer, mac (arm64+x64), linux AppImage
++        return [n for n in names if e(n, ('.AppImage', '.dmg')) or 'win-installer' in n]
++    if app == "MeshChatX":   # win installer, mac dmg x2, linux AppImage x2, android apk
++        return [n for n in names if n.startswith('ReticulumMeshChatX')
++                and ('win-installer' in n or e(n, '.dmg') or e(n, '.AppImage')
++                     or (e(n, '.apk') and 'android' in n))]
++    if app == "Ratspeak":    # win setup, mac dmg x2, linux AppImage, android apk x3
++        return [n for n in names if 'windows-x64-setup' in n or e(n, ('.dmg', '.AppImage', '.apk'))]
++    if app == "Columba":     # android per-arch (official rns-py build)
++        c = [n for n in names if e(n, '.apk') and 'official-rns-py' in n and 'no-sentry' not in n]
++        return c or [n for n in names if e(n, '.apk') and not e(n, '.sha256')]
++    if app == "Sideband":    # android apk, linux AppImage x2, win zip
++        return [n for n in names if e(n, ('.apk', '.appimage', '.zip')) and not e(n, '.rsg')]
++    return []
++REPOS = [("MeshChat",  "liamcottle/reticulum-meshchat"),
++         ("MeshChatX", "Quad4-Software/MeshChatX"),
++         ("Ratspeak",  "ratspeak/Ratspeak"),
++         ("Columba",   "torlando-tech/columba"),
++         ("Sideband",  "markqvist/Sideband")]
++rc = 0
++for app, repo in REPOS:
++    rel = latest(repo)
++    if not rel:
++        sys.stderr.write(f"!! {app}: no release found\n"); rc = 1; continue
++    ver = rel["tag_name"]
++    assets = {a["name"]: a["browser_download_url"] for a in rel.get("assets", [])}
++    chosen = pick(app, list(assets))
++    if not chosen:
++        sys.stderr.write(f"!! {app}: no matching assets in {ver}\n"); rc = 1; continue
++    sys.stderr.write(f"   {app}: {ver} -> {len(chosen)} binaries\n")
++    for n in chosen:
++        out.write(f"BIN|{app}|{ver}|{assets[n]}|{n}\n")
++    for name, url in assets.items():
++        if name.endswith('.sha256') or name.lower().startswith('checksums') or name == 'SHA256SUMS':
++            out.write(f"SUM|{app}|{ver}|{url}|{name}\n")
++out.close(); sys.exit(rc)
++PY
++[ $? -eq 0 ] || { echo "FATAL: could not resolve latest releases (network / GitHub API)"; exit 91; }
++
++# 2) download binaries then checksum sidecars, into per-app subdirs
++dl() { # url dir name  -> 0 ok / 1 fail
++	local url="$1" dir="$2" name="$3" out="$2/$3"
++	mkdir -p "$dir"
++	if [ -s "$out" ]; then echo "  cached: $name"; return 0; fi
++	echo "  get: $name"
++	if curl -fL --retry 3 --retry-delay 2 -C - -o "$out" "$url"; then
++		echo "    ok: $(du -h "$out" | cut -f1)"
++	else
++		echo "    FAILED: $name"; rm -f "$out"; return 1
++	fi
++}
++FAIL=0
++while IFS='|' read -r kind app ver url name; do
++	[ "$kind" = BIN ] || continue
++	dl "$url" "$DEST/$app" "$name" || FAIL=1
++done < "$PLAN"
++while IFS='|' read -r kind app ver url name; do
++	[ "$kind" = SUM ] || continue
++	dl "$url" "$DEST/$app" "$name" || true      # checksum files are best-effort
++done < "$PLAN"
++
++# 3) build a basename->sha256 index from any downloaded checksum files
++IDX="$DEST/.shaidx"; : > "$IDX"
++find "$DEST" -type f \( -name '*.sha256' -o -iname 'checksums*' -o -name 'SHA256SUMS' \) 2>/dev/null | while read -r cf; do
++	awk 'NF>=2 && $1 ~ /^[0-9a-fA-F]{64}$/ {n=$2; sub(/.*\//,"",n); print $1"  "n}' "$cf" >> "$IDX"
++	if [ "$(wc -w < "$cf")" -eq 1 ]; then      # bare-hash "<file>.sha256"
++		printf '%s  %s\n' "$(tr -d '[:space:]' < "$cf")" "$(basename "$cf" .sha256)" >> "$IDX"
++	fi
++done
++
++# 4) verify against the index where possible; record everything in the manifest
++MAN="$DEST/MANIFEST.txt"; : > "$MAN"
++echo "# RNSBox client binaries -- fetched $(date -u)" >> "$MAN"
++echo "# app  version  file  sha256  status" >> "$MAN"
++while IFS='|' read -r kind app ver url name; do
++	[ "$kind" = BIN ] || continue
++	f="$DEST/$app/$name"
++	[ -s "$f" ] || { echo "  MISSING: $app/$name"; FAIL=1; continue; }
++	sha=$(sha256sum "$f" | cut -d' ' -f1)
++	want=$(awk -v n="$name" '$2==n{print $1; exit}' "$IDX")
++	if [ -n "$want" ]; then
++		[ "$want" = "$sha" ] && st=VERIFIED || { st=MISMATCH; FAIL=1; echo "  !! CHECKSUM MISMATCH: $app/$name"; }
++	else
++		st=RECORDED
++	fi
++	printf '%s  %s  %s  %s  %s\n' "$app" "$ver" "$name" "$sha" "$st" >> "$MAN"
++done < "$PLAN"
++rm -f "$PLAN" "$IDX"
++
++echo "=== manifest ($MAN) ==="; cat "$MAN"
++echo "=== per-app totals ==="; du -sh "$DEST"/*/ 2>/dev/null
++echo "=== grand total ==="; du -sh "$DEST"
++[ "$FAIL" = 0 ] || { echo "FETCH-FAIL"; exit 92; }
++echo "FETCH-DONE-SENTINEL"
+-- 
+2.47.3
+
