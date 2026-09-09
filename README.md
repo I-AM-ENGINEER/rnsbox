@@ -10,7 +10,7 @@ Linux kernel, Buildroot and the CVITEK/Sipeed BSP themselves come from
 upstream and are fetched at build time.
 
 - **Upstream base:** [`sipeed/LicheeRV-Nano-Build`](https://github.com/sipeed/LicheeRV-Nano-Build) at commit `d4003f15b`
-- **The delta:** 20 patches in [`patches/`](patches), MIT-licensed
+- **The delta:** 21 patches in [`patches/`](patches), MIT-licensed
 
 ## Quick start
 
@@ -48,8 +48,10 @@ genimage's `mkdosfs`; it handles this itself.
 - **eth0 = WAN**, DHCP or static, with NAT masquerade plus per-rule port
   forwarding and open-port management.
 - **`rnsbox-portal`** — a Flask admin UI on `http://10.42.0.1/` for network,
-  Reticulum, WiFi and system settings. It is the single source of truth for the
-  generated `nftables` ruleset (boot and live-apply both call the same module).
+  Reticulum, WiFi and system settings — including setting the clock from your
+  browser and configuring NTP servers, handy on a board with no RTC. It is the
+  single source of truth for the generated `nftables` ruleset (boot and
+  live-apply both call the same module).
 - Optional **NomadNet** LXMF / pages node (off by default) and **AIC8800 WiFi**
   STA/AP support for the *W* board variant.
 
@@ -60,7 +62,7 @@ DDR is available to Linux and the router data plane.
 ## Repository layout
 
 ```
-patches/          the 20-patch RNSBox series (git am-able onto d4003f15b)
+patches/          the 21-patch RNSBox series (git am-able onto d4003f15b)
 build.sh          one-command: clone upstream -> apply patches -> build
 LICENSE           MIT (the RNSBox delta)
 README.md         this file
