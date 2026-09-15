@@ -10,7 +10,7 @@ Linux kernel, Buildroot and the CVITEK/Sipeed BSP themselves come from
 upstream and are fetched at build time.
 
 - **Upstream base:** [`sipeed/LicheeRV-Nano-Build`](https://github.com/sipeed/LicheeRV-Nano-Build) at commit `d4003f15b`
-- **The delta:** 21 patches in [`patches/`](patches), MIT-licensed
+- **The delta:** 22 patches in [`patches/`](patches), MIT-licensed
 
 ## Quick start
 
@@ -54,6 +54,10 @@ genimage's `mkdosfs`; it handles this itself.
   live-apply both call the same module).
 - Optional **NomadNet** LXMF / pages node (off by default) and **AIC8800 WiFi**
   STA/AP support for the *W* board variant.
+- Optional **SLIP-over-UART link to an external WiFi-HaLow (RNode) modem** — a
+  [RNode_Halow_Firmware](https://github.com/I-AM-ENGINEER/RNode_Halow_Firmware)
+  bridge — for long-range sub-GHz Reticulum over a 3-wire serial link, with the
+  modem's own web UI reverse-proxied through the portal login. Off by default.
 
 The design goal throughout is a minimal OS: the camera / display / audio / NPU
 / codec middleware of the stock BSP is stripped so nearly all of the 256 MB
@@ -62,7 +66,7 @@ DDR is available to Linux and the router data plane.
 ## Repository layout
 
 ```
-patches/          the 21-patch RNSBox series (git am-able onto d4003f15b)
+patches/          the 22-patch RNSBox series (git am-able onto d4003f15b)
 build.sh          one-command: clone upstream -> apply patches -> build
 LICENSE           MIT (the RNSBox delta)
 README.md         this file
