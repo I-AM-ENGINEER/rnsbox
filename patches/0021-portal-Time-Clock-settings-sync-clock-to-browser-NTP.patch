@@ -1,7 +1,7 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 320d0eaaa9f7060ea07f02f23359c3f582f66e65 Mon Sep 17 00:00:00 2001
 From: smit1237 <smit1237@gmail.com>
 Date: Wed, 9 Sep 2026 18:06:39 +0300
-Subject: [PATCH 21/22] =?UTF-8?q?portal:=20Time=20&=20Clock=20settings=20?=
+Subject: [PATCH 21/23] =?UTF-8?q?portal:=20Time=20&=20Clock=20settings=20?=
  =?UTF-8?q?=E2=80=94=20sync=20clock=20to=20browser=20+=20NTP=20servers?=
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -24,164 +24,26 @@ All three routes are login-gated; the epoch is int-validated (incl.
 OverflowError for 'inf') before use, and NTP server names are character-
 validated before they reach the config file.
 ---
- .../rnsbox-portal/src/rnsbox_portal/app.py    | 62 ++++++++++++++++++-
- .../src/rnsbox_portal/static/style.css        |  6 ++
- .../rnsbox-portal/src/rnsbox_portal/store.py  | 36 +++++++++++
- .../src/rnsbox_portal/templates/settings.html | 46 ++++++++++++++
- 4 files changed, 149 insertions(+), 1 deletion(-)
+ .../rnsbox-portal/src/cgi/pages/settings.html |  82 ++++++++++
+ .../rnsbox-portal/src/cgi/routes_settings.cpp | 149 ++++++++++++++++++
+ 2 files changed, 231 insertions(+)
+ create mode 100644 buildroot/package/rnsbox-portal/src/cgi/pages/settings.html
+ create mode 100644 buildroot/package/rnsbox-portal/src/cgi/routes_settings.cpp
 
-diff --git a/buildroot/package/rnsbox-portal/src/rnsbox_portal/app.py b/buildroot/package/rnsbox-portal/src/rnsbox_portal/app.py
-index bba1f5136..4aef9e280 100644
---- a/buildroot/package/rnsbox-portal/src/rnsbox_portal/app.py
-+++ b/buildroot/package/rnsbox-portal/src/rnsbox_portal/app.py
-@@ -351,7 +351,67 @@ def create_app():
-     @app.route("/settings")
-     @login_required
-     def settings():
--        return render_template("settings.html", wan=store.read_wan())
-+        now = time.time()
-+        return render_template(
-+            "settings.html",
-+            wan=store.read_wan(),
-+            sys_time=time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(now)),
-+            time_synced=(now > 1600000000),   # > 2020-09 => the clock has been set
-+            ntp_servers="\n".join(store.read_ntp_servers()),
-+        )
+diff --git a/buildroot/package/rnsbox-portal/src/cgi/pages/settings.html b/buildroot/package/rnsbox-portal/src/cgi/pages/settings.html
+new file mode 100644
+index 000000000..951114e03
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/cgi/pages/settings.html
+@@ -0,0 +1,82 @@
++<h2>Settings</h2>
 +
-+    @app.route("/settings/time/browser", methods=["POST"])
-+    @login_required
-+    def settings_time_browser():
-+        # Set the system clock from the admin's browser (no RTC on the board).
-+        # The browser posts its current UTC epoch; we sanity-check it's in a
-+        # plausible window before stepping the clock. rnsd tolerates the jump.
-+        try:
-+            # OverflowError guards int(float("inf")) — float() accepts "inf"
-+            # without raising, and int(inf) then raises OverflowError.
-+            epoch = int(float(request.form.get("epoch", "")))
-+        except (TypeError, ValueError, OverflowError):
-+            flash("Could not read the browser time.", "error")
-+            return redirect(url_for("settings"))
-+        if not (1577836800 <= epoch <= 4102444800):   # 2020-01-01 .. 2100-01-01
-+            flash("Browser time looks implausible; clock not changed.", "error")
-+            return redirect(url_for("settings"))
-+        stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(epoch))
-+        try:
-+            # @epoch is an absolute instant (no timezone/format ambiguity);
-+            # busybox 1.36 date and GNU date both accept it.
-+            subprocess.run(["date", "-s", "@%d" % epoch], check=False, timeout=5)
-+            flash("Clock set to %s UTC (from your browser). rnsd picks up the "
-+                  "new time on its own." % stamp, "success")
-+        except Exception as e:
-+            flash(f"Error setting clock: {e}", "error")
-+        return redirect(url_for("settings"))
-+
-+    @app.route("/settings/ntp", methods=["POST"])
-+    @login_required
-+    def settings_ntp():
-+        raw = request.form.get("servers", "")
-+        servers = raw.replace(",", " ").split()
-+        saved = store.write_ntp_servers(servers)
-+        dropped = len(servers) - len(saved)
-+        msg = "Saved %d NTP server%s." % (len(saved), "" if len(saved) == 1 else "s")
-+        if dropped:
-+            msg += " %d invalid entr%s ignored." % (
-+                dropped, "y" if dropped == 1 else "ies")
-+        msg += " Restart NTP to apply."
-+        flash(msg, "success")
-+        return redirect(url_for("settings"))
-+
-+    @app.route("/settings/ntp/restart", methods=["POST"])
-+    @login_required
-+    def settings_ntp_restart():
-+        try:
-+            subprocess.run(["/etc/init.d/S49ntp", "restart"], check=False, timeout=15)
-+            flash("ntpd restarted — it will step the clock once it reaches a "
-+                  "server.", "success")
-+        except Exception as e:
-+            flash(f"Error: {e}", "error")
-+        return redirect(url_for("settings"))
- 
-     @app.route("/settings/password", methods=["POST"])
-     @login_required
-diff --git a/buildroot/package/rnsbox-portal/src/rnsbox_portal/static/style.css b/buildroot/package/rnsbox-portal/src/rnsbox_portal/static/style.css
-index 7c0266ec4..32a29cbfe 100644
---- a/buildroot/package/rnsbox-portal/src/rnsbox_portal/static/style.css
-+++ b/buildroot/package/rnsbox-portal/src/rnsbox_portal/static/style.css
-@@ -365,3 +365,9 @@ img.qr {
- .wallet-actions { display: flex; gap: 8px; width: 100%; }
- .wallet-actions .btn { flex: 1; text-align: center; }
- .copy-btn.copied { background: var(--ok); color: #fff; border-color: var(--ok); }
-+
-+/* ---- Time & Clock (Settings) ---- */
-+.timeval { font-family: var(--mono); font-size: 15px; font-weight: 600; }
-+textarea.ntp-servers { min-height: 64px; max-width: 360px; }
-+.time-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-+form.ntp-restart { margin-top: 8px; }
-diff --git a/buildroot/package/rnsbox-portal/src/rnsbox_portal/store.py b/buildroot/package/rnsbox-portal/src/rnsbox_portal/store.py
-index 483b2dad8..69f2259e0 100644
---- a/buildroot/package/rnsbox-portal/src/rnsbox_portal/store.py
-+++ b/buildroot/package/rnsbox-portal/src/rnsbox_portal/store.py
-@@ -11,6 +11,7 @@ PF_FILE = f"{CONF_DIR}/portforward.conf"
- OP_FILE = f"{CONF_DIR}/openports.conf"
- WAN_FILE = f"{CONF_DIR}/wan.conf"
- CRON_FILE = f"{CONF_DIR}/cron.conf"
-+NTP_FILE = "/etc/ntp.conf"          # ntp package's config; we edit its `server` lines
- 
- 
- def _read_lines(path):
-@@ -299,3 +300,38 @@ def write_update_check(enabled):
-     d = read_cron_conf()
-     d["update_check"] = "yes" if enabled else "no"
-     write_cron_conf(d)
-+
-+
-+# ---- NTP servers (edit the `server` lines in /etc/ntp.conf) ----
-+
-+def _valid_ntp_server(s):
-+    """A hostname or IPv4/IPv6 literal: letters, digits, dot, colon, hyphen."""
-+    return bool(s) and len(s) <= 255 and all(
-+        c.isalnum() or c in ".:-" for c in s)
-+
-+
-+def read_ntp_servers():
-+    """Configured NTP server addresses, parsed from /etc/ntp.conf."""
-+    out = []
-+    for ln in _read_lines(NTP_FILE):
-+        parts = ln.strip().split()
-+        if len(parts) >= 2 and parts[0] in ("server", "pool"):
-+            out.append(parts[1])
-+    return out
-+
-+
-+def write_ntp_servers(servers):
-+    """Replace the `server`/`pool` lines in /etc/ntp.conf with these servers,
-+    keeping every other line (restrict, driftfile, comments) intact. Invalid
-+    entries are dropped; an empty list leaves ntpd with no upstream servers.
-+    Returns the list actually written."""
-+    clean = [s for s in servers if _valid_ntp_server(s)]
-+    kept = [ln for ln in _read_lines(NTP_FILE)
-+            if ln.strip().split()[:1] not in (["server"], ["pool"])]
-+    while kept and kept[0].strip() == "":      # keep the server block at the top
-+        kept.pop(0)
-+    new = ["server %s iburst" % s for s in clean]
-+    if new and kept:
-+        new.append("")
-+    _write_lines(NTP_FILE, new + kept)
-+    return clean
-diff --git a/buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/settings.html b/buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/settings.html
-index ba2c4023f..3f6d2e20f 100644
---- a/buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/settings.html
-+++ b/buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/settings.html
-@@ -3,6 +3,52 @@
- {% block content %}
- <h2>Settings</h2>
- 
 +<section class="card">
 +  <h3>Time &amp; Clock</h3>
 +  <table class="kv">
 +    <tr><th>System time</th><td>
-+      <span class="timeval">{{ sys_time }}</span> <span class="muted">UTC</span>
-+      {% if time_synced %}<span class="badge ok">synced</span>{% else %}<span class="badge warn">not synced</span>{% endif %}
++      <span class="timeval">__SYS_TIME__</span> <span class="muted">UTC</span>
++      __TIME_BADGE__
 +    </td></tr>
 +  </table>
 +
@@ -190,22 +52,22 @@ index ba2c4023f..3f6d2e20f 100644
 +  clock to this device's time — the quickest way to get a correct clock on a box
 +  with no internet. rnsd picks up the new time on its own.</p>
 +  <p>This browser reads <strong id="browser-time">…</strong> UTC</p>
-+  <form method="post" action="{{ url_for('settings_time_browser') }}"
++  <form method="post" action="__BASE__/settings/time/browser"
 +        onsubmit="this.epoch.value = Math.floor(Date.now()/1000)">
 +    <input type="hidden" name="epoch" value="">
 +    <button type="submit" class="btn-primary">Sync clock to browser</button>
 +  </form>
 +
 +  <h4>NTP servers</h4>
-+  <form method="post" action="{{ url_for('settings_ntp') }}">
++  <form method="post" action="__BASE__/settings/ntp">
 +    <label>Upstream time servers — one per line; leave blank to run without NTP
-+      <textarea name="servers" class="ntp-servers" rows="3" spellcheck="false">{{ ntp_servers }}</textarea>
++      <textarea name="servers" class="ntp-servers" rows="3" spellcheck="false">__NTP_SERVERS__</textarea>
 +    </label>
 +    <div class="time-actions">
 +      <button type="submit" class="btn-primary">Save servers</button>
 +    </div>
 +  </form>
-+  <form method="post" action="{{ url_for('settings_ntp_restart') }}" class="ntp-restart">
++  <form method="post" action="__BASE__/settings/ntp/restart" class="ntp-restart">
 +    <button type="submit" class="btn">Restart NTP</button>
 +    <span class="muted">ntpd runs with <code>-g</code>, so it steps the clock even from 1970 once it can reach a server.</span>
 +  </form>
@@ -222,9 +84,192 @@ index ba2c4023f..3f6d2e20f 100644
 +  </script>
 +</section>
 +
- <section class="card">
-   <h3>Change admin password</h3>
-   <form method="post" action="{{ url_for('settings_password') }}">
--- 
-2.47.3
-
++<section class="card">
++  <h3>Change admin password</h3>
++  <form method="post" action="__BASE__/settings/password">
++    <label>Current password
++      <input type="password" name="old" autocomplete="current-password" required>
++    </label>
++    <label>New password (≥6 chars)
++      <input type="password" name="new" autocomplete="new-password" required minlength="6">
++    </label>
++    <label>Confirm new password
++      <input type="password" name="confirm" autocomplete="new-password" required minlength="6">
++    </label>
++    <button type="submit" class="btn-primary">Change password</button>
++  </form>
++</section>
++
++<section class="card">
++  <h3>Hostname</h3>
++  <form method="post" action="__BASE__/settings/hostname">
++    <label>New hostname
++      <input type="text" name="hostname" value="__HOSTNAME__" maxlength="63" required>
++    </label>
++    <button type="submit" class="btn-primary">Apply</button>
++    <p class="muted">Alphanumerics, dashes, underscores. Effective immediately for new connections; reboot for SSH banners + log file naming.</p>
++  </form>
++</section>
++
++<section class="card">
++  <h3>WAN interface</h3>
++  <p>Currently: <strong>__WAN__</strong></p>
++  <p class="muted">Switch the WAN uplink (eth0 wired ↔ wlan0 WiFi) from the
++  <a href="__BASE__/network">Network</a> tab. On the W variant, wlan0
++  WAN also needs the WiFi client connected (<a href="__BASE__/wifi">WiFi</a> tab).</p>
++</section>
+diff --git a/buildroot/package/rnsbox-portal/src/cgi/routes_settings.cpp b/buildroot/package/rnsbox-portal/src/cgi/routes_settings.cpp
+new file mode 100644
+index 000000000..bd70158f5
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/cgi/routes_settings.cpp
+@@ -0,0 +1,149 @@
++// routes_settings.cpp — Settings tab: server-rendered page + POST-redirect-GET forms.
++// Time/clock, NTP, admin password, hostname. Ported from the old Flask settings*
++// routes (app.py) — matches their field names, validation order, and flash text.
++#include "routes.h"
++#include "render.h"
++#include "web.h"
++#include "session.h"
++#include "store.h"
++#include "sysinfo.h"
++#include "util.h"
++#include <cctype>
++#include <cstdlib>
++#include <ctime>
++#include <string>
++#include <vector>
++#include <unistd.h>   // ::sleep for the wrong-password brute-force speed bump
++
++using http::Request;
++using http::Response;
++
++namespace routes {
++
++static std::string R(std::string s, const std::string& a, const std::string& b) { return web::replace_all(std::move(s), a, b); }
++static std::string E(const std::string& s) { return render::esc(s); }
++static std::string settings_redirect() { return web::base() + "/settings"; }
++
++// ---- GET render ----
++
++void settings_page(const Request& req, Response& res) {
++    if (!web::require_auth(req, res, false)) return;
++    std::string base = web::base();
++
++    std::string host = sysinfo::hostname();
++    std::string wan  = store::read_wan().interface;
++
++    std::vector<std::string> ntp = store::read_ntp_servers();
++    std::string ntp_joined;
++    for (size_t i = 0; i < ntp.size(); ++i) { if (i) ntp_joined += "\n"; ntp_joined += ntp[i]; }
++
++    time_t now = ::time(nullptr);
++    char ts[40]; struct tm tmv; gmtime_r(&now, &tmv);
++    strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", &tmv);
++    bool synced = (now > 1600000000);   // > 2020-09 => the clock has been set
++
++    std::string h = render::page_file("settings");
++    h = R(std::move(h), "__BASE__", base);
++    h = R(std::move(h), "__SYS_TIME__", E(std::string(ts)));
++    h = R(std::move(h), "__TIME_BADGE__",
++          synced ? "<span class=\"badge ok\">synced</span>"
++                 : "<span class=\"badge warn\">not synced</span>");
++    h = R(std::move(h), "__NTP_SERVERS__", E(ntp_joined));
++    h = R(std::move(h), "__HOSTNAME__", E(host));
++    h = R(std::move(h), "__WAN__", E(wan));
++
++    res.body = render::layout(req, res, "Settings", "settings", h);
++}
++
++// ---- POST-redirect-GET handlers ----
++
++void settings_password(const Request& req, Response& res) {
++    if (!web::require_auth(req, res, false)) return;
++    session::Info s = session::check(req.cookie(session::COOKIE_NAME));
++    std::string old     = req.f("old");
++    std::string neu     = req.f("new");
++    std::string confirm = req.f("confirm");
++    if (neu != confirm) {
++        render::redirect_flash(res, settings_redirect(), "error", "New password and confirmation do not match");
++    } else if (!session::verify_password(s.user, old)) {
++        ::sleep(1);   // brute-force speed bump (WAN admin is open — harden hard)
++        render::redirect_flash(res, settings_redirect(), "error", "Current password is incorrect");
++    } else if (neu.size() < 6) {
++        render::redirect_flash(res, settings_redirect(), "error", "New password must be at least 6 characters");
++    } else {
++        session::set_password(s.user, neu);
++        render::redirect_flash(res, settings_redirect(), "success", "Password changed");
++    }
++}
++
++void hostname_set(const Request& req, Response& res) {
++    if (!web::require_auth(req, res, false)) return;
++    std::string h = util::trim(req.f("hostname"));
++    bool ok = !h.empty() && h.size() <= 63 && h[0] != '-';
++    for (char c : h) if (!(isalnum((unsigned char)c) || c == '-' || c == '_')) ok = false;
++    if (!ok) {
++        render::redirect_flash(res, settings_redirect(), "error", "Invalid hostname (alphanumerics, -, _; max 63 chars)");
++        return;
++    }
++    util::write_file_atomic("/etc/hostname", h + "\n", 0644);
++    util::run({"/bin/hostname", h}, "", 5);
++    render::redirect_flash(res, settings_redirect(), "success",
++        "Hostname changed to '" + h + "'. Reboot to apply everywhere.");
++}
++
++void ntp_set(const Request& req, Response& res) {
++    if (!web::require_auth(req, res, false)) return;
++    std::string raw = req.f("servers");
++    for (auto& c : raw) if (c == ',') c = ' ';
++    std::vector<std::string> servers;
++    size_t i = 0;
++    while (i < raw.size()) {
++        while (i < raw.size() && isspace((unsigned char)raw[i])) ++i;
++        size_t j = i;
++        while (j < raw.size() && !isspace((unsigned char)raw[j])) ++j;
++        if (j > i) servers.push_back(raw.substr(i, j - i));
++        i = j;
++    }
++    std::vector<std::string> kept = store::write_ntp_servers(servers);
++    size_t saved = kept.size();
++    size_t dropped = servers.size() - saved;
++    std::string msg = "Saved " + std::to_string(saved) + " NTP server" + (saved == 1 ? "" : "s") + ".";
++    if (dropped)
++        msg += " " + std::to_string(dropped) + " invalid entr" + (dropped == 1 ? "y" : "ies") + " ignored.";
++    msg += " Restart NTP to apply.";
++    render::redirect_flash(res, settings_redirect(), "success", msg);
++}
++
++void ntp_restart(const Request& req, Response& res) {
++    if (!web::require_auth(req, res, false)) return;
++    web::run_init("S49ntp");
++    render::redirect_flash(res, settings_redirect(), "success",
++        "ntpd restarted — it will step the clock once it reaches a server.");
++}
++
++void time_browser(const Request& req, Response& res) {
++    if (!web::require_auth(req, res, false)) return;
++    // Old: epoch = int(float(request.form.get("epoch",""))); empty/non-numeric =>
++    // "Could not read the browser time." The onsubmit JS always posts a positive
++    // integer (Math.floor(Date.now()/1000)).
++    std::string es = util::trim(req.f("epoch"));
++    bool parseable = !es.empty();
++    for (char c : es) if (!isdigit((unsigned char)c)) parseable = false;
++    if (!parseable) {
++        render::redirect_flash(res, settings_redirect(), "error", "Could not read the browser time.");
++        return;
++    }
++    long epoch = atol(es.c_str());
++    if (epoch < 1577836800L || epoch > 4102444800L) {   // 2020-01-01 .. 2100-01-01
++        render::redirect_flash(res, settings_redirect(), "error", "Browser time looks implausible; clock not changed.");
++        return;
++    }
++    time_t e = (time_t)epoch;
++    char stamp[40]; struct tm tmv; gmtime_r(&e, &tmv);
++    strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S", &tmv);
++    util::run({"/bin/date", "-s", "@" + std::to_string(epoch)}, "", 5);
++    render::redirect_flash(res, settings_redirect(), "success",
++        "Clock set to " + std::string(stamp) + " UTC (from your browser). rnsd picks up the new time on its own.");
++}
++
++}  // namespace routes

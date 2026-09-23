@@ -1,7 +1,7 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From e0c9e5c8c269d0591744b61d98fa7fa30d463ec7 Mon Sep 17 00:00:00 2001
 From: smit1237 <smit1237@gmail.com>
 Date: Wed, 9 Sep 2026 01:14:22 +0300
-Subject: [PATCH 17/22] portal: check for a newer rnsd and show it in the web
+Subject: [PATCH 17/23] portal: check for a newer rnsd and show it in the web
  UI
 
 Adds a notify-only update checker. rnsbox_portal.updatecheck queries PyPI for
@@ -20,18 +20,17 @@ were generalized to whole-dict read/write so update_check and rnsd_restart_days
 no longer clobber each other. Upgrading rnsd itself is out of scope (that means
 reflashing the image) -- this only notifies.
 ---
- .../cvitek/SG200X/overlay/etc/init.d/S84cron  |  14 ++
- .../SG200X/overlay/etc/rnsbox/cron.conf       |   8 ++
- .../package/rnsbox-portal/rnsbox-portal.mk    |   2 +
- .../rnsbox-portal/src/bin/rnsbox-update-check |   5 +
- .../rnsbox-portal/src/rnsbox_portal/app.py    |  42 +++++-
- .../rnsbox-portal/src/rnsbox_portal/store.py  |  72 +++++++---
- .../rnsbox_portal/templates/dashboard.html    |   5 +
- .../rnsbox_portal/templates/reticulum.html    |  19 +++
- .../src/rnsbox_portal/updatecheck.py          | 134 ++++++++++++++++++
- 9 files changed, 282 insertions(+), 19 deletions(-)
+ .../cvitek/SG200X/overlay/etc/init.d/S84cron  |  14 +
+ .../SG200X/overlay/etc/rnsbox/cron.conf       |   8 +
+ .../rnsbox-portal/src/bin/rnsbox-update-check |   8 +
+ .../src/cgi/helpers/updatecheck.py            | 342 ++++++++++++++++++
+ .../rnsbox-portal/src/cgi/updatecheck.cpp     | 103 ++++++
+ .../rnsbox-portal/src/cgi/updatecheck.h       |  26 ++
+ 6 files changed, 501 insertions(+)
  create mode 100755 buildroot/package/rnsbox-portal/src/bin/rnsbox-update-check
- create mode 100644 buildroot/package/rnsbox-portal/src/rnsbox_portal/updatecheck.py
+ create mode 100644 buildroot/package/rnsbox-portal/src/cgi/helpers/updatecheck.py
+ create mode 100644 buildroot/package/rnsbox-portal/src/cgi/updatecheck.cpp
+ create mode 100644 buildroot/package/rnsbox-portal/src/cgi/updatecheck.h
 
 diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S84cron b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S84cron
 index 363f9b609..77fc3db26 100755
@@ -92,264 +91,26 @@ index d920c1493..8ab56eb92 100644
 +#        quietly when the box is offline.
 +#   no   disable the periodic update check.
 +update_check=yes
-diff --git a/buildroot/package/rnsbox-portal/rnsbox-portal.mk b/buildroot/package/rnsbox-portal/rnsbox-portal.mk
-index 93c9afed8..8d0b6dc69 100644
---- a/buildroot/package/rnsbox-portal/rnsbox-portal.mk
-+++ b/buildroot/package/rnsbox-portal/rnsbox-portal.mk
-@@ -29,6 +29,8 @@ define RNSBOX_PORTAL_INSTALL_TARGET_CMDS
- 		$(TARGET_DIR)/usr/lib/rnsbox-portal/rnsbox_portal/static/
- 	$(INSTALL) -D -m 0755 $(@D)/bin/rnsbox-portal \
- 		$(TARGET_DIR)/usr/sbin/rnsbox-portal
-+	$(INSTALL) -D -m 0755 $(@D)/bin/rnsbox-update-check \
-+		$(TARGET_DIR)/usr/sbin/rnsbox-update-check
- endef
- 
- $(eval $(generic-package))
 diff --git a/buildroot/package/rnsbox-portal/src/bin/rnsbox-update-check b/buildroot/package/rnsbox-portal/src/bin/rnsbox-update-check
 new file mode 100755
-index 000000000..04fa914b3
+index 000000000..5a203ad62
 --- /dev/null
 +++ b/buildroot/package/rnsbox-portal/src/bin/rnsbox-update-check
-@@ -0,0 +1,5 @@
+@@ -0,0 +1,8 @@
 +#!/bin/sh
-+# Launcher for the rnsd update checker. Queries PyPI for the latest Reticulum
-+# 'rns' release and records the result under /var/lib/rnsbox/update.json for the
-+# portal to display. Notify-only; offline-safe (exits 0 even with no network).
-+exec env PYTHONPATH=/usr/lib/rnsbox-portal python3 -m rnsbox_portal.updatecheck "$@"
-diff --git a/buildroot/package/rnsbox-portal/src/rnsbox_portal/app.py b/buildroot/package/rnsbox-portal/src/rnsbox_portal/app.py
-index 970d1ca2c..dde2a9559 100644
---- a/buildroot/package/rnsbox-portal/src/rnsbox_portal/app.py
-+++ b/buildroot/package/rnsbox-portal/src/rnsbox_portal/app.py
-@@ -2,13 +2,14 @@
- import os
- import secrets
- import subprocess
-+import time
- from functools import wraps
- 
- from flask import (
-     Flask, flash, redirect, render_template, request, session, url_for,
- )
- 
--from . import auth, store, sysinfo, wifi
-+from . import auth, store, sysinfo, updatecheck, wifi
- 
- SECRET_FILE = "/run/rnsbox-portal.secret"
- ROUTING_INIT = "/etc/init.d/S60routing"
-@@ -91,6 +92,7 @@ def create_app():
-             rnsd=sysinfo.rnsd_status(),
-             net=sysinfo.network_summary(),
-             wan=store.read_wan(),
-+            update=updatecheck.display_state(),
-         )
- 
-     # ---- network ----
-@@ -230,11 +232,18 @@ def create_app():
-         # instantly. The expensive `rnstatus -a` block (a ~5 s cold-start of
-         # the RNS stack) is fetched separately by the page via /reticulum/status
-         # and dropped in once it arrives — see reticulum.html.
-+        upd = updatecheck.display_state()
-+        if upd.get("checked_at"):
-+            upd["checked_human"] = time.strftime(
-+                "%Y-%m-%d %H:%M UTC", time.gmtime(upd["checked_at"]))
-         return render_template(
-             "reticulum.html",
-             rnsd=sysinfo.rnsd_status(),
-             cfg=cfg,
-             restart_days=store.read_rnsd_restart_days(),
-+            rns_version=updatecheck.installed_version(),
-+            update=upd,
-+            auto_update=store.read_update_check(),
-         )
- 
-     @app.route("/reticulum/autorestart", methods=["POST"])
-@@ -256,6 +265,37 @@ def create_app():
-             flash(f"Error: {e}", "error")
-         return redirect(url_for("reticulum"))
- 
-+    @app.route("/reticulum/checkupdate", methods=["POST"])
-+    @login_required
-+    def reticulum_checkupdate():
-+        # Notify-only: queries PyPI, records state; never touches the install
-+        # or config. Synchronous but short (a few seconds), offline-safe.
-+        st = updatecheck.check()
-+        if st.get("error"):
-+            flash("Update check failed — the box may be offline. Last known "
-+                  "latest: " + (st.get("latest") or "unknown") + ".", "error")
-+        elif st.get("update_available"):
-+            flash("Update available: rns %s (installed %s). To upgrade, build "
-+                  "and flash the latest RNSBox image." %
-+                  (st.get("latest"), st.get("installed")), "success")
-+        else:
-+            flash("rnsd is up to date (%s)." % (st.get("installed") or "unknown"),
-+                  "success")
-+        return redirect(url_for("reticulum"))
-+
-+    @app.route("/reticulum/autoupdate", methods=["POST"])
-+    @login_required
-+    def reticulum_autoupdate():
-+        enabled = request.form.get("auto_update") == "on"
-+        try:
-+            store.write_update_check(enabled)
-+            subprocess.run(["/etc/init.d/S84cron", "reload"], check=False, timeout=10)
-+            flash("Automatic update checks " +
-+                  ("enabled (daily)." if enabled else "disabled."), "success")
-+        except Exception as e:
-+            flash(f"Error: {e}", "error")
-+        return redirect(url_for("reticulum"))
-+
-     @app.route("/reticulum/status")
-     @login_required
-     def reticulum_status():
-diff --git a/buildroot/package/rnsbox-portal/src/rnsbox_portal/store.py b/buildroot/package/rnsbox-portal/src/rnsbox_portal/store.py
-index e35f1024b..483b2dad8 100644
---- a/buildroot/package/rnsbox-portal/src/rnsbox_portal/store.py
-+++ b/buildroot/package/rnsbox-portal/src/rnsbox_portal/store.py
-@@ -233,33 +233,69 @@ def write_wan(iface):
-     write_wan_config(cfg)
- 
- 
--# ---- scheduled tasks (rnsd auto-restart cron) ----
-+# ---- scheduled tasks (cron.conf: rnsd auto-restart + update check) ----
-+#
-+# cron.conf holds multiple flat key=value settings; read/write go through the
-+# whole-dict helpers so setting one key never clobbers the others.
- 
--def read_rnsd_restart_days():
--    """Return the rnsd auto-restart interval in days (0 = disabled)."""
-+def read_cron_conf():
-+    """cron.conf as a {key: value} dict."""
-+    d = {}
-     for ln in _read_lines(CRON_FILE):
-         s = ln.strip()
-         if s.startswith("#") or "=" not in s:
-             continue
-         k, _, v = s.partition("=")
--        if k.strip() == "rnsd_restart_days":
--            v = v.split("#", 1)[0].strip()
--            try:
--                n = int(v)
--            except ValueError:
--                return 0
--            return n if 0 <= n <= 7 else 0
--    return 0
-+        d[k.strip()] = v.split("#", 1)[0].strip()
-+    return d
- 
- 
--def write_rnsd_restart_days(days):
--    """Persist the rnsd auto-restart interval (0 = off, 1..7 days)."""
--    days = int(days)
--    if not (0 <= days <= 7):
--        raise ValueError("rnsd_restart_days must be 0..7")
-+def _truthy(v):
-+    return str(v).strip().lower() not in ("no", "0", "false", "off", "")
-+
-+
-+def write_cron_conf(d):
-+    """Rewrite cron.conf from a dict, preserving both known keys."""
-+    try:
-+        days = int(d.get("rnsd_restart_days", 0) or 0)
-+    except (TypeError, ValueError):
-+        days = 0
-+    days = days if 0 <= days <= 7 else 0
-+    uc = _truthy(d.get("update_check", "yes"))
-     _write_lines(CRON_FILE, [
-         "# RNSBox scheduled tasks — managed by the rnsbox-portal Reticulum tab.",
--        "# rnsd_restart_days: 0 = disabled (default); N = restart rnsd every N",
--        "# days at 04:00 (memory hygiene). Applied by S84cron + live by the UI.",
-+        "# rnsd_restart_days: 0 = off (default); N = restart rnsd every N days at",
-+        "#   04:00 (memory hygiene). update_check: yes (default) / no — daily",
-+        "#   check for a newer rnsd (notify-only). Applied by S84cron; live via UI.",
-         f"rnsd_restart_days={days}",
-+        f"update_check={'yes' if uc else 'no'}",
-     ])
-+
-+
-+def read_rnsd_restart_days():
-+    """rnsd auto-restart interval in days (0 = disabled)."""
-+    try:
-+        n = int(read_cron_conf().get("rnsd_restart_days", "0"))
-+    except ValueError:
-+        return 0
-+    return n if 0 <= n <= 7 else 0
-+
-+
-+def write_rnsd_restart_days(days):
-+    days = int(days)
-+    if not (0 <= days <= 7):
-+        raise ValueError("rnsd_restart_days must be 0..7")
-+    d = read_cron_conf()
-+    d["rnsd_restart_days"] = days
-+    write_cron_conf(d)
-+
-+
-+def read_update_check():
-+    """Whether the daily rnsd update check is enabled (default True)."""
-+    return _truthy(read_cron_conf().get("update_check", "yes"))
-+
-+
-+def write_update_check(enabled):
-+    d = read_cron_conf()
-+    d["update_check"] = "yes" if enabled else "no"
-+    write_cron_conf(d)
-diff --git a/buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/dashboard.html b/buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/dashboard.html
-index ec61a7019..795f3bf80 100644
---- a/buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/dashboard.html
-+++ b/buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/dashboard.html
-@@ -68,6 +68,11 @@
-       {% if rnsd.running and rnsd.rss_mb %}
-       <tr><th>rnsd RAM</th><td>{{ rnsd.rss_mb }} MB RSS</td></tr>
-       {% endif %}
-+      <tr><th>Version</th><td>
-+        Reticulum (rnsd) <strong>{{ update.installed or 'unknown' }}</strong>
-+        {% if update.update_available %}<span class="badge warn">update available: {{ update.latest }}</span>
-+        {% elif update.latest and not update.error %}<span class="badge ok">up to date</span>{% endif %}
-+      </td></tr>
-     </table>
-     <p><a class="btn" href="{{ url_for('reticulum') }}">Manage →</a></p>
-   </section>
-diff --git a/buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/reticulum.html b/buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/reticulum.html
-index 5e32f8a16..dc51858d0 100644
---- a/buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/reticulum.html
-+++ b/buildroot/package/rnsbox-portal/src/rnsbox_portal/templates/reticulum.html
-@@ -9,11 +9,30 @@
-     <tr><th>State</th><td id="rnsd-state">
-       {% if rnsd.running %}<span class="badge ok">RUNNING</span> (pid {{ rnsd.pid }}){% else %}<span class="badge err">STOPPED</span>{% endif %}
-     </td></tr>
-+    <tr><th>Version</th><td>
-+      Reticulum (rnsd) <strong>{{ rns_version or 'unknown' }}</strong>
-+      {% if update and update.update_available %}<span class="badge warn">update available: {{ update.latest }}</span>
-+      {% elif update and update.latest and not update.error %}<span class="badge ok">up to date</span>{% endif %}
-+    </td></tr>
-+    <tr><th>Update check</th><td>
-+      {% if update and update.checked_human %}last checked {{ update.checked_human }}{% else %}not checked yet{% endif %}
-+      {% if update and update.error %} <span class="muted">— last attempt failed (offline?)</span>{% endif %}
-+    </td></tr>
-   </table>
-   <form method="post" action="{{ url_for('reticulum_restart') }}" class="inline">
-     <button type="submit" class="btn-primary">Restart rnsd</button>
-   </form>
-   <button type="button" class="btn" onclick="loadRnstatus()">Refresh</button>
-+  <form method="post" action="{{ url_for('reticulum_checkupdate') }}" class="inline">
-+    <button type="submit" class="btn">Check for updates</button>
-+  </form>
-+
-+  <form method="post" action="{{ url_for('reticulum_autoupdate') }}" class="row-form" style="margin-top:10px">
-+    <label style="margin:0"><input type="checkbox" name="auto_update"
-+      {{ 'checked' if auto_update else '' }} onchange="this.form.submit()"> check for updates daily</label>
-+    <noscript><button type="submit" class="btn">Save</button></noscript>
-+    <span class="muted">notify-only — a newer rnsd means reflashing the latest RNSBox image; nothing here changes your config</span>
-+  </form>
- 
-   <form method="post" action="{{ url_for('reticulum_autorestart') }}" class="row-form" style="margin-top:10px">
-     <label for="rnsd_days" style="margin:0">Auto-restart rnsd</label>
-diff --git a/buildroot/package/rnsbox-portal/src/rnsbox_portal/updatecheck.py b/buildroot/package/rnsbox-portal/src/rnsbox_portal/updatecheck.py
++# rnsbox-update-check — thin launcher for the standalone update-check helper.
++# Called by S84cron (daily + a best-effort check ~30 s after boot). The helper
++# is stdlib-only Python (no Flask, no rnsbox_portal package); the C++ portal
++# invokes the same script for the on-demand "Check for updates" / "Apply update"
++# buttons on the Reticulum tab. Arg defaults to "cron" (query PyPI + persist +
++# print a human summary); the portal passes "check" / "apply" (JSON output).
++exec python3 /usr/lib/rnsbox/updatecheck.py "${1:-cron}"
+diff --git a/buildroot/package/rnsbox-portal/src/cgi/helpers/updatecheck.py b/buildroot/package/rnsbox-portal/src/cgi/helpers/updatecheck.py
 new file mode 100644
-index 000000000..cab7d4c71
+index 000000000..e255e8298
 --- /dev/null
-+++ b/buildroot/package/rnsbox-portal/src/rnsbox_portal/updatecheck.py
-@@ -0,0 +1,134 @@
++++ b/buildroot/package/rnsbox-portal/src/cgi/helpers/updatecheck.py
+@@ -0,0 +1,342 @@
 +"""Check whether a newer rnsd (the Reticulum 'rns' package) is available.
 +
 +Runs periodically from cron (and once, best-effort, at boot); it queries PyPI
@@ -364,29 +125,51 @@ index 000000000..cab7d4c71
 +"""
 +import json
 +import os
++import subprocess
++import sys
 +import time
 +import urllib.request
++
++# glob / shutil / tarfile are imported lazily inside the update-apply path
++# (_pkg_paths / apply_update) so the portal's steady state — which only ever
++# calls installed_version() + display_state() — never pays their import RAM.
 +
 +PKG = "rns"                       # rnsd is provided by the Reticulum 'rns' pkg
 +STATE_DIR = "/var/lib/rnsbox"
 +STATE_FILE = STATE_DIR + "/update.json"
++ROLLBACK_TAR = STATE_DIR + "/rns-rollback.tar"
 +PYPI_URL = "https://pypi.org/pypi/{pkg}/json"
++RNSD_INIT = "/etc/init.d/S82rnsd"
++RNSD_PIDFILE = "/var/run/rnsd.pid"
 +TIMEOUT = 8
 +
 +
++_ver_cache = {}
++
++
 +def installed_version(pkg=PKG):
-+    """Installed version string, or None. Cheap: reads package metadata
-+    (no heavy `import RNS`), with RNS._version as a fallback."""
++    """Installed version string, or None. Memoised per process.
++
++    importlib.metadata.version() scans site-packages (~0.1-0.5 s on the C906)
++    and the answer only changes when a package is (re)installed — apply_update()
++    refreshes this cache, and a reflash restarts the process — so we compute it
++    once and serve it from a dict thereafter. This is the single biggest win for
++    the dashboard + Reticulum page load, which used to pay the scan every render
++    (twice, on /reticulum). No heavy `import RNS`; RNS._version is the fallback."""
++    if pkg in _ver_cache:
++        return _ver_cache[pkg]
++    v = None
 +    try:
 +        import importlib.metadata as md
-+        return md.version(pkg)
++        v = md.version(pkg)
 +    except Exception:
-+        pass
-+    try:                          # fallback: RNS ships _version.py
-+        import RNS
-+        return getattr(RNS, "__version__", None)
-+    except Exception:
-+        return None
++        try:                          # fallback: RNS ships _version.py
++            import RNS
++            v = getattr(RNS, "__version__", None)
++        except Exception:
++            v = None
++    _ver_cache[pkg] = v
++    return v
 +
 +
 +def _vtuple(v):
@@ -473,17 +256,341 @@ index 000000000..cab7d4c71
 +    return state
 +
 +
++# --------------------------------------------------------------------------
++# In-place update (rootfs is writeable). rns is a pure-Python wheel, so we can
++# update it without a compiler. We use pip with --no-deps + wheel-only so the
++# compiled deps (cryptography/pyserial) are never rebuilt, clear the old
++# buildroot (distutils) install first (pip cannot uninstall it), keep a
++# rollback tarball, and restart+verify rnsd -- rolling back if it fails.
++# Only site-packages is touched; /etc and user config are never modified.
++# --------------------------------------------------------------------------
++
++def _pypi_json(pkg=PKG, timeout=TIMEOUT):
++    req = urllib.request.Request(
++        PYPI_URL.format(pkg=pkg),
++        headers={"User-Agent": "rnsbox-update-check", "Accept": "application/json"})
++    with urllib.request.urlopen(req, timeout=timeout) as r:
++        return json.load(r)
++
++
++def _dep_floor(req):
++    """'cryptography>=3.4.7' -> ('cryptography', '3.4.7'); skip optional extras."""
++    parts = req.split(";")
++    if len(parts) > 1 and "extra" in parts[1]:
++        return None, None
++    spec = parts[0].strip()
++    name = ""
++    for ch in spec:
++        if ch.isalnum() or ch in "_.-":
++            name += ch
++        else:
++            break
++    floor = ""
++    i = spec.find(">=")
++    if i >= 0:
++        for ch in spec[i + 2:].strip():
++            if ch.isdigit() or ch == ".":
++                floor += ch
++            else:
++                break
++    return (name or None), (floor or None)
++
++
++def _unmet_deps(requires_dist):
++    """Runtime deps whose installed version is below the new release's floor."""
++    unmet = []
++    for req in (requires_dist or []):
++        name, floor = _dep_floor(req)
++        if not name:
++            continue
++        inst = installed_version(name)
++        if inst is None:
++            unmet.append("%s (missing)" % name)
++        elif floor and _vtuple(inst) < _vtuple(floor):
++            unmet.append("%s %s < %s" % (name, inst, floor))
++    return unmet
++
++
++def _site_base(pkg=PKG):
++    import importlib.metadata as md
++    return str(md.distribution(pkg).locate_file(""))
++
++
++def _pkg_paths(site, pkg):
++    """Package dirs + metadata for `pkg` under site-packages (best-effort)."""
++    import glob
++    import importlib.metadata as md
++    tops = set()
++    try:
++        tl = md.distribution(pkg).read_text("top_level.txt") or ""
++        tops = {t.strip() for t in tl.splitlines() if t.strip()}
++    except Exception:
++        pass
++    if not tops:
++        tops = {"RNS", "CRNS"}                 # known top-levels for rns
++    paths = [os.path.join(site, t) for t in tops
++             if os.path.exists(os.path.join(site, t))]
++    paths += glob.glob(os.path.join(site, pkg + "-*.egg-info"))
++    paths += glob.glob(os.path.join(site, pkg + "-*.dist-info"))
++    return paths
++
++
++def _rnsd_up(timeout=15):
++    for _ in range(timeout):
++        try:
++            with open(RNSD_PIDFILE) as f:
++                pid = f.read().strip()
++            if pid and os.path.exists("/proc/" + pid):
++                return True
++        except Exception:
++            pass
++        time.sleep(1)
++    return False
++
++
++def apply_update(pkg=PKG):
++    """Update `pkg` in place from its PyPI wheel. Returns a result dict; never
++    raises. On any failure after the tree is touched, restores the rollback
++    tarball and restarts rnsd."""
++    import shutil
++    import tarfile
++    res = {"ok": False, "from": installed_version(pkg), "to": None,
++           "error": "", "rolled_back": False}
++    site = None
++    touched = False
++    try:
++        data = _pypi_json(pkg)
++        ver = data["info"]["version"]
++        res["to"] = ver
++        if not _newer(ver, res["from"]):
++            res["error"] = "already up to date"
++            return res
++        unmet = _unmet_deps(data["info"].get("requires_dist"))
++        if unmet:
++            res["error"] = ("%s %s needs a newer %s than is installed — reflash "
++                            "the image to update" % (pkg, ver, ", ".join(unmet)))
++            return res
++        site = _site_base(pkg)
++        remove = _pkg_paths(site, pkg)
++        os.makedirs(STATE_DIR, exist_ok=True)
++        with tarfile.open(ROLLBACK_TAR, "w") as tf:
++            for p in remove:
++                tf.add(p, arcname=os.path.relpath(p, site))
++        touched = True
++        for p in remove:                       # clear the old distutils install
++            shutil.rmtree(p) if os.path.isdir(p) else os.remove(p)
++        # --no-deps + wheel-only so the compiled deps (cryptography/pyserial) are
++        # never rebuilt; buildroot's rootfs is not PEP-668 externally-managed, so
++        # pip installs into the system site-packages as root without extra flags.
++        # pip's temp/download dir defaults to /tmp, which is a tiny (512 KB)
++        # tmpfs on the box — a wheel download overflows it (ENOSPC) even with
++        # tens of GB free on the rootfs. Point TMPDIR at the rootfs (and skip
++        # the HTTP cache) so the download has room.
++        piptmp = os.path.join(STATE_DIR, "piptmp")
++        os.makedirs(piptmp, exist_ok=True)
++        env = dict(os.environ, TMPDIR=piptmp)
++        try:
++            cp = subprocess.run(
++                [sys.executable, "-m", "pip", "install", "--no-deps",
++                 "--only-binary=:all:", "--no-cache-dir", "--no-input",
++                 "--disable-pip-version-check", "%s==%s" % (pkg, ver)],
++                capture_output=True, text=True, timeout=180, env=env)
++        finally:
++            # remove piptmp on EVERY exit path -- a pip timeout (or any raise)
++            # would otherwise leave partial downloads on the persistent rootfs.
++            shutil.rmtree(piptmp, ignore_errors=True)
++        if cp.returncode != 0:
++            raise RuntimeError("pip install failed: "
++                               + (cp.stderr or cp.stdout or "")[-300:].strip())
++        subprocess.run([RNSD_INIT, "restart"], check=False, timeout=25)
++        if not _rnsd_up(15):
++            raise RuntimeError("rnsd did not come back after the update")
++        res["ok"] = True
++        _ver_cache[pkg] = ver          # keep the memoised version in step
++        _write_state({"package": pkg, "installed": ver, "latest": ver,
++                      "update_available": False, "error": "",
++                      "checked_at": int(time.time())})
++        return res
++    except Exception as e:
++        res["error"] = str(e) if isinstance(e, RuntimeError) \
++            else "%s: %s" % (type(e).__name__, e)
++        if touched and site:                   # roll back to the saved package
++            try:
++                for p in _pkg_paths(site, pkg):
++                    shutil.rmtree(p) if os.path.isdir(p) else os.remove(p)
++                with tarfile.open(ROLLBACK_TAR) as tf:
++                    tf.extractall(site)
++                subprocess.run([RNSD_INIT, "restart"], check=False, timeout=25)
++                res["rolled_back"] = True
++                _ver_cache[pkg] = res["from"]   # restored the old version
++            except Exception:
++                pass
++        return res
++
++
 +if __name__ == "__main__":
-+    st = check()
-+    if st.get("error"):
-+        print("update-check: failed (%s); installed=%s"
-+              % (st["error"], st.get("installed")))
-+    elif st.get("update_available"):
-+        print("update-check: %s %s available (installed %s)"
-+              % (st.get("package"), st.get("latest"), st.get("installed")))
-+    else:
-+        print("update-check: %s up to date (%s)"
-+              % (st.get("package"), st.get("installed")))
--- 
-2.47.3
-
++    # CLI for the C++ portal (and cron). Prints ONE line of JSON so the caller
++    # parses it trivially:
++    #   updatecheck.py display  -> {installed, latest, update_available, error, checked_at}
++    #   updatecheck.py check    -> queries PyPI + persists, same shape
++    #   updatecheck.py apply     -> {ok, from, to, error, rolled_back}
++    #   updatecheck.py cron      -> check(), human line (the boot/cron notifier)
++    cmd = sys.argv[1] if len(sys.argv) > 1 else "cron"
++    if cmd == "display":
++        print(json.dumps(display_state()))
++    elif cmd == "check":
++        print(json.dumps(check()))
++    elif cmd == "apply":
++        print(json.dumps(apply_update()))
++    else:  # cron: human summary (unchanged from the old __main__)
++        st = check()
++        if st.get("error"):
++            print("update-check: failed (%s); installed=%s"
++                  % (st["error"], st.get("installed")))
++        elif st.get("update_available"):
++            print("update-check: %s %s available (installed %s)"
++                  % (st.get("package"), st.get("latest"), st.get("installed")))
++        else:
++            print("update-check: %s up to date (%s)"
++                  % (st.get("package"), st.get("installed")))
+diff --git a/buildroot/package/rnsbox-portal/src/cgi/updatecheck.cpp b/buildroot/package/rnsbox-portal/src/cgi/updatecheck.cpp
+new file mode 100644
+index 000000000..7d390473c
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/cgi/updatecheck.cpp
+@@ -0,0 +1,103 @@
++// updatecheck.cpp — see updatecheck.h.
++#include "updatecheck.h"
++#include "util.h"
++#include <cctype>
++#include <cstdlib>
++#include <cstring>
++#include <dirent.h>
++#include <vector>
++
++namespace {
++
++// Leading numeric components of a version -> int vector ("1.5.2" -> {1,5,2}).
++std::vector<long> vtuple(const std::string& v) {
++    std::vector<long> out;
++    size_t i = 0;
++    while (i < v.size()) {
++        if (!isdigit((unsigned char)v[i])) break;
++        long n = 0;
++        while (i < v.size() && isdigit((unsigned char)v[i])) { n = n * 10 + (v[i] - '0'); ++i; }
++        out.push_back(n);
++        if (i < v.size() && v[i] == '.') ++i; else break;
++    }
++    return out;
++}
++
++bool newer(const std::string& latest, const std::string& installed) {
++    if (latest.empty() || installed.empty()) return false;
++    return vtuple(latest) > vtuple(installed);
++}
++
++// Installed rns version from the dist-info dir name (rns-X.Y.Z.dist-info).
++std::string installed_version() {
++    DIR* d = opendir("/usr/lib");
++    if (!d) return "";
++    std::string pydir;
++    while (dirent* e = readdir(d)) {
++        if (strncmp(e->d_name, "python3.", 8) == 0) { pydir = e->d_name; break; }
++    }
++    closedir(d);
++    if (pydir.empty()) return "";
++    std::string sp = "/usr/lib/" + pydir + "/site-packages";
++    DIR* s = opendir(sp.c_str());
++    if (!s) return "";
++    std::string ver;
++    while (dirent* e = readdir(s)) {
++        std::string n = e->d_name;
++        // "rns-1.5.2.dist-info"
++        if (n.rfind("rns-", 0) == 0 && n.size() > 14 &&
++            n.compare(n.size() - 10, 10, ".dist-info") == 0) {
++            ver = n.substr(4, n.size() - 4 - 10);
++            break;
++        }
++    }
++    closedir(s);
++    return ver;
++}
++
++// Minimal extractor for a "key":"value" string field in our own JSON state file.
++std::string json_str(const std::string& j, const char* key) {
++    std::string pat = std::string("\"") + key + "\"";
++    size_t p = j.find(pat);
++    if (p == std::string::npos) return "";
++    p = j.find(':', p + pat.size());
++    if (p == std::string::npos) return "";
++    ++p;
++    while (p < j.size() && isspace((unsigned char)j[p])) ++p;
++    if (p >= j.size() || j[p] != '"') return "";   // not a string value (e.g. null)
++    ++p;
++    std::string out;
++    while (p < j.size() && j[p] != '"') {
++        if (j[p] == '\\' && p + 1 < j.size()) ++p;
++        out += j[p++];
++    }
++    return out;
++}
++
++long json_int(const std::string& j, const char* key) {
++    std::string pat = std::string("\"") + key + "\"";
++    size_t p = j.find(pat);
++    if (p == std::string::npos) return 0;
++    p = j.find(':', p + pat.size());
++    if (p == std::string::npos) return 0;
++    return strtol(j.c_str() + p + 1, nullptr, 10);
++}
++
++}  // namespace
++
++namespace updatecheck {
++
++State display() {
++    State s;
++    s.installed = installed_version();
++    std::string j = util::read_file("/var/lib/rnsbox/update.json", 8192);
++    if (!j.empty()) {
++        s.latest = json_str(j, "latest");
++        s.error = json_str(j, "error");
++        s.checked_at = json_int(j, "checked_at");
++    }
++    s.update_available = newer(s.latest, s.installed);
++    return s;
++}
++
++}  // namespace updatecheck
+diff --git a/buildroot/package/rnsbox-portal/src/cgi/updatecheck.h b/buildroot/package/rnsbox-portal/src/cgi/updatecheck.h
+new file mode 100644
+index 000000000..6c09c0393
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/cgi/updatecheck.h
+@@ -0,0 +1,26 @@
++// updatecheck.h — cheap read-only view of the rnsd (rns package) update state,
++// for the Dashboard + Reticulum page renders. The EXPENSIVE parts (querying
++// PyPI, applying a pip update) stay in the python helper
++// /usr/lib/rnsbox/updatecheck.py, invoked on-demand by the Check/Apply buttons.
++// display() does NO network + NO python spawn: it reads the installed version
++// from the dist-info dir name and the last check's result from the state file
++// that the cron helper writes.
++#ifndef RNSBOX_UPDATECHECK_H
++#define RNSBOX_UPDATECHECK_H
++
++#include <string>
++
++namespace updatecheck {
++
++struct State {
++    std::string installed;          // "1.5.2", or "" if not determinable
++    std::string latest;             // last-checked PyPI version, or "" if never checked
++    bool update_available = false;  // latest > installed
++    std::string error;              // last check's error class, "" if none
++    long checked_at = 0;            // epoch of last check, 0 if never
++};
++
++State display();
++
++}  // namespace updatecheck
++#endif

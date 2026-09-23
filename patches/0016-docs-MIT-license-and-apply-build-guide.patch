@@ -1,16 +1,16 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From a8ab194b4f22ac41a459703365f47db2689c7ba5 Mon Sep 17 00:00:00 2001
 From: smit1237 <smit1237@gmail.com>
 Date: Tue, 8 Sep 2026 22:47:50 +0300
-Subject: [PATCH 16/22] docs: MIT license and apply/build guide
+Subject: [PATCH 16/23] docs: MIT license and apply/build guide
 
 Add the MIT LICENSE for the RNSBox code, a project README and an apply/build
 guide describing how to apply this series onto upstream d4003f15b and build the
 dvd/lite images.
 ---
- APPLYING.md      | 63 ++++++++++++++++++++++++++++++++++++++
- LICENSE          | 21 +++++++++++++
- README.RNSBox.md | 80 ++++++++++++++++++++++++++++++++++++++++++++++++
- 3 files changed, 164 insertions(+)
+ APPLYING.md      |  63 +++++++++++++++++++++++++++++
+ LICENSE          |  21 ++++++++++
+ README.RNSBox.md | 101 +++++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 185 insertions(+)
  create mode 100644 APPLYING.md
  create mode 100644 LICENSE
  create mode 100644 README.RNSBox.md
@@ -113,10 +113,10 @@ index 000000000..645d94257
 +SOFTWARE.
 diff --git a/README.RNSBox.md b/README.RNSBox.md
 new file mode 100644
-index 000000000..81daa4b3d
+index 000000000..c8aa31237
 --- /dev/null
 +++ b/README.RNSBox.md
-@@ -0,0 +1,80 @@
+@@ -0,0 +1,101 @@
 +# RNSBox — a Reticulum router for the Sipeed LicheeRV Nano-e
 +
 +RNSBox turns a **Sipeed LicheeRV Nano-e** (SG2002, T-Head C906 RISC-V) into a
@@ -159,6 +159,27 @@ index 000000000..81daa4b3d
 +  the lite build is ~217 MB. The rootfs auto-grows to fill the card on first
 +  boot.
 +
++## WiFi on the Nano-e W
++
++The **W** board adds a single AIC8800 radio, driven from the portal's **WiFi**
++tab. It has four modes: **off**, **STA** (join an upstream network), **AP** (run
++a hotspot), and **STA + AP** (both at once). On the plain Nano-e, which has no
++radio, WiFi bring-up is a clean no-op.
++
++Because the AIC8800 is a **single radio**, the STA and AP time-share it, and the
++hotspot is treated as the priority so local clients stay served:
++
++- If the upstream network drops or you carry the device **out of range**, RNSBox
++  stops the client-side scan that would otherwise hop the radio off the hotspot's
++  channel — so devices connected to the RNSBox AP keep working, with no blips.
++- It retries the upstream automatically, but **only while nobody is connected to
++  the hotspot**, so a reconnect scan can never interrupt an active client.
++- When the upstream returns, the AP re-syncs to its channel and normal
++  concurrent operation resumes.
++
++A small background watchdog (`S36wifiwatch`) enforces this and is active only in
++**STA + AP** mode; in STA-only or AP-only mode it does nothing.
++
 +## Default credentials
 +
 +| Service | User  | Password |
@@ -197,6 +218,3 @@ index 000000000..81daa4b3d
 +  verify pinned checksums or cover every app the DVD build stages from
 +  `build/clients-stick/`. Treat the clients disc as optional and review that
 +  directory before relying on it. The `lite` build does not need it.
--- 
-2.47.3
-

@@ -1,7 +1,7 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 8556ef859382997131c1202f30164af64953ed7a Mon Sep 17 00:00:00 2001
 From: smit1237 <smit1237@gmail.com>
 Date: Tue, 8 Sep 2026 22:47:49 +0300
-Subject: [PATCH 11/22] wifi: AIC8800 STA/AP support for the W variant
+Subject: [PATCH 11/23] wifi: AIC8800 STA/AP support for the W variant
 
 Build the out-of-tree AIC8800 fullmac driver from osdrv (Bluetooth disabled,
 Cvitek cross-build, other wireless vendors gated off in the M= pass) and
@@ -11,13 +11,15 @@ a clean no-op on the radio-less board. The board defconfig also disables the
 MIPI panel and camera sensors.
 ---
  .../sg2002_licheervnano_sd_defconfig          |  21 +-
- .../cvitek/SG200X/overlay/etc/init.d/S35wifi  | 295 ++++++++++++++++++
- .../SG200X/overlay/etc/rnsbox/wifi.conf       |  57 ++++
+ .../cvitek/SG200X/overlay/etc/init.d/S35wifi  | 400 ++++++++++++++++++
+ .../SG200X/overlay/etc/init.d/S36wifiwatch    |  90 ++++
+ .../SG200X/overlay/etc/rnsbox/wifi.conf       |  62 +++
  osdrv/extdrv/wireless/Makefile                |  23 +-
  osdrv/extdrv/wireless/aic8800/Makefile        |   8 +-
  .../wireless/aic8800/aic8800_fdrv/Makefile    |   2 +-
- 6 files changed, 388 insertions(+), 18 deletions(-)
+ 7 files changed, 588 insertions(+), 18 deletions(-)
  create mode 100755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/S35wifi
+ create mode 100755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/S36wifiwatch
  create mode 100644 buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/wifi.conf
 
 diff --git a/build/boards/sg200x/sg2002_licheervnano_sd/sg2002_licheervnano_sd_defconfig b/build/boards/sg200x/sg2002_licheervnano_sd/sg2002_licheervnano_sd_defconfig
@@ -60,10 +62,10 @@ index aa1ebfb00..b8405ed67 100644
  # CONFIG_TARGET_PACKAGE_GATORD is not set
 diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S35wifi b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S35wifi
 new file mode 100755
-index 000000000..4033fbaf9
+index 000000000..14ca48d83
 --- /dev/null
 +++ b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S35wifi
-@@ -0,0 +1,295 @@
+@@ -0,0 +1,400 @@
 +#!/bin/sh
 +# S35wifi — AIC8800 WiFi bring-up for the LicheeRV Nano-e W variant.
 +#
@@ -83,6 +85,16 @@ index 000000000..4033fbaf9
 +STA_IF=wlan0
 +AP_IF_CONCURRENT=wlan1
 +LOG=/var/log/wifi.log
++
++# 2.4 GHz channel centre frequencies (ch1..13, MHz). Used to pin the STA to
++# 2.4 GHz in concurrent sta+ap mode so it is ALWAYS co-band with the AP. The
++# AIC8800 is a single radio (one RF path) doing fullmac time-sharing: the STA
++# and the hotspot must sit on one channel, and the AP is 2.4 GHz (hw_mode=g),
++# so the STA has to be 2.4 GHz too. A regdom that disallows ch12/13 simply
++# never surfaces them in scans, so listing them here is harmless (US = 1..11,
++# EU/world = 1..13). This restriction is applied ONLY in sta+ap mode; sta-only
++# keeps full dual-band (5 GHz) capability.
++FREQ_24="2412 2417 2422 2427 2432 2437 2442 2447 2452 2457 2462 2467 2472"
 +
 +log() { printf '%s: %s\n' "$(date '+%F %T')" "$*" >> "$LOG"; }
 +
@@ -117,8 +129,27 @@ index 000000000..4033fbaf9
 +	return 1
 +}
 +
++# wait_sta_connected <timeout_s>
++# Block until wpa_supplicant reports wpa_state=COMPLETED on the STA (i.e. the
++# STA has associated and a channel is assigned) or the timeout elapses.
++# Used by the sta+ap dispatch so start_ap can read the STA's real channel and
++# bring the AP up co-channel. The old code slept a fixed 2 s, which is far too
++# short for a scan+auth+4-way handshake — start_ap then read an empty channel
++# and fell back to ap_channel, stranding the AP on the wrong channel/band.
++wait_sta_connected() {
++	_to="${1:-20}"; _n=0
++	while [ "$_n" -lt "$_to" ]; do
++		wpa_cli -i "$STA_IF" status 2>/dev/null | grep -q '^wpa_state=COMPLETED' && return 0
++		sleep 1; _n=$((_n + 1))
++	done
++	return 1
++}
++
++# gen_wpa_conf <ssid> <psk> <hidden> <country> [band]
++#   band = "24"  -> pin this network to 2.4 GHz (concurrent sta+ap). Anything
++#          else / empty -> unrestricted (full dual-band; sta-only mode).
 +gen_wpa_conf() {
-+	ssid="$1"; psk="$2"; hidden="$3"; country="$4"
++	ssid="$1"; psk="$2"; hidden="$3"; country="$4"; band="$5"
 +	{
 +		echo "ctrl_interface=/var/run/wpa_supplicant"
 +		echo "update_config=1"
@@ -130,6 +161,25 @@ index 000000000..4033fbaf9
 +			echo "    psk=\"$psk\""
 +		else
 +			echo "    key_mgmt=NONE"
++		fi
++		# Concurrent sta+ap: force this network onto 2.4 GHz (single radio must
++		# stay co-band with the AP). freq_list filters BSS *selection*, so a
++		# band-steering AP that advertises one SSID on both 2.4 and 5 GHz is
++		# pinned to its 2.4 GHz BSS even when the 5 GHz BSS is stronger.
++		# scan_freq confines scans to 2.4 GHz, so a background/roam scan can
++		# never hop the radio off the AP's band (keeps the hotspot solid).
++		# scan_ssid=1 (above, for hidden nets) directs probes only within this
++		# freq set, so a hidden 2.4 GHz SSID still works; a hidden 5 GHz-only
++		# SSID will (correctly) never be found in this mode.
++		if [ "$band" = "24" ]; then
++			echo "    freq_list=$FREQ_24"
++			echo "    scan_freq=$FREQ_24"
++			# NB: we deliberately do NOT try to force the STA to HT20 here.
++			# wpa_supplicant's disable_ht40 only covers 802.11n HT; on a WiFi 6/5
++			# upstream the STA links HE/VHT 40 MHz and ignores it (verified on the
++			# AIC8800D80 against an 802.11ax AP — the STA still came up HE40).
++			# start_ap inherits the STA's *actual* width instead, so the single
++			# radio stays co-channel AND co-width whatever the link negotiates.
 +		fi
 +		echo "}"
 +	} > "$WPA_CONF"
@@ -223,26 +273,34 @@ index 000000000..4033fbaf9
 +	log "txpower($_if): requested=$tp actual=${now:-?}"
 +}
 +
++# start_sta [concurrent]
++#   concurrent -> pin the STA to 2.4 GHz so it is co-band with the AP.
++#                 Passed only from the sta+ap dispatch; sta-only stays 5 GHz.
 +start_sta() {
++	band=""; [ "$1" = "concurrent" ] && band=24
 +	ssid=$(cfg sta_ssid); psk=$(cfg sta_psk); hidden=$(cfg sta_hidden); country=$(cfg sta_country)
 +	if [ -z "$ssid" ]; then
 +		log "STA requested but sta_ssid empty; skipping"
 +		return 0
 +	fi
 +	[ -n "$country" ] && iw reg set "$country" 2>/dev/null
-+	gen_wpa_conf "$ssid" "$psk" "$hidden" "$country"
++	gen_wpa_conf "$ssid" "$psk" "$hidden" "$country" "$band"
 +	ip link set "$STA_IF" up 2>/dev/null
-+	wpa_supplicant -B -i "$STA_IF" -c "$WPA_CONF" -P /var/run/wpa_supplicant-wlan0.pid >>"$LOG" 2>&1
++	# 9>&- closes the /run/wifi.lock fd (held by the caller) for the daemon, so
++	# a long-lived wpa_supplicant can't pin the lock after S35wifi exits and
++	# deadlock the next invocation (portal apply / watchdog). Same for dhcpcd
++	# and hostapd below.
++	wpa_supplicant -B -i "$STA_IF" -c "$WPA_CONF" -P /var/run/wpa_supplicant-wlan0.pid >>"$LOG" 2>&1 9>&-
 +	apply_txpower "$STA_IF"
-+	dhcpcd -n "$STA_IF" >>"$LOG" 2>&1 &
-+	log "STA started on $STA_IF ssid=$ssid"
++	dhcpcd -n "$STA_IF" >>"$LOG" 2>&1 9>&- &
++	log "STA started on $STA_IF ssid=$ssid${band:+ (2.4 GHz pinned — concurrent)}"
 +}
 +
 +# Bring up hostapd; if it exits within ~1s (ACS survey unsupported, bad
 +# channel, etc.) retry once on a safe fixed channel. Returns 0 if a hostapd
 +# is running afterwards.
 +_hostapd_up() {
-+	hostapd -B -P /var/run/hostapd.pid "$HOSTAPD_CONF" >>"$LOG" 2>&1
++	hostapd -B -P /var/run/hostapd.pid "$HOSTAPD_CONF" >>"$LOG" 2>&1 9>&-
 +	sleep 1
 +	[ -f /var/run/hostapd.pid ] && kill -0 "$(cat /var/run/hostapd.pid)" 2>/dev/null
 +}
@@ -326,7 +384,21 @@ index 000000000..4033fbaf9
 +		off)    log "mode=off — radio idle"; ip link set "$STA_IF" down 2>/dev/null ;;
 +		sta)    start_sta ;;
 +		ap)     start_ap "$STA_IF" ;;
-+		sta+ap) start_sta; sleep 2; start_ap "$AP_IF_CONCURRENT" ;;
++		sta+ap)
++			# Single radio: bring the STA up FIRST (pinned to 2.4 GHz), wait for
++			# it to actually associate so start_ap can read its real channel and
++			# sit co-channel. If the STA doesn't associate in time (e.g. the
++			# upstream is 5 GHz-only, or just slow), we still start the AP on
++			# ap_channel — the hotspot is the priority — and S36wifiwatch
++			# re-syncs the AP to the STA's channel if/when it later joins.
++			start_sta concurrent
++			if wait_sta_connected 20; then
++				log "STA associated — starting co-channel AP"
++			else
++				log "STA not associated after 20s — starting AP on ap_channel (AP priority); watchdog re-syncs when STA joins"
++			fi
++			start_ap "$AP_IF_CONCURRENT"
++			;;
 +		*)      log "unknown mode '$mode' — treating as off" ;;
 +	esac
 +}
@@ -340,10 +412,45 @@ index 000000000..4033fbaf9
 +	rm -f /run/wifi-ap-iface
 +}
 +
++# Serialize all radio state transitions on one lock so a portal-triggered
++# `restart` (wifi.py apply()) and the S36wifiwatch `ap_restart` can never init
++# hostapd on wlan1 at the same instant — the AIC8800 fullmac driver then returns
++# `nl80211: Match already configured` and the AP fails to come up. The lock is
++# held on fd 9 for the life of this invocation and released on exit; a
++# concurrent S35wifi call blocks here until the in-flight one finishes.
++case "${1:-start}" in
++	start|stop|restart|ap_restart|ap_ensure)
++		exec 9>/run/wifi.lock && flock 9 2>/dev/null || true ;;
++esac
++
 +case "${1:-start}" in
 +	start)   start ;;
 +	stop)    stop ;;
 +	restart) stop; sleep 1; start ;;
++	ap_restart)
++		# Re-establish ONLY the concurrent AP without touching the STA — used by
++		# S36wifiwatch to revive the hotspot if the firmware dropped it on STA
++		# loss, and to re-sync the AP's channel when the STA reconnects. start_ap
++		# re-reads the STA's live channel (or falls back to ap_channel if the STA
++		# is down), so it does the right thing in both cases.
++		load_modules
++		[ -f /var/run/hostapd.pid ] && { kill "$(cat /var/run/hostapd.pid)" 2>/dev/null; rm -f /var/run/hostapd.pid; }
++		killall hostapd 2>/dev/null
++		sleep 1
++		start_ap "$AP_IF_CONCURRENT"
++		;;
++	ap_ensure)
++		# Idempotent "revive": bring the concurrent AP up ONLY if it isn't
++		# already running. Used by S36wifiwatch's hostapd-down path so that if it
++		# blocked on the lock behind a deliberate `restart` (portal apply), it
++		# finds the AP already up once the lock releases and does nothing —
++		# instead of a redundant teardown/rebuild (one avoidable blip). The
++		# channel re-sync path still uses ap_restart (always restarts).
++		if ! pidof hostapd >/dev/null 2>&1; then
++			load_modules
++			start_ap "$AP_IF_CONCURRENT"
++		fi
++		;;
 +	scan)
 +		ip link set "$STA_IF" up 2>/dev/null
 +		iw dev "$STA_IF" scan 2>/dev/null | awk '
@@ -359,12 +466,108 @@ index 000000000..4033fbaf9
 +		;;
 +	*) echo "Usage: $0 {start|stop|restart|scan|status}" >&2; exit 1 ;;
 +esac
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S36wifiwatch b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S36wifiwatch
+new file mode 100755
+index 000000000..c637e17af
+--- /dev/null
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S36wifiwatch
+@@ -0,0 +1,90 @@
++#!/bin/sh
++# S36wifiwatch — AP-priority watchdog for concurrent WiFi (mode=sta+ap).
++#
++# The AIC8800 is a SINGLE radio. In sta+ap the AP (hostapd on wlan1) shares the
++# STA's channel, and ANY STA scan hops the radio off that channel — so a
++# disconnected wpa_supplicant, scanning continuously to find the upstream,
++# permanently disrupts the hotspot when you carry the device out of range.
++#
++# The hotspot is what local clients depend on, so it is the priority and must be
++# ROCK-SOLID when the WAN uplink is gone. The rule: the STA may only scan when
++# the AP has ZERO connected clients — so a connected client NEVER sees a blip.
++#   * STA drops           -> `wpa_cli disconnect` immediately: stop the scan, the
++#                            AP keeps beaconing on its channel (no blips, ever).
++#   * uplink still down    -> re-attempt the STA ONLY while the AP is idle (no
++#                            associated stations); if anyone is connected, leave
++#                            the radio untouched.
++#   * STA back / AP dropped -> re-establish + re-sync the AP (S35wifi ap_restart).
++#
++# Background loop (like S46wanwatch); re-reads the mode each pass. No-op unless
++# mode=sta+ap.
++
++CONF=/etc/rnsbox/wifi.conf
++STA_IF=wlan0
++AP_IF=wlan1
++LOG=/var/log/wifi.log
++GRACE=8          # seconds the STA may be down before we protect the AP
++IDLE_RETRY=30    # seconds between STA reconnect attempts, but only while idle
++STEP=4           # poll interval
++
++cfg() { grep -E "^[[:space:]]*$1[[:space:]]*=" "$CONF" 2>/dev/null | tail -1 \
++	| sed -E "s/^[^=]*=[[:space:]]*//;s/[[:space:]]*#.*$//;s/[[:space:]]*$//" | tr -d '"'; }
++log() { printf '%s: wifiwatch %s\n' "$(date '+%F %T')" "$*" >> "$LOG"; }
++wpa() { wpa_cli -i "$STA_IF" "$@" 2>/dev/null; }
++sta_up()   { wpa status 2>/dev/null | grep -q '^wpa_state=COMPLETED'; }
++ap_up()    { pidof hostapd >/dev/null 2>&1; }
++ap_idle()  { [ "$(iw dev "$AP_IF" station dump 2>/dev/null | grep -c '^Station')" = "0" ]; }
++now_s()    { cut -d. -f1 /proc/uptime; }
++
++loop() {
++	log "watchdog started"
++	down=0; protected=0; last_retry=0
++	while sleep "$STEP"; do
++		[ "$(cfg mode)" = "sta+ap" ] || { down=0; protected=0; continue; }
++
++		# The AP is the priority: if the firmware dropped it, bring it back.
++		# ap_ensure (not ap_restart) so that if this blocks on the wifi lock
++		# behind a deliberate restart (portal apply), it finds the AP already up
++		# once the lock releases and does nothing — no redundant blip.
++		if ! ap_up; then
++			log "hostapd down — reviving AP"
++			/etc/init.d/S35wifi ap_ensure >>"$LOG" 2>&1
++		fi
++
++		if sta_up; then
++			if [ "$protected" = 1 ]; then
++				log "STA reconnected — re-syncing AP to its channel"
++				/etc/init.d/S35wifi ap_restart >>"$LOG" 2>&1
++				protected=0
++			fi
++			down=0
++			continue
++		fi
++
++		# STA not connected.
++		down=$((down + STEP))
++		if [ "$protected" = 0 ] && [ "$down" -ge "$GRACE" ]; then
++			log "STA down (${down}s) — protecting AP: stopping STA scan"
++			wpa disconnect            # radio is now 100% the AP's — no blips
++			protected=1
++			last_retry=$(now_s)
++		fi
++
++		# Re-attempt the uplink ONLY while nobody is on the AP (a scan then can't
++		# disturb anyone). If clients are connected, never touch the radio.
++		if [ "$protected" = 1 ] && ap_idle; then
++			n=$(now_s)
++			if [ $((n - last_retry)) -ge "$IDLE_RETRY" ]; then
++				log "AP idle — trying STA reconnect"
++				wpa reconnect
++				last_retry=$n
++			fi
++		fi
++	done
++}
++
++case "${1:-start}" in
++	start) loop & ;;
++	stop)  : ;;
++	*) echo "usage: $0 {start|stop}"; exit 1 ;;
++esac
 diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/wifi.conf b/buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/wifi.conf
 new file mode 100644
-index 000000000..916c306a2
+index 000000000..ea3f7baa1
 --- /dev/null
 +++ b/buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/wifi.conf
-@@ -0,0 +1,57 @@
+@@ -0,0 +1,62 @@
 +# RNSBox WiFi config — read at boot by /etc/init.d/S35wifi.
 +#
 +# Only meaningful on the LicheeRV Nano-e **W** variant (AIC8800 chip). On
@@ -373,10 +576,15 @@ index 000000000..916c306a2
 +#
 +# mode:
 +#   off       no WiFi (default)
-+#   sta       client only (join a network on wlan0)
-+#   ap        hotspot only (wlan0 runs hostapd)
++#   sta       client only (join a network on wlan0) — FULL dual-band, uses
++#             5 GHz when the upstream offers it (no AP to co-channel with)
++#   ap        hotspot only (wlan0 runs hostapd) — 2.4 GHz
 +#   sta+ap    concurrent: wlan0 = STA, wlan1 = AP (AIC8800 single radio,
-+#             time-multiplexed)
++#             time-multiplexed). The client is PINNED TO 2.4 GHz in this mode
++#             so it stays on the same channel as the 2.4 GHz hotspot — the one
++#             radio cannot straddle two bands. Trade-off: no 5 GHz upstream
++#             while the hotspot is on. A 5 GHz-ONLY upstream will not connect
++#             in sta+ap; use mode=sta (no hotspot) for a 5 GHz uplink.
 +#
 +# Managed by the rnsbox-portal WiFi tab. Apply hand-edits with:
 +#   /etc/init.d/S35wifi restart
@@ -386,7 +594,7 @@ index 000000000..916c306a2
 +# --- STA (client) ---
 +sta_ssid=
 +sta_psk=
-+# sta_hidden=0      # 1 to scan for a hidden SSID
++# sta_hidden=0      # 1 to scan for a hidden SSID (works on 2.4 GHz in sta+ap)
 +# sta_country=00    # regulatory domain; 00=world
 +
 +# --- AP (hotspot) ---
@@ -492,6 +700,3 @@ index 52b001a67..ed314f917 100755
  CONFIG_USE_5G ?= y
  CONFIG_CREATE_TRACE_POINTS = n
  CONFIG_TXRX_THREAD_PRIO = y
--- 
-2.47.3
-

@@ -1,7 +1,7 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 837db8aacfeb08be97d242232e83d0bc3230b9af Mon Sep 17 00:00:00 2001
 From: smit1237 <smit1237@gmail.com>
 Date: Tue, 8 Sep 2026 22:47:48 +0300
-Subject: [PATCH 06/22] python: Rust host toolchain, cryptography 43.0.3 and
+Subject: [PATCH 06/23] python: Rust host toolchain, cryptography 43.0.3 and
  Reticulum 1.5.2
 
 Reticulum needs PyCA cryptography, which needs Rust. Enable a source-built
@@ -242,6 +242,3 @@ index 822de68db..f05532d82 100644
  
  # All target rust packages should depend on this option
  # Note: With musl based toolchain, we need a C++ cross compiler to
--- 
-2.47.3
-

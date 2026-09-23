@@ -47,7 +47,8 @@ genimage's `mkdosfs`; it handles this itself.
   for a zero-download quick start.
 - **eth0 = WAN**, DHCP or static, with NAT masquerade plus per-rule port
   forwarding and open-port management.
-- **`rnsbox-portal`** — a Flask admin UI on `http://10.42.0.1/` for network,
+- **`rnsbox-portal`** — a compact C++/CGI admin UI (served by uhttpd, ~0
+  resident RAM) on `http://10.42.0.1/` for network,
   Reticulum, WiFi and system settings — including setting the clock from your
   browser and configuring NTP servers, handy on a board with no RTC. It is the
   single source of truth for the generated `nftables` ruleset (boot and
@@ -58,6 +59,8 @@ genimage's `mkdosfs`; it handles this itself.
   [RNode_Halow_Firmware](https://github.com/I-AM-ENGINEER/RNode_Halow_Firmware)
   bridge — for long-range sub-GHz Reticulum over a 3-wire serial link, with the
   modem's own web UI reverse-proxied through the portal login. Off by default.
+- Optional **LXMF propagation node** (`lxmd`, off by default) for
+  store-and-forward Reticulum message routing.
 
 The design goal throughout is a minimal OS: the camera / display / audio / NPU
 / codec middleware of the stock BSP is stripped so nearly all of the 256 MB
@@ -107,7 +110,7 @@ Applying the series brings the full documentation into the built tree
 | Web UI  | admin | admin    |
 
 Change these on first use. The web password is stored hashed (pbkdf2) in
-`/etc/rnsbox/auth.json` after first login; the Flask session key is generated
+`/etc/rnsbox/auth.json` after first login; the session-signing key is generated
 at runtime and never stored in the source tree.
 
 ## Applying the patches by hand

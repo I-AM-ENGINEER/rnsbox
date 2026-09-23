@@ -1,0 +1,4523 @@
+From 39fcbad1c91ceef6c98c525cb8852bba2d7ebe5f Mon Sep 17 00:00:00 2001
+From: smit1237 <smit1237@gmail.com>
+Date: Tue, 8 Sep 2026 22:47:49 +0300
+Subject: [PATCH 09/23] portal: rnsbox-portal C++/CGI admin UI (uhttpd)
+
+A single riscv64 C++/CGI binary served per-request by uhttpd (OpenWrt's
+tiny HTTP server), replacing the former Flask app so the web tier keeps
+~0 resident RAM (no long-lived interpreter). Pages are server-rendered
+from .html templates under /usr/share/rnsbox-portal/pages in a shared
+OpenWrt-style chrome; POST forms use POST-redirect-GET with a one-shot
+flash cookie. Session auth is werkzeug-compatible pbkdf2 (libcrypto).
+nftables generation (single source of truth for the UI and the boot
+scripts) is the binary's `nftgen` CLI mode.
+
+uhttpd replaces busybox httpd: it serves the docroot index at bare "/"
+(busybox httpd 404s it), follows the /www/cgi-bin/portal symlink to the
+extensionless CGI, and does proper redirects/error pages.
+---
+ .../board/cvitek/SG200X/busybox-extra.config  |   7 +
+ .../SG200X/overlay/etc/init.d/S60routing      |   2 +-
+ .../SG200X/overlay/etc/init.d/S81router       |  82 ++--
+ buildroot/package/rnsbox-portal/Config.in     |  28 ++
+ .../package/rnsbox-portal/rnsbox-portal.mk    |  51 ++
+ buildroot/package/rnsbox-portal/src/LICENSE   |  21 +
+ .../package/rnsbox-portal/src/cgi/http.cpp    | 181 +++++++
+ .../package/rnsbox-portal/src/cgi/http.h      |  75 +++
+ .../package/rnsbox-portal/src/cgi/main.cpp    | 107 +++++
+ .../package/rnsbox-portal/src/cgi/nftgen.cpp  | 114 +++++
+ .../package/rnsbox-portal/src/cgi/nftgen.h    |  20 +
+ .../rnsbox-portal/src/cgi/pages/base.html     |  40 ++
+ .../src/cgi/pages/dashboard.html              | 128 +++++
+ .../rnsbox-portal/src/cgi/pages/login.html    |  18 +
+ .../src/cgi/pages/login_base.html             |  15 +
+ .../rnsbox-portal/src/cgi/pages/network.html  | 118 +++++
+ .../rnsbox-portal/src/cgi/pages/wifi.html     | 129 +++++
+ .../package/rnsbox-portal/src/cgi/render.cpp  |  99 ++++
+ .../package/rnsbox-portal/src/cgi/render.h    |  43 ++
+ .../package/rnsbox-portal/src/cgi/routes.h    |  61 +++
+ .../rnsbox-portal/src/cgi/routes_dash.cpp     | 272 +++++++++++
+ .../rnsbox-portal/src/cgi/routes_net.cpp      | 200 ++++++++
+ .../rnsbox-portal/src/cgi/routes_wifi.cpp     | 243 ++++++++++
+ .../package/rnsbox-portal/src/cgi/session.cpp | 183 +++++++
+ .../package/rnsbox-portal/src/cgi/session.h   |  38 ++
+ .../package/rnsbox-portal/src/cgi/store.cpp   | 444 +++++++++++++++++
+ .../package/rnsbox-portal/src/cgi/store.h     |  88 ++++
+ .../package/rnsbox-portal/src/cgi/sysinfo.cpp | 265 ++++++++++
+ .../package/rnsbox-portal/src/cgi/sysinfo.h   |  54 +++
+ .../package/rnsbox-portal/src/cgi/util.cpp    | 195 ++++++++
+ .../package/rnsbox-portal/src/cgi/util.h      |  54 +++
+ .../package/rnsbox-portal/src/cgi/web.cpp     |  49 ++
+ buildroot/package/rnsbox-portal/src/cgi/web.h |  28 ++
+ .../package/rnsbox-portal/src/cgi/wifi.cpp    | 240 ++++++++++
+ .../package/rnsbox-portal/src/cgi/wifi.h      |  37 ++
+ .../rnsbox-portal/src/cgi/www/index.html      |   5 +
+ .../rnsbox-portal/src/cgi/www/style.css       | 453 ++++++++++++++++++
+ 37 files changed, 4146 insertions(+), 41 deletions(-)
+ create mode 100644 buildroot/package/rnsbox-portal/Config.in
+ create mode 100644 buildroot/package/rnsbox-portal/rnsbox-portal.mk
+ create mode 100644 buildroot/package/rnsbox-portal/src/LICENSE
+ create mode 100644 buildroot/package/rnsbox-portal/src/cgi/http.cpp
+ create mode 100644 buildroot/package/rnsbox-portal/src/cgi/http.h
+ create mode 100644 buildroot/package/rnsbox-portal/src/cgi/main.cpp
+ create mode 100644 buildroot/package/rnsbox-portal/src/cgi/nftgen.cpp
+ create mode 100644 buildroot/package/rnsbox-portal/src/cgi/nftgen.h
+ create mode 100644 buildroot/package/rnsbox-portal/src/cgi/pages/base.html
+ create mode 100644 buildroot/package/rnsbox-portal/src/cgi/pages/dashboard.html
+ create mode 100644 buildroot/package/rnsbox-portal/src/cgi/pages/login.html
+ create mode 100644 buildroot/package/rnsbox-portal/src/cgi/pages/login_base.html
+ create mode 100644 buildroot/package/rnsbox-portal/src/cgi/pages/network.html
+ create mode 100644 buildroot/package/rnsbox-portal/src/cgi/pages/wifi.html
+ create mode 100644 buildroot/package/rnsbox-portal/src/cgi/render.cpp
+ create mode 100644 buildroot/package/rnsbox-portal/src/cgi/render.h
+ create mode 100644 buildroot/package/rnsbox-portal/src/cgi/routes.h
+ create mode 100644 buildroot/package/rnsbox-portal/src/cgi/routes_dash.cpp
+ create mode 100644 buildroot/package/rnsbox-portal/src/cgi/routes_net.cpp
+ create mode 100644 buildroot/package/rnsbox-portal/src/cgi/routes_wifi.cpp
+ create mode 100644 buildroot/package/rnsbox-portal/src/cgi/session.cpp
+ create mode 100644 buildroot/package/rnsbox-portal/src/cgi/session.h
+ create mode 100644 buildroot/package/rnsbox-portal/src/cgi/store.cpp
+ create mode 100644 buildroot/package/rnsbox-portal/src/cgi/store.h
+ create mode 100644 buildroot/package/rnsbox-portal/src/cgi/sysinfo.cpp
+ create mode 100644 buildroot/package/rnsbox-portal/src/cgi/sysinfo.h
+ create mode 100644 buildroot/package/rnsbox-portal/src/cgi/util.cpp
+ create mode 100644 buildroot/package/rnsbox-portal/src/cgi/util.h
+ create mode 100644 buildroot/package/rnsbox-portal/src/cgi/web.cpp
+ create mode 100644 buildroot/package/rnsbox-portal/src/cgi/web.h
+ create mode 100644 buildroot/package/rnsbox-portal/src/cgi/wifi.cpp
+ create mode 100644 buildroot/package/rnsbox-portal/src/cgi/wifi.h
+ create mode 100644 buildroot/package/rnsbox-portal/src/cgi/www/index.html
+ create mode 100644 buildroot/package/rnsbox-portal/src/cgi/www/style.css
+
+diff --git a/buildroot/board/cvitek/SG200X/busybox-extra.config b/buildroot/board/cvitek/SG200X/busybox-extra.config
+index a0414033c..1da780661 100644
+--- a/buildroot/board/cvitek/SG200X/busybox-extra.config
++++ b/buildroot/board/cvitek/SG200X/busybox-extra.config
+@@ -10,3 +10,10 @@ CONFIG_SVC=y
+ CONFIG_SVOK=y
+ CONFIG_SVLOGD=y
+ CONFIG_STAT=y
++# httpd — REMOVED. The C++ CGI admin portal (rnsbox-portal) is now served by
++# uhttpd (OpenWrt's HTTP server) instead of busybox httpd. uhttpd serves the
++# docroot index at bare "/" (busybox httpd hard-404s "/"), follows the
++# /www/cgi-bin/portal symlink, and supports proper redirects/error pages.
++# See package/uhttpd + /etc/init.d/S81router.
++# CONFIG_HTTPD is not set
++# CONFIG_FEATURE_HTTPD_CGI is not set
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S60routing b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S60routing
+index 7531b48bc..27abcfe6a 100755
+--- a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S60routing
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S60routing
+@@ -14,7 +14,7 @@
+ WAN_CONF=/etc/rnsbox/wan.conf
+ NFT_FILE=/etc/nftables.conf
+ DNSMASQ_FILE=/etc/dnsmasq.conf
+-NFTGEN="env PYTHONPATH=/usr/lib/rnsbox-portal python3 -m rnsbox_portal.nftgen"
++NFTGEN="/usr/sbin/rnsbox-portal nftgen"
+ 
+ USB0_LAN_IP=10.42.0.1
+ USB0_LAN_DHCP_START=10.42.0.10
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S81router b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S81router
+index 16a86094d..d5ad11be1 100755
+--- a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S81router
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S81router
+@@ -1,55 +1,57 @@
+ #!/bin/sh
+-# S81router — rnsbox-portal Flask web UI, runs as root.
++# S81router — RNSBox admin web UI: uhttpd serving the C++ CGI portal.
+ #
+-# Why root: the portal exec's /etc/init.d/S60routing to apply nftables
+-# changes and edits /etc/reticulum/config + /etc/rnsbox/*. Running it
+-# unprivileged + shelling to sudo would just shift the trust boundary
+-# without buying isolation (the unprivileged user would still need full
+-# command access). The same trade-off an on-box admin portal lands on in
+-# build #36+.
++# The portal is a single riscv64 binary at /www/cgi-bin/portal (a symlink to
++# /usr/sbin/rnsbox-portal), exec'd per-request by uhttpd — so the web tier
++# costs ~0 resident RAM beyond uhttpd's small event-loop listener. It runs as
++# root: it edits /etc/rnsbox/*, /etc/reticulum/config and exec's the S* init
++# scripts to apply changes, exactly like the old Flask app did.
+ #
+-# Listens on 0.0.0.0:80 by default. nftables policy in S60routing only
+-# accepts inbound :80 on LAN interfaces (usb0), so WAN-side is closed
+-# even with the wildcard bind.
+-
+-NAME=rnsbox-portal
+-DAEMON=/usr/sbin/$NAME
+-PIDFILE=/var/run/$NAME.pid
+-LOG=/var/log/$NAME.log
++# Why uhttpd (not busybox httpd): uhttpd serves the docroot index at bare "/"
++# (busybox httpd hard-404s "/"), does proper redirects/error pages, and leaves
++# room for TLS later. It is a documented drop-in replacement for busybox httpd.
++#
++# uhttpd specifics (verified against the pinned source, commit 15346de8):
++#   -p 0.0.0.0:80   HTTP listen
++#   -h /www         docroot (realpath'd; must exist)
++#   -x /cgi-bin     CGI url prefix — any file under <docroot>/cgi-bin is exec'd
++#                   directly as CGI regardless of extension (our binary has none)
++#   -I index.html   index file served for "/" (index.html is a default anyway)
++#   NB: do NOT pass -S. -S sets no_symlinks=1, which makes uhttpd realpath() the
++#       request and enforce docroot-containment — that would resolve our
++#       /www/cgi-bin/portal symlink to /usr/sbin/... (outside /www) and REJECT
++#       it. Without -S the containment check is lexical, so the symlink passes
++#       and the kernel dereferences it at exec. (cgi env: SCRIPT_NAME=
++#       /cgi-bin/portal, PATH_INFO=/<route> — same as busybox httpd, so the CGI
++#       binary is unchanged.)
++#   uhttpd self-daemonizes when -f is absent; it has no pidfile option, so we
++#   track it with pidof and stop it with killall (same as the old httpd script).
++#
++# Listens on 0.0.0.0:80. WAN reachability is governed by nftables (the Open
++# Ports list ships tcp/80), matching the pre-uhttpd behaviour.
+ 
+-[ -x "$DAEMON" ] || exit 0
++DOCROOT=/www
+ 
+ start() {
+-	mkdir -p /var/log /var/run /etc/rnsbox
+-
+-	if [ -f "$PIDFILE" ] && kill -0 "$(cat $PIDFILE)" 2>/dev/null; then
+-		echo "S81router: already running (pid $(cat $PIDFILE))"
++	mkdir -p /var/log "$DOCROOT/cgi-bin"
++	if pidof uhttpd >/dev/null 2>&1; then
++		echo "S81router: uhttpd already running (pid $(pidof uhttpd))"
+ 		return 0
+ 	fi
+-
+-	printf "Starting %s: " "$NAME"
+-	"$DAEMON" >>"$LOG" 2>&1 &
+-	PID=$!
+-	echo "$PID" > "$PIDFILE"
++	printf "Starting uhttpd (portal): "
++	# -t/-T 200: the Reticulum tab's "Update rnsd" apply shells to pip (in-place
++	# package update + rnsd restart) and can run well past uhttpd's 60 s default
++	# script timeout; raise both the script and network idle timeouts so the
++	# async apply isn't killed mid-flight (the browser shows a spinner meanwhile).
++	uhttpd -p 0.0.0.0:80 -h "$DOCROOT" -x /cgi-bin -I index.html -t 200 -T 200
+ 	sleep 0.3
+-	if kill -0 "$PID" 2>/dev/null; then
+-		echo "OK (pid $PID)"
+-	else
+-		echo "FAIL (see $LOG)"
+-		rm -f "$PIDFILE"
+-		return 1
+-	fi
++	if pidof uhttpd >/dev/null 2>&1; then echo "OK (pid $(pidof uhttpd))"; else echo "FAIL"; return 1; fi
+ }
+ 
+ stop() {
+-	printf "Stopping %s: " "$NAME"
+-	if [ -f "$PIDFILE" ]; then
+-		kill "$(cat $PIDFILE)" 2>/dev/null
+-		rm -f "$PIDFILE"
+-		echo "OK"
+-	else
+-		echo "(not running)"
+-	fi
++	printf "Stopping uhttpd: "
++	killall uhttpd 2>/dev/null
++	echo "OK"
+ }
+ 
+ case "${1:-start}" in
+diff --git a/buildroot/package/rnsbox-portal/Config.in b/buildroot/package/rnsbox-portal/Config.in
+new file mode 100644
+index 000000000..6445506ae
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/Config.in
+@@ -0,0 +1,28 @@
++config BR2_PACKAGE_RNSBOX_PORTAL
++	bool "rnsbox-portal"
++	select BR2_PACKAGE_OPENSSL
++	select BR2_PACKAGE_UHTTPD
++	help
++	  OpenWrt-style admin web UI for the RNSBox router build.
++
++	  A single C++/CGI binary served per-request by uhttpd
++	  (OpenWrt's tiny HTTP server; the web tier keeps ~0 resident
++	  RAM since uhttpd forks the CGI per request), replacing the
++	  former Flask app. No Python is needed for the web tier.
++
++	  uhttpd is used instead of busybox httpd because it serves the
++	  docroot index at bare "/" (busybox httpd 404s "/"), does
++	  proper redirects/error pages, and can add TLS later.
++
++	  Features:
++	    - Dashboard: system + Reticulum status at a glance
++	    - Network: WAN/LAN status, dnsmasq leases, port forwards
++	      (WAN -> LAN DNAT), WAN-side open ports (input ACCEPT)
++	    - Reticulum: live rnsd status, raw config editor, restart
++	    - Settings: admin password + hostname
++
++	  Stores port-forward / open-port / auth state under
++	  /etc/rnsbox/ and regenerates /etc/nftables.conf via
++	  rnsbox_portal.nftgen (called by /etc/init.d/S60routing).
++
++	  Pure-Python; no Go/Node toolchain needed. Source is local.
+diff --git a/buildroot/package/rnsbox-portal/rnsbox-portal.mk b/buildroot/package/rnsbox-portal/rnsbox-portal.mk
+new file mode 100644
+index 000000000..774c351be
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/rnsbox-portal.mk
+@@ -0,0 +1,51 @@
++################################################################################
++#
++# rnsbox-portal — C++/CGI admin UI for the RNSBox router build
++#
++# A single riscv64 binary (dual-mode):
++#   - CGI:  /www/cgi-bin/portal (symlink -> /usr/sbin/rnsbox-portal), executed
++#           per-request by uhttpd (S81router). ~0 resident RAM for the web tier.
++#           uhttpd follows the symlink (no -S flag) and exec's the extensionless
++#           ELF directly; SCRIPT_NAME=/cgi-bin/portal, PATH_INFO=/<route>.
++#   - CLI:  `rnsbox-portal nftgen --wan <if> --lan <a,b>` — the nftables
++#           generator (single source of truth), invoked by S60routing at boot.
++#
++# Links the box's OpenSSL (libcrypto) for the pbkdf2 password check; static
++# libstdc++/libgcc so only libc + libcrypto are runtime deps. Page shells are
++# plain .html under /usr/share/rnsbox-portal/pages; static assets under /www.
++#
++# Replaces the former Flask/Python portal entirely (no python3 needed for the
++# web tier).
++#
++################################################################################
++
++RNSBOX_PORTAL_VERSION = 0.2.0
++RNSBOX_PORTAL_SITE = $(TOPDIR)/package/rnsbox-portal/src
++RNSBOX_PORTAL_SITE_METHOD = local
++RNSBOX_PORTAL_LICENSE = MIT
++RNSBOX_PORTAL_LICENSE_FILES = LICENSE
++RNSBOX_PORTAL_DEPENDENCIES = openssl zlib
++
++define RNSBOX_PORTAL_BUILD_CMDS
++	$(TARGET_CXX) -std=c++17 -Os -s -fno-exceptions -fno-rtti \
++		-static-libstdc++ -static-libgcc \
++		-ffunction-sections -fdata-sections -Wl,--gc-sections \
++		-o $(@D)/rnsbox-portal $(@D)/cgi/*.cpp -lcrypto -lz
++endef
++
++define RNSBOX_PORTAL_INSTALL_TARGET_CMDS
++	$(INSTALL) -D -m 0755 $(@D)/rnsbox-portal $(TARGET_DIR)/usr/sbin/rnsbox-portal
++	mkdir -p $(TARGET_DIR)/www/cgi-bin
++	ln -sf /usr/sbin/rnsbox-portal $(TARGET_DIR)/www/cgi-bin/portal
++	mkdir -p $(TARGET_DIR)/usr/share/rnsbox-portal/pages
++	$(INSTALL) -m 0644 $(@D)/cgi/pages/*.html $(TARGET_DIR)/usr/share/rnsbox-portal/pages/
++	$(INSTALL) -D -m 0644 $(@D)/cgi/www/style.css $(TARGET_DIR)/www/style.css
++	$(INSTALL) -D -m 0644 $(@D)/cgi/www/index.html $(TARGET_DIR)/www/index.html
++	mkdir -p $(TARGET_DIR)/www/qr
++	$(INSTALL) -m 0644 $(@D)/cgi/www/qr/*.svg $(TARGET_DIR)/www/qr/
++	$(INSTALL) -D -m 0755 $(@D)/cgi/helpers/updatecheck.py $(TARGET_DIR)/usr/lib/rnsbox/updatecheck.py
++	$(INSTALL) -D -m 0755 $(@D)/cgi/helpers/halow.py $(TARGET_DIR)/usr/lib/rnsbox/halow.py
++	$(INSTALL) -D -m 0755 $(@D)/bin/rnsbox-update-check $(TARGET_DIR)/usr/sbin/rnsbox-update-check
++endef
++
++$(eval $(generic-package))
+diff --git a/buildroot/package/rnsbox-portal/src/LICENSE b/buildroot/package/rnsbox-portal/src/LICENSE
+new file mode 100644
+index 000000000..645d94257
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/LICENSE
+@@ -0,0 +1,21 @@
++MIT License
++
++Copyright (c) 2026 smit1237
++
++Permission is hereby granted, free of charge, to any person obtaining a copy
++of this software and associated documentation files (the "Software"), to deal
++in the Software without restriction, including without limitation the rights
++to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++copies of the Software, and to permit persons to whom the Software is
++furnished to do so, subject to the following conditions:
++
++The above copyright notice and this permission notice shall be included in all
++copies or substantial portions of the Software.
++
++THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
++SOFTWARE.
+diff --git a/buildroot/package/rnsbox-portal/src/cgi/http.cpp b/buildroot/package/rnsbox-portal/src/cgi/http.cpp
+new file mode 100644
+index 000000000..5657e6ec2
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/cgi/http.cpp
+@@ -0,0 +1,181 @@
++// http.cpp — see http.h. Defensive CGI parsing for a WAN-facing root service.
++#include "http.h"
++#include <cstdio>
++#include <cstring>
++#include <unistd.h>
++
++namespace http {
++
++static int hexval(char c) {
++    if (c >= '0' && c <= '9') return c - '0';
++    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
++    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
++    return -1;
++}
++
++std::string url_decode(const std::string& s) {
++    std::string out;
++    out.reserve(s.size());
++    for (size_t i = 0; i < s.size(); ++i) {
++        char c = s[i];
++        if (c == '+') {
++            out.push_back(' ');
++        } else if (c == '%' && i + 2 < s.size()) {
++            int hi = hexval(s[i + 1]), lo = hexval(s[i + 2]);
++            if (hi >= 0 && lo >= 0) {
++                out.push_back(static_cast<char>((hi << 4) | lo));
++                i += 2;
++            } else {
++                out.push_back(c);  // malformed %XX -> literal
++            }
++        } else {
++            out.push_back(c);
++        }
++    }
++    return out;
++}
++
++void parse_urlencoded(const std::string& s, std::map<std::string, std::string>& out) {
++    size_t i = 0;
++    while (i < s.size()) {
++        size_t amp = s.find('&', i);
++        if (amp == std::string::npos) amp = s.size();
++        std::string pair = s.substr(i, amp - i);
++        size_t eq = pair.find('=');
++        if (eq == std::string::npos) {
++            std::string k = url_decode(pair);
++            if (!k.empty()) out[k] = "";
++        } else {
++            std::string k = url_decode(pair.substr(0, eq));
++            std::string v = url_decode(pair.substr(eq + 1));
++            if (!k.empty()) out[k] = v;
++        }
++        i = amp + 1;
++    }
++}
++
++void parse_cookies(const std::string& s, std::map<std::string, std::string>& out) {
++    size_t i = 0;
++    while (i < s.size()) {
++        size_t semi = s.find(';', i);
++        if (semi == std::string::npos) semi = s.size();
++        std::string pair = s.substr(i, semi - i);
++        // trim leading spaces
++        size_t start = pair.find_first_not_of(' ');
++        if (start != std::string::npos) {
++            pair = pair.substr(start);
++            size_t eq = pair.find('=');
++            if (eq != std::string::npos) {
++                std::string k = pair.substr(0, eq);
++                std::string v = pair.substr(eq + 1);
++                if (!k.empty()) out[k] = v;
++            }
++        }
++        i = semi + 1;
++    }
++}
++
++static std::string env_str(const char* name) {
++    const char* v = getenv(name);
++    return v ? std::string(v) : std::string();
++}
++
++Request read_request() {
++    Request r;
++    r.method = env_str("REQUEST_METHOD");
++    r.path = env_str("PATH_INFO");
++    if (r.path.empty()) r.path = "/";
++    r.query = env_str("QUERY_STRING");
++    r.remote_addr = env_str("REMOTE_ADDR");
++
++    parse_urlencoded(r.query, r.args);
++    parse_cookies(env_str("HTTP_COOKIE"), r.cookies);
++
++    // POST body: bounded read. Trust CONTENT_LENGTH only as a hint; cap hard.
++    if (r.method == "POST" || r.method == "PUT") {
++        std::string cl = env_str("CONTENT_LENGTH");
++        long want = -1;
++        if (!cl.empty()) {
++            char* end = nullptr;
++            long v = strtol(cl.c_str(), &end, 10);
++            if (end && *end == '\0' && v >= 0) want = v;
++        }
++        if (want > MAX_BODY) { r.too_large = true; return r; }
++        // Read up to MAX_BODY regardless (defends against a lying CONTENT_LENGTH).
++        long limit = (want >= 0 && want < MAX_BODY) ? want : MAX_BODY;
++        r.body.reserve(static_cast<size_t>(limit < 4096 ? limit : 4096));
++        char buf[4096];
++        long total = 0;
++        while (total < limit) {
++            long chunk = limit - total;
++            if (chunk > (long)sizeof(buf)) chunk = sizeof(buf);
++            ssize_t n = ::read(STDIN_FILENO, buf, static_cast<size_t>(chunk));
++            if (n <= 0) break;
++            r.body.append(buf, static_cast<size_t>(n));
++            total += n;
++            if (total > MAX_BODY) { r.too_large = true; break; }
++        }
++        std::string ct = env_str("CONTENT_TYPE");
++        if (ct.find("application/x-www-form-urlencoded") != std::string::npos)
++            parse_urlencoded(r.body, r.form);
++    }
++    return r;
++}
++
++void Response::send() const {
++    std::string out;
++    out.reserve(body.size() + 256);
++    out += "Status: " + status + "\r\n";
++    out += "Content-Type: " + content_type + "\r\n";
++    for (const auto& h : headers) out += h + "\r\n";
++    // Conservative security headers (WAN-facing).
++    out += "X-Content-Type-Options: nosniff\r\n";
++    out += "X-Frame-Options: DENY\r\n";
++    out += "\r\n";
++    out += body;
++    ::fwrite(out.data(), 1, out.size(), stdout);
++    ::fflush(stdout);
++}
++
++std::string json_escape(const std::string& s) {
++    std::string o;
++    o.reserve(s.size() + 8);
++    for (unsigned char c : s) {
++        switch (c) {
++            case '"':  o += "\\\""; break;
++            case '\\': o += "\\\\"; break;
++            case '\n': o += "\\n";  break;
++            case '\r': o += "\\r";  break;
++            case '\t': o += "\\t";  break;
++            case '\b': o += "\\b";  break;
++            case '\f': o += "\\f";  break;
++            default:
++                if (c < 0x20) {
++                    char b[8];
++                    snprintf(b, sizeof(b), "\\u%04x", c);
++                    o += b;
++                } else {
++                    o.push_back(static_cast<char>(c));
++                }
++        }
++    }
++    return o;
++}
++
++std::string html_escape(const std::string& s) {
++    std::string o;
++    o.reserve(s.size() + 8);
++    for (char c : s) {
++        switch (c) {
++            case '&': o += "&amp;"; break;
++            case '<': o += "&lt;"; break;
++            case '>': o += "&gt;"; break;
++            case '"': o += "&quot;"; break;
++            case '\'': o += "&#39;"; break;
++            default: o.push_back(c);
++        }
++    }
++    return o;
++}
++
++}  // namespace http
+diff --git a/buildroot/package/rnsbox-portal/src/cgi/http.h b/buildroot/package/rnsbox-portal/src/cgi/http.h
+new file mode 100644
+index 000000000..99a1588e5
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/cgi/http.h
+@@ -0,0 +1,75 @@
++// http.h — CGI request/response core for the RNSBox portal.
++//
++// WAN-facing root CGI: every parser here is written defensively — bounded
++// reads into std::string (never fixed char[] sized from attacker input),
++// explicit length caps, and no use of the untrusted bytes in any shell.
++// Compiled with -fno-exceptions, so we never rely on throwing; callers check
++// return values / emptiness instead.
++#ifndef RNSBOX_HTTP_H
++#define RNSBOX_HTTP_H
++
++#include <string>
++#include <map>
++#include <vector>
++#include <cstdlib>
++
++namespace http {
++
++// Hard cap on a request body we will read (matches the Flask portal's 256 KiB
++// MAX_CONTENT_LENGTH). A larger CONTENT_LENGTH is refused with 413.
++constexpr long MAX_BODY = 256 * 1024;
++
++struct Request {
++    std::string method;        // REQUEST_METHOD
++    std::string path;          // PATH_INFO (the app route, e.g. "/login")
++    std::string query;         // QUERY_STRING (raw)
++    std::string body;          // request body (POST), capped at MAX_BODY
++    std::string remote_addr;   // REMOTE_ADDR
++    bool too_large = false;    // CONTENT_LENGTH exceeded MAX_BODY
++    std::map<std::string, std::string> cookies;  // parsed Cookie header
++    std::map<std::string, std::string> form;     // parsed application/x-www-form-urlencoded body
++    std::map<std::string, std::string> args;     // parsed QUERY_STRING
++
++    // Convenience: form field, else empty string.
++    std::string f(const char* k) const { auto it = form.find(k); return it == form.end() ? std::string() : it->second; }
++    std::string a(const char* k) const { auto it = args.find(k); return it == args.end() ? std::string() : it->second; }
++    std::string cookie(const char* k) const { auto it = cookies.find(k); return it == cookies.end() ? std::string() : it->second; }
++};
++
++// Percent-decode + '+'-to-space. Bounded by the input length; malformed %XX is
++// passed through literally rather than read past the end.
++std::string url_decode(const std::string& s);
++
++// Parse "a=1&b=two%20words" into a map (last value wins). Keys/values decoded.
++void parse_urlencoded(const std::string& s, std::map<std::string, std::string>& out);
++
++// Parse a Cookie header ("k=v; k2=v2") into a map. Values are NOT url-decoded
++// (cookies we set are already token-safe base64url).
++void parse_cookies(const std::string& s, std::map<std::string, std::string>& out);
++
++// Read the CGI environment + (for POST) stdin into a Request. Enforces MAX_BODY.
++Request read_request();
++
++// --- response helpers (write to stdout, CGI style) ---
++
++// A response accumulates headers then a body, emitted once via send().
++struct Response {
++    std::string status = "200 OK";
++    std::string content_type = "text/html; charset=utf-8";
++    std::vector<std::string> headers;   // extra raw headers ("Set-Cookie: ...")
++    std::string body;
++
++    void set_cookie(const std::string& raw) { headers.push_back("Set-Cookie: " + raw); }
++    void redirect(const std::string& location) { status = "302 Found"; headers.push_back("Location: " + location); body.clear(); }
++    void send() const;
++};
++
++// JSON string escaper (for our tiny hand-rolled JSON emitter). Escapes the
++// control set + quote/backslash; emits \uXXXX for < 0x20.
++std::string json_escape(const std::string& s);
++
++// HTML-escape for the rare case we echo a value into a shell page.
++std::string html_escape(const std::string& s);
++
++}  // namespace http
++#endif
+diff --git a/buildroot/package/rnsbox-portal/src/cgi/main.cpp b/buildroot/package/rnsbox-portal/src/cgi/main.cpp
+new file mode 100644
+index 000000000..930c78cd1
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/cgi/main.cpp
+@@ -0,0 +1,107 @@
++// main.cpp — RNSBox portal CGI. One binary at /cgi-bin/portal/*, PATH_INFO = route.
++// Pages are rendered server-side (render::layout wraps a .html content block from
++// PAGES_DIR); form POSTs are POST-redirect-GET with a one-shot flash. A handful of
++// endpoints stay JSON for the pages' own AJAX (rnstatus, wifi scan/status,
++// dashboard auto-refresh, live HaLow modem). Dual-mode: `nftgen` CLI at boot.
++#include "http.h"
++#include "session.h"
++#include "util.h"
++#include "web.h"
++#include "render.h"
++#include "routes.h"
++#include "nftgen.h"
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <unistd.h>
++
++// ---- auth routes ----
++static void r_login(const http::Request& req, http::Response& res) {
++    if (req.method == "POST") {
++        std::string user = util::trim(req.f("username"));
++        std::string pass = req.f("password");
++        std::string next = req.f("next");
++        if (session::verify_password(user, pass)) {
++            res.set_cookie(session::start(user));
++            std::string dest = web::base();   // no trailing slash (a trailing slash turns the CGI path into a dir lookup)
++            if (next.size() > 1 && next[0] == '/' && next[1] != '/') dest = next;  // local only
++            res.redirect(dest);
++            return;
++        }
++        ::sleep(1);  // brute-force speed bump
++        render::redirect_flash(res, web::base() + "/login", "error", "Invalid credentials");
++        return;
++    }
++    std::string h = render::page_file("login");
++    h = web::replace_all(h, "__ACTION__", web::base() + "/login");
++    h = web::replace_all(h, "__NEXT__", http::html_escape(req.a("next")));
++    res.body = render::login_layout(req, res, h);
++}
++
++static void r_logout(const http::Request&, http::Response& res) {
++    res.set_cookie(session::clear());
++    res.redirect(web::base() + "/login");
++}
++
++int main(int argc, char** argv) {
++    // CLI mode: `rnsbox-portal nftgen --wan eth0 --lan usb0,wlan1` (boot path).
++    if (argc >= 2 && strcmp(argv[1], "nftgen") == 0)
++        return nftgen::cli_main(argc, argv);
++
++    // otherwise: CGI mode (invoked by uhttpd, request in the environment)
++    session::ensure_default_auth();
++    http::Request req = http::read_request();
++    http::Response res;
++
++    if (req.too_large) {
++        res.status = "413 Payload Too Large";
++        res.content_type = "application/json";
++        res.body = "{\"error\":\"request too large\"}";
++        res.send();
++        return 0;
++    }
++
++    const std::string& p = req.path;
++    if      (p == "/login")                      r_login(req, res);
++    else if (p == "/logout")                     r_logout(req, res);
++    else if (p == "/")                           routes::dashboard_page(req, res);
++    else if (p == "/dashboard/data")             routes::dashboard_data(req, res);
++    else if (p == "/network")                    routes::network_page(req, res);
++    else if (p == "/network/wan")                routes::wan_set(req, res);
++    else if (p == "/network/portforward/add")    routes::pf_add(req, res);
++    else if (p == "/network/portforward/delete") routes::pf_delete(req, res);
++    else if (p == "/network/openport/add")       routes::op_add(req, res);
++    else if (p == "/network/openport/delete")    routes::op_delete(req, res);
++    else if (p == "/wifi")                       routes::wifi_page(req, res);
++    else if (p == "/wifi/scan")                  routes::wifi_scan(req, res);
++    else if (p == "/wifi/status")                routes::wifi_status(req, res);
++    else if (p == "/wifi/connect")               routes::wifi_connect(req, res);
++    else if (p == "/wifi/ap")                    routes::wifi_ap(req, res);
++    else if (p == "/wifi/mode")                  routes::wifi_mode(req, res);
++    else if (p == "/wifi/txpower")               routes::wifi_txpower(req, res);
++    else if (p == "/reticulum")                  routes::reticulum_page(req, res);
++    else if (p == "/reticulum/status")           routes::reticulum_status(req, res);
++    else if (p == "/reticulum/halow")            routes::reticulum_halow(req, res);
++    else if (p == "/reticulum/config")           routes::reticulum_config_save(req, res);
++    else if (p == "/reticulum/restart")          routes::reticulum_restart(req, res);
++    else if (p == "/reticulum/autorestart")      routes::reticulum_autorestart(req, res);
++    else if (p == "/reticulum/autoupdate")       routes::reticulum_autoupdate(req, res);
++    else if (p == "/reticulum/checkupdate")      routes::reticulum_checkupdate(req, res);
++    else if (p == "/reticulum/applyupdate")      routes::reticulum_applyupdate(req, res);
++    else if (p == "/reticulum/slip")             routes::reticulum_slip(req, res);
++    else if (p == "/reticulum/halow/add")        routes::reticulum_halow_add(req, res);
++    else if (p == "/settings")                   routes::settings_page(req, res);
++    else if (p == "/settings/password")          routes::settings_password(req, res);
++    else if (p == "/settings/hostname")          routes::hostname_set(req, res);
++    else if (p == "/settings/time/browser")      routes::time_browser(req, res);
++    else if (p == "/settings/ntp")               routes::ntp_set(req, res);
++    else if (p == "/settings/ntp/restart")       routes::ntp_restart(req, res);
++    else if (p == "/donate")                     routes::donate_page(req, res);
++    else if (p == "/modem" || p == "/modem/")    routes::modem_ui(req, res);
++    else if (p.rfind("/modem/api/", 0) == 0)     routes::modem_api(req, res);
++    else if (p == "/health") { res.content_type = "application/json"; res.body = "{\"ok\":true}"; }
++    else { res.status = "404 Not Found"; res.content_type = "application/json"; res.body = "{\"error\":\"not found\"}"; }
++
++    res.send();
++    return 0;
++}
+diff --git a/buildroot/package/rnsbox-portal/src/cgi/nftgen.cpp b/buildroot/package/rnsbox-portal/src/cgi/nftgen.cpp
+new file mode 100644
+index 000000000..fb7f3b91f
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/cgi/nftgen.cpp
+@@ -0,0 +1,114 @@
++// nftgen.cpp — see nftgen.h. Native port of nftgen.py; output is byte-identical.
++#include "nftgen.h"
++#include "store.h"
++#include <cstdio>
++#include <cstring>
++#include <map>
++#include <set>
++
++namespace nftgen {
++
++std::string generate(const std::string& wan, const std::vector<std::string>& lans) {
++    auto forwards = store::read_portforwards();
++    auto openports = store::read_openports();
++
++    std::string lan_set;
++    for (size_t i = 0; i < lans.size(); ++i) {
++        if (i) lan_set += ", ";
++        lan_set += "\"" + lans[i] + "\"";
++    }
++
++    std::string L;
++    auto add = [&](const std::string& s) { L += s; L += "\n"; };
++
++    add("# Generated by rnsbox nftgen — do not hand-edit.");
++    add("# Re-render with: /etc/init.d/S60routing restart\n");
++    add("flush ruleset\n");
++
++    add("table ip filter {");
++    add("\tset lan_ifaces { type ifname; elements = { " + lan_set + " } }\n");
++
++    add("\tchain input {");
++    add("\t\ttype filter hook input priority filter; policy drop;");
++    add("\t\tct state invalid drop");
++    add("\t\tct state established,related accept");
++    add("\t\tiifname \"lo\" accept");
++    add("\t\ticmp type echo-request limit rate 10/second accept");
++    add("\t\t# LAN: full management surface (HTTP UI on :80, DHCP/DNS, SSH, etc.)");
++    add("\t\tiifname @lan_ifaces accept");
++    if (!forwards.empty()) {
++        add("\t\t# port forwards whose target is the device itself (DNAT -> INPUT)");
++        add("\t\tiifname \"" + wan + "\" ct status dnat accept");
++    }
++    if (!openports.empty()) {
++        std::map<std::string, std::set<int>> pp;   // proto -> sorted unique ports
++        for (const auto& op : openports) pp[op.proto].insert(op.port);
++        for (const auto& kv : pp) {
++            std::string ports;
++            for (auto it = kv.second.begin(); it != kv.second.end(); ++it) {
++                if (it != kv.second.begin()) ports += ", ";
++                ports += std::to_string(*it);
++            }
++            add("\t\t# user-managed open ports");
++            add("\t\tiifname \"" + wan + "\" " + kv.first + " dport { " + ports + " } accept");
++        }
++    }
++    add("\t}\n");
++
++    add("\tchain forward {");
++    add("\t\ttype filter hook forward priority filter; policy drop;");
++    add("\t\tct state invalid drop");
++    add("\t\tct state established,related accept");
++    add("\t\t# LAN -> WAN (free egress)");
++    add("\t\tiifname @lan_ifaces oifname \"" + wan + "\" accept");
++    if (!forwards.empty()) {
++        add("\t\t# WAN -> LAN, post-DNAT (port forward destinations)");
++        for (const auto& fw : forwards)
++            add("\t\tiifname \"" + wan + "\" oifname @lan_ifaces ip daddr " + fw.lan_ip + " " +
++                fw.proto + " dport " + std::to_string(fw.lan_port) + " accept");
++    }
++    add("\t}\n");
++
++    add("\tchain output { type filter hook output priority filter; policy accept; }");
++    add("}\n");
++
++    add("table ip nat {");
++    add("\tchain prerouting {");
++    add("\t\ttype nat hook prerouting priority dstnat; policy accept;");
++    for (const auto& fw : forwards)
++        add("\t\tiifname \"" + wan + "\" " + fw.proto + " dport " + std::to_string(fw.wan_port) +
++            " dnat to " + fw.lan_ip + ":" + std::to_string(fw.lan_port));
++    add("\t}\n");
++    add("\tchain postrouting {");
++    add("\t\ttype nat hook postrouting priority srcnat; policy accept;");
++    add("\t\toifname \"" + wan + "\" masquerade");
++    add("\t}");
++    add("}");
++    return L;
++}
++
++int cli_main(int argc, char** argv) {
++    std::string wan, lan = "usb0";
++    for (int i = 2; i < argc; ++i) {   // argv[1] == "nftgen"
++        if (!strcmp(argv[i], "--wan") && i + 1 < argc) wan = argv[++i];
++        else if (!strcmp(argv[i], "--lan") && i + 1 < argc) lan = argv[++i];
++    }
++    if (wan.empty()) { fprintf(stderr, "usage: rnsbox-portal nftgen --wan <iface> [--lan a,b]\n"); return 2; }
++    std::vector<std::string> lans;
++    size_t i = 0;
++    while (i < lan.size()) {
++        size_t c = lan.find(',', i);
++        if (c == std::string::npos) c = lan.size();
++        std::string t = lan.substr(i, c - i);
++        // trim
++        size_t a = t.find_first_not_of(" \t");
++        size_t b = t.find_last_not_of(" \t");
++        if (a != std::string::npos) lans.push_back(t.substr(a, b - a + 1));
++        i = c + 1;
++    }
++    std::string out = generate(wan, lans);
++    fwrite(out.data(), 1, out.size(), stdout);
++    return 0;
++}
++
++}  // namespace nftgen
+diff --git a/buildroot/package/rnsbox-portal/src/cgi/nftgen.h b/buildroot/package/rnsbox-portal/src/cgi/nftgen.h
+new file mode 100644
+index 000000000..3316725d9
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/cgi/nftgen.h
+@@ -0,0 +1,20 @@
++// nftgen.h — nftables ruleset generator (native port of nftgen.py).
++// Single source of truth for /etc/nftables.conf, used two ways:
++//   - the portal's apply path (config change), and
++//   - the boot path: `rnsbox-portal nftgen --wan eth0 --lan usb0[,wlan1]`
++//     invoked by /etc/init.d/S60routing.
++#ifndef RNSBOX_NFTGEN_H
++#define RNSBOX_NFTGEN_H
++
++#include <string>
++#include <vector>
++
++namespace nftgen {
++
++std::string generate(const std::string& wan_iface, const std::vector<std::string>& lan_ifaces);
++
++// CLI: parse --wan/--lan from argv, print the ruleset to stdout. Returns exit code.
++int cli_main(int argc, char** argv);
++
++}  // namespace nftgen
++#endif
+diff --git a/buildroot/package/rnsbox-portal/src/cgi/pages/base.html b/buildroot/package/rnsbox-portal/src/cgi/pages/base.html
+new file mode 100644
+index 000000000..641aff9c0
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/cgi/pages/base.html
+@@ -0,0 +1,40 @@
++<!doctype html>
++<html lang="en">
++<head>
++  <meta charset="utf-8">
++  <meta name="viewport" content="width=device-width, initial-scale=1">
++  <title>__TITLE__ — __HOSTNAME__</title>
++  <link rel="stylesheet" href="/style.css">
++</head>
++<body>
++<header class="topbar">
++  <div class="brand">
++    <span class="logo">⬢</span>
++    <span class="brand-name">RNSBox</span>
++    <span class="brand-host">__HOSTNAME__</span>
++  </div>
++  <nav class="topnav">
++    <span class="user">__USER__</span>
++    <a class="logout" href="__BASE__/logout">Logout</a>
++  </nav>
++</header>
++<div class="page">
++  <aside class="sidebar">
++    <a href="__BASE__/" class="__ACT_dashboard__">Dashboard</a>
++    <a href="__BASE__/network" class="__ACT_network__">Network</a>
++    <a href="__BASE__/wifi" class="__ACT_wifi__">WiFi</a>
++    <a href="__BASE__/reticulum" class="__ACT_reticulum__">Reticulum</a>
++    <a href="__BASE__/settings" class="__ACT_settings__">Settings</a>
++    <a href="__BASE__/donate" class="__ACT_donate__">Donate</a>
++  </aside>
++  <main class="content">
++    __FLASH__
++    __CONTENT__
++  </main>
++</div>
++<footer class="sitefoot">
++  <span class="foot-brand"><span class="logo">⬢</span> RNSBox · open-source Reticulum router</span>
++  <a class="foot-donate" href="__BASE__/donate">Donate</a>
++</footer>
++</body>
++</html>
+diff --git a/buildroot/package/rnsbox-portal/src/cgi/pages/dashboard.html b/buildroot/package/rnsbox-portal/src/cgi/pages/dashboard.html
+new file mode 100644
+index 000000000..847919685
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/cgi/pages/dashboard.html
+@@ -0,0 +1,128 @@
++<div class="dash-head">
++  <h2>Dashboard</h2>
++  <div class="autoref">
++    <span class="muted" id="autoref-status"></span>
++    <label>Auto-refresh
++      <select id="autoref">
++        <option value="0">Off</option>
++        <option value="5">5s</option>
++        <option value="10">10s</option>
++        <option value="15">15s</option>
++      </select>
++    </label>
++  </div>
++</div>
++
++<div class="cards">
++
++  <section class="card">
++    <h3>System</h3>
++    <table class="kv">
++      <tr><th>Hostname</th><td>__HOSTNAME__</td></tr>
++      <tr><th>Kernel</th><td>__KERNEL__</td></tr>
++      <tr><th>Uptime</th><td id="d-uptime">__UPTIME__</td></tr>
++      <tr><th>Load avg</th><td id="d-load">__LOAD__</td></tr>
++    </table>
++    <div class="meter-label">
++      <span>RAM</span>
++      <span id="d-ram-label">__RAM_USED__ / __RAM_TOTAL__ MB &middot; __RAM_AVAIL__ MB free</span>
++    </div>
++    <div class="meter">
++      <div class="meter-fill __RAM_FILL_CLASS__" id="d-ram-fill" style="width: __RAM_PCT__%"></div>
++    </div>
++    <p class="muted" id="d-ram-note" style="margin-top:4px">
++      __RAM_PCT__% used &middot; __RAM_BUFFCACHE__ MB buff/cache (reclaimable)
++    </p>
++  </section>
++
++  <section class="card">
++    <h3>WAN (__WAN__)</h3>
++    <table class="kv">
++      <tr><th>State</th><td id="d-wan-state">__WAN_STATE__</td></tr>
++      <tr><th>Address</th><td id="d-wan-addr">__WAN_ADDR__</td></tr>
++      <tr><th>Gateway</th><td id="d-wan-gw">__WAN_GW__</td></tr>
++      <tr><th>DNS</th><td id="d-wan-dns">__WAN_DNS__</td></tr>
++      <tr><th>RX / TX</th><td id="d-wan-rxtx">__WAN_RXTX__</td></tr>
++    </table>
++  </section>
++
++  __LAN_CARD__
++
++  <section class="card">
++    <h3>Reticulum</h3>
++    <table class="kv">
++      <tr><th>Status</th><td id="d-rnsd-status">__RNSD_STATUS__</td></tr>
++      <tr><th>Version</th><td id="d-rnsd-version">__RNSD_VERSION__</td></tr>
++    </table>
++    <p><a class="btn" href="__BASE__/reticulum">Manage &rarr;</a></p>
++  </section>
++
++  __HALOW_CARD__
++
++</div>
++
++__HALOW_SCRIPT__
++
++<script>
++(function(){
++  function $(id){ return document.getElementById(id); }
++  function setText(id,t){ var e=$(id); if(e) e.textContent=t; }
++  function setHTML(id,h){ var e=$(id); if(e) e.innerHTML=h; }
++  function patch(d){
++    var s=d.sys||{}, m=s.mem||{}, wif=d.wan_if||{}, lif=d.lan_if||{}, rn=d.rnsd||{}, up=d.update||{};
++    setText('d-uptime', s.uptime||'');
++    setText('d-load', (s.load||[]).join(' / '));
++    if(m.total_mb){
++      var pct=m.used_pct||0;
++      setText('d-ram-label', m.used_mb+' / '+m.total_mb+' MB · '+m.avail_mb+' MB free');
++      var f=$('d-ram-fill'); if(f){ f.style.width=pct+'%'; f.className='meter-fill '+(pct>=90?'crit':pct>=75?'warn':'ok'); }
++      setText('d-ram-note', pct+'% used · '+m.buffcache_mb+' MB buff/cache (reclaimable)');
++    }
++    setHTML('d-wan-state', wif.state==='up'?'<span class="badge ok">UP</span>':'<span class="badge err">'+(wif.state||'DOWN')+'</span>');
++    setText('d-wan-addr', (wif.addrs&&wif.addrs.length)?wif.addrs.join(', '):'(none)');
++    setText('d-wan-gw', d.gateway||'(none)');
++    setText('d-wan-dns', (d.dns&&d.dns.length)?d.dns.join(', '):'(none)');
++    setText('d-wan-rxtx', (wif.rx||'0')+' / '+(wif.tx||'0'));
++    if($('d-lan-state')){
++      setHTML('d-lan-state', lif.state==='up'?'<span class="badge ok">UP</span>':'<span class="badge warn">'+(lif.state||'DOWN')+'</span>');
++      setText('d-lan-addr', (lif.addrs&&lif.addrs.length)?lif.addrs.join(', '):'(none)');
++      setText('d-lan-rxtx', (lif.rx||'0')+' / '+(lif.tx||'0'));
++    }
++    setHTML('d-rnsd-status', rn.running
++      ? '<span class="badge ok">RUNNING</span> (pid '+rn.pid+')'+(rn.rss_mb?' · '+rn.rss_mb+' MB RSS':'')
++      : '<span class="badge err">STOPPED</span>');
++    var vh='Reticulum (rnsd) <strong>'+(up.installed||'unknown')+'</strong>';
++    if(up.update_available) vh+=' <span class="badge warn">update available: '+up.latest+'</span>';
++    else if(up.latest && !up.error) vh+=' <span class="badge ok">up to date</span>';
++    setHTML('d-rnsd-version', vh);
++  }
++  function refreshData(){
++    return fetch('__BASE__/dashboard/data').then(function(r){return r.json();}).then(patch).catch(function(){});
++  }
++  var sel=$('autoref'), timer=null, KEY='rnsbox-autoref';
++  function tick(){
++    setText('autoref-status','updating…');
++    if(window.__loadHalow) window.__loadHalow();
++    refreshData().then(function(){
++      var t=new Date();
++      setText('autoref-status','updated '+t.toTimeString().slice(0,8));
++    });
++  }
++  function apply(sec){
++    if(timer){ clearInterval(timer); timer=null; }
++    if(sec>0){ timer=setInterval(tick, sec*1000); setText('autoref-status','every '+sec+'s'); }
++    else setText('autoref-status','');
++  }
++  if(sel){
++    var saved=0; try{ saved=parseInt(localStorage.getItem(KEY)||'0',10)||0; }catch(e){}
++    if([0,5,10,15].indexOf(saved)<0) saved=0;
++    sel.value=String(saved);
++    sel.addEventListener('change', function(){
++      var v=parseInt(sel.value,10)||0;
++      try{ localStorage.setItem(KEY, String(v)); }catch(e){}
++      apply(v);
++    });
++    apply(saved);
++  }
++})();
++</script>
+diff --git a/buildroot/package/rnsbox-portal/src/cgi/pages/login.html b/buildroot/package/rnsbox-portal/src/cgi/pages/login.html
+new file mode 100644
+index 000000000..57e2053f9
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/cgi/pages/login.html
+@@ -0,0 +1,18 @@
++<div class="login-box">
++  <div class="login-brand">
++    <span class="logo">⬢</span>
++    <span class="brand-name">RNSBox</span>
++  </div>
++  <h1>Sign in</h1>
++  <form method="post" action="__ACTION__">
++    <input type="hidden" name="next" value="__NEXT__">
++    <label>Username
++      <input type="text" name="username" autofocus autocomplete="username" value="admin">
++    </label>
++    <label>Password
++      <input type="password" name="password" autocomplete="current-password">
++    </label>
++    <button type="submit" class="btn-primary">Sign in</button>
++  </form>
++  <p class="muted">Default credentials: <strong>admin</strong> / <strong>admin</strong>. Change them after first login.</p>
++</div>
+diff --git a/buildroot/package/rnsbox-portal/src/cgi/pages/login_base.html b/buildroot/package/rnsbox-portal/src/cgi/pages/login_base.html
+new file mode 100644
+index 000000000..8f75d1e7e
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/cgi/pages/login_base.html
+@@ -0,0 +1,15 @@
++<!doctype html>
++<html lang="en">
++<head>
++  <meta charset="utf-8">
++  <meta name="viewport" content="width=device-width, initial-scale=1">
++  <title>Sign in — __HOSTNAME__</title>
++  <link rel="stylesheet" href="/style.css">
++</head>
++<body class="login-screen">
++<main class="login-page">
++  __FLASH__
++  __CONTENT__
++</main>
++</body>
++</html>
+diff --git a/buildroot/package/rnsbox-portal/src/cgi/pages/network.html b/buildroot/package/rnsbox-portal/src/cgi/pages/network.html
+new file mode 100644
+index 000000000..ef2618131
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/cgi/pages/network.html
+@@ -0,0 +1,118 @@
++<h2>Network</h2>
++<p class="muted">WAN: <strong>__WAN__</strong> &middot; LAN: <strong>usb0</strong> &middot; default gateway: <strong>__GATEWAY__</strong></p>
++
++<section class="card">
++  <h3>WAN uplink</h3>
++  <p class="muted">Which interface reaches the internet, and how it gets its
++  address. NAT masquerade + the default route follow this choice.
++  <strong>wlan0</strong> requires the WiFi client to be connected (WiFi tab →
++  mode <em>sta</em> or <em>sta+ap</em>) and is always DHCP-addressed by the WiFi
++  stack — the static fields below apply to <strong>eth0</strong> only.</p>
++  <form method="post" action="__BASE__/network/wan">
++    <label>Interface
++      <select name="wan">
++        <option value="eth0"  __SEL_ETH0__>eth0 — wired Ethernet</option>
++        <option value="wlan0" __SEL_WLAN0__>wlan0 — WiFi client</option>
++      </select>
++    </label>
++    <label>Addressing
++      <select name="wan_mode" id="wan_mode" onchange="wanModeToggle()">
++        <option value="dhcp"   __SEL_DHCP__>DHCP (automatic)</option>
++        <option value="static" __SEL_STATIC__>Static IP</option>
++      </select>
++    </label>
++    <div id="wan_static" style="__WAN_STATIC_DISPLAY__">
++      <label>IP address
++        <input type="text" name="wan_address" value="__WAN_ADDRESS__" placeholder="192.168.1.50">
++      </label>
++      <label>Netmask (CIDR prefix, 1–32)
++        <input type="number" name="wan_prefix" min="1" max="32" value="__WAN_PREFIX__" placeholder="24">
++      </label>
++      <label>Gateway
++        <input type="text" name="wan_gateway" value="__WAN_GATEWAY__" placeholder="192.168.1.1">
++      </label>
++      <label>DNS servers (space- or comma-separated)
++        <input type="text" name="wan_dns" value="__WAN_DNS__" placeholder="1.1.1.1 8.8.8.8">
++      </label>
++    </div>
++    <button type="submit" class="btn-primary">Set WAN</button>
++  </form>
++  <script>
++    function wanModeToggle(){
++      var m = document.getElementById('wan_mode').value;
++      document.getElementById('wan_static').style.display = (m === 'static') ? '' : 'none';
++    }
++  </script>
++</section>
++
++<section class="card">
++  <h3>Port forwards (WAN → LAN)</h3>
++  <p class="muted">Inbound TCP/UDP traffic arriving on the WAN port is DNAT'd to the LAN host:port. The matching FORWARD rule is added automatically.</p>
++  <table class="data">
++    <thead>
++      <tr><th>Proto</th><th>WAN port</th><th>LAN target</th><th>Comment</th><th></th></tr>
++    </thead>
++    <tbody>
++      __FORWARDS_ROWS__
++    </tbody>
++  </table>
++
++  <form method="post" action="__BASE__/network/portforward/add" class="row-form">
++    <select name="proto" required>
++      <option value="tcp">TCP</option>
++      <option value="udp">UDP</option>
++    </select>
++    <input name="wan_port" type="number" min="1" max="65535" placeholder="WAN port" required>
++    <input name="lan_ip" type="text" placeholder="LAN IP (e.g. 10.42.0.10)" required>
++    <input name="lan_port" type="number" min="1" max="65535" placeholder="LAN port" required>
++    <input name="comment" type="text" placeholder="comment (optional)">
++    <button type="submit" class="btn-primary">Add</button>
++  </form>
++</section>
++
++<section class="card">
++  <h3>Open ports (services on this router exposed on WAN)</h3>
++  <p class="muted">Allows inbound connections on the WAN to services bound on this device. <strong>SSH (22)</strong> and the <strong>web UI (80)</strong> are open by default &mdash; remove them to close WAN access (the LAN/<code>usb0</code> side always stays open). Add rnsd's TCPServerInterface port (4242) here for external Reticulum peers.</p>
++  <table class="data">
++    <thead>
++      <tr><th>Proto</th><th>Port</th><th>Comment</th><th></th></tr>
++    </thead>
++    <tbody>
++      __OPENPORTS_ROWS__
++    </tbody>
++  </table>
++
++  <form method="post" action="__BASE__/network/openport/add" class="row-form">
++    <select name="proto" required>
++      <option value="tcp">TCP</option>
++      <option value="udp">UDP</option>
++    </select>
++    <input name="port" type="number" min="1" max="65535" placeholder="Port" required>
++    <input name="comment" type="text" placeholder="comment (optional)">
++    <button type="submit" class="btn-primary">Add</button>
++  </form>
++</section>
++
++<section class="card">
++  <h3>LAN clients (DHCP leases)</h3>
++  <table class="data">
++    <thead>
++      <tr><th>IP</th><th>MAC</th><th>Name</th><th>Expires (epoch)</th></tr>
++    </thead>
++    <tbody>
++      __LEASES_ROWS__
++    </tbody>
++  </table>
++</section>
++
++<section class="card">
++  <h3>All interfaces</h3>
++  <table class="data">
++    <thead>
++      <tr><th>Iface</th><th>State</th><th>Address</th><th>MAC</th><th>MTU</th><th>RX / TX</th></tr>
++    </thead>
++    <tbody>
++      __IFACES_ROWS__
++    </tbody>
++  </table>
++</section>
+diff --git a/buildroot/package/rnsbox-portal/src/cgi/pages/wifi.html b/buildroot/package/rnsbox-portal/src/cgi/pages/wifi.html
+new file mode 100644
+index 000000000..fddb1daee
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/cgi/pages/wifi.html
+@@ -0,0 +1,129 @@
++<h2>WiFi</h2>
++
++<section class="card">
++  <h3>Status</h3>
++  <table class="kv">
++    <tr><th>Mode</th><td><span class="badge">__STATUS_MODE__</span></td></tr>
++    <tr><th>Client (STA)</th><td>
++      __STA_CELL__
++    </td></tr>
++    <tr><th>Hotspot (AP)</th><td>
++      __AP_CELL__
++    </td></tr>
++    <tr><th>TX power</th><td>
++      __TXPOWER_CELL__
++    </td></tr>
++  </table>
++  <form method="post" action="__BASE__/wifi/mode" class="row-form">
++    <select name="mode">
++      <option value="off" __SEL_MODE_OFF__>off</option>
++      <option value="sta" __SEL_MODE_STA__>sta</option>
++      <option value="ap" __SEL_MODE_AP__>ap</option>
++      <option value="sta+ap" __SEL_MODE_STAAP__>sta+ap</option>
++    </select>
++    <button type="submit" class="btn">Set mode</button>
++  </form>
++</section>
++
++<section class="card">
++  <h3>Join a network (client)</h3>
++  __CONCURRENT_NOTE__
++  <button type="button" class="btn" onclick="doScan()">Scan</button>
++  <span id="scanmsg" class="muted"></span>
++  <table class="data" id="scantbl" style="margin-top:8px; display:none">
++    <thead><tr><th>SSID</th><th>Signal</th><th>Ch</th><th>Band</th><th>Security</th><th></th></tr></thead>
++    <tbody></tbody>
++  </table>
++  <form method="post" action="__BASE__/wifi/connect" class="row-form" style="margin-top:10px">
++    <input name="ssid" id="ssid" type="text" placeholder="SSID" value="__STA_SSID__" required>
++    <input name="psk" id="sta_psk" type="password" placeholder="password (blank = open)">
++    <button type="button" class="btn" onclick="togglePw('sta_psk', this)">Show</button>
++    <button type="submit" class="btn-primary">Connect</button>
++  </form>
++</section>
++
++<section class="card">
++  <h3>Hotspot (access point)</h3>
++  <p class="muted">Runs concurrently with the client connection (AIC8800
++  single radio, time-shared). AP clients are NAT'd to the WAN and get DHCP
++  from the AP subnet in <code>/etc/rnsbox/wifi.conf</code>.</p>
++  <form method="post" action="__BASE__/wifi/ap">
++    <label><input type="checkbox" name="ap_enable" __AP_ENABLE_CHECKED__> Enable hotspot</label>
++    <label>SSID <input type="text" name="ap_ssid" value="__AP_SSID__"></label>
++    <label>Password (≥8 chars)
++      <input type="password" id="ap_psk" name="ap_psk" value="__AP_PSK__">
++      <button type="button" class="btn" onclick="togglePw('ap_psk', this)">Show</button>
++    </label>
++    <label>Channel__AP_CHANNEL_LOCK__
++      <select name="ap_channel" __AP_CHANNEL_DISABLED__>
++        __AP_CHANNEL_OPTIONS__
++      </select>
++    </label>
++    <label>Width__AP_WIDTH_LOCK__
++      <select name="ap_htmode" __AP_HTMODE_DISABLED__>
++        <option value="ht20" __SEL_HT20__>20 MHz (HT20)</option>
++        <option value="ht40" __SEL_HT40__>40 MHz (HT40)</option>
++      </select>
++    </label>
++    <button type="submit" class="btn-primary">Apply hotspot</button>
++  </form>
++  <p class="muted" style="margin-top:8px">In concurrent <em>sta+ap</em> mode the
++  client is pinned to <strong>2.4&nbsp;GHz</strong> and the hotspot inherits the
++  client's exact channel <em>and</em> width (single radio — they must share one
++  channel), so it runs at 40 MHz whenever the client link is 40 MHz. If the
++  client isn't connected yet, the hotspot starts on the channel below and
++  re-syncs to the client's channel once it joins. <em>auto</em> channel and a
++  manually chosen 40 MHz apply only in AP-only mode; if the radio can't honor
++  them the hotspot falls back to a 20 MHz channel.</p>
++</section>
++
++<section class="card">
++  <h3>TX power</h3>
++  <p class="muted">Radio-wide — applies to both client and hotspot (single
++  radio). <strong>auto</strong> = chip maximum, independent of the regulatory
++  database. A number caps power; firmware still applies per-rate EVM backoff
++  below it. The AIC8800D80 OFDM ceiling is ~18&nbsp;dBm (datasheet: 23&nbsp;dBm
++  11b-CCK, 18&nbsp;dBm MCS7), so values above ~18 only affect legacy 11b, not
++  data-rate throughput. Set lower to cut heat/range.</p>
++  <form method="post" action="__BASE__/wifi/txpower" class="row-form">
++    <select name="tx_power">
++      __TXPOWER_OPTIONS__
++    </select>
++    <button type="submit" class="btn-primary">Set TX power</button>
++  </form>
++</section>
++
++<script>
++// True when the box is in concurrent sta+ap mode: the client is 2.4 GHz-only,
++// so 5 GHz scan results are shown but not selectable.
++var CONCURRENT = __CONCURRENT_JS__;
++// Show/hide a password field. Flips the input type and the button label.
++function togglePw(id, btn){
++  var el = document.getElementById(id);
++  if (!el) return;
++  if (el.type === 'password'){ el.type = 'text';  btn.textContent = 'Hide'; }
++  else                       { el.type = 'password'; btn.textContent = 'Show'; }
++}
++function doScan(){
++  var msg=document.getElementById('scanmsg'); msg.textContent='scanning…';
++  fetch('__BASE__/wifi/scan').then(r=>r.json()).then(function(nets){
++    var tbl=document.getElementById('scantbl'), tb=tbl.querySelector('tbody');
++    tb.innerHTML='';
++    if(!nets.length){ msg.textContent='no networks found'; return; }
++    msg.textContent=nets.length+' found'; tbl.style.display='';
++    nets.forEach(function(n){
++      var tr=document.createElement('tr');
++      var band=n.band?(n.band+' GHz'):'';
++      var block5=CONCURRENT && n.band==='5';   // 5 GHz not joinable while concurrent
++      var btn=block5
++        ? '<span class="muted" title="2.4 GHz only in concurrent mode">5&nbsp;GHz</span>'
++        : '<button type="button" class="btn">Use</button>';
++      tr.innerHTML='<td>'+(n.ssid||'(hidden)')+'</td><td>'+n.signal+' dBm</td><td>'+
++        (n.channel||'')+'</td><td>'+band+'</td><td>'+n.security+'</td><td>'+btn+'</td>';
++      if(block5){ tr.style.opacity='0.45'; }
++      else { tr.querySelector('button').onclick=function(){ document.getElementById('ssid').value=n.ssid; }; }
++      tb.appendChild(tr);
++    });
++  }).catch(function(){ msg.textContent='scan failed'; });
++}
++</script>
+\ No newline at end of file
+diff --git a/buildroot/package/rnsbox-portal/src/cgi/render.cpp b/buildroot/package/rnsbox-portal/src/cgi/render.cpp
+new file mode 100644
+index 000000000..44d1a6cdf
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/cgi/render.cpp
+@@ -0,0 +1,99 @@
++// render.cpp — see render.h.
++#include "render.h"
++#include "web.h"
++#include "session.h"
++#include "util.h"
++#include <cstdlib>
++
++namespace {
++
++std::string pages_dir() {
++    const char* d = getenv("RNSBOX_PAGES");
++    return d && *d ? std::string(d) : std::string("/usr/share/rnsbox-portal/pages");
++}
++
++// Percent-encode everything but the unreserved set — for the flash cookie value.
++std::string pct(const std::string& s) {
++    static const char* hex = "0123456789ABCDEF";
++    std::string o;
++    o.reserve(s.size());
++    for (unsigned char c : s) {
++        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
++            (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~') {
++            o += (char)c;
++        } else {
++            o += '%'; o += hex[c >> 4]; o += hex[c & 0xF];
++        }
++    }
++    return o;
++}
++
++std::string all(std::string s, const std::string& from, const std::string& to) {
++    return web::replace_all(std::move(s), from, to);
++}
++
++// Read + clear the one-shot flash cookie; returns the rendered <div> (or "").
++std::string take_flash(const http::Request& req, http::Response& res) {
++    std::string v = req.cookie("rns_flash");
++    if (v.empty()) return "";
++    // Clear it so a refresh doesn't show it twice.
++    res.set_cookie("rns_flash=; Path=/; Max-Age=0; SameSite=Lax; HttpOnly");
++    size_t colon = v.find(':');
++    std::string cat = colon == std::string::npos ? std::string("success") : v.substr(0, colon);
++    std::string msg = colon == std::string::npos ? std::string() : http::url_decode(v.substr(colon + 1));
++    if (cat != "success" && cat != "error" && cat != "warn") cat = "success";
++    return "<div class=\"flash " + cat + "\">" + render::esc(msg) + "</div>";
++}
++
++}  // namespace
++
++namespace render {
++
++std::string esc(const std::string& s) { return http::html_escape(s); }
++
++std::string page_file(const char* name) {
++    return util::read_file(pages_dir() + "/" + name + ".html", 256 * 1024);
++}
++
++std::string layout(const http::Request& req, http::Response& res,
++                   const std::string& title, const char* active,
++                   const std::string& content) {
++    std::string host = util::trim(util::read_file("/proc/sys/kernel/hostname", 128));
++    session::Info s = session::check(req.cookie(session::COOKIE_NAME));
++
++    std::string h = page_file("base");
++    h = all(std::move(h), "__BASE__", web::base());
++    h = all(std::move(h), "__TITLE__", esc(title));
++    h = all(std::move(h), "__HOSTNAME__", esc(host));
++    h = all(std::move(h), "__USER__", esc(s.user));
++    // Active-nav: exactly one id gets "active", the rest collapse to "".
++    static const char* ids[] = {"dashboard", "network", "wifi", "reticulum", "settings", "donate"};
++    for (const char* id : ids) {
++        std::string tok = std::string("__ACT_") + id + "__";
++        h = all(std::move(h), tok, (active && std::string(active) == id) ? "active" : "");
++    }
++    h = all(std::move(h), "__FLASH__", take_flash(req, res));
++    h = all(std::move(h), "__CONTENT__", content);
++    return h;
++}
++
++std::string login_layout(const http::Request& req, http::Response& res,
++                         const std::string& content) {
++    std::string host = util::trim(util::read_file("/proc/sys/kernel/hostname", 128));
++    std::string h = page_file("login_base");
++    h = all(std::move(h), "__BASE__", web::base());
++    h = all(std::move(h), "__HOSTNAME__", esc(host));
++    h = all(std::move(h), "__FLASH__", take_flash(req, res));
++    h = all(std::move(h), "__CONTENT__", content);
++    return h;
++}
++
++void redirect_flash(http::Response& res, const std::string& location,
++                    const char* category, const std::string& msg) {
++    std::string cat = category ? category : "success";
++    res.set_cookie("rns_flash=" + cat + ":" + pct(msg) +
++                   "; Path=/; Max-Age=60; SameSite=Lax; HttpOnly");
++    res.redirect(location);
++}
++
++}  // namespace render
+diff --git a/buildroot/package/rnsbox-portal/src/cgi/render.h b/buildroot/package/rnsbox-portal/src/cgi/render.h
+new file mode 100644
+index 000000000..db6499521
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/cgi/render.h
+@@ -0,0 +1,43 @@
++// render.h — server-side page rendering: base chrome, flash messages, PRG.
++//
++// The portal renders full HTML server-side (like the old Flask/Jinja app),
++// NOT a JSON-dumping shell. Page bodies live as .html files under PAGES_DIR
++// with __PLACEHOLDER__ tokens; a route handler builds the dynamic fragments
++// (table rows, selected options, values) and wraps the result in the shared
++// chrome via layout(). POST handlers use redirect_flash() (POST-redirect-GET)
++// so a refresh never re-submits, exactly as the Flask app did.
++#ifndef RNSBOX_RENDER_H
++#define RNSBOX_RENDER_H
++
++#include "http.h"
++#include <string>
++
++namespace render {
++
++// HTML-escape (alias of http::html_escape) — the workhorse for injecting data.
++std::string esc(const std::string& s);
++
++// Read a page template file: <PAGES_DIR>/<name>.html (env RNSBOX_PAGES overrides
++// the default /usr/share/rnsbox-portal/pages). Empty string if missing.
++std::string page_file(const char* name);
++
++// Wrap `content` in the base chrome (topbar + sidebar + footer). `active` is the
++// sidebar id to highlight: "dashboard" | "network" | "wifi" | "reticulum" |
++// "settings" | "donate". Consumes + clears the one-shot flash cookie (rendering
++// it above the content) and sets the clearing Set-Cookie on `res`. `title` and
++// the session user are HTML-escaped.
++std::string layout(const http::Request& req, http::Response& res,
++                   const std::string& title, const char* active,
++                   const std::string& content);
++
++// Bare login-screen chrome (no sidebar). Also renders + clears the flash.
++std::string login_layout(const http::Request& req, http::Response& res,
++                          const std::string& content);
++
++// POST-redirect-GET with a one-shot flash. `category` is "success"|"error"|
++// "warn"; `msg` is shown once on the next page. Sets the flash cookie + 302.
++void redirect_flash(http::Response& res, const std::string& location,
++                    const char* category, const std::string& msg);
++
++}  // namespace render
++#endif
+diff --git a/buildroot/package/rnsbox-portal/src/cgi/routes.h b/buildroot/package/rnsbox-portal/src/cgi/routes.h
+new file mode 100644
+index 000000000..ac8300cba
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/cgi/routes.h
+@@ -0,0 +1,61 @@
++// routes.h — feature route handlers (dispatched from main.cpp).
++// Pages are server-rendered (render::layout); form POSTs are POST-redirect-GET
++// (render::redirect_flash); a few endpoints stay JSON for the pages' AJAX.
++#ifndef RNSBOX_ROUTES_H
++#define RNSBOX_ROUTES_H
++
++#include "http.h"
++
++namespace routes {
++
++// dashboard tab
++void dashboard_page(const http::Request&, http::Response&);        // GET  render (landing)
++void dashboard_data(const http::Request&, http::Response&);        // GET  JSON (auto-refresh)
++
++// donate tab
++void donate_page(const http::Request&, http::Response&);           // GET  render
++
++// network tab
++void network_page(const http::Request&, http::Response&);          // GET  render
++void wan_set(const http::Request&, http::Response&);               // POST PRG
++void pf_add(const http::Request&, http::Response&);                // POST PRG
++void pf_delete(const http::Request&, http::Response&);             // POST PRG
++void op_add(const http::Request&, http::Response&);                // POST PRG
++void op_delete(const http::Request&, http::Response&);             // POST PRG
++
++// reticulum tab
++void reticulum_page(const http::Request&, http::Response&);        // GET  render
++void reticulum_status(const http::Request&, http::Response&);      // GET  JSON (?raw=1 = rnstatus)
++void reticulum_halow(const http::Request&, http::Response&);       // GET  JSON (live modem)
++void reticulum_config_save(const http::Request&, http::Response&); // POST PRG
++void reticulum_restart(const http::Request&, http::Response&);     // POST PRG
++void reticulum_autorestart(const http::Request&, http::Response&); // POST PRG
++void reticulum_autoupdate(const http::Request&, http::Response&);  // POST PRG
++void reticulum_checkupdate(const http::Request&, http::Response&); // POST PRG (python helper)
++void reticulum_applyupdate(const http::Request&, http::Response&); // POST PRG (python helper)
++void reticulum_slip(const http::Request&, http::Response&);        // POST PRG
++void reticulum_halow_add(const http::Request&, http::Response&);   // POST PRG
++
++// settings tab
++void settings_page(const http::Request&, http::Response&);         // GET  render
++void settings_password(const http::Request&, http::Response&);     // POST PRG
++void hostname_set(const http::Request&, http::Response&);          // POST PRG
++void time_browser(const http::Request&, http::Response&);          // POST PRG
++void ntp_set(const http::Request&, http::Response&);               // POST PRG
++void ntp_restart(const http::Request&, http::Response&);           // POST PRG
++
++// HaLow modem web-UI reverse proxy (SLIP)
++void modem_ui(const http::Request&, http::Response&);              // GET  proxy modem root
++void modem_api(const http::Request&, http::Response&);             // GET/POST proxy /api/*
++
++// wifi tab (W variant)
++void wifi_page(const http::Request&, http::Response&);             // GET  render
++void wifi_scan(const http::Request&, http::Response&);             // GET  JSON (AJAX)
++void wifi_status(const http::Request&, http::Response&);           // GET  JSON (AJAX)
++void wifi_connect(const http::Request&, http::Response&);          // POST PRG
++void wifi_ap(const http::Request&, http::Response&);               // POST PRG
++void wifi_mode(const http::Request&, http::Response&);             // POST PRG
++void wifi_txpower(const http::Request&, http::Response&);          // POST PRG
++
++}  // namespace routes
++#endif
+diff --git a/buildroot/package/rnsbox-portal/src/cgi/routes_dash.cpp b/buildroot/package/rnsbox-portal/src/cgi/routes_dash.cpp
+new file mode 100644
+index 000000000..1988c44ee
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/cgi/routes_dash.cpp
+@@ -0,0 +1,272 @@
++// routes_dash.cpp — Dashboard tab (the login landing page): server-rendered
++// summary + a compact JSON endpoint (/dashboard/data) for the client-side
++// auto-refresh. Ports the old Flask dashboard()/dashboard_data() faithfully.
++//
++// The HaLow card + its live-status script are only emitted when SLIP is
++// enabled (matching the old {% if slip_on %}). They refresh over their own
++// fetch to /reticulum/halow (a JSON endpoint owned by the Reticulum tab).
++#include "routes.h"
++#include "render.h"
++#include "web.h"
++#include "store.h"
++#include "sysinfo.h"
++#include "updatecheck.h"
++#include "util.h"
++#include <cctype>
++#include <cstdio>
++#include <string>
++#include <vector>
++
++using http::Request;
++using http::Response;
++
++namespace routes {
++
++static std::string R(std::string s, const std::string& a, const std::string& b) {
++    return web::replace_all(std::move(s), a, b);
++}
++static std::string E(const std::string& s) { return render::esc(s); }
++static std::string JE(const std::string& s) { return http::json_escape(s); }
++
++// _truthy() from store.py: enabled unless it's one of the "off" spellings.
++static bool slip_enabled(const store::SlipConfig& sl) {
++    std::string v = util::trim(sl.enabled);
++    for (char& c : v) c = (char)tolower((unsigned char)c);
++    return !(v == "no" || v == "0" || v == "false" || v == "off" || v.empty());
++}
++
++static const sysinfo::Iface* find_iface(const sysinfo::Network& net, const std::string& name) {
++    for (const auto& i : net.ifaces) if (i.name == name) return &i;
++    return nullptr;
++}
++
++static std::string join_esc(const std::vector<std::string>& a) {
++    std::string o;
++    for (size_t k = 0; k < a.size(); ++k) { if (k) o += ", "; o += E(a[k]); }
++    return o;
++}
++
++static std::string fmt_pct(double p) {
++    char buf[32]; snprintf(buf, sizeof(buf), "%.1f", p); return buf;
++}
++
++// --- JSON helpers for /dashboard/data ---
++static std::string str_array_json(const std::vector<std::string>& v) {
++    std::string o = "[";
++    for (size_t k = 0; k < v.size(); ++k) { if (k) o += ","; o += "\"" + JE(v[k]) + "\""; }
++    o += "]";
++    return o;
++}
++static std::string iface_json(const sysinfo::Iface* i) {
++    if (!i) return "{}";   // old returned {} for a missing iface; the JS copes
++    return std::string("{\"name\":\"") + JE(i->name) +
++           "\",\"state\":\"" + JE(i->state) +
++           "\",\"mac\":\"" + JE(i->mac) +
++           "\",\"mtu\":\"" + JE(i->mtu) +
++           "\",\"rx\":\"" + JE(i->rx) +
++           "\",\"tx\":\"" + JE(i->tx) +
++           "\",\"addrs\":" + str_array_json(i->addrs) + "}";
++}
++
++// --- HaLow card + live-status script (verbatim port of the old template) ---
++static std::string halow_card_html(const std::string& base) {
++    // href must go through the portal (SCRIPT_NAME base), not the server root —
++    // a literal /modem/ hits uhttpd's docroot (404), not this CGI.
++    std::string s = R"HTML(<section class="card card-wide" id="halow-card">
++    <div class="cardhead"><h3>HaLow modem</h3><span class="badge" id="halow-badge">…</span></div>
++    <div id="halow-body"><p class="muted">Loading modem status…</p></div>
++    <p class="cardfoot"><a class="btn" href="__BASE__/modem" target="_blank" rel="noopener">Open modem web UI →</a></p>
++  </section>)HTML";
++    return web::replace_all(std::move(s), "__BASE__", base);
++}
++static std::string halow_script_html(const std::string& base) {
++    std::string s = R"JS(<script>
++(function(){
++  function esc(s){ return (''+(s==null?'':s)).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
++  function num(v){ if(v==null) return null; var m=(''+v).match(/-?\d+(\.\d+)?/); return m?parseFloat(m[0]):null; }
++  function unit(v,u){ if(v==null||v==='') return '?'; return /^-?\d+(\.\d+)?$/.test(''+v)? v+' '+u : esc(v); }
++  function sig(v,u,g,a){ if(v==null) return '<span class="muted">—</span>'; var c=v>=g?'sig-g':(v>=a?'sig-a':'sig-r'); return '<span class="'+c+'">'+v+' '+u+'</span>'; }
++  function noise(v){ var n=num(v); if(n==null) return '<span class="muted">—</span>'; var c=n<=-80?'sig-g':(n<=-70?'sig-a':'sig-r'); return '<span class="'+c+'">'+n+' dBm</span>'; }
++  function tile(k,v){ return '<div class="hstat"><div class="hstat-k">'+k+'</div><div class="hstat-v">'+v+'</div></div>'; }
++  function load(){
++    var badge=document.getElementById('halow-badge'), body=document.getElementById('halow-body');
++    if(!badge) return;
++    return fetch('__BASE__/reticulum/halow').then(function(r){return r.json();}).then(function(d){
++      if(!d.enabled){ var c=document.getElementById('halow-card'); if(c) c.hidden=true; return; }
++      if(!d.reachable){
++        badge.className='badge '+(d.sl0_up?'err':'warn');
++        badge.textContent=d.sl0_up?'unreachable':'sl0 down';
++        body.innerHTML='<p class="muted">'+(d.sl0_up?'Modem not answering over SLIP.':'SLIP link (sl0) is down.')+'</p>';
++        return;
++      }
++      badge.className='badge ok'; badge.textContent='link up';
++      var rd=d.radio||{}, st=d.stats||{}, dv=d.device||{}, b=d.best, ns=d.neighbours||[];
++      var name=(dv.hostname||'RNode-Halow'), port=(d.tcp_port||8001);
++      var air=num(st.airtime);
++      var airbar = air!=null ? '<span class="hbar"><span style="width:'+Math.max(0,Math.min(100,air))+'%"></span></span> ' : '';
++      var mcs = (rd.mcs==null||rd.mcs==='') ? 'MCS?' : 'MCS'+esc((''+rd.mcs).replace(/^mcs\s*/i,''));
++      var fw = (dv.fw ? esc((''+dv.fw).split(' ')[0]) : '?');
++      var tiles=[
++        tile('Link (sl0)','<span class="badge ok">UP</span> <span class="val">'+esc(d.local)+' &rarr; '+esc(d.peer)+'</span>'),
++        tile('rnsd interface', d.rnsd_up
++          ? '<span class="badge ok">UP</span> <span class="val">'+esc(name)+' &rarr; :'+esc(port)+'</span>'
++          : '<span class="badge warn">DOWN</span> <span class="val">'+esc(name)+'</span>'),
++        tile('Radio','<span class="val">'+unit(rd.freq,'MHz')+' · '+unit(rd.bw,'MHz')+' · '+mcs+'</span>'),
++        tile('TX power','<span class="val">'+unit(rd.power,'dBm')+'</span>'),
++        tile('Airtime', airbar+'<span class="val">'+esc(st.airtime||'?')+'</span>'),
++        tile('Ch. util','<span class="val">'+esc(st.ch_util||'?')+'</span>'),
++        tile('Noise floor', noise(st.noise)),
++        tile('Throughput','<span class="val">&darr; '+esc(st.rx_speed||'?')+' · &uarr; '+esc(st.tx_speed||'?')+'</span>'),
++        tile('Traffic','<span class="val">&darr; '+esc(st.rx_bytes||'?')+' · &uarr; '+esc(st.tx_bytes||'?')+'</span>'),
++        tile('Best peer', b?(sig(num(b.rssi),'dBm',-75,-88)+' · '+sig(num(b.snr),'dB',10,5)):'<span class="muted">none heard</span>'),
++        tile('Neighbours','<span class="val">'+ns.length+'</span>'),
++        tile('Modem','<span class="val">'+esc(dv.temp||'?')+' · fw '+fw+' · up '+esc(dv.uptime||'?')+'</span>'),
++      ];
++      body.innerHTML='<div class="hstats">'+tiles.join('')+'</div>';
++    }).catch(function(){ badge.className='badge warn'; badge.textContent='error';
++      body.innerHTML='<p class="muted">Could not read modem status.</p>'; });
++  }
++  window.__loadHalow = load;
++  load();
++})();
++</script>)JS";
++    return web::replace_all(std::move(s), "__BASE__", base);
++}
++
++// ---- GET / : server-rendered dashboard ----
++void dashboard_page(const Request& req, Response& res) {
++    if (!web::require_auth(req, res, false)) return;
++    std::string base = web::base();
++
++    sysinfo::Summary sys = sysinfo::summary();
++    sysinfo::Rnsd    rnsd = sysinfo::rnsd_status();      // cheap: no with_raw
++    sysinfo::Network net  = sysinfo::network_summary();
++    store::WanConfig  wan  = store::read_wan();
++    bool slip_on = slip_enabled(store::read_slip());
++
++    const sysinfo::Iface* wif = find_iface(net, wan.interface);
++    const sysinfo::Iface* lif = find_iface(net, "usb0");
++
++    std::string h = render::page_file("dashboard");
++    h = R(std::move(h), "__BASE__", base);
++
++    // System card
++    h = R(std::move(h), "__HOSTNAME__", E(sysinfo::hostname()));
++    h = R(std::move(h), "__KERNEL__",   E(sys.kernel));
++    h = R(std::move(h), "__UPTIME__",   E(sys.uptime));
++    h = R(std::move(h), "__LOAD__",     E(sys.load[0]) + " / " + E(sys.load[1]) + " / " + E(sys.load[2]));
++
++    // RAM meter
++    h = R(std::move(h), "__RAM_USED__",      std::to_string(sys.mem.used_mb));
++    h = R(std::move(h), "__RAM_TOTAL__",     std::to_string(sys.mem.total_mb));
++    h = R(std::move(h), "__RAM_AVAIL__",     std::to_string(sys.mem.avail_mb));
++    h = R(std::move(h), "__RAM_BUFFCACHE__", std::to_string(sys.mem.buffcache_mb));
++    double pct = sys.mem.used_pct;
++    const char* rclass = pct >= 90 ? "crit" : pct >= 75 ? "warn" : "ok";
++    h = R(std::move(h), "__RAM_FILL_CLASS__", rclass);
++    h = R(std::move(h), "__RAM_PCT__", fmt_pct(pct));
++
++    // WAN card
++    h = R(std::move(h), "__WAN__", E(wan.interface));
++    std::string wstate = (wif && wif->state == "up")
++        ? std::string("<span class=\"badge ok\">UP</span>")
++        : "<span class=\"badge err\">" + E((wif && !wif->state.empty()) ? wif->state : std::string("DOWN")) + "</span>";
++    h = R(std::move(h), "__WAN_STATE__", wstate);
++    h = R(std::move(h), "__WAN_ADDR__", (wif && !wif->addrs.empty()) ? join_esc(wif->addrs) : "(none)");
++    h = R(std::move(h), "__WAN_GW__",   net.default_gateway.empty() ? "(none)" : E(net.default_gateway));
++    h = R(std::move(h), "__WAN_DNS__",  net.dns.empty() ? "(none)" : join_esc(net.dns));
++    {
++        std::string rx = (wif && !wif->rx.empty()) ? E(wif->rx) : "0";
++        std::string tx = (wif && !wif->tx.empty()) ? E(wif->tx) : "0";
++        h = R(std::move(h), "__WAN_RXTX__", rx + " / " + tx);
++    }
++
++    // LAN card — only when usb0 is actually up (a USB host is tethered)
++    std::string lan;
++    if (lif && lif->state == "up") {
++        std::string addr = lif->addrs.empty() ? std::string("(none)") : join_esc(lif->addrs);
++        std::string rx = lif->rx.empty() ? std::string("0") : E(lif->rx);
++        std::string tx = lif->tx.empty() ? std::string("0") : E(lif->tx);
++        lan =
++            "<section class=\"card\">\n"
++            "    <h3>LAN (usb0)</h3>\n"
++            "    <table class=\"kv\">\n"
++            "      <tr><th>State</th><td id=\"d-lan-state\"><span class=\"badge ok\">UP</span></td></tr>\n"
++            "      <tr><th>Address</th><td id=\"d-lan-addr\">" + addr + "</td></tr>\n"
++            "      <tr><th>MAC</th><td>" + E(lif->mac) + "</td></tr>\n"
++            "      <tr><th>RX / TX</th><td id=\"d-lan-rxtx\">" + rx + " / " + tx + "</td></tr>\n"
++            "    </table>\n"
++            "  </section>";
++    }
++    h = R(std::move(h), "__LAN_CARD__", lan);
++
++    // Reticulum card
++    std::string rstat;
++    if (rnsd.running) {
++        rstat = "<span class=\"badge ok\">RUNNING</span> (pid " + E(rnsd.pid) + ")";
++        if (rnsd.rss_mb > 0) rstat += " &middot; " + std::to_string(rnsd.rss_mb) + " MB RSS";
++    } else {
++        rstat = "<span class=\"badge err\">STOPPED</span>";
++    }
++    h = R(std::move(h), "__RNSD_STATUS__", rstat);
++    // Installed version (cheap dist-info read) + optional update badge — mirrors
++    // the reticulum card and the /dashboard/data JS.
++    updatecheck::State u = updatecheck::display();
++    std::string ver = "Reticulum (rnsd) <strong>" + E(u.installed.empty() ? "unknown" : u.installed) + "</strong>";
++    if (u.update_available)
++        ver += " <span class=\"badge warn\">update available: " + E(u.latest) + "</span>";
++    else if (!u.latest.empty() && u.error.empty())
++        ver += " <span class=\"badge ok\">up to date</span>";
++    h = R(std::move(h), "__RNSD_VERSION__", ver);
++
++    // HaLow card + script — present only when SLIP is enabled
++    h = R(std::move(h), "__HALOW_CARD__",   slip_on ? halow_card_html(base)  : std::string());
++    h = R(std::move(h), "__HALOW_SCRIPT__", slip_on ? halow_script_html(base) : std::string());
++
++    res.body = render::layout(req, res, "Dashboard", "dashboard", h);
++}
++
++// ---- GET /dashboard/data : compact JSON for the client-side auto-refresh ----
++void dashboard_data(const Request& req, Response& res) {
++    if (!web::require_auth(req, res, true)) return;
++
++    sysinfo::Summary sys = sysinfo::summary();
++    sysinfo::Rnsd    rnsd = sysinfo::rnsd_status();
++    sysinfo::Network net  = sysinfo::network_summary();
++    store::WanConfig  wan  = store::read_wan();
++    const sysinfo::Iface* wif = find_iface(net, wan.interface);
++    const sysinfo::Iface* lif = find_iface(net, "usb0");
++
++    std::string J = "{\"sys\":{";
++    J += "\"uptime\":\"" + JE(sys.uptime) + "\",";
++    J += "\"load\":[\"" + JE(sys.load[0]) + "\",\"" + JE(sys.load[1]) + "\",\"" + JE(sys.load[2]) + "\"],";
++    J += "\"kernel\":\"" + JE(sys.kernel) + "\",";
++    J += "\"mem\":{";
++    if (sys.mem.ok) {
++        J += "\"total_mb\":" + std::to_string(sys.mem.total_mb) + ",";
++        J += "\"avail_mb\":" + std::to_string(sys.mem.avail_mb) + ",";
++        J += "\"used_mb\":" + std::to_string(sys.mem.used_mb) + ",";
++        J += "\"buffcache_mb\":" + std::to_string(sys.mem.buffcache_mb) + ",";
++        J += "\"used_pct\":" + fmt_pct(sys.mem.used_pct);
++    }
++    J += "}},";
++    J += "\"rnsd\":{\"running\":" + std::string(rnsd.running ? "true" : "false");
++    J += ",\"pid\":"    + (rnsd.pid.empty()  ? std::string("null") : rnsd.pid);
++    J += ",\"rss_mb\":" + (rnsd.rss_mb >= 0  ? std::to_string(rnsd.rss_mb) : std::string("null"));
++    J += "},";
++    J += "\"wan_if\":" + iface_json(wif) + ",";
++    J += "\"lan_if\":" + iface_json(lif) + ",";
++    J += "\"gateway\":\"" + JE(net.default_gateway) + "\",";
++    J += "\"dns\":" + str_array_json(net.dns) + ",";
++    updatecheck::State u = updatecheck::display();
++    J += "\"update\":{\"installed\":" + (u.installed.empty() ? std::string("null") : "\"" + JE(u.installed) + "\"");
++    J += ",\"update_available\":" + std::string(u.update_available ? "true" : "false");
++    J += ",\"latest\":" + (u.latest.empty() ? std::string("null") : "\"" + JE(u.latest) + "\"");
++    J += ",\"error\":" + (u.error.empty() ? std::string("null") : "\"" + JE(u.error) + "\"") + "}";
++    J += "}";
++
++    res.content_type = "application/json";
++    res.body = J;
++}
++
++}  // namespace routes
+diff --git a/buildroot/package/rnsbox-portal/src/cgi/routes_net.cpp b/buildroot/package/rnsbox-portal/src/cgi/routes_net.cpp
+new file mode 100644
+index 000000000..d5eb54987
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/cgi/routes_net.cpp
+@@ -0,0 +1,200 @@
++// routes_net.cpp — Network tab: server-rendered page + POST-redirect-GET forms.
++#include "routes.h"
++#include "render.h"
++#include "web.h"
++#include "store.h"
++#include "sysinfo.h"
++#include "wifi.h"
++#include "util.h"
++#include <cctype>
++#include <cstdlib>
++#include <string>
++
++using http::Request;
++using http::Response;
++
++namespace routes {
++
++static std::string upper(std::string s) { for (char& c : s) c = (char)toupper((unsigned char)c); return s; }
++static std::string R(std::string s, const std::string& a, const std::string& b) { return web::replace_all(std::move(s), a, b); }
++static std::string E(const std::string& s) { return render::esc(s); }
++
++static std::string net_redirect() { return web::base() + "/network"; }
++
++void network_page(const Request& req, Response& res) {
++    if (!web::require_auth(req, res, false)) return;
++    store::WanConfig w = store::read_wan();
++    sysinfo::Network net = sysinfo::network_summary();
++    std::string base = web::base();
++
++    std::string h = render::page_file("network");
++    h = R(std::move(h), "__BASE__", base);
++    h = R(std::move(h), "__WAN__", E(w.interface));
++    h = R(std::move(h), "__GATEWAY__", net.default_gateway.empty() ? "(none)" : E(net.default_gateway));
++    h = R(std::move(h), "__SEL_ETH0__",  w.interface == "eth0"  ? "selected" : "");
++    h = R(std::move(h), "__SEL_WLAN0__", w.interface == "wlan0" ? "selected" : "");
++    bool is_static = (w.mode == "static");
++    h = R(std::move(h), "__SEL_DHCP__",   is_static ? "" : "selected");
++    h = R(std::move(h), "__SEL_STATIC__", is_static ? "selected" : "");
++    h = R(std::move(h), "__WAN_STATIC_DISPLAY__", is_static ? "" : "display:none");
++    h = R(std::move(h), "__WAN_ADDRESS__", E(w.address));
++    h = R(std::move(h), "__WAN_PREFIX__",  E(w.prefix.empty() ? "24" : w.prefix));
++    h = R(std::move(h), "__WAN_GATEWAY__", E(w.gateway));
++    h = R(std::move(h), "__WAN_DNS__",     E(w.dns));
++
++    // Port-forward rows
++    std::string rows;
++    auto fs = store::read_portforwards();
++    if (fs.empty()) {
++        rows = "<tr><td colspan=\"5\" class=\"muted\">No port forwards configured.</td></tr>";
++    } else {
++        for (size_t i = 0; i < fs.size(); ++i) {
++            const auto& f = fs[i];
++            rows += "<tr><td><span class=\"badge " + E(f.proto) + "\">" + E(upper(f.proto)) + "</span></td>"
++                    "<td>" + std::to_string(f.wan_port) + "</td>"
++                    "<td>" + E(f.lan_ip) + ":" + std::to_string(f.lan_port) + "</td>"
++                    "<td>" + E(f.comment) + "</td>"
++                    "<td><form method=\"post\" action=\"" + base + "/network/portforward/delete\" class=\"inline\">"
++                    "<input type=\"hidden\" name=\"idx\" value=\"" + std::to_string(i) + "\">"
++                    "<button type=\"submit\" class=\"btn-danger\">Remove</button></form></td></tr>";
++        }
++    }
++    h = R(std::move(h), "__FORWARDS_ROWS__", rows);
++
++    // Open-port rows
++    rows.clear();
++    auto ops = store::read_openports();
++    if (ops.empty()) {
++        rows = "<tr><td colspan=\"4\" class=\"muted\">No open ports &mdash; WAN access is closed (the LAN/usb0 side stays open).</td></tr>";
++    } else {
++        for (size_t i = 0; i < ops.size(); ++i) {
++            const auto& o = ops[i];
++            rows += "<tr><td><span class=\"badge " + E(o.proto) + "\">" + E(upper(o.proto)) + "</span></td>"
++                    "<td>" + std::to_string(o.port) + "</td>"
++                    "<td>" + E(o.comment) + "</td>"
++                    "<td><form method=\"post\" action=\"" + base + "/network/openport/delete\" class=\"inline\">"
++                    "<input type=\"hidden\" name=\"idx\" value=\"" + std::to_string(i) + "\">"
++                    "<button type=\"submit\" class=\"btn-danger\">Remove</button></form></td></tr>";
++        }
++    }
++    h = R(std::move(h), "__OPENPORTS_ROWS__", rows);
++
++    // DHCP leases
++    rows.clear();
++    auto leases = sysinfo::dnsmasq_leases();
++    if (leases.empty()) {
++        rows = "<tr><td colspan=\"4\" class=\"muted\">No active leases.</td></tr>";
++    } else {
++        for (const auto& l : leases) {
++            rows += "<tr><td>" + E(l.ip) + "</td><td><code>" + E(l.mac) + "</code></td>"
++                    "<td>" + E(l.name) + "</td><td>" + E(l.expires) + "</td></tr>";
++        }
++    }
++    h = R(std::move(h), "__LEASES_ROWS__", rows);
++
++    // All interfaces
++    rows.clear();
++    for (const auto& i : net.ifaces) {
++        std::string addrs;
++        for (size_t k = 0; k < i.addrs.size(); ++k) { if (k) addrs += ", "; addrs += E(i.addrs[k]); }
++        std::string st = (i.state == "up")
++            ? std::string("<span class=\"badge ok\">UP</span>")
++            : "<span class=\"badge warn\">" + E(i.state.empty() ? "?" : i.state) + "</span>";
++        rows += "<tr><td><strong>" + E(i.name) + "</strong></td><td>" + st + "</td>"
++                "<td>" + addrs + "</td><td><code>" + E(i.mac) + "</code></td>"
++                "<td>" + E(i.mtu) + "</td><td>" + E(i.rx) + " / " + E(i.tx) + "</td></tr>";
++    }
++    h = R(std::move(h), "__IFACES_ROWS__", rows);
++
++    res.body = render::layout(req, res, "Network", "network", h);
++}
++
++// ---- POST-redirect-GET handlers ----
++
++void wan_set(const Request& req, Response& res) {
++    if (!web::require_auth(req, res, false)) return;
++    std::string iface = util::trim(req.f("wan")); if (iface.empty()) iface = "eth0";
++    std::string mode = util::trim(req.f("wan_mode")); if (mode != "static") mode = "dhcp";
++    if (iface == "wlan0" && !wifi::present()) {
++        render::redirect_flash(res, net_redirect(), "error", "No WiFi radio — wlan0 WAN needs the W variant.");
++        return;
++    }
++    store::WanConfig c;
++    c.interface = iface;
++    c.mode = mode;
++    if (mode == "static") {
++        c.address = util::trim(req.f("wan_address"));
++        c.prefix  = util::trim(req.f("wan_prefix"));
++        c.gateway = util::trim(req.f("wan_gateway"));
++        c.dns     = util::trim(req.f("wan_dns"));
++    }
++    std::string err;
++    if (!store::write_wan(c, err)) {
++        render::redirect_flash(res, net_redirect(), "error", "Bad input: " + err);
++        return;
++    }
++    web::run_init("S30eth");
++    web::run_init("S60routing");
++    if (iface == "wlan0")
++        render::redirect_flash(res, net_redirect(), "success",
++            "WAN set to wlan0 (WiFi). Make sure WiFi is connected as a client (WiFi tab → mode sta or sta+ap).");
++    else if (mode == "static")
++        render::redirect_flash(res, net_redirect(), "success",
++            "WAN set to eth0 static " + c.address + "/" + c.prefix + ".");
++    else
++        render::redirect_flash(res, net_redirect(), "success", "WAN set to eth0 (DHCP).");
++}
++
++void pf_add(const Request& req, Response& res) {
++    if (!web::require_auth(req, res, false)) return;
++    store::PortForward pf;
++    pf.proto    = util::trim(req.f("proto"));
++    pf.wan_port = atoi(req.f("wan_port").c_str());
++    pf.lan_ip   = util::trim(req.f("lan_ip"));
++    pf.lan_port = atoi(req.f("lan_port").c_str());
++    pf.comment  = req.f("comment");
++    std::string err;
++    if (!store::add_portforward(pf, err)) {
++        render::redirect_flash(res, net_redirect(), "error", "Bad input: " + err);
++        return;
++    }
++    web::run_init("S60routing");
++    render::redirect_flash(res, net_redirect(), "success", "Port forward added");
++}
++
++void pf_delete(const Request& req, Response& res) {
++    if (!web::require_auth(req, res, false)) return;
++    if (!store::delete_portforward(atoi(req.f("idx").c_str())))
++        render::redirect_flash(res, net_redirect(), "error", "Bad input: invalid index");
++    else {
++        web::run_init("S60routing");
++        render::redirect_flash(res, net_redirect(), "success", "Port forward removed");
++    }
++}
++
++void op_add(const Request& req, Response& res) {
++    if (!web::require_auth(req, res, false)) return;
++    store::OpenPort op;
++    op.proto   = util::trim(req.f("proto"));
++    op.port    = atoi(req.f("port").c_str());
++    op.comment = req.f("comment");
++    std::string err;
++    if (!store::add_openport(op, err)) {
++        render::redirect_flash(res, net_redirect(), "error", "Bad input: " + err);
++        return;
++    }
++    web::run_init("S60routing");
++    render::redirect_flash(res, net_redirect(), "success", "Open port added");
++}
++
++void op_delete(const Request& req, Response& res) {
++    if (!web::require_auth(req, res, false)) return;
++    if (!store::delete_openport(atoi(req.f("idx").c_str())))
++        render::redirect_flash(res, net_redirect(), "error", "Bad input: invalid index");
++    else {
++        web::run_init("S60routing");
++        render::redirect_flash(res, net_redirect(), "success", "Open port removed");
++    }
++}
++
++}  // namespace routes
+diff --git a/buildroot/package/rnsbox-portal/src/cgi/routes_wifi.cpp b/buildroot/package/rnsbox-portal/src/cgi/routes_wifi.cpp
+new file mode 100644
+index 000000000..402bd3089
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/cgi/routes_wifi.cpp
+@@ -0,0 +1,243 @@
++// routes_wifi.cpp — WiFi tab: server-rendered page + PRG forms + scan/status JSON.
++#include "routes.h"
++#include "render.h"
++#include "web.h"
++#include "wifi.h"
++#include "util.h"
++#include <cctype>
++#include <cstdlib>
++#include <map>
++#include <string>
++
++using http::Request;
++using http::Response;
++
++namespace routes {
++
++static std::string R(std::string s, const std::string& a, const std::string& b) { return web::replace_all(std::move(s), a, b); }
++static std::string E(const std::string& s) { return render::esc(s); }
++static std::string wifi_redirect() { return web::base() + "/wifi"; }
++
++static bool all_digits(const std::string& s) {
++    if (s.empty()) return false;
++    for (char c : s) if (!isdigit((unsigned char)c)) return false;
++    return true;
++}
++
++// ---- GET render ----
++
++void wifi_page(const Request& req, Response& res) {
++    if (!web::require_auth(req, res, false)) return;
++
++    if (!wifi::present()) {
++        std::string h =
++            "<h2>WiFi</h2>\n\n"
++            "<section class=\"card\">\n"
++            "  <p class=\"muted\">No WiFi radio detected. This is the non-W board, or the\n"
++            "  AIC8800 driver hasn't loaded. Check <code>/var/log/wifi.log</code> and\n"
++            "  <code>dmesg | grep aic</code>.</p>\n"
++            "</section>";
++        res.body = render::layout(req, res, "WiFi", "wifi", h);
++        return;
++    }
++
++    auto cfg = wifi::read_conf();
++    wifi::Status st = wifi::status();
++    std::string base = web::base();
++
++    std::string h = render::page_file("wifi");
++    h = R(std::move(h), "__BASE__", base);
++
++    // ---- Status table ----
++    h = R(std::move(h), "__STATUS_MODE__", E(st.mode));
++
++    // Client (STA) cell
++    std::string sta;
++    if (st.sta.connected) {
++        sta = "<span class=\"badge ok\">CONNECTED</span> " + E(st.sta.ssid) +
++              " (" + E(st.sta.signal) + " dBm)";
++        if (!st.sta.width.empty()) sta += ", " + E(st.sta.width) + " MHz";
++        sta += " — " + (st.sta.ip.empty() ? std::string("no IP") : E(st.sta.ip));
++    } else {
++        sta = "<span class=\"badge warn\">not connected</span>";
++        if (st.concurrent) {
++            sta += "\n        <div class=\"muted\" style=\"margin-top:4px\">In concurrent <em>sta+ap</em>\n"
++                   "        mode the client is limited to <strong>2.4&nbsp;GHz</strong> (single radio\n"
++                   "        must share the hotspot's channel). If your upstream network is\n"
++                   "        <strong>5&nbsp;GHz-only</strong>, it can't be joined here — switch to\n"
++                   "        <em>Client only (sta)</em> mode for a 5&nbsp;GHz uplink (this turns the\n"
++                   "        hotspot off).</div>";
++        }
++    }
++    h = R(std::move(h), "__STA_CELL__", sta);
++
++    // Hotspot (AP) cell
++    std::string ap;
++    if (st.ap.active) {
++        ap = "<span class=\"badge ok\">UP</span> on " + E(st.ap.iface) + ",\n        " +
++             std::to_string(st.ap.clients) + " client(s)";
++        if (!st.ap.width.empty()) ap += ", " + E(st.ap.width) + " MHz";
++        ap += ", " + E(st.ap.ip);
++    } else {
++        ap = "<span class=\"badge warn\">off</span>";
++    }
++    h = R(std::move(h), "__AP_CELL__", ap);
++
++    // TX power cell
++    std::string tx = "configured <span class=\"badge\">" + E(st.tx_power) + "</span>";
++    if (st.sta.connected && !st.sta.txpower.empty()) tx += " · STA " + E(st.sta.txpower) + " dBm";
++    if (st.ap.active && !st.ap.txpower.empty())      tx += " · AP " + E(st.ap.txpower) + " dBm";
++    h = R(std::move(h), "__TXPOWER_CELL__", tx);
++
++    // Mode select markers
++    const std::string& m = cfg["mode"];
++    h = R(std::move(h), "__SEL_MODE_OFF__",   m == "off"    ? "selected" : "");
++    h = R(std::move(h), "__SEL_MODE_STA__",   m == "sta"    ? "selected" : "");
++    h = R(std::move(h), "__SEL_MODE_AP__",    m == "ap"     ? "selected" : "");
++    h = R(std::move(h), "__SEL_MODE_STAAP__", m == "sta+ap" ? "selected" : "");
++
++    bool concurrent = (m == "sta+ap");
++
++    // Join-section concurrent note
++    std::string note;
++    if (concurrent) {
++        note = "<p class=\"muted\">Concurrent mode is on, so the client is restricted to\n"
++               "  <strong>2.4&nbsp;GHz</strong> networks (same radio as the hotspot).\n"
++               "  5&nbsp;GHz networks are shown greyed out — they can't be joined until you\n"
++               "  switch to <em>Client only</em> mode.</p>";
++    }
++    h = R(std::move(h), "__CONCURRENT_NOTE__", note);
++
++    h = R(std::move(h), "__STA_SSID__", E(cfg["sta_ssid"]));
++
++    // Hotspot form
++    h = R(std::move(h), "__AP_ENABLE_CHECKED__", (m == "ap" || m == "sta+ap") ? "checked" : "");
++    h = R(std::move(h), "__AP_SSID__", E(cfg["ap_ssid"]));
++    h = R(std::move(h), "__AP_PSK__",  E(cfg["ap_psk"]));
++
++    std::string lock = concurrent ? " <span class=\"muted\">(locked — follows client link)</span>" : "";
++    h = R(std::move(h), "__AP_CHANNEL_LOCK__", lock);
++    h = R(std::move(h), "__AP_WIDTH_LOCK__",   lock);
++    h = R(std::move(h), "__AP_CHANNEL_DISABLED__", concurrent ? "disabled" : "");
++    h = R(std::move(h), "__AP_HTMODE_DISABLED__",  concurrent ? "disabled" : "");
++
++    // Channel options: auto + 1..13
++    std::string chopts = "<option value=\"auto\" " + std::string(cfg["ap_channel"] == "auto" ? "selected" : "") + ">auto (ACS)</option>";
++    for (int c = 1; c <= 13; ++c) {
++        std::string cs = std::to_string(c);
++        chopts += "\n        <option value=\"" + cs + "\" " + (cfg["ap_channel"] == cs ? "selected" : "") + ">" + cs + "</option>";
++    }
++    h = R(std::move(h), "__AP_CHANNEL_OPTIONS__", chopts);
++
++    h = R(std::move(h), "__SEL_HT20__", cfg["ap_htmode"] != "ht40" ? "selected" : "");
++    h = R(std::move(h), "__SEL_HT40__", cfg["ap_htmode"] == "ht40" ? "selected" : "");
++
++    // TX power options: auto + 18..1
++    const std::string& tp = cfg["tx_power"];
++    bool autoSel = (tp == "auto" || tp == "max" || tp.empty());
++    std::string txopts = "<option value=\"auto\" " + std::string(autoSel ? "selected" : "") + ">auto (chip max ≈ 18 dBm)</option>";
++    for (int d = 18; d >= 1; --d) {
++        std::string ds = std::to_string(d);
++        txopts += "\n      <option value=\"" + ds + "\" " + (tp == ds ? "selected" : "") + ">" + ds + " dBm" + (d == 18 ? " (max)" : "") + "</option>";
++    }
++    h = R(std::move(h), "__TXPOWER_OPTIONS__", txopts);
++
++    h = R(std::move(h), "__CONCURRENT_JS__", concurrent ? "true" : "false");
++
++    res.body = render::layout(req, res, "WiFi", "wifi", h);
++}
++
++// ---- AJAX GET JSON (kept as JSON, exactly as the old template's fetch expects) ----
++
++void wifi_scan(const Request& req, Response& res) {
++    if (!web::require_auth(req, res, true)) return;
++    res.content_type = "application/json";
++    res.body = wifi::scan_json();
++}
++
++void wifi_status(const Request& req, Response& res) {
++    if (!web::require_auth(req, res, true)) return;
++    res.content_type = "application/json";
++    res.body = wifi::status_json();
++}
++
++// ---- POST-redirect-GET handlers ----
++
++void wifi_connect(const Request& req, Response& res) {
++    if (!web::require_auth(req, res, false)) return;
++    std::string ssid = util::trim(req.f("ssid"));
++    std::string psk = req.f("psk");
++    if (ssid.empty()) {
++        render::redirect_flash(res, wifi_redirect(), "error", "SSID required");
++        return;
++    }
++    auto cur = wifi::read_conf();
++    std::string mode = (cur["mode"] == "ap" || cur["mode"] == "sta+ap") ? "sta+ap" : "sta";
++    wifi::write_conf({{"mode", mode}, {"sta_ssid", ssid}, {"sta_psk", psk}});
++    wifi::apply();
++    render::redirect_flash(res, wifi_redirect(), "success", "Connecting to '" + ssid + "'…");
++}
++
++void wifi_ap(const Request& req, Response& res) {
++    if (!web::require_auth(req, res, false)) return;
++    std::string ssid = util::trim(req.f("ap_ssid"));
++    std::string psk = req.f("ap_psk");
++    bool enable = req.f("ap_enable") == "on";
++    if (enable && (ssid.empty() || psk.size() < 8)) {
++        render::redirect_flash(res, wifi_redirect(), "error", "AP needs an SSID and a password of at least 8 chars");
++        return;
++    }
++    auto cur = wifi::read_conf();
++    bool sta_on = (cur["mode"] == "sta" || cur["mode"] == "sta+ap") && !cur["sta_ssid"].empty();
++    std::string mode = enable ? (sta_on ? "sta+ap" : "ap") : (sta_on ? "sta" : "off");
++    std::map<std::string, std::string> updates = {{"mode", mode}, {"ap_ssid", ssid}, {"ap_psk", psk}};
++    // Channel/width are settable only in AP-only mode (concurrent forces them to
++    // follow the STA, and the disabled <select> submits nothing). Key off the
++    // *rendered* mode so we don't clobber stored AP-only values with form defaults.
++    if (cur["mode"] != "sta+ap") {
++        std::string chan = util::trim(req.f("ap_channel"));   if (chan.empty()) chan = "6";
++        std::string htmode = util::trim(req.f("ap_htmode"));  if (htmode.empty()) htmode = "ht20";
++        if (chan != "auto") {
++            int n = atoi(chan.c_str());
++            if (!all_digits(chan) || n < 1 || n > 13) {
++                render::redirect_flash(res, wifi_redirect(), "error", "AP channel must be 1-13 or auto");
++                return;
++            }
++        }
++        if (htmode != "ht20" && htmode != "ht40") htmode = "ht20";
++        updates["ap_channel"] = chan;
++        updates["ap_htmode"] = htmode;
++    }
++    wifi::write_conf(updates);
++    wifi::apply();
++    render::redirect_flash(res, wifi_redirect(), "success", "AP settings applied");
++}
++
++void wifi_mode(const Request& req, Response& res) {
++    if (!web::require_auth(req, res, false)) return;
++    std::string mode = req.f("mode");
++    if (mode != "off" && mode != "sta" && mode != "ap" && mode != "sta+ap") mode = "off";
++    wifi::write_conf({{"mode", mode}});
++    wifi::apply();
++    render::redirect_flash(res, wifi_redirect(), "success", "WiFi mode set to " + mode);
++}
++
++void wifi_txpower(const Request& req, Response& res) {
++    if (!web::require_auth(req, res, false)) return;
++    std::string tp = util::trim(req.f("tx_power"));
++    for (auto& c : tp) c = (char)tolower((unsigned char)c);
++    if (tp == "auto" || tp == "max" || tp.empty()) {
++        tp = "auto";
++    } else {
++        int n = atoi(tp.c_str());
++        if (!all_digits(tp) || n < 1 || n > 18) {
++            render::redirect_flash(res, wifi_redirect(), "error", "TX power must be 'auto' or an integer 1-18 dBm");
++            return;
++        }
++    }
++    wifi::write_conf({{"tx_power", tp}});
++    wifi::apply();
++    render::redirect_flash(res, wifi_redirect(), "success", std::string("TX power set to ") + (tp == "auto" ? "auto" : tp + " dBm"));
++}
++
++}  // namespace routes
+\ No newline at end of file
+diff --git a/buildroot/package/rnsbox-portal/src/cgi/session.cpp b/buildroot/package/rnsbox-portal/src/cgi/session.cpp
+new file mode 100644
+index 000000000..4511610e4
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/cgi/session.cpp
+@@ -0,0 +1,183 @@
++// session.cpp — see session.h.
++#include "session.h"
++#include "util.h"
++#include <openssl/evp.h>
++#include <cctype>
++#include <cstdlib>
++#include <cstring>
++#include <ctime>
++#include <map>
++#include <unistd.h>
++
++namespace session {
++
++// ---- minimal flat JSON object {"k":"v",...} (auth.json is exactly this) ----
++static bool read_json_string(const std::string& j, size_t& p, std::string& out) {
++    if (p >= j.size() || j[p] != '"') return false;
++    ++p; out.clear();
++    while (p < j.size()) {
++        char c = j[p++];
++        if (c == '\\') {
++            if (p >= j.size()) return false;
++            char e = j[p++];
++            switch (e) {
++                case 'n': out += '\n'; break; case 't': out += '\t'; break;
++                case 'r': out += '\r'; break; case '"': out += '"';  break;
++                case '\\': out += '\\'; break; case '/': out += '/';  break;
++                default: out += e;
++            }
++        } else if (c == '"') {
++            return true;
++        } else {
++            out += c;
++        }
++    }
++    return false;
++}
++
++static std::map<std::string, std::string> parse_auth(const std::string& j) {
++    std::map<std::string, std::string> m;
++    size_t i = 0;
++    while (i < j.size()) {
++        while (i < j.size() && j[i] != '"') ++i;
++        if (i >= j.size()) break;
++        std::string k;
++        if (!read_json_string(j, i, k)) break;
++        while (i < j.size() && j[i] != ':') ++i;
++        if (i >= j.size()) break;
++        ++i;
++        while (i < j.size() && (j[i]==' '||j[i]=='\t'||j[i]=='\n'||j[i]=='\r')) ++i;
++        std::string v;
++        if (!read_json_string(j, i, v)) break;
++        m[k] = v;
++    }
++    return m;
++}
++
++static std::string json_esc(const std::string& s) {
++    std::string o;
++    for (char c : s) { if (c == '"' || c == '\\') o += '\\'; o += c; }
++    return o;
++}
++
++static std::string serialize_auth(const std::map<std::string, std::string>& m) {
++    std::string o = "{";
++    bool first = true;
++    for (const auto& kv : m) {
++        if (!first) o += ",";
++        first = false;
++        o += "\"" + json_esc(kv.first) + "\":\"" + json_esc(kv.second) + "\"";
++    }
++    o += "}";
++    return o;
++}
++
++// PBKDF2-HMAC-SHA256 via OpenSSL -> lowercase hex (dklen bytes).
++static std::string pbkdf2_hex(const std::string& password, const std::string& salt,
++                              int iterations, int dklen) {
++    std::string out; out.resize(dklen);
++    if (PKCS5_PBKDF2_HMAC(password.data(), (int)password.size(),
++                          reinterpret_cast<const unsigned char*>(salt.data()), (int)salt.size(),
++                          iterations, EVP_sha256(), dklen,
++                          reinterpret_cast<unsigned char*>(&out[0])) != 1)
++        return std::string();
++    return util::to_hex(out);
++}
++
++// werkzeug hash: "pbkdf2:sha256:<iter>$<salt>$<hexdigest>"
++static bool verify_werkzeug(const std::string& hash, const std::string& password) {
++    size_t d1 = hash.find('$');
++    if (d1 == std::string::npos) return false;
++    size_t d2 = hash.find('$', d1 + 1);
++    if (d2 == std::string::npos) return false;
++    std::string method = hash.substr(0, d1);
++    std::string salt   = hash.substr(d1 + 1, d2 - d1 - 1);
++    std::string digest = hash.substr(d2 + 1);
++    // method = pbkdf2:sha256:<iter>
++    if (method.rfind("pbkdf2:sha256:", 0) != 0) return false;
++    size_t c = method.rfind(':');
++    long iter = strtol(method.c_str() + c + 1, nullptr, 10);
++    if (iter <= 0 || iter > 10000000) return false;
++    int dklen = (int)(digest.size() / 2);
++    if (dklen <= 0 || dklen > 64) return false;
++    std::string got = pbkdf2_hex(password, salt, (int)iter, dklen);
++    if (got.empty()) return false;
++    return util::const_time_eq(got, digest);
++}
++
++static std::string make_hash(const std::string& password) {
++    std::string salt = util::random_hex(8);   // 16 hex chars
++    if (salt.empty()) salt = "0000000000000000";
++    std::string hex = pbkdf2_hex(password, salt, 25000, 32);
++    return "pbkdf2:sha256:25000$" + salt + "$" + hex;
++}
++
++bool valid_username(const std::string& u) {
++    if (u.empty() || u.size() > 32) return false;
++    for (char c : u)
++        if (!(isalnum((unsigned char)c) || c == '_' || c == '.' || c == '-')) return false;
++    return true;
++}
++
++bool verify_password(const std::string& user, const std::string& password) {
++    if (!valid_username(user) || password.empty() || password.size() > 512) return false;
++    auto m = parse_auth(util::read_file(AUTH_FILE));
++    auto it = m.find(user);
++    if (it == m.end()) return false;
++    return verify_werkzeug(it->second, password);
++}
++
++void ensure_default_auth() {
++    auto m = parse_auth(util::read_file(AUTH_FILE));
++    if (!m.empty()) return;
++    m["admin"] = make_hash("admin");
++    util::write_file_atomic(AUTH_FILE, serialize_auth(m), 0600);
++}
++
++bool set_password(const std::string& user, const std::string& newpass) {
++    if (!valid_username(user) || newpass.empty() || newpass.size() > 512) return false;
++    auto m = parse_auth(util::read_file(AUTH_FILE));
++    m[user] = make_hash(newpass);
++    return util::write_file_atomic(AUTH_FILE, serialize_auth(m), 0600);
++}
++
++// ---- session token file: "user\ntoken\nexpiry" ----
++static std::string cookie(const std::string& token, long max_age) {
++    return std::string(COOKIE_NAME) + "=" + token +
++           "; HttpOnly; SameSite=Lax; Path=/; Max-Age=" + std::to_string(max_age);
++}
++
++std::string start(const std::string& user) {
++    std::string token = util::random_hex(24);   // 48 hex chars
++    long expiry = (long)::time(nullptr) + SESSION_TTL;
++    std::string body = user + "\n" + token + "\n" + std::to_string(expiry) + "\n";
++    util::write_file_atomic(SESSION_FILE, body, 0600);
++    return cookie(token, SESSION_TTL);
++}
++
++std::string clear() {
++    ::unlink(SESSION_FILE);
++    return cookie("", 0);
++}
++
++Info check(const std::string& cookie_token) {
++    Info info;
++    if (cookie_token.empty()) return info;
++    std::string body = util::read_file(SESSION_FILE, 4096);
++    if (body.empty()) return info;
++    // parse the three lines
++    size_t n1 = body.find('\n');
++    if (n1 == std::string::npos) return info;
++    size_t n2 = body.find('\n', n1 + 1);
++    if (n2 == std::string::npos) return info;
++    std::string user  = body.substr(0, n1);
++    std::string token = body.substr(n1 + 1, n2 - n1 - 1);
++    long expiry = strtol(body.c_str() + n2 + 1, nullptr, 10);
++    if ((long)::time(nullptr) >= expiry) { ::unlink(SESSION_FILE); return info; }
++    if (!util::const_time_eq(cookie_token, token)) return info;
++    info.valid = true;
++    info.user = user;
++    return info;
++}
++
++}  // namespace session
+diff --git a/buildroot/package/rnsbox-portal/src/cgi/session.h b/buildroot/package/rnsbox-portal/src/cgi/session.h
+new file mode 100644
+index 000000000..c50d2cb93
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/cgi/session.h
+@@ -0,0 +1,38 @@
++// session.h — dead-simple auth + session for a tiny-device admin UI.
++//
++//  * password: verify against the existing werkzeug pbkdf2 hash in auth.json,
++//    using the box's OpenSSL (no bundled crypto).
++//  * session : an opaque random token written to a /run file and compared;
++//    logout deletes it, reboot clears it (tmpfs). No signing.
++//  * CSRF    : the cookie is SameSite=Lax, so browsers won't attach it to a
++//    cross-site POST — no token machinery needed.
++#ifndef RNSBOX_SESSION_H
++#define RNSBOX_SESSION_H
++
++#include <string>
++
++namespace session {
++
++constexpr const char* AUTH_FILE    = "/etc/rnsbox/auth.json";
++constexpr const char* SESSION_FILE = "/run/rnsbox-portal.session";
++constexpr const char* COOKIE_NAME  = "rnsbox_session";
++constexpr long SESSION_TTL = 24 * 3600;   // session lifetime (seconds)
++
++struct Info {
++    bool valid = false;
++    std::string user;
++};
++
++// --- auth (werkzeug pbkdf2:sha256 hash, verified via OpenSSL) ---
++bool verify_password(const std::string& user, const std::string& password);
++void ensure_default_auth();                 // seed admin/admin if auth.json absent/empty
++bool set_password(const std::string& user, const std::string& newpass);
++bool valid_username(const std::string& u);  // ^[A-Za-z0-9_.-]{1,32}$
++
++// --- session token file ---
++std::string start(const std::string& user); // writes token file; returns Set-Cookie value
++std::string clear();                          // deletes token file; returns expiring Set-Cookie
++Info check(const std::string& cookie_token);  // valid iff cookie matches the live token
++
++}  // namespace session
++#endif
+diff --git a/buildroot/package/rnsbox-portal/src/cgi/store.cpp b/buildroot/package/rnsbox-portal/src/cgi/store.cpp
+new file mode 100644
+index 000000000..db2ce2131
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/cgi/store.cpp
+@@ -0,0 +1,444 @@
++// store.cpp — see store.h. Formats mirror store.py exactly.
++#include "store.h"
++#include "util.h"
++#include <cctype>
++#include <cstdlib>
++#include <cstring>
++
++namespace store {
++
++// ---- shared helpers ----
++static std::vector<std::string> read_lines(const std::string& path) {
++    std::vector<std::string> out;
++    std::string data = util::read_file(path);
++    size_t i = 0;
++    while (i < data.size()) {
++        size_t nl = data.find('\n', i);
++        if (nl == std::string::npos) nl = data.size();
++        out.push_back(data.substr(i, nl - i));
++        i = nl + 1;
++    }
++    return out;
++}
++
++static std::vector<std::string> split_ws(const std::string& s) {
++    std::vector<std::string> out;
++    size_t i = 0;
++    while (i < s.size()) {
++        while (i < s.size() && (s[i] == ' ' || s[i] == '\t')) ++i;
++        size_t j = i;
++        while (j < s.size() && s[j] != ' ' && s[j] != '\t') ++j;
++        if (j > i) out.push_back(s.substr(i, j - i));
++        i = j;
++    }
++    return out;
++}
++
++static bool to_int(const std::string& s, int& out) {
++    if (s.empty()) return false;
++    char* end = nullptr;
++    long v = strtol(s.c_str(), &end, 10);
++    if (!end || *end != '\0') return false;
++    out = (int)v;
++    return true;
++}
++
++bool valid_ipv4(const std::string& s) {
++    if (s.empty()) return false;
++    int parts = 0;
++    size_t i = 0;
++    while (i < s.size()) {
++        size_t dot = s.find('.', i);
++        std::string p = (dot == std::string::npos) ? s.substr(i) : s.substr(i, dot - i);
++        if (p.empty() || p.size() > 3) return false;
++        for (char c : p) if (c < '0' || c > '9') return false;
++        int n = atoi(p.c_str());
++        if (n < 0 || n > 255) return false;
++        ++parts;
++        if (dot == std::string::npos) break;
++        i = dot + 1;
++        if (i == s.size()) return false;  // trailing dot
++    }
++    return parts == 4;
++}
++
++bool valid_dns_list(const std::string& s) {
++    for (const auto& ip : split_ws(s)) if (!valid_ipv4(ip)) return false;
++    return true;
++}
++
++std::string sanitize_comment(const std::string& s) {
++    std::string o;
++    for (unsigned char c : s) {
++        if (c == '\n' || c == '\r' || c == '#') continue;       // would break the file / delimiter
++        if (c < 0x20 && c != '\t') continue;
++        o.push_back((char)c);
++    }
++    return util::trim(o);
++}
++
++// ---- port forwards ----
++std::vector<PortForward> read_portforwards() {
++    std::vector<PortForward> out;
++    for (const auto& ln : read_lines(PF_FILE)) {
++        std::string s = util::trim(ln);
++        if (s.empty() || s[0] == '#') continue;
++        size_t h = s.find('#');
++        std::string head = (h == std::string::npos) ? s : s.substr(0, h);
++        std::string comment = (h == std::string::npos) ? "" : util::trim(s.substr(h + 1));
++        auto p = split_ws(head);
++        if (p.size() < 4) continue;
++        PortForward pf;
++        pf.proto = p[0];
++        if (!to_int(p[1], pf.wan_port)) continue;
++        pf.lan_ip = p[2];
++        if (!to_int(p[3], pf.lan_port)) continue;
++        pf.comment = comment;
++        out.push_back(pf);
++    }
++    return out;
++}
++
++static bool write_portforwards(const std::vector<PortForward>& items) {
++    std::string o =
++        "# proto  wan_port  lan_ip          lan_port  [# comment]\n"
++        "# managed by rnsbox-portal — hand-edits clobbered when UI saves\n";
++    for (const auto& it : items) {
++        o += it.proto + " " + std::to_string(it.wan_port) + " " + it.lan_ip + " " + std::to_string(it.lan_port);
++        if (!it.comment.empty()) o += "  # " + it.comment;
++        o += "\n";
++    }
++    return util::write_file_atomic(PF_FILE, o, 0644);
++}
++
++bool add_portforward(const PortForward& pf, std::string& err) {
++    if (pf.proto != "tcp" && pf.proto != "udp") { err = "proto must be tcp or udp"; return false; }
++    if (pf.wan_port < 1 || pf.wan_port > 65535) { err = "wan_port out of range"; return false; }
++    if (pf.lan_port < 1 || pf.lan_port > 65535) { err = "lan_port out of range"; return false; }
++    if (!valid_ipv4(pf.lan_ip)) { err = "lan_ip is not a valid IPv4 address"; return false; }
++    auto items = read_portforwards();
++    PortForward n = pf;
++    n.comment = sanitize_comment(pf.comment);
++    items.push_back(n);
++    if (!write_portforwards(items)) { err = "write failed"; return false; }
++    return true;
++}
++
++bool delete_portforward(int idx) {
++    auto items = read_portforwards();
++    if (idx < 0 || idx >= (int)items.size()) return false;
++    items.erase(items.begin() + idx);
++    return write_portforwards(items);
++}
++
++// ---- open ports ----
++std::vector<OpenPort> read_openports() {
++    std::vector<OpenPort> out;
++    for (const auto& ln : read_lines(OP_FILE)) {
++        std::string s = util::trim(ln);
++        if (s.empty() || s[0] == '#') continue;
++        size_t h = s.find('#');
++        std::string head = (h == std::string::npos) ? s : s.substr(0, h);
++        std::string comment = (h == std::string::npos) ? "" : util::trim(s.substr(h + 1));
++        auto p = split_ws(head);
++        if (p.size() < 2) continue;
++        OpenPort op;
++        op.proto = p[0];
++        if (!to_int(p[1], op.port)) continue;
++        op.comment = comment;
++        out.push_back(op);
++    }
++    return out;
++}
++
++static bool write_openports(const std::vector<OpenPort>& items) {
++    std::string o = "# proto  port  [# comment]\n# managed by rnsbox-portal\n";
++    for (const auto& it : items) {
++        o += it.proto + " " + std::to_string(it.port);
++        if (!it.comment.empty()) o += "  # " + it.comment;
++        o += "\n";
++    }
++    return util::write_file_atomic(OP_FILE, o, 0644);
++}
++
++bool add_openport(const OpenPort& op, std::string& err) {
++    if (op.proto != "tcp" && op.proto != "udp") { err = "proto must be tcp or udp"; return false; }
++    if (op.port < 1 || op.port > 65535) { err = "port out of range"; return false; }
++    auto items = read_openports();
++    OpenPort n = op;
++    n.comment = sanitize_comment(op.comment);
++    items.push_back(n);
++    if (!write_openports(items)) { err = "write failed"; return false; }
++    return true;
++}
++
++bool delete_openport(int idx) {
++    auto items = read_openports();
++    if (idx < 0 || idx >= (int)items.size()) return false;
++    items.erase(items.begin() + idx);
++    return write_openports(items);
++}
++
++// ---- WAN ----
++WanConfig read_wan() {
++    WanConfig c;
++    for (const auto& ln : read_lines(WAN_FILE)) {
++        std::string s = util::trim(ln);
++        if (s.empty() || s[0] == '#') continue;
++        size_t eq = s.find('=');
++        if (eq != std::string::npos) {
++            std::string k = util::trim(s.substr(0, eq));
++            std::string v = s.substr(eq + 1);
++            size_t h = v.find('#'); if (h != std::string::npos) v = v.substr(0, h);
++            v = util::trim(v);
++            if (k == "interface") c.interface = v;
++            else if (k == "mode") c.mode = v;
++            else if (k == "address") c.address = v;
++            else if (k == "prefix") c.prefix = v;
++            else if (k == "gateway") c.gateway = v;
++            else if (k == "dns") c.dns = v;
++        } else if (s == "eth0" || s == "wlan0") {
++            c.interface = s;   // legacy single-line
++        }
++    }
++    if (c.interface != "eth0" && c.interface != "wlan0") c.interface = "eth0";
++    if (c.mode != "dhcp" && c.mode != "static") c.mode = "dhcp";
++    return c;
++}
++
++bool write_wan(const WanConfig& cfg, std::string& err) {
++    if (cfg.interface != "eth0" && cfg.interface != "wlan0") { err = "WAN interface must be eth0 or wlan0"; return false; }
++    if (cfg.mode != "dhcp" && cfg.mode != "static") { err = "WAN mode must be dhcp or static"; return false; }
++    if (cfg.mode == "static") {
++        if (!valid_ipv4(cfg.address)) { err = "static address is not a valid IPv4"; return false; }
++        int pfx = -1; to_int(cfg.prefix, pfx);
++        if (pfx < 0 || pfx > 32) { err = "prefix must be 0-32"; return false; }
++        if (!cfg.gateway.empty() && !valid_ipv4(cfg.gateway)) { err = "gateway is not a valid IPv4"; return false; }
++        if (!valid_dns_list(cfg.dns)) { err = "dns must be space-separated IPv4 addresses"; return false; }
++    }
++    std::string o =
++        "# WAN uplink config — managed by the rnsbox-portal Network tab.\n"
++        "# interface: eth0 (wired RJ45) or wlan0 (WiFi client, requires STA mode).\n"
++        "# mode:      dhcp (lease from upstream) or static.\n"
++        "# Static mode (applied to eth0 by S30eth): address/prefix/gateway/dns.\n";
++    o += "interface=" + cfg.interface + "\n";
++    o += "mode=" + cfg.mode + "\n";
++    if (cfg.mode == "static") {
++        o += "address=" + cfg.address + "\n";
++        o += "prefix=" + cfg.prefix + "\n";
++        o += "gateway=" + cfg.gateway + "\n";
++        o += "dns=" + cfg.dns + "\n";
++    }
++    if (!util::write_file_atomic(WAN_FILE, o, 0644)) { err = "write failed"; return false; }
++    return true;
++}
++
++// ---- cron.conf (rnsd_restart_days + update_check) ----
++static bool cron_truthy(const std::string& v) {
++    std::string s = util::trim(v);
++    for (auto& c : s) c = (char)tolower((unsigned char)c);
++    return !(s == "no" || s == "0" || s == "false" || s == "off" || s.empty());
++}
++
++int read_rnsd_restart_days() {
++    int n = 0;
++    if (to_int(util::trim(util::conf_get(CRON_FILE, "rnsd_restart_days")), n)) {
++        if (n >= 0 && n <= 7) return n;
++    }
++    return 0;
++}
++
++bool write_rnsd_restart_days(int days, std::string& err) {
++    if (days < 0 || days > 7) { err = "days must be 0..7"; return false; }
++    // preserve update_check (default yes when the key is absent)
++    std::string ucv = util::conf_get(CRON_FILE, "update_check");
++    bool uc = ucv.empty() ? true : cron_truthy(ucv);
++    std::string o =
++        "# RNSBox scheduled tasks — managed by the rnsbox-portal Reticulum tab.\n"
++        "# rnsd_restart_days: 0 = off (default); N = restart rnsd every N days at\n"
++        "#   04:00 (memory hygiene). update_check: yes (default) / no — daily\n"
++        "#   check for a newer rnsd (notify-only). Applied by S84cron; live via UI.\n";
++    o += "rnsd_restart_days=" + std::to_string(days) + "\n";
++    o += std::string("update_check=") + (uc ? "yes" : "no") + "\n";
++    if (!util::write_file_atomic(CRON_FILE, o, 0644)) { err = "write failed"; return false; }
++    return true;
++}
++bool write_update_check(bool enabled, std::string& err) {
++    // symmetric to write_rnsd_restart_days: preserve rnsd_restart_days (default 0)
++    int days = read_rnsd_restart_days();
++    std::string o =
++        "# RNSBox scheduled tasks — managed by the rnsbox-portal Reticulum tab.\n"
++        "# rnsd_restart_days: 0 = off (default); N = restart rnsd every N days at\n"
++        "#   04:00 (memory hygiene). update_check: yes (default) / no — daily\n"
++        "#   check for a newer rnsd (notify-only). Applied by S84cron; live via UI.\n";
++    o += "rnsd_restart_days=" + std::to_string(days) + "\n";
++    o += std::string("update_check=") + (enabled ? "yes" : "no") + "\n";
++    if (!util::write_file_atomic(CRON_FILE, o, 0644)) { err = "write failed"; return false; }
++    return true;
++}
++
++// ---- reticulum config (raw text) ----
++std::string read_reticulum_config() {
++    return util::read_file(RETICULUM_CONFIG, 256 * 1024);
++}
++
++bool write_reticulum_config(const std::string& text, std::string& err) {
++    if (text.size() > 128 * 1024) { err = "config too large"; return false; }
++    // normalize CRLF -> LF (a browser textarea may submit CRLF)
++    std::string norm;
++    norm.reserve(text.size());
++    for (char c : text) { if (c != '\r') norm.push_back(c); }
++    if (!util::write_file_atomic(RETICULUM_CONFIG, norm, 0644)) { err = "write failed"; return false; }
++    return true;
++}
++
++// ---- NTP servers ----
++static bool valid_ntp_server(const std::string& s) {
++    if (s.empty() || s.size() > 253) return false;
++    for (char c : s) if (!(isalnum((unsigned char)c) || c == '.' || c == '-' || c == ':')) return false;
++    return true;
++}
++
++std::vector<std::string> read_ntp_servers() {
++    std::vector<std::string> out;
++    for (const auto& ln : read_lines(NTP_FILE)) {
++        auto p = split_ws(util::trim(ln));
++        if (p.size() >= 2 && (p[0] == "server" || p[0] == "pool")) out.push_back(p[1]);
++    }
++    return out;
++}
++
++std::vector<std::string> write_ntp_servers(const std::vector<std::string>& servers) {
++    std::vector<std::string> clean;
++    for (const auto& s : servers) if (valid_ntp_server(s)) clean.push_back(s);
++    std::vector<std::string> kept;
++    for (const auto& ln : read_lines(NTP_FILE)) {
++        auto p = split_ws(util::trim(ln));
++        if (!p.empty() && (p[0] == "server" || p[0] == "pool")) continue;
++        kept.push_back(ln);
++    }
++    while (!kept.empty() && util::trim(kept.front()).empty()) kept.erase(kept.begin());
++    std::string o;
++    for (const auto& s : clean) o += "server " + s + " iburst\n";
++    if (!clean.empty() && !kept.empty()) o += "\n";
++    for (const auto& l : kept) o += l + "\n";
++    util::write_file_atomic(NTP_FILE, o, 0644);
++    return clean;
++}
++
++// ---- SLIP ----
++static bool valid_tty(const std::string& s) {
++    if (s == "/dev/ttyS0" || s == "/dev/console") return false;   // don't hijack the console
++    if (s.rfind("/dev/", 0) != 0 || s.size() > 64) return false;
++    for (char c : s) if (!(isalnum((unsigned char)c) || c == '/' || c == '_' || c == '-')) return false;
++    return true;
++}
++
++SlipConfig read_slip() {
++    SlipConfig d;
++    for (const auto& ln : read_lines(SLIP_FILE)) {
++        std::string s = util::trim(ln);
++        if (s.empty() || s[0] == '#' || s.find('=') == std::string::npos) continue;
++        size_t eq = s.find('=');
++        std::string k = util::trim(s.substr(0, eq));
++        std::string v = s.substr(eq + 1);
++        size_t h = v.find('#'); if (h != std::string::npos) v = v.substr(0, h);
++        v = util::trim(v);
++        if (k == "enabled") d.enabled = v; else if (k == "device") d.device = v;
++        else if (k == "baud") d.baud = v; else if (k == "local_ip") d.local_ip = v;
++        else if (k == "peer_ip") d.peer_ip = v;
++    }
++    return d;
++}
++
++bool write_slip(const SlipConfig& c, std::string& err) {
++    std::string en = cron_truthy(c.enabled) ? "yes" : "no";
++    std::string dev = c.device.empty() ? "/dev/ttyS1" : c.device;
++    if (!valid_tty(dev)) { err = "bad device path"; return false; }
++    int baud = atoi(c.baud.c_str());
++    if (baud < 1 || baud > 4000000) { err = "baud out of range (1-4000000)"; return false; }
++    std::string lip = c.local_ip.empty() ? "192.168.7.1" : c.local_ip;
++    std::string pip = c.peer_ip.empty() ? "192.168.7.2" : c.peer_ip;
++    if (!valid_ipv4(lip) || !valid_ipv4(pip)) { err = "bad IP address"; return false; }
++    std::string o =
++        "# SLIP-over-UART link to an external WiFi-HaLow (RNode) modem.\n"
++        "# Managed by the rnsbox-portal Reticulum tab; applied by S31slip. OFF\n"
++        "# by default. baud must match the modem (Nano max 1562500);\n"
++        "# local_ip/peer_ip must match the modem's SLIP config.\n";
++    o += "enabled=" + en + "\ndevice=" + dev + "\nbaud=" + std::to_string(baud) +
++         "\nlocal_ip=" + lip + "\npeer_ip=" + pip + "\n";
++    if (!util::write_file_atomic(SLIP_FILE, o, 0644)) { err = "write failed"; return false; }
++    return true;
++}
++
++// ---- add HaLow modem as a TCPClientInterface in the reticulum config ----
++static std::string sanitize_iface_name(const std::string& in) {
++    std::string n;
++    for (char c : in) if (c != '[' && c != ']') n += c;
++    auto parts = split_ws(n);
++    std::string r;
++    for (size_t i = 0; i < parts.size(); ++i) { if (i) r += " "; r += parts[i]; }
++    if (r.size() > 48) r = r.substr(0, 48);
++    return r;
++}
++
++static std::vector<std::string> reticulum_iface_names() {
++    std::vector<std::string> names;
++    for (const auto& ln : read_lines(RETICULUM_CONFIG)) {
++        std::string s = util::trim(ln);
++        if (s.rfind("[[", 0) == 0 && s.rfind("[[[", 0) != 0 &&
++            s.size() >= 4 && s.substr(s.size() - 2) == "]]")
++            names.push_back(util::trim(s.substr(2, s.size() - 4)));
++    }
++    return names;
++}
++
++static bool reticulum_has_tcp_client(const std::string& host, int port) {
++    std::string ps = std::to_string(port);
++    bool is_tcp = false;
++    std::string cur_host, cur_port;
++    for (const auto& ln : read_lines(RETICULUM_CONFIG)) {
++        std::string s = util::trim(ln);
++        if (!s.empty() && s[0] == '[') { is_tcp = false; cur_host.clear(); cur_port.clear(); continue; }
++        if (s.empty() || s[0] == '#' || s.find('=') == std::string::npos) continue;
++        size_t eq = s.find('=');
++        std::string k = util::trim(s.substr(0, eq));
++        for (auto& c : k) c = (char)tolower((unsigned char)c);
++        std::string v = s.substr(eq + 1);
++        size_t h = v.find('#'); if (h != std::string::npos) v = v.substr(0, h);
++        v = util::trim(v);
++        if (k == "type") is_tcp = (v == "TCPClientInterface");
++        else if (k == "target_host") cur_host = v;
++        else if (k == "target_port") cur_port = v;
++        if (is_tcp && cur_host == host && cur_port == ps) return true;
++    }
++    return false;
++}
++
++bool add_halow_interface(const std::string& name_in, const std::string& host, int port, std::string& msg) {
++    if (!valid_ipv4(host)) { msg = "bad modem IP"; return false; }
++    if (port < 1 || port > 65535) { msg = "bad port"; return false; }
++    auto lines = read_lines(RETICULUM_CONFIG);
++    if (lines.empty()) { msg = "no reticulum config"; return false; }
++    if (reticulum_has_tcp_client(host, port)) { msg = "already"; return false; }
++    std::string name = sanitize_iface_name(name_in);
++    if (name.empty()) name = "RNode-Halow";
++    auto existing = reticulum_iface_names();
++    auto has = [&](const std::string& n) { for (const auto& e : existing) if (e == n) return true; return false; };
++    if (has(name)) { std::string base = name; int i = 2; while (has(name)) { name = base + " " + std::to_string(i); ++i; } }
++    while (!lines.empty() && util::trim(lines.back()).empty()) lines.pop_back();
++    lines.push_back("");
++    lines.push_back("  # HaLow RNode modem over the SLIP link — added from the portal.");
++    lines.push_back("  [[" + name + "]]");
++    lines.push_back("    type = TCPClientInterface");
++    lines.push_back("    enabled = yes");
++    lines.push_back("    target_host = " + host);
++    lines.push_back("    target_port = " + std::to_string(port));
++    std::string o;
++    for (const auto& l : lines) o += l + "\n";
++    if (!util::write_file_atomic(RETICULUM_CONFIG, o, 0644)) { msg = "write failed"; return false; }
++    msg = name;
++    return true;
++}
++
++}  // namespace store
+diff --git a/buildroot/package/rnsbox-portal/src/cgi/store.h b/buildroot/package/rnsbox-portal/src/cgi/store.h
+new file mode 100644
+index 000000000..6b4d1acc7
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/cgi/store.h
+@@ -0,0 +1,88 @@
++// store.h — read/write the flat /etc/rnsbox/*.conf files, byte-compatible with
++// store.py so Python (nftgen, boot scripts) and this CGI can share them.
++#ifndef RNSBOX_STORE_H
++#define RNSBOX_STORE_H
++
++#include <string>
++#include <vector>
++
++namespace store {
++
++constexpr const char* PF_FILE   = "/etc/rnsbox/portforward.conf";
++constexpr const char* OP_FILE   = "/etc/rnsbox/openports.conf";
++constexpr const char* WAN_FILE  = "/etc/rnsbox/wan.conf";
++constexpr const char* CRON_FILE = "/etc/rnsbox/cron.conf";
++constexpr const char* RETICULUM_CONFIG = "/etc/reticulum/config";
++constexpr const char* NTP_FILE  = "/etc/ntp.conf";
++constexpr const char* SLIP_FILE = "/etc/rnsbox/slip.conf";
++
++struct PortForward {
++    std::string proto;      // "tcp" | "udp"
++    int wan_port = 0;
++    std::string lan_ip;
++    int lan_port = 0;
++    std::string comment;
++};
++
++struct OpenPort {
++    std::string proto;
++    int port = 0;
++    std::string comment;
++};
++
++struct WanConfig {
++    std::string interface = "eth0";   // eth0 | wlan0
++    std::string mode = "dhcp";        // dhcp | static
++    std::string address, prefix, gateway, dns;
++};
++
++// --- validation helpers ---
++bool valid_ipv4(const std::string& s);
++bool valid_dns_list(const std::string& s);        // space-separated IPv4s (may be empty)
++std::string sanitize_comment(const std::string& s); // strip control chars + '#' + trim
++
++// --- port forwards ---
++std::vector<PortForward> read_portforwards();
++bool add_portforward(const PortForward& pf, std::string& err);  // validates
++bool delete_portforward(int idx);
++
++// --- open ports ---
++std::vector<OpenPort> read_openports();
++bool add_openport(const OpenPort& op, std::string& err);
++bool delete_openport(int idx);
++
++// --- WAN ---
++WanConfig read_wan();
++bool write_wan(const WanConfig& cfg, std::string& err);         // validates all fields
++
++// --- cron (rnsd auto-restart), preserving the update_check key ---
++int  read_rnsd_restart_days();                 // 0..7 (0 = off)
++bool write_rnsd_restart_days(int days, std::string& err);
++bool write_update_check(bool enabled, std::string& err);   // cron.conf update_check=yes|no
++
++// --- reticulum config (raw text editor) ---
++std::string read_reticulum_config();
++bool write_reticulum_config(const std::string& text, std::string& err);
++
++// --- NTP servers (edit the server/pool lines in /etc/ntp.conf) ---
++std::vector<std::string> read_ntp_servers();
++std::vector<std::string> write_ntp_servers(const std::vector<std::string>& servers); // returns kept
++
++// --- SLIP link to an external HaLow (RNode) modem ---
++struct SlipConfig {
++    std::string enabled = "no";
++    std::string device = "/dev/ttyS1";
++    std::string baud = "1500000";
++    std::string local_ip = "192.168.7.1";
++    std::string peer_ip = "192.168.7.2";
++};
++SlipConfig read_slip();
++bool write_slip(const SlipConfig& c, std::string& err);
++
++// Append a TCPClientInterface for the HaLow modem to the reticulum config.
++// Returns true + sets msg to the interface name; false + msg="already" if the
++// target is already present, else msg=error.
++bool add_halow_interface(const std::string& name, const std::string& host, int port, std::string& msg);
++
++}  // namespace store
++#endif
+diff --git a/buildroot/package/rnsbox-portal/src/cgi/sysinfo.cpp b/buildroot/package/rnsbox-portal/src/cgi/sysinfo.cpp
+new file mode 100644
+index 000000000..e681f598e
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/cgi/sysinfo.cpp
+@@ -0,0 +1,265 @@
++// sysinfo.cpp — see sysinfo.h. Port of sysinfo.py.
++#include "sysinfo.h"
++#include "util.h"
++#include <algorithm>
++#include <cctype>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <dirent.h>
++#include <sys/stat.h>
++
++namespace {
++
++// Split on ASCII whitespace into tokens.
++std::vector<std::string> split_ws(const std::string& s) {
++    std::vector<std::string> out;
++    size_t i = 0, n = s.size();
++    while (i < n) {
++        while (i < n && isspace((unsigned char)s[i])) ++i;
++        size_t j = i;
++        while (j < n && !isspace((unsigned char)s[j])) ++j;
++        if (j > i) out.push_back(s.substr(i, j - i));
++        i = j;
++    }
++    return out;
++}
++
++std::vector<std::string> split_lines(const std::string& s) {
++    std::vector<std::string> out;
++    size_t i = 0, n = s.size();
++    while (i < n) {
++        size_t j = s.find('\n', i);
++        if (j == std::string::npos) j = n;
++        out.push_back(s.substr(i, j - i));
++        i = j + 1;
++    }
++    return out;
++}
++
++std::string slurp(const std::string& p) { return util::read_file(p, 1 << 20); }
++std::string slurp_trim(const std::string& p) { return util::trim(util::read_file(p, 65536)); }
++
++bool is_dir(const std::string& p) {
++    struct stat st;
++    return ::stat(p.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
++}
++bool exists(const std::string& p) {
++    struct stat st;
++    return ::stat(p.c_str(), &st) == 0;
++}
++
++// One `ip` invocation; empty on failure.
++std::string run_ip(const std::vector<std::string>& args) {
++    std::vector<std::string> argv = {"/sbin/ip"};
++    argv.insert(argv.end(), args.begin(), args.end());
++    util::RunResult r = util::run(argv, "", 3);
++    return r.exit_code == 0 ? r.out : std::string();
++}
++
++std::string human_bytes(const std::string& raw) {
++    if (raw.empty()) return raw;
++    char* end = nullptr;
++    double n = strtod(raw.c_str(), &end);
++    if (end == raw.c_str()) return raw;   // non-numeric: pass through
++    static const char* units[] = {"B", "KiB", "MiB", "GiB", "TiB"};
++    char buf[48];
++    for (int u = 0; u < 5; ++u) {
++        if (n < 1024.0) {
++            if (u == 0) snprintf(buf, sizeof(buf), "%ld B", (long)n);
++            else        snprintf(buf, sizeof(buf), "%.1f %s", n, units[u]);
++            return buf;
++        }
++        n /= 1024.0;
++    }
++    snprintf(buf, sizeof(buf), "%.1f PiB", n);
++    return buf;
++}
++
++long meminfo_kb(const std::string& mi, const char* key) {
++    size_t p = mi.find(key);
++    if (p == std::string::npos) return -1;
++    return strtol(mi.c_str() + p + strlen(key), nullptr, 10);
++}
++
++}  // namespace
++
++namespace sysinfo {
++
++std::string hostname() {
++    std::string h = slurp_trim("/proc/sys/kernel/hostname");
++    return h.empty() ? std::string("(unknown)") : h;
++}
++
++Summary summary() {
++    Summary s;
++    // uptime
++    std::string up = slurp("/proc/uptime");
++    if (!up.empty()) {
++        long secs = (long)strtod(up.c_str(), nullptr);
++        long d = secs / 86400; secs %= 86400;
++        long h = secs / 3600;  secs %= 3600;
++        long m = secs / 60;
++        char buf[64]; snprintf(buf, sizeof(buf), "%ldd %ldh %ldm", d, h, m);
++        s.uptime = buf;
++    }
++    // load
++    auto la = split_ws(slurp("/proc/loadavg"));
++    for (int i = 0; i < 3 && i < (int)la.size(); ++i) s.load[i] = la[i];
++    // mem
++    std::string mi = slurp("/proc/meminfo");
++    long total = meminfo_kb(mi, "MemTotal:");
++    long avail = meminfo_kb(mi, "MemAvailable:");
++    long mfree = meminfo_kb(mi, "MemFree:");
++    long buffers = meminfo_kb(mi, "Buffers:");
++    long cached = meminfo_kb(mi, "Cached:");
++    if (avail < 0) avail = mfree;
++    if (total > 0 && avail >= 0) {
++        long used = total - avail;
++        s.mem.ok = true;
++        s.mem.total_mb = (total + 512) / 1024;
++        s.mem.avail_mb = (avail + 512) / 1024;
++        s.mem.used_mb = (used + 512) / 1024;
++        long bc = (buffers > 0 ? buffers : 0) + (cached > 0 ? cached : 0);
++        s.mem.buffcache_mb = (bc + 512) / 1024;
++        s.mem.used_pct = (double)((int)(1000.0 * used / total + 0.5)) / 10.0;
++    }
++    s.kernel = slurp_trim("/proc/sys/kernel/osrelease");
++    return s;
++}
++
++Network network_summary() {
++    Network net;
++    // addr map from one `ip -o -4 addr show`
++    // line: "2: eth0    inet 192.168.3.83/24 brd ..."
++    std::vector<std::pair<std::string, std::vector<std::string>>> addrs;  // preserve; small
++    auto find_addrs = [&](const std::string& dev) -> std::vector<std::string>* {
++        for (auto& kv : addrs) if (kv.first == dev) return &kv.second;
++        return nullptr;
++    };
++    for (const auto& ln : split_lines(run_ip({"-o", "-4", "addr", "show"}))) {
++        auto p = split_ws(ln);
++        if (p.size() >= 4 && p[2] == "inet") {
++            auto* v = find_addrs(p[1]);
++            if (!v) { addrs.push_back({p[1], {}}); v = &addrs.back().second; }
++            v->push_back(p[3]);
++        }
++    }
++    // interfaces from /sys/class/net (skip lo), sorted
++    std::vector<std::string> devs;
++    if (DIR* d = opendir("/sys/class/net")) {
++        while (struct dirent* e = readdir(d)) {
++            std::string n = e->d_name;
++            if (n == "." || n == ".." || n == "lo") continue;
++            devs.push_back(n);
++        }
++        closedir(d);
++    }
++    std::sort(devs.begin(), devs.end());
++    for (const auto& dev : devs) {
++        std::string base = "/sys/class/net/" + dev;
++        std::string state = slurp_trim(base + "/operstate");
++        if (state == "unknown") {
++            long iff = strtol(slurp_trim(base + "/flags").c_str(), nullptr, 16);
++            if ((iff & 0x1) && slurp_trim(base + "/carrier") == "1") state = "up";
++        }
++        Iface i;
++        i.name = dev;
++        i.state = state;
++        i.mac = slurp_trim(base + "/address");
++        i.mtu = slurp_trim(base + "/mtu");
++        i.rx = human_bytes(slurp_trim(base + "/statistics/rx_bytes"));
++        i.tx = human_bytes(slurp_trim(base + "/statistics/tx_bytes"));
++        if (auto* v = find_addrs(dev)) i.addrs = *v;
++        net.ifaces.push_back(std::move(i));
++    }
++    // default gateway
++    for (const auto& ln : split_lines(run_ip({"-4", "route", "show", "default"}))) {
++        auto p = split_ws(ln);
++        if (p.size() >= 5 && p[0] == "default") { net.default_gateway = p[2]; break; }
++    }
++    // dns
++    for (const auto& ln : split_lines(slurp("/etc/resolv.conf"))) {
++        auto t = util::trim(ln);
++        if (t.rfind("nameserver ", 0) == 0) {
++            auto p = split_ws(t);
++            if (p.size() >= 2) net.dns.push_back(p[1]);
++        }
++    }
++    return net;
++}
++
++static std::string find_rnsd_pid() {
++    // 1. pidfile (authoritative — S82rnsd writes /var/run/rnsd.pid).
++    std::string pid = slurp_trim("/var/run/rnsd.pid");
++    if (!pid.empty() && exists("/proc/" + pid)) return pid;
++    // 2. /proc cmdline scan (rnsd's comm is "python3", so `pidof rnsd` fails).
++    if (DIR* d = opendir("/proc")) {
++        std::string found;
++        while (struct dirent* e = readdir(d)) {
++            std::string n = e->d_name;
++            if (n.empty() || !isdigit((unsigned char)n[0])) continue;
++            bool alldig = true;
++            for (char c : n) if (!isdigit((unsigned char)c)) { alldig = false; break; }
++            if (!alldig) continue;
++            std::string cl = slurp("/proc/" + n + "/cmdline");
++            for (char& c : cl) if (c == '\0') c = ' ';
++            std::string t = util::trim(cl);
++            bool ends_rnsd = t.size() >= 4 && t.compare(t.size() - 4, 4, "rnsd") == 0;
++            if (t.find("/rnsd") != std::string::npos || t.find(" rnsd ") != std::string::npos || ends_rnsd) {
++                found = n; break;
++            }
++        }
++        closedir(d);
++        if (!found.empty()) return found;
++    }
++    return "";
++}
++
++Rnsd rnsd_status(bool with_raw) {
++    Rnsd r;
++    std::string pid = find_rnsd_pid();
++    if (!pid.empty()) {
++        r.running = true;
++        r.pid = pid;
++        std::string st = slurp("/proc/" + pid + "/status");
++        size_t p = st.find("VmRSS:");
++        if (p != std::string::npos) r.rss_mb = strtol(st.c_str() + p + 6, nullptr, 10) / 1024;
++        if (with_raw) {
++            util::RunResult rr = util::run({"/usr/bin/rnstatus", "-a"}, "", 20);
++            r.raw = rr.out.empty() ? std::string("(rnstatus not available)") : rr.out;
++        }
++    }
++    return r;
++}
++
++std::vector<Lease> dnsmasq_leases() {
++    std::vector<Lease> out;
++    for (const char* path : {"/var/lib/misc/dnsmasq.leases", "/tmp/dnsmasq.leases"}) {
++        std::string data = slurp(path);
++        if (data.empty()) continue;
++        for (const auto& ln : split_lines(data)) {
++            auto p = split_ws(ln);
++            if (p.size() >= 5) {
++                Lease l;
++                l.expires = p[0]; l.mac = p[1]; l.ip = p[2];
++                l.name = (p[3] == "*") ? "(no name)" : p[3];
++                l.client_id = p[4];
++                out.push_back(std::move(l));
++            }
++        }
++        break;
++    }
++    return out;
++}
++
++Slip slip_status() {
++    Slip s;
++    if (!is_dir("/sys/class/net/sl0")) return s;
++    s.present = true;
++    std::string st = slurp_trim("/sys/class/net/sl0/operstate");
++    s.up = !(st == "down" || st.empty());
++    return s;
++}
++
++}  // namespace sysinfo
+diff --git a/buildroot/package/rnsbox-portal/src/cgi/sysinfo.h b/buildroot/package/rnsbox-portal/src/cgi/sysinfo.h
+new file mode 100644
+index 000000000..1121d67ec
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/cgi/sysinfo.h
+@@ -0,0 +1,54 @@
++// sysinfo.h — read-only views over /proc, /sys, and a few command outputs.
++// C++ port of the former sysinfo.py (hot path: hit on every page render, so
++// native rather than a python spawn). halow_status() stays a python helper —
++// it does HTTP-over-SLIP + JSON and is only fetched async on two tabs.
++#ifndef RNSBOX_SYSINFO_H
++#define RNSBOX_SYSINFO_H
++
++#include <string>
++#include <vector>
++
++namespace sysinfo {
++
++std::string hostname();
++
++struct Mem {
++    bool ok = false;
++    long total_mb = 0, avail_mb = 0, used_mb = 0, buffcache_mb = 0;
++    double used_pct = 0.0;
++};
++struct Summary {
++    std::string uptime;       // "Nd Nh Nm"
++    std::string load[3];      // 1/5/15-min load strings
++    Mem mem;
++    std::string kernel;       // osrelease
++};
++Summary summary();
++
++struct Iface {
++    std::string name, state, mac, mtu, rx, tx;
++    std::vector<std::string> addrs;   // "addr/prefix"
++};
++struct Network {
++    std::vector<Iface> ifaces;        // sorted, lo excluded
++    std::string default_gateway;
++    std::vector<std::string> dns;
++};
++Network network_summary();
++
++struct Rnsd {
++    bool running = false;
++    std::string pid;          // empty when not running
++    long rss_mb = -1;         // -1 = unknown
++    std::string raw;          // rnstatus -a block (only when with_raw)
++};
++Rnsd rnsd_status(bool with_raw = false);
++
++struct Lease { std::string expires, mac, ip, name, client_id; };
++std::vector<Lease> dnsmasq_leases();
++
++struct Slip { bool present = false, up = false; };
++Slip slip_status();
++
++}  // namespace sysinfo
++#endif
+diff --git a/buildroot/package/rnsbox-portal/src/cgi/util.cpp b/buildroot/package/rnsbox-portal/src/cgi/util.cpp
+new file mode 100644
+index 000000000..19c7a50e6
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/cgi/util.cpp
+@@ -0,0 +1,195 @@
++// util.cpp — see util.h.
++#include "util.h"
++#include <cstdio>
++#include <cstring>
++#include <cstdlib>
++#include <ctime>
++#include <fcntl.h>
++#include <unistd.h>
++#include <signal.h>
++#include <sys/wait.h>
++#include <sys/types.h>
++#include <sys/stat.h>
++
++namespace util {
++
++std::string read_file(const std::string& path, size_t max_bytes) {
++    int fd = ::open(path.c_str(), O_RDONLY);
++    if (fd < 0) return std::string();
++    std::string out;
++    char buf[8192];
++    while (out.size() < max_bytes) {
++        ssize_t n = ::read(fd, buf, sizeof(buf));
++        if (n <= 0) break;
++        size_t room = max_bytes - out.size();
++        out.append(buf, size_t(n) < room ? size_t(n) : room);
++    }
++    ::close(fd);
++    return out;
++}
++
++bool write_file_atomic(const std::string& path, const std::string& data, int mode) {
++    std::string tmp = path + ".tmp";
++    int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, mode);
++    if (fd < 0) return false;
++    const char* p = data.data();
++    size_t left = data.size();
++    while (left > 0) {
++        ssize_t n = ::write(fd, p, left);
++        if (n <= 0) { ::close(fd); ::unlink(tmp.c_str()); return false; }
++        p += n; left -= size_t(n);
++    }
++    ::fsync(fd);
++    ::close(fd);
++    ::chmod(tmp.c_str(), mode);
++    if (::rename(tmp.c_str(), path.c_str()) != 0) { ::unlink(tmp.c_str()); return false; }
++    return true;
++}
++
++RunResult run(const std::vector<std::string>& argv, const std::string& input,
++              int timeout_s, size_t out_cap) {
++    RunResult rr;
++    if (argv.empty()) return rr;
++
++    int inpipe[2], outpipe[2];
++    if (::pipe(inpipe) != 0) return rr;
++    if (::pipe(outpipe) != 0) { ::close(inpipe[0]); ::close(inpipe[1]); return rr; }
++
++    pid_t pid = ::fork();
++    if (pid < 0) {
++        ::close(inpipe[0]); ::close(inpipe[1]); ::close(outpipe[0]); ::close(outpipe[1]);
++        return rr;
++    }
++    if (pid == 0) {
++        // child
++        ::dup2(inpipe[0], STDIN_FILENO);
++        ::dup2(outpipe[1], STDOUT_FILENO);
++        ::dup2(outpipe[1], STDERR_FILENO);
++        ::close(inpipe[0]); ::close(inpipe[1]);
++        ::close(outpipe[0]); ::close(outpipe[1]);
++        std::vector<char*> cargv;
++        cargv.reserve(argv.size() + 1);
++        for (const auto& a : argv) cargv.push_back(const_cast<char*>(a.c_str()));
++        cargv.push_back(nullptr);
++        ::execv(argv[0].c_str(), cargv.data());
++        ::_exit(127);  // execv failed
++    }
++
++    // parent
++    ::close(inpipe[0]);
++    ::close(outpipe[1]);
++    if (!input.empty()) {
++        ::signal(SIGPIPE, SIG_IGN);
++        const char* p = input.data(); size_t left = input.size();
++        while (left > 0) { ssize_t n = ::write(inpipe[1], p, left); if (n <= 0) break; p += n; left -= size_t(n); }
++    }
++    ::close(inpipe[1]);
++
++    // Read output with a wall-clock deadline enforced via alarm-free polling:
++    // set the read fd non-blocking and loop until child exits or timeout.
++    ::fcntl(outpipe[0], F_SETFL, O_NONBLOCK);
++    time_t deadline = ::time(nullptr) + timeout_s;
++    bool killed = false;
++    char buf[8192];
++    int status = 0;
++    for (;;) {
++        ssize_t n = ::read(outpipe[0], buf, sizeof(buf));
++        if (n > 0) {
++            size_t room = out_cap > rr.out.size() ? out_cap - rr.out.size() : 0;
++            if (room) rr.out.append(buf, size_t(n) < room ? size_t(n) : room);
++            continue;
++        }
++        if (n == 0) break;  // EOF: child closed stdout
++        // n < 0: EAGAIN or error
++        pid_t w = ::waitpid(pid, &status, WNOHANG);
++        if (w == pid) { // child gone; drain any remaining then break
++            while ((n = ::read(outpipe[0], buf, sizeof(buf))) > 0) {
++                size_t room = out_cap > rr.out.size() ? out_cap - rr.out.size() : 0;
++                if (!room) break;
++                rr.out.append(buf, size_t(n) < room ? size_t(n) : room);
++            }
++            break;
++        }
++        if (::time(nullptr) >= deadline) { ::kill(pid, SIGKILL); killed = true; break; }
++        ::usleep(20 * 1000);
++    }
++    ::close(outpipe[0]);
++    if (killed) { ::waitpid(pid, &status, 0); rr.timed_out = true; rr.exit_code = -1; }
++    else {
++        if (!WIFEXITED(status) && !WIFSIGNALED(status)) ::waitpid(pid, &status, 0);
++        rr.exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
++    }
++    return rr;
++}
++
++std::string trim(const std::string& s) {
++    size_t a = s.find_first_not_of(" \t\r\n");
++    if (a == std::string::npos) return std::string();
++    size_t b = s.find_last_not_of(" \t\r\n");
++    return s.substr(a, b - a + 1);
++}
++
++std::string conf_get(const std::string& path, const std::string& key) {
++    std::string data = read_file(path);
++    size_t i = 0;
++    std::string want = key;
++    while (i < data.size()) {
++        size_t nl = data.find('\n', i);
++        if (nl == std::string::npos) nl = data.size();
++        std::string line = data.substr(i, nl - i);
++        i = nl + 1;
++        std::string t = trim(line);
++        if (t.empty() || t[0] == '#') continue;
++        size_t eq = t.find('=');
++        if (eq == std::string::npos) continue;
++        std::string k = trim(t.substr(0, eq));
++        if (k == want) {
++            std::string v = trim(t.substr(eq + 1));
++            // strip an inline comment + surrounding quotes
++            size_t h = v.find('#');
++            if (h != std::string::npos) v = trim(v.substr(0, h));
++            if (v.size() >= 2 && (v.front() == '"' || v.front() == '\'') && v.back() == v.front())
++                v = v.substr(1, v.size() - 2);
++            return v;
++        }
++    }
++    return std::string();
++}
++
++bool is_single_line_clean(const std::string& s) {
++    for (unsigned char c : s) {
++        if (c == '\n' || c == '\r' || c == '\0') return false;
++        if (c < 0x20 && c != '\t') return false;
++    }
++    return true;
++}
++
++std::string to_hex(const std::string& raw) {
++    static const char* h = "0123456789abcdef";
++    std::string o; o.reserve(raw.size() * 2);
++    for (unsigned char c : raw) { o.push_back(h[c >> 4]); o.push_back(h[c & 0xf]); }
++    return o;
++}
++
++std::string random_hex(size_t nbytes) {
++    int fd = ::open("/dev/urandom", O_RDONLY);
++    if (fd < 0) return std::string();
++    std::string raw; raw.resize(nbytes);
++    size_t got = 0;
++    while (got < nbytes) {
++        ssize_t r = ::read(fd, &raw[got], nbytes - got);
++        if (r <= 0) { ::close(fd); return std::string(); }
++        got += size_t(r);
++    }
++    ::close(fd);
++    return to_hex(raw);
++}
++
++bool const_time_eq(const std::string& a, const std::string& b) {
++    if (a.size() != b.size()) return false;
++    unsigned char diff = 0;
++    for (size_t i = 0; i < a.size(); ++i) diff |= (unsigned char)(a[i] ^ b[i]);
++    return diff == 0;
++}
++
++}  // namespace util
+diff --git a/buildroot/package/rnsbox-portal/src/cgi/util.h b/buildroot/package/rnsbox-portal/src/cgi/util.h
+new file mode 100644
+index 000000000..24a31c71e
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/cgi/util.h
+@@ -0,0 +1,54 @@
++// util.h — filesystem + SAFE subprocess helpers for the portal CGI.
++//
++// Shell-outs NEVER go through /bin/sh: run() takes an argv vector and
++// execve()s directly, so attacker-controlled form values can't inject
++// commands even if one is passed as an argument.
++#ifndef RNSBOX_UTIL_H
++#define RNSBOX_UTIL_H
++
++#include <string>
++#include <vector>
++
++namespace util {
++
++// Read a whole file (up to max_bytes) into a string; empty string if missing.
++std::string read_file(const std::string& path, size_t max_bytes = 1 << 20);
++
++// Atomic write: write to path.tmp then rename. Returns true on success.
++bool write_file_atomic(const std::string& path, const std::string& data, int mode = 0644);
++
++struct RunResult {
++    int  exit_code = -1;   // process exit status, or -1 on spawn failure / timeout kill
++    bool timed_out = false;
++    std::string out;       // captured stdout (+stderr merged), capped
++};
++
++// Run argv[0] with argv, feeding `input` on stdin, killing it after timeout_s.
++// NO shell. stdout+stderr merged, capped at out_cap bytes. argv[0] should be an
++// absolute path (no PATH search of attacker-influenced names).
++RunResult run(const std::vector<std::string>& argv,
++              const std::string& input = "",
++              int timeout_s = 10,
++              size_t out_cap = 256 * 1024);
++
++// Trim ASCII whitespace.
++std::string trim(const std::string& s);
++
++// Read one `key = value` (or `key=value`) line from a flat config file.
++std::string conf_get(const std::string& path, const std::string& key);
++
++// True if s contains no CR/LF/NUL/control chars (defense for values we write
++// back into flat config files — blocks config-injection).
++bool is_single_line_clean(const std::string& s);
++
++// Lowercase hex of raw bytes.
++std::string to_hex(const std::string& raw);
++
++// n random bytes from /dev/urandom, hex-encoded (2n chars); empty on failure.
++std::string random_hex(size_t nbytes);
++
++// Constant-time string equality (avoids a timing oracle on token/hash compares).
++bool const_time_eq(const std::string& a, const std::string& b);
++
++}  // namespace util
++#endif
+diff --git a/buildroot/package/rnsbox-portal/src/cgi/web.cpp b/buildroot/package/rnsbox-portal/src/cgi/web.cpp
+new file mode 100644
+index 000000000..8882ac7f7
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/cgi/web.cpp
+@@ -0,0 +1,49 @@
++// web.cpp — see web.h.
++#include "web.h"
++#include "session.h"
++#include "util.h"
++#include <cstdlib>
++
++namespace web {
++
++std::string base() {
++    const char* s = getenv("SCRIPT_NAME");
++    return s && *s ? std::string(s) : std::string("/cgi-bin/portal");
++}
++
++bool require_auth(const http::Request& req, http::Response& res, bool json) {
++    session::Info s = session::check(req.cookie(session::COOKIE_NAME));
++    if (s.valid) return true;
++    if (json) {
++        res.status = "401 Unauthorized";
++        res.content_type = "application/json";
++        res.body = "{\"error\":\"auth required\"}";
++    } else {
++        res.redirect(base() + "/login");
++    }
++    return false;
++}
++
++std::string replace_all(std::string s, const std::string& from, const std::string& to) {
++    size_t p = 0;
++    while ((p = s.find(from, p)) != std::string::npos) { s.replace(p, from.size(), to); p += to.size(); }
++    return s;
++}
++
++bool run_init(const char* name, const char* arg) {
++    std::string path = std::string("/etc/init.d/") + name;
++    return util::run({path, arg}, "", 25).exit_code == 0;
++}
++
++void json_ok(http::Response& res) {
++    res.content_type = "application/json";
++    res.body = "{\"ok\":true}";
++}
++
++void json_err(http::Response& res, const std::string& msg, const char* status) {
++    res.status = status;
++    res.content_type = "application/json";
++    res.body = std::string("{\"ok\":false,\"error\":\"") + http::json_escape(msg) + "\"}";
++}
++
++}  // namespace web
+diff --git a/buildroot/package/rnsbox-portal/src/cgi/web.h b/buildroot/package/rnsbox-portal/src/cgi/web.h
+new file mode 100644
+index 000000000..1c42ceca3
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/cgi/web.h
+@@ -0,0 +1,28 @@
++// web.h — shared helpers for route handlers (auth gate, base URL, apply).
++#ifndef RNSBOX_WEB_H
++#define RNSBOX_WEB_H
++
++#include "http.h"
++#include <string>
++
++namespace web {
++
++// Base app URL = SCRIPT_NAME (where uhttpd mapped the CGI), default /cgi-bin/portal.
++std::string base();
++
++// Gate a route on a valid session. On failure, fills res (302 to login for a
++// page, 401 JSON for an API route) and returns false.
++bool require_auth(const http::Request& req, http::Response& res, bool json);
++
++// Replace every occurrence of `from` with `to`.
++std::string replace_all(std::string s, const std::string& from, const std::string& to);
++
++// Run `/etc/init.d/<name> <arg>` (no shell). Returns true on exit 0.
++bool run_init(const char* name, const char* arg = "restart");
++
++// Emit a small JSON {"ok":true} / {"ok":false,"error":"..."} result.
++void json_ok(http::Response& res);
++void json_err(http::Response& res, const std::string& msg, const char* status = "400 Bad Request");
++
++}  // namespace web
++#endif
+diff --git a/buildroot/package/rnsbox-portal/src/cgi/wifi.cpp b/buildroot/package/rnsbox-portal/src/cgi/wifi.cpp
+new file mode 100644
+index 000000000..545e75839
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/cgi/wifi.cpp
+@@ -0,0 +1,240 @@
++// wifi.cpp — see wifi.h. Native port of wifi.py (iw parsing by hand, no regex).
++#include "wifi.h"
++#include "util.h"
++#include "http.h"
++#include "web.h"
++#include <cctype>
++#include <cstdlib>
++#include <cstring>
++#include <dirent.h>
++#include <algorithm>
++#include <vector>
++
++namespace wifi {
++
++static const char* KEYS[] = {
++    "mode", "sta_ssid", "sta_psk", "sta_hidden", "sta_country",
++    "ap_ssid", "ap_psk", "ap_channel", "ap_htmode", "ap_hidden",
++    "ap_ip", "ap_dhcp_start", "ap_dhcp_end", "tx_power",
++};
++
++bool present() {
++    DIR* d = ::opendir("/sys/class/net");
++    if (!d) return false;
++    bool found = false;
++    for (dirent* e; (e = ::readdir(d)) != nullptr; )
++        if (strncmp(e->d_name, "wlan", 4) == 0) { found = true; break; }
++    ::closedir(d);
++    return found;
++}
++
++std::map<std::string, std::string> read_conf() {
++    std::map<std::string, std::string> cfg;
++    for (const char* k : KEYS) cfg[k] = "";
++    cfg["mode"] = "off"; cfg["ap_ssid"] = "RNSBox-AP"; cfg["ap_channel"] = "6";
++    cfg["ap_htmode"] = "ht20"; cfg["ap_ip"] = "192.168.42.1"; cfg["tx_power"] = "auto";
++    std::string data = util::read_file(CONF);
++    size_t i = 0;
++    while (i < data.size()) {
++        size_t nl = data.find('\n', i);
++        if (nl == std::string::npos) nl = data.size();
++        std::string s = util::trim(data.substr(i, nl - i));
++        i = nl + 1;
++        if (s.empty() || s[0] == '#' || s.find('=') == std::string::npos) continue;
++        size_t eq = s.find('=');
++        std::string k = util::trim(s.substr(0, eq));
++        std::string v = s.substr(eq + 1);
++        size_t h = v.find('#'); if (h != std::string::npos) v = v.substr(0, h);
++        v = util::trim(v);
++        if (v.size() >= 2 && (v.front() == '"' || v.front() == '\'') && v.back() == v.front())
++            v = v.substr(1, v.size() - 2);
++        if (cfg.count(k)) cfg[k] = v;
++    }
++    return cfg;
++}
++
++void write_conf(const std::map<std::string, std::string>& updates) {
++    auto cfg = read_conf();
++    for (const auto& kv : updates) if (cfg.count(kv.first)) cfg[kv.first] = kv.second;
++    std::string o =
++        "# RNSBox WiFi config — managed by rnsbox-portal.\n"
++        "# mode: off | sta | ap | sta+ap\n\n";
++    o += "mode=" + cfg["mode"] + "\n\n";
++    o += "# --- STA (client) ---\n";
++    for (const char* k : {"sta_ssid", "sta_psk", "sta_hidden", "sta_country"})
++        o += std::string(k) + "=" + cfg[k] + "\n";
++    o += "\n# --- AP (hotspot) ---\n";
++    for (const char* k : {"ap_ssid", "ap_psk", "ap_channel", "ap_htmode", "ap_hidden",
++                          "ap_ip", "ap_dhcp_start", "ap_dhcp_end"})
++        o += std::string(k) + "=" + cfg[k] + "\n";
++    o += "\n# --- TX power (radio-wide): auto = chip max, or 1..20 dBm ---\n";
++    o += "tx_power=" + cfg["tx_power"] + "\n";
++    util::write_file_atomic(CONF, o, 0644);
++}
++
++// ---- iw output parsing helpers ----
++static std::string after_token(const std::string& s, const char* tok, size_t from = 0) {
++    // return the numeric/token run after the FIRST occurrence of tok
++    size_t p = s.find(tok, from);
++    if (p == std::string::npos) return "";
++    p += strlen(tok);
++    size_t e = p;
++    while (e < s.size() && (isdigit((unsigned char)s[e]) || s[e] == '-' || s[e] == '.')) ++e;
++    return s.substr(p, e - p);
++}
++
++static std::string line_value(const std::string& block, const char* prefix) {
++    // first line whose trimmed form starts with prefix -> the remainder trimmed
++    size_t i = 0;
++    size_t plen = strlen(prefix);
++    while (i < block.size()) {
++        size_t nl = block.find('\n', i);
++        if (nl == std::string::npos) nl = block.size();
++        std::string t = util::trim(block.substr(i, nl - i));
++        i = nl + 1;
++        if (t.size() >= plen && t.compare(0, plen, prefix) == 0)
++            return util::trim(t.substr(plen));
++    }
++    return "";
++}
++
++struct Net { std::string ssid, signal, channel, band, security; };
++
++static Net parse_block(const std::string& block) {
++    Net n; n.security = "open";
++    n.signal = after_token(block, "signal: ");
++    if (block.find("RSN:") != std::string::npos || block.find("WPA:") != std::string::npos)
++        n.security = "secured";
++    // first "channel N"
++    size_t cp = 0;
++    while ((cp = block.find("channel ", cp)) != std::string::npos) {
++        size_t s = cp + 8;
++        if (s < block.size() && isdigit((unsigned char)block[s])) {
++            size_t e = s; while (e < block.size() && isdigit((unsigned char)block[e])) ++e;
++            n.channel = block.substr(s, e - s); break;
++        }
++        cp += 8;
++    }
++    n.ssid = line_value(block, "SSID:");
++    if (!n.channel.empty()) n.band = (atoi(n.channel.c_str()) <= 14) ? "2.4" : "5";
++    return n;
++}
++
++static double sig_val(const std::string& s) { return s.empty() ? -999.0 : atof(s.c_str()); }
++
++std::string scan_json() {
++    if (!present()) return "[]";
++    util::run({"/sbin/ip", "link", "set", STA_IF, "up"}, "", 5);
++    std::string out = "\n" + util::run({"/usr/sbin/iw", "dev", STA_IF, "scan"}, "", 15).out;
++    // split on "\nBSS "
++    std::map<std::string, Net> nets;
++    size_t i = out.find("\nBSS ");
++    while (i != std::string::npos) {
++        size_t next = out.find("\nBSS ", i + 5);
++        std::string block = out.substr(i + 5, (next == std::string::npos ? out.size() : next) - (i + 5));
++        Net e = parse_block(block);
++        if (!e.ssid.empty()) {
++            auto it = nets.find(e.ssid);
++            if (it == nets.end()) nets[e.ssid] = e;
++            else {
++                bool prev2 = it->second.band == "2.4", ent2 = e.band == "2.4";
++                if (ent2 && !prev2) it->second = e;
++                else if (ent2 == prev2 && sig_val(e.signal) > sig_val(it->second.signal)) it->second = e;
++            }
++        }
++        i = next;
++    }
++    std::vector<Net> list;
++    for (auto& kv : nets) list.push_back(kv.second);
++    std::sort(list.begin(), list.end(), [](const Net& a, const Net& b) { return sig_val(a.signal) > sig_val(b.signal); });
++    std::string o = "[";
++    for (size_t k = 0; k < list.size(); ++k) {
++        if (k) o += ",";
++        o += "{\"ssid\":\"" + http::json_escape(list[k].ssid) +
++             "\",\"signal\":\"" + http::json_escape(list[k].signal) +
++             "\",\"channel\":\"" + http::json_escape(list[k].channel) +
++             "\",\"band\":\"" + http::json_escape(list[k].band) +
++             "\",\"security\":\"" + http::json_escape(list[k].security) + "\"}";
++    }
++    o += "]";
++    return o;
++}
++
++static std::string ip_of(const std::string& dev) {
++    std::string out = util::run({"/sbin/ip", "-4", "addr", "show", "dev", dev}, "", 5).out;
++    size_t p = out.find("inet ");
++    if (p == std::string::npos) return "";
++    p += 5; size_t e = p;
++    while (e < out.size() && out[e] != '/' && out[e] != ' ') ++e;
++    return out.substr(p, e - p);
++}
++
++Status status() {
++    Status s;
++    auto cfg = read_conf();
++    s.present = present();
++    s.mode = cfg["mode"];
++    s.concurrent = (cfg["mode"] == "sta+ap");
++    s.tx_power = cfg["tx_power"].empty() ? "auto" : cfg["tx_power"];
++    if (!s.present) return s;
++    std::string link = util::run({"/usr/sbin/iw", "dev", STA_IF, "link"}, "", 5).out;
++    if (link.find("Connected to") != std::string::npos) {
++        std::string sta_info = util::run({"/usr/sbin/iw", "dev", STA_IF, "info"}, "", 5).out;
++        s.sta.connected = true;
++        s.sta.ssid = line_value(link, "SSID:");
++        s.sta.signal = after_token(link, "signal: ");
++        s.sta.ip = ip_of(STA_IF);
++        s.sta.width = after_token(sta_info, "width: ");
++        s.sta.txpower = after_token(sta_info, "txpower ");
++    }
++    std::string ap_if = util::trim(util::read_file("/run/wifi-ap-iface", 64));
++    if (!ap_if.empty() && util::read_file("/sys/class/net/" + ap_if + "/ifindex", 32).size() > 0) {
++        std::string dump = util::run({"/usr/sbin/iw", "dev", ap_if, "station", "dump"}, "", 5).out;
++        std::string ap_info = util::run({"/usr/sbin/iw", "dev", ap_if, "info"}, "", 5).out;
++        int clients = 0; size_t sp = 0;
++        while ((sp = dump.find("Station ", sp)) != std::string::npos) { ++clients; sp += 8; }
++        s.ap.active = true;
++        s.ap.iface = ap_if;
++        s.ap.clients = clients;
++        s.ap.ip = ip_of(ap_if);
++        s.ap.width = after_token(ap_info, "width: ");
++        s.ap.txpower = after_token(ap_info, "txpower ");
++    }
++    return s;
++}
++
++std::string status_json() {
++    Status s = status();
++    std::string o = std::string("{\"present\":") + (s.present ? "true" : "false") +
++        ",\"mode\":\"" + http::json_escape(s.mode) + "\"" +
++        ",\"concurrent\":" + (s.concurrent ? "true" : "false") +
++        ",\"tx_power\":\"" + http::json_escape(s.tx_power) + "\"";
++    if (!s.present) { o += ",\"sta\":{\"connected\":false},\"ap\":{\"active\":false}}"; return o; }
++    if (s.sta.connected) {
++        o += ",\"sta\":{\"connected\":true,\"ssid\":\"" + http::json_escape(s.sta.ssid) +
++             "\",\"signal\":\"" + http::json_escape(s.sta.signal) +
++             "\",\"ip\":\"" + http::json_escape(s.sta.ip) +
++             "\",\"width\":\"" + http::json_escape(s.sta.width) +
++             "\",\"txpower\":\"" + http::json_escape(s.sta.txpower) + "\"}";
++    } else {
++        o += ",\"sta\":{\"connected\":false}";
++    }
++    if (s.ap.active) {
++        o += ",\"ap\":{\"active\":true,\"iface\":\"" + http::json_escape(s.ap.iface) +
++             "\",\"clients\":" + std::to_string(s.ap.clients) +
++             ",\"ip\":\"" + http::json_escape(s.ap.ip) +
++             "\",\"width\":\"" + http::json_escape(s.ap.width) +
++             "\",\"txpower\":\"" + http::json_escape(s.ap.txpower) + "\"}";
++    } else {
++        o += ",\"ap\":{\"active\":false}";
++    }
++    o += "}";
++    return o;
++}
++
++void apply() {
++    web::run_init("S35wifi");
++    web::run_init("S60routing");
++}
++
++}  // namespace wifi
+diff --git a/buildroot/package/rnsbox-portal/src/cgi/wifi.h b/buildroot/package/rnsbox-portal/src/cgi/wifi.h
+new file mode 100644
+index 000000000..54b1548c2
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/cgi/wifi.h
+@@ -0,0 +1,37 @@
++// wifi.h — AIC8800 WiFi management (W variant): config + `iw` parsing.
++// Native C++ port of the former wifi.py. No-radio boards: present()==false.
++#ifndef RNSBOX_WIFI_H
++#define RNSBOX_WIFI_H
++
++#include <string>
++#include <map>
++
++namespace wifi {
++
++constexpr const char* CONF   = "/etc/rnsbox/wifi.conf";
++constexpr const char* STA_IF = "wlan0";
++
++bool present();                                       // any wlan* in /sys/class/net
++std::map<std::string, std::string> read_conf();       // keys + defaults
++void write_conf(const std::map<std::string, std::string>& updates);  // merge + atomic write
++
++// Live radio status (parsed from `iw`). Used both server-side (wifi_page render)
++// and, serialized, by the /wifi/status AJAX endpoint.
++struct StaStatus { bool connected = false; std::string ssid, signal, ip, width, txpower; };
++struct ApStatus  { bool active = false; std::string iface; int clients = 0; std::string ip, width, txpower; };
++struct Status {
++    bool present = false;
++    std::string mode;
++    bool concurrent = false;
++    std::string tx_power;
++    StaStatus sta;
++    ApStatus ap;
++};
++Status status();             // gather live status
++std::string status_json();   // status() serialized to JSON (present/mode/sta/ap/...)
++
++std::string scan_json();     // JSON array of {ssid,signal,channel,band,security}
++void apply();                // S35wifi restart + S60routing restart
++
++}  // namespace wifi
++#endif
+diff --git a/buildroot/package/rnsbox-portal/src/cgi/www/index.html b/buildroot/package/rnsbox-portal/src/cgi/www/index.html
+new file mode 100644
+index 000000000..d5ef38c06
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/cgi/www/index.html
+@@ -0,0 +1,5 @@
++<!doctype html>
++<html><head><meta charset="utf-8">
++<meta http-equiv="refresh" content="0;url=/cgi-bin/portal">
++<title>RNSBox</title></head>
++<body><a href="/cgi-bin/portal">RNSBox admin &rarr;</a></body></html>
+diff --git a/buildroot/package/rnsbox-portal/src/cgi/www/style.css b/buildroot/package/rnsbox-portal/src/cgi/www/style.css
+new file mode 100644
+index 000000000..599bcf43e
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/cgi/www/style.css
+@@ -0,0 +1,453 @@
++/* RNSBox portal — OpenWrt-inspired admin UI */
++:root {
++  --bg:        #f3f4f6;
++  --card:      #ffffff;
++  --text:      #1f2937;
++  --muted:     #6b7280;
++  --border:    #e5e7eb;
++  --primary:   #0d3e54;       /* dark teal — header / sidebar */
++  --primary-2: #155873;       /* mid teal — hover */
++  --accent:    #10bbff;       /* bright cyan — links / active */
++  --ok:        #10b981;
++  --warn:      #f59e0b;
++  --err:       #ef4444;
++  --tcp:       #2563eb;
++  --udp:       #7c3aed;
++  --mono:      ui-monospace, "SF Mono", Menlo, Consolas, monospace;
++}
++
++* { box-sizing: border-box; }
++html, body {
++  margin: 0;
++  padding: 0;
++  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
++  color: var(--text);
++  background: var(--bg);
++}
++a { color: var(--accent); text-decoration: none; }
++a:hover { text-decoration: underline; }
++code { font-family: var(--mono); font-size: 12.5px; background: #f1f5f9; padding: 1px 4px; border-radius: 3px; }
++strong { font-weight: 600; }
++
++/* ---- Top bar ---- */
++.topbar {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  background: var(--primary);
++  color: #fff;
++  padding: 0 18px;
++  height: 52px;
++  box-shadow: 0 1px 0 rgba(0,0,0,0.1);
++}
++.topbar .brand { display: flex; align-items: baseline; gap: 10px; }
++.topbar .logo { color: var(--accent); font-size: 20px; line-height: 1; }
++.topbar .brand-name { font-weight: 600; font-size: 16px; letter-spacing: 0.5px; }
++.topbar .brand-host { color: #9fbed0; font-size: 13px; }
++.topbar .topnav { display: flex; align-items: center; gap: 14px; }
++.topbar .user { color: #9fbed0; font-size: 13px; }
++.topbar .logout {
++  color: #fff;
++  padding: 5px 12px;
++  border: 1px solid rgba(255,255,255,0.25);
++  border-radius: 3px;
++  font-size: 13px;
++}
++.topbar .logout:hover { background: var(--primary-2); text-decoration: none; }
++
++/* ---- Layout ---- */
++.page { display: flex; min-height: calc(100vh - 52px); }
++.sidebar {
++  background: #1f2937;
++  width: 200px;
++  padding: 16px 0;
++  flex-shrink: 0;
++}
++.sidebar a {
++  display: block;
++  padding: 10px 18px;
++  color: #cbd5e1;
++  border-left: 3px solid transparent;
++  font-size: 14px;
++}
++.sidebar a:hover {
++  background: #2c3a4c;
++  color: #fff;
++  text-decoration: none;
++}
++.sidebar a.active {
++  background: #111827;
++  color: #fff;
++  border-left-color: var(--accent);
++}
++
++.content { flex: 1; padding: 22px 28px; max-width: 1200px; }
++.content h2 { margin: 0 0 14px; font-size: 22px; font-weight: 600; }
++.content h3 { margin: 0 0 12px; font-size: 16px; font-weight: 600; color: var(--primary); }
++.content h4 { margin: 18px 0 6px; font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
++
++/* ---- Cards ---- */
++.card {
++  background: var(--card);
++  border: 1px solid var(--border);
++  border-radius: 5px;
++  padding: 18px 20px;
++  margin-bottom: 18px;
++}
++.dash-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 0 0 6px; }
++.dash-head h2 { margin: 0; }
++.autoref { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); }
++.autoref label { display: flex; align-items: center; gap: 6px; margin: 0; }
++.autoref select { padding: 3px 6px; }
++#autoref-status { font-variant-numeric: tabular-nums; }
++
++.cards {
++  display: grid;
++  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
++  gap: 14px;
++}
++.cards .card { margin-bottom: 0; }
++
++/* ---- Tables ---- */
++table.kv { width: 100%; border-collapse: collapse; }
++table.kv th, table.kv td { padding: 6px 8px; vertical-align: top; }
++table.kv th {
++  font-weight: 500;
++  color: var(--muted);
++  text-align: left;
++  width: 32%;
++  white-space: nowrap;
++}
++table.kv td { color: var(--text); }
++table.kv tr + tr th, table.kv tr + tr td { border-top: 1px solid var(--border); }
++
++table.data {
++  width: 100%;
++  border-collapse: collapse;
++  margin: 4px 0 12px;
++  font-size: 13.5px;
++}
++table.data th {
++  text-align: left;
++  font-weight: 500;
++  color: var(--muted);
++  padding: 6px 10px;
++  border-bottom: 2px solid var(--border);
++  background: #fafafa;
++}
++table.data td {
++  padding: 8px 10px;
++  border-bottom: 1px solid var(--border);
++  vertical-align: middle;
++}
++table.data tr:hover td { background: #fafbfc; }
++
++/* ---- Badges ---- */
++.badge {
++  display: inline-block;
++  padding: 2px 8px;
++  font-size: 11.5px;
++  font-weight: 600;
++  border-radius: 3px;
++  text-transform: uppercase;
++  letter-spacing: 0.4px;
++  color: #fff;
++  background: var(--muted);
++}
++.badge.ok   { background: var(--ok); }
++.badge.warn { background: var(--warn); }
++.badge.err  { background: var(--err); }
++.badge.tcp  { background: var(--tcp); }
++.badge.udp  { background: var(--udp); }
++
++/* ---- Forms ---- */
++label {
++  display: block;
++  margin-bottom: 10px;
++  font-size: 13px;
++  color: var(--muted);
++}
++label > input,
++label > select,
++label > textarea {
++  display: block;
++  margin-top: 4px;
++}
++input[type=text], input[type=password], input[type=number], select, textarea {
++  border: 1px solid var(--border);
++  border-radius: 3px;
++  padding: 7px 10px;
++  font: inherit;
++  background: #fff;
++  color: var(--text);
++  width: 100%;
++  max-width: 360px;
++}
++input:focus, select:focus, textarea:focus {
++  outline: none;
++  border-color: var(--accent);
++  box-shadow: 0 0 0 2px rgba(16,187,255,0.15);
++}
++textarea {
++  font-family: var(--mono);
++  font-size: 12.5px;
++  width: 100%;
++  max-width: 100%;
++  resize: vertical;
++  min-height: 200px;
++}
++
++button, .btn, .btn-primary, .btn-danger {
++  border: 1px solid var(--border);
++  background: #fff;
++  color: var(--text);
++  padding: 7px 14px;
++  border-radius: 3px;
++  cursor: pointer;
++  font: inherit;
++  font-weight: 500;
++  display: inline-block;
++}
++button:hover, .btn:hover { background: #f1f5f9; text-decoration: none; }
++.btn-primary {
++  background: var(--primary);
++  color: #fff;
++  border-color: var(--primary);
++}
++.btn-primary:hover { background: var(--primary-2); color: #fff; }
++.btn-danger {
++  background: #fff;
++  color: var(--err);
++  border-color: var(--err);
++}
++.btn-danger:hover { background: var(--err); color: #fff; }
++/* The `hidden` attribute must always win — even over author display rules
++   like form.inline below. Without this reset, a JS-toggled hidden form (e.g.
++   the HaLow "Add to rnsd config" button) stays visible because form.inline's
++   `display: inline` outranks the browser's built-in [hidden] { display:none }. */
++[hidden] { display: none !important; }
++form.inline { display: inline; }
++
++.row-form {
++  display: flex;
++  gap: 8px;
++  flex-wrap: wrap;
++  align-items: center;
++  padding: 10px;
++  background: #fafbfc;
++  border: 1px solid var(--border);
++  border-radius: 3px;
++}
++.row-form input, .row-form select { max-width: 180px; }
++.row-form input[name=comment] { flex: 1; min-width: 180px; max-width: none; }
++
++/* ---- Flash ---- */
++.flash {
++  padding: 10px 14px;
++  border-radius: 3px;
++  margin-bottom: 14px;
++  font-size: 13.5px;
++}
++.flash.success { background: #d1fae5; color: #065f46; border: 1px solid #34d399; }
++.flash.error   { background: #fee2e2; color: #991b1b; border: 1px solid #f87171; }
++.flash.warn    { background: #fef3c7; color: #92400e; border: 1px solid #fbbf24; }
++
++/* ---- Misc ---- */
++.muted { color: var(--muted); font-size: 13px; }
++pre.log {
++  background: #0b1220;
++  color: #d1d5db;
++  padding: 12px 14px;
++  border-radius: 4px;
++  font-family: var(--mono);
++  font-size: 12.5px;
++  overflow-x: auto;
++  max-height: 360px;
++}
++
++/* ---- Login screen ---- */
++body.login-screen { background: var(--primary); }
++.login-page {
++  display: flex;
++  justify-content: center;
++  align-items: center;
++  min-height: 100vh;
++  padding: 20px;
++}
++.login-box {
++  background: #fff;
++  border-radius: 6px;
++  padding: 30px 36px;
++  width: 100%;
++  max-width: 360px;
++  box-shadow: 0 10px 40px rgba(0,0,0,0.25);
++}
++.login-brand {
++  display: flex;
++  align-items: baseline;
++  gap: 8px;
++  justify-content: center;
++  margin-bottom: 6px;
++}
++.login-brand .logo { color: var(--accent); font-size: 22px; }
++.login-brand .brand-name { font-weight: 600; font-size: 18px; color: var(--primary); }
++.login-box h1 { margin: 0 0 18px; font-size: 18px; font-weight: 500; text-align: center; color: var(--muted); }
++.login-box button { width: 100%; }
++.login-box .muted { margin-top: 14px; text-align: center; font-size: 12px; }
++
++/* ---- RAM / resource meter (dashboard) ---- */
++.meter-label {
++  display: flex;
++  justify-content: space-between;
++  font-size: 12.5px;
++  color: var(--muted);
++  margin: 10px 0 4px;
++}
++.meter {
++  height: 14px;
++  background: #e9edf1;
++  border: 1px solid var(--border);
++  border-radius: 7px;
++  overflow: hidden;
++}
++.meter-fill {
++  height: 100%;
++  border-radius: 7px 0 0 7px;
++  transition: width 0.4s ease;
++  min-width: 2px;
++}
++.meter-fill.ok   { background: var(--ok); }
++.meter-fill.warn { background: var(--warn); }
++.meter-fill.crit { background: var(--err); }
++
++/* ---- Donate ---- */
++.sitefoot {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  gap: 12px;
++  flex-wrap: wrap;
++  padding: 12px 28px;
++  background: #111827;
++  color: #94a3b8;
++  font-size: 12.5px;
++}
++.sitefoot .foot-brand { display: flex; align-items: center; gap: 7px; }
++.sitefoot .foot-brand .logo { color: var(--accent); }
++.sitefoot .foot-donate { color: #cbd5e1; }
++.sitefoot .foot-donate:hover { color: #fff; text-decoration: none; }
++
++.donate-intro p { margin: 0 0 8px; max-width: 68ch; }
++.donate-intro p:last-child { margin-bottom: 0; }
++
++.wallet-grid {
++  display: grid;
++  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
++  gap: 14px;
++  margin-bottom: 18px;
++}
++.wallet-grid .card.wallet { margin-bottom: 0; display: flex; flex-direction: column; align-items: center; text-align: center; }
++.wallet-head { display: flex; align-items: center; gap: 8px; width: 100%; margin-bottom: 12px; }
++.wallet-head .coin-sym { font-size: 20px; line-height: 1; color: var(--primary); }
++.wallet-head .coin-name { font-weight: 600; font-size: 15px; }
++.wallet-head .coin-ticker { margin-left: auto; }
++
++.qr-link { display: block; line-height: 0; }
++img.qr {
++  width: 160px;
++  height: 160px;
++  background: #fff;
++  border: 1px solid var(--border);
++  border-radius: 4px;
++  padding: 8px;
++}
++.wallet-addr {
++  display: block;
++  width: 100%;
++  margin: 12px 0 10px;
++  padding: 8px 10px;
++  background: #f1f5f9;
++  border: 1px solid var(--border);
++  border-radius: 4px;
++  font-size: 11.5px;
++  line-height: 1.4;
++  word-break: break-all;
++  color: var(--text);
++}
++.wallet-actions { display: flex; gap: 8px; width: 100%; }
++.wallet-actions .btn { flex: 1; text-align: center; }
++.copy-btn.copied { background: var(--ok); color: #fff; border-color: var(--ok); }
++
++/* ---- Time & Clock (Settings) ---- */
++.timeval { font-family: var(--mono); font-size: 15px; font-weight: 600; }
++textarea.ntp-servers { min-height: 64px; max-width: 360px; }
++.time-actions { display: flex; gap: 8px; flex-wrap: wrap; }
++form.ntp-restart { margin-top: 8px; }
++
++/* ---- HaLow modem (dashboard summary + Reticulum live block) ---- */
++.cardhead { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
++.cardhead h3 { margin: 0; }
++.cardfoot { margin-top: 12px; margin-bottom: 0; }
++.val { font-family: var(--mono); font-size: 12.5px; }
++.mono { font-family: var(--mono); font-size: 11.5px; }
++.dim { color: var(--muted); }
++.sig-g { color: var(--ok);   font-weight: 600; }
++.sig-a { color: var(--warn); font-weight: 600; }
++.sig-r { color: var(--err);  font-weight: 600; }
++.halow-live {
++  background: #f6fbf9;
++  border: 1px solid #cdeee2;
++  border-radius: 4px;
++  padding: 10px 12px;
++  margin: 10px 0;
++  font-size: 13px;
++  line-height: 1.7;
++}
++.halow-live .hrow { display: flex; flex-wrap: wrap; gap: 4px 16px; }
++.halow-live .k { color: var(--muted); }
++/* Clean single-column key/value layout for the live modem card. */
++.halow-live table.halow-kv { background: transparent; }
++.halow-live table.halow-kv th { width: 128px; font-weight: 600; color: var(--muted); white-space: nowrap; }
++.halow-live table.halow-kv td { color: var(--text); }
++.halow-live table.halow-kv tr + tr th,
++.halow-live table.halow-kv tr + tr td { border-top: 1px solid #d9ece4; }
++/* Airtime / channel-utilisation mini bar. */
++.hbar { display: inline-block; width: 90px; height: 7px; border-radius: 4px;
++  background: #dfeee7; overflow: hidden; vertical-align: middle; }
++.hbar > span { display: block; height: 100%; background: var(--ok); }
++/* Card action row: "Open modem web UI" + the quick-add form (side by side). */
++.halow-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 12px 0 0; }
++.halow-actions form.inline { margin: 0; }
++.halow-actions .btn, .halow-actions .btn-primary { margin: 0; }
++
++/* Full-width dashboard card: spans every column of the .cards auto-fit grid
++   so the HaLow modem becomes a horizontal stats strip below the square cards. */
++.card-wide { grid-column: 1 / -1; }
++/* Responsive metric-tile strip. auto-fit reflows the tiles from ~8 across on a
++   wide screen down to 1 on a phone; min-width:0 + overflow-wrap keep long values
++   (IPs, hostnames) inside their tile so the page never scrolls sideways. */
++.hstats { display: grid; grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)); gap: 10px 12px; margin: 4px 0 2px; }
++.hstat { min-width: 0; padding: 9px 11px; background: #f6fbf9; border: 1px solid #cdeee2; border-radius: 5px; }
++.hstat-k { font-size: 10.5px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted);
++  margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
++.hstat-v { font-size: 12.5px; line-height: 1.45; color: var(--text); overflow-wrap: anywhere; }
++.hstat-v .hbar { margin-bottom: 2px; }
++details.neigh { border: 1px solid var(--border); border-radius: 4px; margin: 0 0 10px; }
++details.neigh > summary {
++  cursor: pointer;
++  padding: 8px 12px;
++  font-weight: 600;
++  font-size: 13px;
++  color: var(--primary);
++  list-style: none;
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  user-select: none;
++}
++details.neigh > summary::-webkit-details-marker { display: none; }
++details.neigh > summary::after { content: "\25BE"; color: var(--muted); font-weight: 400; }
++details.neigh[open] > summary::after { content: "\25B4"; }
++details.neigh > summary:hover { background: #fafbfc; }
++details.neigh .body { border-top: 1px solid var(--border); }
++details.neigh .data { margin: 0; }

@@ -1,7 +1,7 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 60c3119f7e81f1b5414a9fed4cb1891ece29f21f Mon Sep 17 00:00:00 2001
 From: smit1237 <smit1237@gmail.com>
 Date: Tue, 8 Sep 2026 22:47:50 +0300
-Subject: [PATCH 15/22] buildroot: RNSBox defconfig and package wiring
+Subject: [PATCH 15/23] buildroot: RNSBox defconfig and package wiring
 
 Set the hostname to rnsbox; strip audio and unused python modules; enable
 python3 + flask + pyserial + cryptography, the new in-tree packages
@@ -10,12 +10,12 @@ and the WiFi userspace; build the Rust host toolchain from source; and size
 the rootfs for the clients disc. Wire the four RNSBox packages into
 package/Config.in. Placed last so every referenced package directory exists.
 ---
- .../cvitek_SG200X_musl_riscv64_defconfig      | 985 +++++++++---------
+ .../cvitek_SG200X_musl_riscv64_defconfig      | 993 +++++++++---------
  buildroot/package/Config.in                   |   5 +
- 2 files changed, 523 insertions(+), 467 deletions(-)
+ 2 files changed, 527 insertions(+), 471 deletions(-)
 
 diff --git a/buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig b/buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig
-index a3edf568c..6abe7c9f8 100644
+index a3edf568c..4929dcf3e 100644
 --- a/buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig
 +++ b/buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig
 @@ -382,7 +382,7 @@ BR2_FORTIFY_SOURCE_ARCH_SUPPORTS=y
@@ -719,7 +719,7 @@ index a3edf568c..6abe7c9f8 100644
  # BR2_PACKAGE_PYTHON_FALCON is not set
  # BR2_PACKAGE_PYTHON_FILELOCK is not set
  # BR2_PACKAGE_PYTHON_FIRE is not set
- BR2_PACKAGE_PYTHON_FLASK=y
+-BR2_PACKAGE_PYTHON_FLASK=y
 -BR2_PACKAGE_PYTHON_FLASK_BABEL=y
 -BR2_PACKAGE_PYTHON_FLASK_CORS=y
 -BR2_PACKAGE_PYTHON_FLASK_JSONRPC=y
@@ -728,6 +728,7 @@ index a3edf568c..6abe7c9f8 100644
 -BR2_PACKAGE_PYTHON_FLASK_SQLALCHEMY=y
 -BR2_PACKAGE_PYTHON_FLASK_WTF=y
 -BR2_PACKAGE_PYTHON_FLATBUFFERS=y
++# BR2_PACKAGE_PYTHON_FLASK is not set (portal is now C++/CGI)
 +# BR2_PACKAGE_PYTHON_FLASK_BABEL is not set
 +# BR2_PACKAGE_PYTHON_FLASK_CORS is not set
 +# BR2_PACKAGE_PYTHON_FLASK_JSONRPC is not set
@@ -1443,6 +1444,15 @@ index a3edf568c..6abe7c9f8 100644
  # BR2_PACKAGE_UHD is not set
  # BR2_PACKAGE_URG is not set
  
+@@ -2403,7 +2409,7 @@ BR2_PACKAGE_EXPAT=y
+ # BR2_PACKAGE_JANSSON is not set
+ # BR2_PACKAGE_JOSE is not set
+ # BR2_PACKAGE_JSMN is not set
+-# BR2_PACKAGE_JSON_C is not set
++BR2_PACKAGE_JSON_C=y
+ # BR2_PACKAGE_JSON_FOR_MODERN_CPP is not set
+ # BR2_PACKAGE_JSON_GLIB is not set
+ # BR2_PACKAGE_JSONCPP is not set
 @@ -2412,7 +2418,7 @@ BR2_PACKAGE_EXPAT=y
  # BR2_PACKAGE_LIBJSON is not set
  # BR2_PACKAGE_LIBROXML is not set
@@ -1517,6 +1527,15 @@ index a3edf568c..6abe7c9f8 100644
  # BR2_PACKAGE_LIBNSPR is not set
  # BR2_PACKAGE_LIBOSMIUM is not set
  
+@@ -2796,7 +2802,7 @@ BR2_PACKAGE_LIBSIGSEGV_ARCH_SUPPORTS=y
+ # BR2_PACKAGE_LIBTASN1 is not set
+ # BR2_PACKAGE_LIBTOMMATH is not set
+ # BR2_PACKAGE_LIBTPL is not set
+-# BR2_PACKAGE_LIBUBOX is not set
++BR2_PACKAGE_LIBUBOX=y
+ # BR2_PACKAGE_LIBUCI is not set
+ BR2_PACKAGE_LIBUCONTEXT_ARCH_SUPPORTS=y
+ # BR2_PACKAGE_LIBUCONTEXT is not set
 @@ -2805,7 +2811,7 @@ BR2_PACKAGE_LIBUNWIND_ARCH_SUPPORTS=y
  BR2_PACKAGE_LIBURCU_ARCH_SUPPORTS=y
  # BR2_PACKAGE_LIBURCU is not set
@@ -1768,6 +1787,15 @@ index a3edf568c..6abe7c9f8 100644
  # BR2_PACKAGE_TINYPROXY is not set
  # BR2_PACKAGE_TINYSSH is not set
  # BR2_PACKAGE_TOR is not set
+@@ -3305,7 +3309,7 @@ BR2_PACKAGE_TRACEROUTE=y
+ # BR2_PACKAGE_UACME is not set
+ # BR2_PACKAGE_UDPCAST is not set
+ # BR2_PACKAGE_UFTP is not set
+-# BR2_PACKAGE_UHTTPD is not set
++BR2_PACKAGE_UHTTPD=y
+ # BR2_PACKAGE_ULOGD is not set
+ # BR2_PACKAGE_UNBOUND is not set
+ # BR2_PACKAGE_UQMI is not set
 @@ -3316,7 +3320,7 @@ BR2_PACKAGE_TRACEROUTE=y
  # BR2_PACKAGE_VDR is not set
  # BR2_PACKAGE_VNSTAT is not set
@@ -1983,6 +2011,3 @@ index 7451ceb9b..5da93f4c2 100644
  	source "package/wireless-regdb/Config.in"
  	source "package/wireless_tools/Config.in"
  	source "package/wireshark/Config.in"
--- 
-2.47.3
-

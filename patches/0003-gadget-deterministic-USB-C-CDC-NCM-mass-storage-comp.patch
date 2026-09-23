@@ -1,7 +1,7 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From c660ff35f4ba1d6174dc4114a97181392058925e Mon Sep 17 00:00:00 2001
 From: smit1237 <smit1237@gmail.com>
 Date: Tue, 8 Sep 2026 22:47:48 +0300
-Subject: [PATCH 03/22] gadget: deterministic USB-C CDC-NCM (+ mass-storage)
+Subject: [PATCH 03/23] gadget: deterministic USB-C CDC-NCM (+ mass-storage)
  composite
 
 Bring the USB-C gadget up as CDC-NCM with a fixed usb0 = 10.42.0.1/24 (dnsmasq
@@ -479,6 +479,3 @@ index 019bea8e0..7c464a927 100644
  
  		/* Add the datagram position entries */
  		ntb_ndp = skb_put_zero(ncm->skb_tx_ndp, dgram_idx_len);
--- 
-2.47.3
-

@@ -1,0 +1,222 @@
+From 909c5091547edf3f39b25578b320c0ad27a57655 Mon Sep 17 00:00:00 2001
+From: smit1237 <smit1237@gmail.com>
+Date: Wed, 23 Sep 2026 09:03:49 +0300
+Subject: [PATCH 23/23] lxmd: LXMF propagation node (opt-in)
+
+Optional lxmd propagation node for operators who want to run one, off by
+default (S85lxmd reads /etc/rnsbox/lxmd.conf `enabled=no` and is gated on
+/run/clock-synced like rnsd). Attaches to the shared local Reticulum
+instance; kept RAM-conscious since the board is memory-constrained.
+---
+ .../cvitek/SG200X/overlay/etc/init.d/S85lxmd  | 127 ++++++++++++++++++
+ .../cvitek/SG200X/overlay/etc/lxmd/config     |  30 +++++
+ .../SG200X/overlay/etc/rnsbox/lxmd.conf       |  29 ++++
+ 3 files changed, 186 insertions(+)
+ create mode 100755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/S85lxmd
+ create mode 100644 buildroot/board/cvitek/SG200X/overlay/etc/lxmd/config
+ create mode 100644 buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/lxmd.conf
+
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S85lxmd b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S85lxmd
+new file mode 100755
+index 000000000..3e4d7f5d8
+--- /dev/null
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S85lxmd
+@@ -0,0 +1,127 @@
++#!/bin/sh
++# S85lxmd — dedicated LXMF Propagation Node (lxmd), shipped DISABLED by default.
++#
++# lxmd is the lightweight, headless propagation node (store-and-forward relay
++# for offline peers) — the frugal alternative to NomadNet's built-in one (no
++# pages server, no TUI). Enable by setting `enabled=yes` in
++# /etc/rnsbox/lxmd.conf, then reboot or run this script with `start`.
++#
++# Runs AFTER S82rnsd so it attaches to rnsd's *shared* Reticulum instance
++# (--rnsconfig /etc/reticulum) instead of starting a second transport stack —
++# critical on a 245 MB box. Gates on /run/clock-synced (LXMF stamps stored
++# messages + announces with wall-clock time) AND on a free-RAM floor, so a
++# tight box can't OOM-kill rnsd by starting lxmd.
++
++NAME=lxmd
++DAEMON=/usr/bin/lxmd
++CONF=/etc/rnsbox/lxmd.conf
++LXMD_CONFIGDIR=/etc/lxmd
++RNS_CONFIGDIR=/etc/reticulum
++PIDFILE=/var/run/$NAME.pid
++LOG=/var/log/$NAME.log
++
++[ -x "$DAEMON" ] || exit 0
++
++# --- read the enable flag + RAM floor (flat key=value, no shell sourcing) ---
++read_conf() {
++	enabled="no"
++	min_free_mb=60
++	if [ -r "$CONF" ]; then
++		v=$(grep -E '^[[:space:]]*enabled[[:space:]]*=' "$CONF" 2>/dev/null \
++		      | tail -1 | sed -E 's/^[[:space:]]*enabled[[:space:]]*=[[:space:]]*//' \
++		      | tr -d '"' | tr -d "'" | tr '[:upper:]' '[:lower:]' | awk '{print $1}')
++		case "$v" in yes|true|1|on) enabled="yes" ;; esac
++		m=$(grep -E '^[[:space:]]*min_free_mb[[:space:]]*=' "$CONF" 2>/dev/null \
++		      | tail -1 | sed -E 's/^[[:space:]]*min_free_mb[[:space:]]*=[[:space:]]*//' \
++		      | tr -d '"' | tr -d "'" | awk '{print $1}')
++		case "$m" in ''|*[!0-9]*) ;; *) min_free_mb="$m" ;; esac
++	fi
++}
++
++mem_available_mb() {
++	awk '/^MemAvailable:/{print int($2/1024); found=1} END{if(!found) print 0}' /proc/meminfo 2>/dev/null
++}
++
++start() {
++	read_conf
++	if [ "$enabled" != "yes" ]; then
++		echo "S85lxmd: disabled in $CONF (enabled=$enabled); skipping"
++		echo "         set 'enabled=yes' to run an LXMF propagation node"
++		return 0
++	fi
++
++	if [ -f "$PIDFILE" ] && kill -0 "$(cat $PIDFILE)" 2>/dev/null; then
++		echo "S85lxmd: already running (pid $(cat $PIDFILE))"
++		return 0
++	fi
++
++	if [ ! -f /run/clock-synced ]; then
++		echo "S85lxmd: refusing to start - /run/clock-synced absent"
++		echo "         (LXMF needs a real clock to stamp stored messages)"
++		return 1
++	fi
++
++	# Attach to rnsd's shared instance — don't start a second transport stack.
++	if [ -z "$(pidof rnsd)" ]; then
++		echo "S85lxmd: refusing to start - rnsd (S82rnsd) is not running"
++		echo "         lxmd shares rnsd's Reticulum instance; start rnsd first"
++		return 1
++	fi
++
++	# RAM floor: protect rnsd (the core service) from an OOM kill.
++	avail=$(mem_available_mb)
++	if [ "$avail" -lt "$min_free_mb" ]; then
++		echo "S85lxmd: refusing to start - only ${avail} MB free (< min_free_mb=${min_free_mb})"
++		echo "         free RAM first (e.g. 'S81router stop' to stop the web UI)"
++		echo "         or lower min_free_mb in $CONF if you know your budget"
++		return 1
++	fi
++
++	mkdir -p /var/log /var/run "$LXMD_CONFIGDIR"
++
++	printf "Starting %s: " "$NAME"
++	# -p = propagation node; --rnsconfig points at rnsd's shared instance.
++	# No -s: log to the size-capped /var/log tmpfs instead of the rootfs.
++	"$DAEMON" -p --rnsconfig "$RNS_CONFIGDIR" --config "$LXMD_CONFIGDIR" >>"$LOG" 2>&1 &
++	PID=$!
++	echo "$PID" > "$PIDFILE"
++	sleep 0.5
++	if kill -0 "$PID" 2>/dev/null; then
++		echo "OK (pid $PID, ${avail} MB free, shared instance)"
++	else
++		echo "FAIL (see $LOG)"
++		rm -f "$PIDFILE"
++		return 1
++	fi
++}
++
++stop() {
++	printf "Stopping %s: " "$NAME"
++	if [ -f "$PIDFILE" ]; then
++		kill "$(cat $PIDFILE)" 2>/dev/null
++		for _ in 1 2 3 4 5; do
++			[ -f "$PIDFILE" ] && kill -0 "$(cat $PIDFILE)" 2>/dev/null || break
++			sleep 1
++		done
++		rm -f "$PIDFILE"
++		echo "OK"
++	else
++		echo "(not running)"
++	fi
++}
++
++case "${1:-start}" in
++	start)   start ;;
++	stop)    stop ;;
++	restart) stop; sleep 1; start ;;
++	status)
++		read_conf
++		echo "enabled in conf: $enabled  (min_free_mb=$min_free_mb, free now $(mem_available_mb) MB)"
++		if [ -f "$PIDFILE" ] && kill -0 "$(cat $PIDFILE)" 2>/dev/null; then
++			echo "running:         pid $(cat $PIDFILE)"
++		else
++			echo "running:         no"
++		fi
++		;;
++	*) echo "Usage: $0 {start|stop|restart|status}" >&2; exit 1 ;;
++esac
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/lxmd/config b/buildroot/board/cvitek/SG200X/overlay/etc/lxmd/config
+new file mode 100644
+index 000000000..e91573e2a
+--- /dev/null
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/lxmd/config
+@@ -0,0 +1,30 @@
++# RNSBox lxmd config — a dedicated LXMF Propagation Node.
++# Gated by /etc/rnsbox/lxmd.conf (whether S85lxmd starts lxmd at all); this
++# file tunes the node itself. Run `lxmd --exampleconfig` for every option.
++
++[propagation]
++
++# Run as a propagation node (S85lxmd also passes -p, so this is belt-and-braces).
++enable_node = yes
++
++# Name announced to the network.
++node_name = RNSBox Propagation Node
++
++# Announce every 6 hours, and once at startup.
++announce_interval = 360
++announce_at_start = yes
++
++# Peer automatically with nearby propagation nodes.
++autopeer = yes
++autopeer_maxdepth = 6
++
++# Message-store cap in MB, on the rootfs. Kept small for the 256 MB / SD-card
++# box (upstream default is 500). LXMF evicts old/large messages first when full.
++message_storage_limit = 64
++
++[lxmf]
++display_name = RNSBox
++
++[logging]
++# 0=critical .. 4=debug. 3=info; lower to 2 to keep the log quiet.
++loglevel = 3
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/lxmd.conf b/buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/lxmd.conf
+new file mode 100644
+index 000000000..697809029
+--- /dev/null
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/lxmd.conf
+@@ -0,0 +1,29 @@
++# lxmd daemon config — read at boot by /etc/init.d/S85lxmd.
++#
++# lxmd runs a *dedicated* LXMF Propagation Node: a store-and-forward relay that
++# holds LXMF messages for peers who are offline and delivers them when they sync
++# back. It is the lightweight, headless alternative to NomadNet's built-in
++# propagation node (no pages server, no TUI) — the right choice when a
++# propagation node is ALL you want.
++#
++# Shipped DISABLED by default. To enable: set `enabled=yes` below, then reboot
++# or run `/etc/init.d/S85lxmd start`. The propagation node's own settings
++# (message store size, node name, peering) live in /etc/lxmd/config.
++#
++# *** RAM CAUTION — read this ***
++# The LicheeRV Nano-e has only 256 MB. rnsd + the web portal already use most of
++# it. lxmd is another Python process (~30-50 MB of private RAM on top of rnsd).
++# It attaches to rnsd's *shared* Reticulum instance, so it does NOT start a
++# second transport stack — but the interpreter + LXMF state still cost memory.
++# To protect rnsd from being OOM-killed, S85lxmd REFUSES to start when free
++# memory is below `min_free_mb`. If it refuses, free some RAM first — e.g. stop
++# the web UI with `S81router stop` — or lower min_free_mb if you know your
++# headroom. Do NOT also run NomadNet's propagation node (S83nomadnet): that is
++# two propagation nodes for no benefit and roughly double the RAM.
++
++enabled=no
++
++# Minimum free memory (MB, read from /proc/meminfo MemAvailable) required before
++# S85lxmd will start lxmd. Guards rnsd against OOM. Lower only if you understand
++# your RAM budget.
++min_free_mb=60
