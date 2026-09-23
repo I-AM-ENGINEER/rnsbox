@@ -1,4 +1,4 @@
-From 3ab71079b5fc5d27947d0f0317e753cf39c3f105 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: smit1237 <smit1237@gmail.com>
 Date: Wed, 9 Sep 2026 01:39:58 +0300
 Subject: [PATCH 18/23] portal: in-place rnsd update (pip) + pip/setuptools on
@@ -58,3 +58,6 @@ index 4929dcf3e..fdbd49452 100644
  # BR2_PACKAGE_PYTHON_SH is not set
  # BR2_PACKAGE_PYTHON_SHUTILWHICH is not set
  # BR2_PACKAGE_PYTHON_SIMPLEAUDIO is not set
+-- 
+2.47.3
+

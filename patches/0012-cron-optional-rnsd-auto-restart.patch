@@ -1,4 +1,4 @@
-From b26625dc1ac1f678fec57c9e5fdc16a5b84d8109 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: smit1237 <smit1237@gmail.com>
 Date: Tue, 8 Sep 2026 22:47:49 +0300
 Subject: [PATCH 12/23] cron: optional rnsd auto-restart
@@ -111,3 +111,6 @@ index 000000000..d920c1493
 +# starts crond) and live by the portal when you change it in the UI.
 +
 +rnsd_restart_days=0
+-- 
+2.47.3
+

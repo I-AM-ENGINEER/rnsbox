@@ -1,4 +1,4 @@
-From 6a18c0ce0afca9dc93efc81170210dd48a6d5def Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: smit1237 <smit1237@gmail.com>
 Date: Tue, 15 Sep 2026 04:55:01 +0300
 Subject: [PATCH 22/23] slip: optional SLIP-over-UART link to an external HaLow
@@ -1323,3 +1323,6 @@ index 000000000..15aec1b57
 +
 +}  // namespace routes
 \ No newline at end of file
+-- 
+2.47.3
+

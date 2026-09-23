@@ -1,4 +1,4 @@
-From 1a51a88bbf8c5c698ed07f92fc3b08c74e38c9e5 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: smit1237 <smit1237@gmail.com>
 Date: Tue, 8 Sep 2026 22:47:48 +0300
 Subject: [PATCH 08/23] rnsd: Reticulum daemon service and shipped config
@@ -243,3 +243,6 @@ index 000000000..75382cabd
 +    enabled = yes
 +    target_host = 31.129.33.146
 +    target_port = 4242
+-- 
+2.47.3
+

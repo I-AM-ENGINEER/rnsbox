@@ -1,4 +1,4 @@
-From 67579e90a28684fa4db6c8020184c45e6b425c67 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: smit1237 <smit1237@gmail.com>
 Date: Wed, 9 Sep 2026 01:58:01 +0300
 Subject: [PATCH 19/23] python: install rns as a wheel (pep517) so pip can
@@ -36,3 +36,6 @@ index 107f4ca18..343e88adf 100644
  PYTHON_RNS_LICENSE = Reticulum License
  PYTHON_RNS_LICENSE_FILES = LICENSE
  
+-- 
+2.47.3
+

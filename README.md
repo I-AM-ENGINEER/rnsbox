@@ -10,7 +10,7 @@ Linux kernel, Buildroot and the CVITEK/Sipeed BSP themselves come from
 upstream and are fetched at build time.
 
 - **Upstream base:** [`sipeed/LicheeRV-Nano-Build`](https://github.com/sipeed/LicheeRV-Nano-Build) at commit `d4003f15b`
-- **The delta:** 22 patches in [`patches/`](patches), MIT-licensed
+- **The delta:** 23 patches in [`patches/`](patches), MIT-licensed
 
 ## Quick start
 

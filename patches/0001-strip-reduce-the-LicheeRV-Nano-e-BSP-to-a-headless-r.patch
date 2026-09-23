@@ -1,4 +1,4 @@
-From 9436542ee236a239f6dcb688780b202c70836a98 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: smit1237 <smit1237@gmail.com>
 Date: Tue, 8 Sep 2026 22:47:47 +0300
 Subject: [PATCH 01/23] strip: reduce the LicheeRV Nano-e BSP to a headless
@@ -1893,3 +1893,6 @@ index 6ff782744..132f39c24 100644
  
  prepare:
  	@mkdir -p $(INSTALL_DIR)/3rd
+-- 
+2.47.3
+

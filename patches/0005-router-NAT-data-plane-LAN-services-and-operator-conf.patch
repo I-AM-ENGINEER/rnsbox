@@ -1,4 +1,4 @@
-From d528ac43fa227d7486c673d0d09915e4cd9e1821 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: smit1237 <smit1237@gmail.com>
 Date: Tue, 8 Sep 2026 22:47:48 +0300
 Subject: [PATCH 05/23] router: NAT data plane, LAN services and operator
@@ -556,3 +556,6 @@ index 000000000..2edba0da8
 +
 +interface=eth0
 +mode=dhcp
+-- 
+2.47.3
+

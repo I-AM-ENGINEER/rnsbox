@@ -1,4 +1,4 @@
-From 39fcbad1c91ceef6c98c525cb8852bba2d7ebe5f Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: smit1237 <smit1237@gmail.com>
 Date: Tue, 8 Sep 2026 22:47:49 +0300
 Subject: [PATCH 09/23] portal: rnsbox-portal C++/CGI admin UI (uhttpd)
@@ -4521,3 +4521,6 @@ index 000000000..599bcf43e
 +details.neigh > summary:hover { background: #fafbfc; }
 +details.neigh .body { border-top: 1px solid var(--border); }
 +details.neigh .data { margin: 0; }
+-- 
+2.47.3
+

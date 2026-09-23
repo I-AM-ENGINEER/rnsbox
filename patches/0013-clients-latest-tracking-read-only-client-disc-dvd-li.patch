@@ -1,4 +1,4 @@
-From ba306d103c71801f3285f6e16933547dc79dc548 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: smit1237 <smit1237@gmail.com>
 Date: Tue, 8 Sep 2026 22:47:49 +0300
 Subject: [PATCH 13/23] clients: latest-tracking read-only client disc +
@@ -803,3 +803,6 @@ index 000000000..1e884132a
 +echo "=== grand total ==="; du -sh "$DEST"
 +[ "$FAIL" = 0 ] || { echo "FETCH-FAIL"; exit 92; }
 +echo "FETCH-DONE-SENTINEL"
+-- 
+2.47.3
+

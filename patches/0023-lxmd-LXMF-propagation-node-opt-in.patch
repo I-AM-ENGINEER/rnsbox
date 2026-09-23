@@ -1,4 +1,4 @@
-From 909c5091547edf3f39b25578b320c0ad27a57655 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: smit1237 <smit1237@gmail.com>
 Date: Wed, 23 Sep 2026 09:03:49 +0300
 Subject: [PATCH 23/23] lxmd: LXMF propagation node (opt-in)
@@ -220,3 +220,6 @@ index 000000000..697809029
 +# S85lxmd will start lxmd. Guards rnsd against OOM. Lower only if you understand
 +# your RAM budget.
 +min_free_mb=60
+-- 
+2.47.3
+

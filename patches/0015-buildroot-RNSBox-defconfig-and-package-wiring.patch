@@ -1,4 +1,4 @@
-From 60c3119f7e81f1b5414a9fed4cb1891ece29f21f Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: smit1237 <smit1237@gmail.com>
 Date: Tue, 8 Sep 2026 22:47:50 +0300
 Subject: [PATCH 15/23] buildroot: RNSBox defconfig and package wiring
@@ -2011,3 +2011,6 @@ index 7451ceb9b..5da93f4c2 100644
  	source "package/wireless-regdb/Config.in"
  	source "package/wireless_tools/Config.in"
  	source "package/wireshark/Config.in"
+-- 
+2.47.3
+
