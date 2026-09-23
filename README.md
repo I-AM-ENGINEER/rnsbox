@@ -85,8 +85,9 @@ tab → HaLow modem (SLIP)*), then point a `TCPClientInterface` at the modem on
 ## Repository layout
 
 ```
-patches/          the 22-patch RNSBox series (git am-able onto d4003f15b)
+patches/          the 23-patch RNSBox series (git am-able onto d4003f15b)
 build.sh          one-command: clone upstream -> apply patches -> build
+.github/          CI: build the lite image on GitHub Actions + publish a Release
 LICENSE           MIT (the RNSBox delta)
 README.md         this file
 ```
