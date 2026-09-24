@@ -14,18 +14,24 @@ MIT-licensed; the exact upstream pin lives in the Hardware section below.
 ## Quick start
 
 One command clones the pinned upstream base, fetches the cross toolchain,
-applies the patch series and builds:
+applies the patch series for the board and builds:
 
 ```bash
 git clone https://github.com/Smit1237/rnsbox
 cd rnsbox
-./build.sh lite        # NCM-only image (~217 MB)
-# ./build.sh dvd       # + a read-only disc of the latest Reticulum clients
+./build.sh licheerv-nano lite   # Sipeed LicheeRV Nano-e image (~217 MB)
+./build.sh rpi0-2w lite         # Raspberry Pi Zero 2 W image
+# ... dvd instead of lite adds a read-only disc of the latest Reticulum clients
 ```
 
-The finished image lands under
-`LicheeRV-Nano-Build/install/soc_sg2002_licheervnano_sd/images/`. Flash it with
-`dd` (or a tool like balenaEtcher) to a microSD and boot the board.
+The finished image lands under `<workdir>/install/.../images/` (LicheeRV) or
+`buildroot-rpi0-2w/output/images/` (Pi). Flash it with `dd` (or a tool like
+balenaEtcher) to a microSD and boot the board.
+
+The shipped `rns` (Reticulum) is always the **latest release at build time**:
+`build.sh` asks PyPI, re-pins the package and verifies the download's sha256.
+Set `RNSBOX_RNS_VERSION` to force a specific version; offline builds fall back
+to the pinned default from the patch series.
 
 > **First build is long.** It compiles a Rust host toolchain from source
 > (needed for `python-cryptography` on `riscv64-musl`), so the first run takes
@@ -37,7 +43,8 @@ genimage's `mkdosfs`; it handles this itself.
 
 ## What it does
 
-- **`rnsd`** (Reticulum 1.5.2) runs as the long-lived service: a transport node
+- **`rnsd`** (Reticulum, latest release at build time) runs as the long-lived
+  service: a transport node
   with a `TCPServerInterface` on `0.0.0.0:4242`, an `AutoInterface` on the
   USB-C LAN, and two public RNS-testnet uplinks preconfigured.
 - **USB gadget = LAN.** The board presents a CDC-NCM network interface
@@ -68,11 +75,13 @@ available to Linux and the router data plane.
 ## Repository layout
 
 ```
-patches/          the 23-patch RNSBox series (git am-able onto d4003f15b)
-build.sh          one-command: clone upstream -> apply patches -> build
-.github/          CI: build the lite image on GitHub Actions + publish a Release
-LICENSE           MIT (the RNSBox delta)
-README.md         this file
+patches/licheerv-nano/     RNSBox series for the LicheeRV Nano-e (git am-able)
+patches/rpi0-2w/           RNSBox series for the Raspberry Pi Zero 2 W
+boards/                    per-board build glue (upstream pins, build steps)
+build.sh                   one-command: clone upstream -> apply patches -> build
+.github/                   CI: build the lite images on GitHub Actions + Releases
+LICENSE                    MIT (the RNSBox delta)
+README.md                  this file
 ```
 
 Applying the series brings the full documentation into the built tree
@@ -87,9 +96,15 @@ Supported boards:
   bring-up is a clean no-op where there is no radio.
   - **Upstream base:** [`sipeed/LicheeRV-Nano-Build`](https://github.com/sipeed/LicheeRV-Nano-Build)
     at commit `d4003f15b35d43ad4842f427050ab2bba0114fa5`
+- **Raspberry Pi Zero 2 W** (BCM2710A1, quad Cortex-A53, 512 MB, aarch64),
+  onboard WiFi/BT (brcmfmac), no Ethernet. WiFi does STA / AP / concurrent
+  AP+STA; WAN uplink is the WiFi station.
+  - **Upstream base:** [`buildroot/buildroot`](https://github.com/buildroot/buildroot)
+    at commit `679b9ead7620bbf193620d1ebf56f53c1764d37a` (2026.02.3 LTS)
 - microSD: the DVD build's size tracks the current client releases (~3.3 GB
-  now; use a card comfortably larger, e.g. 8 GB); the lite build is ~217 MB.
-  The rootfs auto-grows to fill the card on first boot.
+  now; use a card comfortably larger, e.g. 8 GB); the lite build is ~217 MB
+  on the Nano-e and ~250 MB on the Zero 2 W. The rootfs auto-grows to fill
+  the card on first boot.
 
 ### HaLow modem — SLIP wiring (LicheeRV Nano-e)
 
@@ -106,6 +121,22 @@ Set **both** ends to `1500000` baud — the Nano-e's UART tops out at 1,562,500,
 below the modem's 2 Mbaud default. Enable the link from the portal (*Reticulum
 tab → HaLow modem (SLIP)*), then point a `TCPClientInterface` at the modem on
 **port 8001**. Full walkthrough in `README.RNSBox.md` (shipped by the patch series).
+
+### HaLow modem — SLIP wiring (Raspberry Pi Zero 2 W)
+
+Same 3-wire hookup on the hardware UART (`/dev/ttyAMA0`, PL011). Bluetooth is
+disabled and the serial console moved off the UART by the RNSBox image so the
+port is free; TX and RX cross over:
+
+| Pi pin | GPIO | Function | Wire to modem |
+|--------|------|----------|---------------|
+| 8      | 14   | UART0_TX | RX            |
+| 10     | 15   | UART0_RX | TX            |
+| 6      | —    | GND      | GND           |
+
+Run the link at the modem's default **2000000** baud — the PL011 handles it
+fine. Enable the same as above (portal → *Reticulum tab → HaLow modem (SLIP)*),
+then point a `TCPClientInterface` at the modem on **port 8001**.
 
 ## Default credentials
 
@@ -127,7 +158,7 @@ git clone https://github.com/sipeed/LicheeRV-Nano-Build.git
 cd LicheeRV-Nano-Build
 git checkout d4003f15b35d43ad4842f427050ab2bba0114fa5
 git clone --depth=1 https://github.com/sophgo/host-tools host-tools
-git am /path/to/rnsbox/patches/*.patch
+git am /path/to/rnsbox/patches/licheerv-nano/*.patch
 source build/cvisetup.sh && defconfig sg2002_licheervnano_sd && build_all
 ./build-rnsbox.sh lite      # or: ./fetch-clients.sh && ./build-rnsbox.sh dvd
 ```
