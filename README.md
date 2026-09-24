@@ -1,16 +1,15 @@
-# RNSBox — a Reticulum router for the Sipeed LicheeRV Nano-e
+# RNSBox — a Reticulum router
 
-RNSBox turns a **Sipeed LicheeRV Nano-e** (SG2002, T-Head C906 RISC-V) into a
-small, USB-C-powered [Reticulum](https://reticulum.network/) router and
-transport node with an OpenWrt-style web admin UI.
+RNSBox turns a small single-board computer into a USB-powered
+[Reticulum](https://reticulum.network/) router and transport node with an
+OpenWrt-style web admin UI. Supported boards are listed under
+[Hardware](#hardware).
 
-It is distributed as a **patch series on top of the upstream Sipeed board
-support package**, so this repository contains only the RNSBox delta — the
-Linux kernel, Buildroot and the CVITEK/Sipeed BSP themselves come from
-upstream and are fetched at build time.
-
-- **Upstream base:** [`sipeed/LicheeRV-Nano-Build`](https://github.com/sipeed/LicheeRV-Nano-Build) at commit `d4003f15b`
-- **The delta:** 23 patches in [`patches/`](patches), MIT-licensed
+It is distributed as a **patch series on top of the upstream board support
+package**, so this repository contains only the RNSBox delta — the Linux
+kernel, Buildroot and the board BSP themselves come from upstream and are
+fetched at build time. The delta: 23 patches in [`patches/`](patches),
+MIT-licensed; the exact upstream pin lives in the Hardware section below.
 
 ## Quick start
 
@@ -41,11 +40,11 @@ genimage's `mkdosfs`; it handles this itself.
 - **`rnsd`** (Reticulum 1.5.2) runs as the long-lived service: a transport node
   with a `TCPServerInterface` on `0.0.0.0:4242`, an `AutoInterface` on the
   USB-C LAN, and two public RNS-testnet uplinks preconfigured.
-- **USB-C gadget = LAN.** The board presents a CDC-NCM network interface
+- **USB gadget = LAN.** The board presents a CDC-NCM network interface
   (`usb0 = 10.42.0.1/24`, dnsmasq DHCP + DNS). The DVD build additionally
   exposes a read-only mass-storage "disc" pre-loaded with Reticulum client apps
   for a zero-download quick start.
-- **eth0 = WAN**, DHCP or static, with NAT masquerade plus per-rule port
+- **WAN uplink**, DHCP or static, with NAT masquerade plus per-rule port
   forwarding and open-port management.
 - **`rnsbox-portal`** — a compact C++/CGI admin UI (served by uhttpd, ~0
   resident RAM) on `http://10.42.0.1/` for network,
@@ -53,8 +52,8 @@ genimage's `mkdosfs`; it handles this itself.
   browser and configuring NTP servers, handy on a board with no RTC. It is the
   single source of truth for the generated `nftables` ruleset (boot and
   live-apply both call the same module).
-- Optional **NomadNet** LXMF / pages node (off by default) and **AIC8800 WiFi**
-  STA/AP support for the *W* board variant.
+- Optional **NomadNet** LXMF / pages node (off by default) and WiFi
+  STA/AP support where the board has a radio.
 - Optional **SLIP-over-UART link to an external WiFi-HaLow (RNode) modem** — a
   [RNode_Halow_Firmware](https://github.com/I-AM-ENGINEER/RNode_Halow_Firmware)
   bridge — for long-range sub-GHz Reticulum over a 3-wire serial link, with the
@@ -62,25 +61,9 @@ genimage's `mkdosfs`; it handles this itself.
 - Optional **LXMF propagation node** (`lxmd`, off by default) for
   store-and-forward Reticulum message routing.
 
-The design goal throughout is a minimal OS: the camera / display / audio / NPU
-/ codec middleware of the stock BSP is stripped so nearly all of the 256 MB
-DDR is available to Linux and the router data plane.
-
-## HaLow modem — SLIP wiring
-
-Wire the RNode HaLow modem to **UART1** (`/dev/ttyS1` — **not** `ttyS0`, the
-serial console) with three 3.3 V-TTL lines; TX and RX cross over:
-
-| Nano-e pad | Function | Wire to modem |
-|------------|----------|---------------|
-| `GPIOA28`  | UART1_TX | RX            |
-| `GPIOA29`  | UART1_RX | TX            |
-| `GND`      | ground   | GND           |
-
-Set **both** ends to `1500000` baud — the Nano-e's UART tops out at 1,562,500,
-below the modem's 2 Mbaud default. Enable the link from the portal (*Reticulum
-tab → HaLow modem (SLIP)*), then point a `TCPClientInterface` at the modem on
-**port 8001**. Full walkthrough in `README.RNSBox.md` (shipped by the patch series).
+The design goal throughout is a minimal OS: stock board middleware (camera /
+display / audio / NPU / codec) is stripped so nearly all of the board's RAM is
+available to Linux and the router data plane.
 
 ## Repository layout
 
@@ -97,11 +80,32 @@ Applying the series brings the full documentation into the built tree
 
 ## Hardware
 
-- Sipeed LicheeRV Nano-e (no radio) or Nano-e **W** (AIC8800 WiFi). One image
-  serves both; WiFi bring-up is a clean no-op where there is no radio.
+Supported boards:
+
+- **Sipeed LicheeRV Nano-e** (SG2002, T-Head C906 RISC-V, 256 MB DDR), no
+  radio, or the Nano-e **W** (AIC8800 WiFi). One image serves both; WiFi
+  bring-up is a clean no-op where there is no radio.
+  - **Upstream base:** [`sipeed/LicheeRV-Nano-Build`](https://github.com/sipeed/LicheeRV-Nano-Build)
+    at commit `d4003f15b35d43ad4842f427050ab2bba0114fa5`
 - microSD: the DVD build's size tracks the current client releases (~3.3 GB
   now; use a card comfortably larger, e.g. 8 GB); the lite build is ~217 MB.
   The rootfs auto-grows to fill the card on first boot.
+
+### HaLow modem — SLIP wiring (LicheeRV Nano-e)
+
+Wire the RNode HaLow modem to **UART1** (`/dev/ttyS1` — **not** `ttyS0`, the
+serial console) with three 3.3 V-TTL lines; TX and RX cross over:
+
+| Nano-e pad | Function | Wire to modem |
+|------------|----------|---------------|
+| `GPIOA28`  | UART1_TX | RX            |
+| `GPIOA29`  | UART1_RX | TX            |
+| `GND`      | ground   | GND           |
+
+Set **both** ends to `1500000` baud — the Nano-e's UART tops out at 1,562,500,
+below the modem's 2 Mbaud default. Enable the link from the portal (*Reticulum
+tab → HaLow modem (SLIP)*), then point a `TCPClientInterface` at the modem on
+**port 8001**. Full walkthrough in `README.RNSBox.md` (shipped by the patch series).
 
 ## Default credentials
 
