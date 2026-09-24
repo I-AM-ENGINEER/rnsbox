@@ -42,12 +42,21 @@ fi
 . "$HERE/boards/$BOARD.sh"
 
 # rnsbox_track_latest_rns <builddir> — point package/python-rns at the newest
-# rns release on PyPI (version + sha256), verifying against the PyPI digests.
+# rns release on PyPI (version + sha256 hash), verify and pre-seed the
+# download cache so the build never depends on the version-pinned sdist URL.
 rnsbox_track_latest_rns() {
-    local pkgdir="$1/package/python-rns"
+    local pkgdir=""
+    for cand in "$1/package/python-rns" "$1/buildroot/package/python-rns"; do
+        [ -f "$cand/python-rns.mk" ] && pkgdir="$cand" && break
+    done
+    if [ -z "$pkgdir" ]; then
+        echo ">> python-rns package not present, skipping latest-rns tracking"
+        return 0
+    fi
     local mk="$pkgdir/python-rns.mk"
     local hashf="$pkgdir/python-rns.hash"
-    [ -f "$mk" ] || { echo ">> python-rns package not present, skipping latest-rns tracking"; return 0; }
+    # download cache sits next to the package's buildroot top dir
+    local dl="$(cd "$pkgdir/../.." && pwd)/dl"
 
     local want="${RNSBOX_RNS_VERSION:-}"
     if [ -z "$want" ]; then
@@ -58,9 +67,11 @@ rnsbox_track_latest_rns() {
         return 0
     fi
 
-    local sha
-    sha="$(curl -fsSL --max-time 30 "https://pypi.org/pypi/rns/$want/json" | jq -r '.urls[] | select(.packagetype=="sdist") | .digests.sha256' | head -1)"
-    if [ -z "$sha" ] || [ "$sha" = "null" ]; then
+    local base sha url
+    base="$(curl -fsSL --max-time 30 "https://pypi.org/pypi/rns/$want/json")" || base=""
+    sha="$(printf '%s' "$base" | jq -r '.urls[] | select(.packagetype=="sdist") | .digests.sha256' | head -1)"
+    url="$(printf '%s' "$base" | jq -r '.urls[] | select(.packagetype=="sdist") | .url' | head -1)"
+    if [ -z "$sha" ] || [ "$sha" = "null" ] || [ -z "$url" ] || [ "$url" = "null" ]; then
         echo ">> could not fetch the rns $want sdist digest — keeping the pinned version" >&2
         return 0
     fi
@@ -68,6 +79,20 @@ rnsbox_track_latest_rns() {
     sed -i "s/^PYTHON_RNS_VERSION = .*/PYTHON_RNS_VERSION = $want/" "$mk"
     { echo "# fetched from PyPI by build.sh at $(date -u +%Y-%m-%dT%H:%M:%SZ)"; \
       echo "sha256  $sha  rns-$want.tar.gz"; } > "$hashf"
+
+    # Pre-seed the dl cache with the verified sdist so buildroot's downloader
+    # never has to resolve the (version-pinned) URL in the .mk.
+    if [ ! -s "$dl/python-rns/rns-$want.tar.gz" ]; then
+        mkdir -p "$dl/python-rns"
+        local tmp="$dl/python-rns/.rns-$want.download"
+        if curl -fsSL --retry 3 --max-time 300 -o "$tmp" "$url" \
+           && [ "$(sha256sum "$tmp" | cut -d' ' -f1)" = "$sha" ]; then
+            mv "$tmp" "$dl/python-rns/rns-$want.tar.gz"
+        else
+            rm -f "$tmp"
+            echo ">> WARNING: could not pre-seed rns $want into the dl cache; the pinned-URL fallback may fail" >&2
+        fi
+    fi
     echo ">> rns (Reticulum) version: $want (latest from PyPI, sha256-verified)"
 }
 

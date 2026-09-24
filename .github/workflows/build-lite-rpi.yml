@@ -1,0 +1,155 @@
+name: build-lite-rpi
+
+# Build the RNSBox *lite* image for the Raspberry Pi Zero 2 W (aarch64,
+# Buildroot 2026.02.3 base) on a GitHub-hosted runner. Manual dispatch, plus
+# pushes of this workflow / the rpi0-2w patch series on the port branch.
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: "Image variant to build"
+        type: choice
+        options: [lite]
+        default: lite
+      version:
+        description: "Release tag (blank = r<date>-<shortsha>). A GitHub Release is published only on manual runs."
+        type: string
+        default: ""
+  push:
+    branches: [raspberry-pi-zero-2w]
+    paths: ['.github/workflows/build-lite-rpi.yml', 'patches/rpi0-2w/**', 'boards/rpi0-2w.sh', 'build.sh']
+
+concurrency:
+  group: build-lite-rpi-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write   # needed to publish a Release
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Free up disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          docker-images: true
+          large-packages: false   # slow apt-remove; /mnt gives us the room
+          haskell: false
+          swap-storage: false     # keep swap — the maturin/Rust build wants memory
+
+      - name: Disk + memory before
+        run: |
+          echo "## disk"; df -h / /mnt
+          echo "## mem";  free -h
+          echo "## cpu";  nproc
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential git wget curl cpio unzip rsync bc file \
+            python3 jq libncurses5-dev dosfstools mtools xz-utils
+
+      - name: Checkout patch series
+        uses: actions/checkout@v4
+        with:
+          path: rnsbox
+
+      - name: Prepare scratch on /mnt (the roomy disk)
+        run: |
+          sudo mkdir -p /mnt/rnsbox /mnt/dl /mnt/tmp
+          sudo chown -R "$USER":"$USER" /mnt/rnsbox /mnt/dl /mnt/tmp
+
+      - name: Cache buildroot downloads
+        uses: actions/cache@v4
+        with:
+          path: /mnt/dl
+          key: br-dl-rpi-${{ hashFiles('rnsbox/patches/rpi0-2w/*.patch') }}
+          restore-keys: |
+            br-dl-rpi-
+            br-dl-
+
+      - name: Build ${{ github.event.inputs.variant || 'lite' }} (rpi0-2w)
+        env:
+          WORKDIR: /mnt/rnsbox/buildroot-rpi0-2w
+          BR2_DL_DIR: /mnt/dl
+          TMPDIR: /mnt/tmp
+        run: |
+          export PATH=/usr/sbin:/sbin:$PATH
+          cd rnsbox
+          START=$(date +%s)
+          set -o pipefail
+          # Scrub CI markers for the build only: Rust's bootstrap (x.py)
+          # panics on --stage 1 when it detects them (python-cryptography
+          # builds via maturin -> host rust).
+          ( unset GITHUB_ACTIONS TF_BUILD CI
+            /usr/bin/time -v ./build.sh rpi0-2w "${{ github.event.inputs.variant || 'lite' }}" ) \
+            2>&1 | tee /mnt/tmp/build.log
+          echo "BUILD_SECONDS=$(( $(date +%s) - START ))" | tee -a "$GITHUB_ENV"
+
+      - name: Disk after + image + timing
+        if: always()
+        run: |
+          echo "## disk after"; df -h / /mnt
+          echo "## build minutes: $(( ${BUILD_SECONDS:-0} / 60 ))"
+          IMGDIR=/mnt/rnsbox/buildroot-rpi0-2w/output/images
+          echo "## images"; ls -lh "$IMGDIR" 2>/dev/null || echo "(no images dir — build did not reach packaging)"
+          echo "## last 40 build.log lines"; tail -n 40 /mnt/tmp/build.log 2>/dev/null || true
+
+      - name: Package image (.img.xz + SHA256SUMS)
+        if: success()
+        run: |
+          cd /mnt/rnsbox/buildroot-rpi0-2w/output/images
+          IMG=$(ls -1 rnsbox-rpi0-2w-*-lite.img | tail -1)
+          echo "compressing $IMG …"
+          xz -T0 -9 -k -f "$IMG"
+          sha256sum "$IMG" "$IMG.xz" | tee SHA256SUMS
+          ls -lh "$IMG" "$IMG.xz"
+          { echo "IMG=$IMG"; echo "IMGDIR=$PWD"; } >> "$GITHUB_ENV"
+
+      - name: Publish GitHub Release (manual runs only)
+        if: success() && github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER="${{ github.event.inputs.version }}"
+          [ -z "$VER" ] && VER="rpi-r$(date -u +%Y.%m.%d)-${GITHUB_SHA:0:7}"
+          cd "$IMGDIR"
+          printf '%s\n' \
+            "Automated RNSBox **lite** (Raspberry Pi Zero 2 W) build from \`${GITHUB_SHA:0:7}\` (branch \`${GITHUB_REF_NAME}\`)." \
+            "" \
+            "Decompress and flash to a microSD:" \
+            '```' \
+            "xz -d ${IMG}.xz && sudo dd if=${IMG} of=/dev/sdX bs=4M conv=fsync status=progress" \
+            '```' \
+            "Verify first with \`sha256sum -c SHA256SUMS\`." > /tmp/notes.md
+          gh release create "$VER" \
+            --repo "${{ github.repository }}" \
+            --target "${{ github.sha }}" \
+            --title "RNSBox lite (rpi0-2w) $VER" \
+            --notes-file /tmp/notes.md \
+            "${IMG}.xz" SHA256SUMS
+          echo "Published release: $VER"
+
+      - name: Upload lite image
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rnsbox-rpi0-2w-lite-image
+          path: /mnt/rnsbox/buildroot-rpi0-2w/output/images/rnsbox-rpi0-2w-*-lite.img
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-rpi
+          path: /mnt/tmp/build.log
+          if-no-files-found: warn
+          retention-days: 7

@@ -13,6 +13,9 @@ rnsbox_build() {
     # The series ships configs/rnsbox_rpi0_2w_64_defconfig. A plain `make`
     # after that builds kernel, rootfs and the genimage sdcard.
     echo ">> configuring and building (first run compiles the toolchain; be patient)"
+    # WSL note: Windows PATH interop appends /mnt/c entries (some with
+    # spaces) that buildroot's dependency check rejects — strip them.
+    export PATH=$(echo "$PATH" | tr ':' '\n' | grep -v '^/mnt/[a-z]/' | paste -sd:)
     export PATH=/usr/sbin:/sbin:$PATH
     make rnsbox_rpi0_2w_64_defconfig
     make
