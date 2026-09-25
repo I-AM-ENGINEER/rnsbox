@@ -1,0 +1,260 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: rnsbox <rnsbox@localhost>
+Date: Thu, 24 Sep 2026 23:08:59 +0300
+Subject: [PATCH 07/13] rnsd: Reticulum daemon service, shipped config and
+ python-rns package
+
+python-rns installs rns as a PEP 517 wheel so pip can upgrade it in place
+(portal Update button). PYTHON_RNS_VERSION uses ?= so build.sh can pin the
+LATEST PyPI release at build time (it also rewrites the .hash digest and
+pre-seeds the dl/ cache with the verified sdist); 1.5.2 is the offline
+fallback. S82rnsd + /etc/reticulum/config ported verbatim (transport node,
+TCPServerInterface 0.0.0.0:4242, AutoInterface on the gadget LAN, two
+RNS-testnet uplinks).
+---
+ .../rootfs-overlay/etc/init.d/S82rnsd         | 82 +++++++++++++++++++
+ .../rootfs-overlay/etc/reticulum/config       | 66 +++++++++++++++
+ configs/rnsbox_rpi0_2w_64_defconfig           |  6 ++
+ package/python-rns/Config.in                  | 14 ++++
+ package/python-rns/python-rns.hash            |  3 +
+ package/python-rns/python-rns.mk              | 24 ++++++
+ 6 files changed, 195 insertions(+)
+ create mode 100755 board/raspberrypi/rnsbox-0-2w/rootfs-overlay/etc/init.d/S82rnsd
+ create mode 100644 board/raspberrypi/rnsbox-0-2w/rootfs-overlay/etc/reticulum/config
+ create mode 100644 package/python-rns/Config.in
+ create mode 100644 package/python-rns/python-rns.hash
+ create mode 100644 package/python-rns/python-rns.mk
+
+diff --git a/board/raspberrypi/rnsbox-0-2w/rootfs-overlay/etc/init.d/S82rnsd b/board/raspberrypi/rnsbox-0-2w/rootfs-overlay/etc/init.d/S82rnsd
+new file mode 100755
+index 00000000..a68497ae
+--- /dev/null
++++ b/board/raspberrypi/rnsbox-0-2w/rootfs-overlay/etc/init.d/S82rnsd
+@@ -0,0 +1,82 @@
++#!/bin/sh
++# S82rnsd — Reticulum Network Stack daemon.
++#
++# Gated on /run/clock-synced (S45ntpsync) because Reticulum's link
++# announcements include a wall-clock timestamp and a node still at
++# 1970 will be silently filtered by every peer with a sane clock. We
++# refuse to start rather than spam invalid announcements that get
++# rate-limited.
++#
++# Config: /etc/reticulum/config (shipped as an opinionated default; the
++# rnsbox-portal UI exposes a raw editor). rnsd creates the config dir
++# + default file on first run if missing, so the placeholder we ship is
++# just a hint.
++#
++# Bind addr: rnsd listens on whatever interfaces are declared in the
++# config (typically a TCPServerInterface on 0.0.0.0:4242 + an
++# AutoInterface on usb0). The nftables INPUT chain in S60routing only
++# accepts inbound :4242 on WAN if the user added it to
++# /etc/rnsbox/openports.conf via the portal.
++
++NAME=rnsd
++DAEMON=/usr/bin/rnsd
++PIDFILE=/var/run/$NAME.pid
++LOG=/var/log/$NAME.log
++CFG_DIR=/etc/reticulum
++
++[ -x "$DAEMON" ] || exit 0
++
++start() {
++	mkdir -p /var/log /var/run "$CFG_DIR"
++
++	if [ -f "$PIDFILE" ] && kill -0 "$(cat $PIDFILE)" 2>/dev/null; then
++		echo "S82rnsd: already running (pid $(cat $PIDFILE))"
++		return 0
++	fi
++
++	if [ ! -f /run/clock-synced ]; then
++		echo "S82rnsd: refusing to start - /run/clock-synced absent"
++		echo "        (S45ntpsync did not succeed; check WAN link"
++		echo "         and /var/log/ntp-step.log)"
++		return 1
++	fi
++
++	printf "Starting %s: " "$NAME"
++	# --config points at our config dir; rnsd auto-creates files inside.
++	# -s detaches to its own process group; we still pidfile-track so
++	# the watchdog (S46wanwatch) can detect it cleanly.
++	"$DAEMON" --config "$CFG_DIR" >>"$LOG" 2>&1 &
++	PID=$!
++	echo "$PID" > "$PIDFILE"
++	sleep 0.3
++	if kill -0 "$PID" 2>/dev/null; then
++		echo "OK (pid $PID)"
++	else
++		echo "FAIL (see $LOG)"
++		rm -f "$PIDFILE"
++		return 1
++	fi
++}
++
++stop() {
++	printf "Stopping %s: " "$NAME"
++	if [ -f "$PIDFILE" ]; then
++		kill "$(cat $PIDFILE)" 2>/dev/null
++		# Reticulum drains active links cleanly on SIGTERM; give it a moment.
++		for _ in 1 2 3 4 5; do
++			[ -f "$PIDFILE" ] && kill -0 "$(cat $PIDFILE)" 2>/dev/null || break
++			sleep 1
++		done
++		rm -f "$PIDFILE"
++		echo "OK"
++	else
++		echo "(not running)"
++	fi
++}
++
++case "${1:-start}" in
++	start)   start ;;
++	stop)    stop ;;
++	restart) stop; sleep 1; start ;;
++	*) echo "Usage: $0 {start|stop|restart}" >&2; exit 1 ;;
++esac
+diff --git a/board/raspberrypi/rnsbox-0-2w/rootfs-overlay/etc/reticulum/config b/board/raspberrypi/rnsbox-0-2w/rootfs-overlay/etc/reticulum/config
+new file mode 100644
+index 00000000..75382cab
+--- /dev/null
++++ b/board/raspberrypi/rnsbox-0-2w/rootfs-overlay/etc/reticulum/config
+@@ -0,0 +1,66 @@
++# Reticulum config — opinionated default for the RNSBox router.
++#
++# rnsd creates this file with stock defaults if it's missing. We ship
++# an opinionated version that:
++#   - enables transport (we're a fixed-location router; routing for
++#     other nodes is the whole point of running this as a service)
++#   - listens on TCP 0.0.0.0:4242 so external Reticulum peers can
++#     connect inbound (user must also add tcp/4242 to
++#     /etc/rnsbox/openports.conf via the portal UI for WAN reach)
++#   - runs an AutoInterface on usb0 so devices on the USB-tethered
++#     LAN auto-discover this node without manual config
++#
++# Edit live via the portal (Reticulum tab) or directly with SSH +
++# `/etc/init.d/S82rnsd restart` to apply.
++#
++# Full reference: https://markqvist.github.io/Reticulum/manual/
++
++[reticulum]
++  enable_transport = Yes
++  share_instance = Yes
++  shared_instance_port = 37428
++  instance_control_port = 37429
++  panic_on_interface_error = No
++
++[logging]
++  loglevel = 4
++
++[interfaces]
++
++  # LAN-side auto-discovery on the USB-C gadget network. Reticulum
++  # multicasts node announcements over usb0 so any client device
++  # tethered via USB-C finds this node with no config.
++  [[USB LAN AutoInterface]]
++    type = AutoInterface
++    enabled = True
++    devices = usb0
++
++  # Inbound TCP listener for external Reticulum peers. Bound on all
++  # interfaces; nftables limits which interfaces actually reach it.
++  # Add `tcp 4242` to /etc/rnsbox/openports.conf via the portal to
++  # make this reachable from the WAN side.
++  [[TCP Server]]
++    type = TCPServerInterface
++    enabled = True
++    listen_ip = 0.0.0.0
++    listen_port = 4242
++
++  # RNS Testnet TCP entrypoints — connect on boot to known public
++  # transport nodes so the device joins the broader Reticulum testnet
++  # without any manual peer configuration. TCPClientInterface keeps
++  # retrying indefinitely; harmless if a remote is temporarily down.
++  # Both verified reachable + actively exchanging announcements as of
++  # 2026-05-16. Earlier attempts dropped: betweentheborders.com:4242
++  # (host off the air at flash time) and rns.beleth.net:4242 (worked
++  # at first but swapped out by operator request for the .146 node).
++  [[Catz Node (TCP)]]
++    type = TCPClientInterface
++    enabled = yes
++    target_host = 77.37.146.243
++    target_port = 4242
++
++  [[RNS Node 31.129.33.146]]
++    type = TCPClientInterface
++    enabled = yes
++    target_host = 31.129.33.146
++    target_port = 4242
+diff --git a/configs/rnsbox_rpi0_2w_64_defconfig b/configs/rnsbox_rpi0_2w_64_defconfig
+index 916400c2..cdb72962 100644
+--- a/configs/rnsbox_rpi0_2w_64_defconfig
++++ b/configs/rnsbox_rpi0_2w_64_defconfig
+@@ -58,3 +58,9 @@ BR2_PACKAGE_DOSFSTOOLS=y
+ BR2_PACKAGE_DOSFSTOOLS_FSCK_FAT=y
+ BR2_PACKAGE_DOSFSTOOLS_MKFS_FAT=y
+ BR2_PACKAGE_NANO=y
++# rnsd (Reticulum transport node) + python stack
++BR2_PACKAGE_PYTHON3=y
++BR2_PACKAGE_PYTHON3_BZIP2=y
++BR2_PACKAGE_PYTHON3_PY_PYC=y
++BR2_PACKAGE_PYTHON3_PIP=y
++BR2_PACKAGE_PYTHON_RNS=y
+diff --git a/package/python-rns/Config.in b/package/python-rns/Config.in
+new file mode 100644
+index 00000000..3557987b
+--- /dev/null
++++ b/package/python-rns/Config.in
+@@ -0,0 +1,14 @@
++config BR2_PACKAGE_PYTHON_RNS
++	bool "python-rns"
++	select BR2_PACKAGE_PYTHON3_SSL
++	select BR2_PACKAGE_PYTHON3_ZLIB
++	select BR2_PACKAGE_PYTHON_CRYPTOGRAPHY  # runtime
++	select BR2_PACKAGE_PYTHON_SERIAL        # runtime
++	help
++	  Reticulum Network Stack (RNS) — a self-configuring,
++	  encrypted, resilient mesh networking stack designed to
++	  run over LoRa, packet radio, WiFi, TCP/IP, serial links
++	  and other carriers. Installs the rnsd daemon and the
++	  rnstatus / rnpath / rnid / rnodeconf CLI tools.
++
++	  https://reticulum.network/
+diff --git a/package/python-rns/python-rns.hash b/package/python-rns/python-rns.hash
+new file mode 100644
+index 00000000..df4343ac
+--- /dev/null
++++ b/package/python-rns/python-rns.hash
+@@ -0,0 +1,3 @@
++# rns 1.5.2 sdist; regenerated by build.sh when tracking the latest release
++md5     07bc7b00ad58f4de313e322be40d0098                                  rns-1.5.2.tar.gz
++sha256  a7f8f0d445312fee1c4ade41178f5224fe7af8bd790a79d148696659d81cc862  rns-1.5.2.tar.gz
+diff --git a/package/python-rns/python-rns.mk b/package/python-rns/python-rns.mk
+new file mode 100644
+index 00000000..cefd14d8
+--- /dev/null
++++ b/package/python-rns/python-rns.mk
+@@ -0,0 +1,24 @@
++################################################################################
++#
++# python-rns (Reticulum Network Stack)
++#
++# The shipped version is the LATEST rns release at build time: rnsbox build.sh
++# asks PyPI, rewrites PYTHON_RNS_VERSION (below) + the .hash digest and seeds
++# buildroot's dl/ cache with the sha256-verified sdist. This pinned value is
++# the offline fallback.
++#
++################################################################################
++
++PYTHON_RNS_VERSION ?= 1.5.2
++PYTHON_RNS_SOURCE = rns-$(PYTHON_RNS_VERSION).tar.gz
++PYTHON_RNS_SITE = https://files.pythonhosted.org/packages/7e/fb/d7b0b67c0e369b8533fe14688cb2b65bff21c669b0c776759015ad3d1830
++PYTHON_RNS_SETUP_TYPE = pep517
++# Install rns as a wheel (dist-info + RECORD) rather than a distutils
++# egg-info, so pip can upgrade it in place (portal Update button / manual
++# pip install -U rns). rns is setup.py-only, so the PEP 517 build uses the
++# setuptools legacy backend -- host-only build deps, no target bloat.
++PYTHON_RNS_DEPENDENCIES += host-python-setuptools host-python-wheel
++PYTHON_RNS_LICENSE = Reticulum License
++PYTHON_RNS_LICENSE_FILES = LICENSE
++
++$(eval $(python-package))

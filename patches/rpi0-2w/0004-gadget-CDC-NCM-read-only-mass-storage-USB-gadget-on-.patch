@@ -1,0 +1,281 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: rnsbox <rnsbox@localhost>
+Date: Thu, 24 Sep 2026 23:06:15 +0300
+Subject: [PATCH 04/13] gadget: CDC-NCM (+ read-only mass-storage) USB gadget
+ on the OTG port
+
+S10usbdev composes the gadget via configfs from the same /boot/usb.* flag
+files the LicheeRV build uses (shipped on the boot FAT by post-image):
+pinned identity, MS-OS WINNCM compat id for Windows auto-bind, optional
+read-only cdrom LUN for the clients DVD. S30gadget_nic pins the MAC and
+addresses usb0 = 10.42.0.1/24.
+
+fstab: boot FAT mounted at /boot; tmpfs for /tmp /run /var/{log,lock,cache}.
+inittab: HDMI tty1 console only - Bluetooth is disabled and no getty holds
+UART0, keeping the PL011 free for the 2 Mbaud SLIP HaLow link.
+---
+ .../rnsbox-0-2w/rootfs-overlay/etc/fstab      |  13 ++
+ .../rootfs-overlay/etc/init.d/S10usbdev       | 114 ++++++++++++++++++
+ .../rootfs-overlay/etc/init.d/S30gadget_nic   |  64 ++++++++++
+ .../rnsbox-0-2w/rootfs-overlay/etc/inittab    |  40 ++++++
+ 4 files changed, 231 insertions(+)
+ create mode 100644 board/raspberrypi/rnsbox-0-2w/rootfs-overlay/etc/fstab
+ create mode 100755 board/raspberrypi/rnsbox-0-2w/rootfs-overlay/etc/init.d/S10usbdev
+ create mode 100755 board/raspberrypi/rnsbox-0-2w/rootfs-overlay/etc/init.d/S30gadget_nic
+ create mode 100644 board/raspberrypi/rnsbox-0-2w/rootfs-overlay/etc/inittab
+
+diff --git a/board/raspberrypi/rnsbox-0-2w/rootfs-overlay/etc/fstab b/board/raspberrypi/rnsbox-0-2w/rootfs-overlay/etc/fstab
+new file mode 100644
+index 00000000..c1c8fb17
+--- /dev/null
++++ b/board/raspberrypi/rnsbox-0-2w/rootfs-overlay/etc/fstab
+@@ -0,0 +1,13 @@
++# RNSBox fstab — boot FAT (gadget flag files) at /boot; log/state dirs as
++# tmpfs so their writes never hit the SD card; noatime everywhere else.
++# <file system>	<mount pt>	<type>	<options>				<dump>	<pass>
++/dev/root	/		ext4	rw,noauto,noatime			0	1
++/dev/mmcblk0p1	/boot		vfat	defaults,noatime			0	0
++proc		/proc		proc	defaults				0	0
++devpts		/dev/pts	devpts	defaults,gid=5,mode=620,ptmxmode=0666	0	0
++tmpfs		/dev/shm	tmpfs	mode=0777				0	0
++tmpfs		/tmp		tmpfs	mode=1777				0	0
++tmpfs		/run		tmpfs	mode=0755,nosuid,nodev			0	0
++tmpfs		/var/log	tmpfs	mode=0755,size=4M			0	0
++tmpfs		/var/lock	tmpfs	mode=1777,size=512k			0	0
++tmpfs		/var/cache	tmpfs	mode=0755,size=512k			0	0
+diff --git a/board/raspberrypi/rnsbox-0-2w/rootfs-overlay/etc/init.d/S10usbdev b/board/raspberrypi/rnsbox-0-2w/rootfs-overlay/etc/init.d/S10usbdev
+new file mode 100755
+index 00000000..d3bed2c3
+--- /dev/null
++++ b/board/raspberrypi/rnsbox-0-2w/rootfs-overlay/etc/init.d/S10usbdev
+@@ -0,0 +1,114 @@
++#!/bin/sh
++# S10usbdev — compose the CDC-NCM (+ optional read-only mass-storage) USB
++# gadget on the micro-USB OTG port (DWC2 peripheral, via config.txt
++# dtoverlay=dwc2,dr_mode=peripheral).
++#
++# Same /boot flag-file semantics as the LicheeRV Nano-e build (the flags are
++# shipped on the boot FAT by post-image.sh):
++#   /boot/usb.dev           present          -> bring the gadget up at all
++#   /boot/usb.ncm           present          -> CDC-NCM function (the LAN)
++#   /boot/usb.disk0         present          -> read-only mass-storage LUN
++#                          (non-empty content = backing image path; empty =
++#                           /opt/rnsbox-clients/usbdisk.iso, the clients DVD)
++#   /boot/usb.ncm.mac       device-side MAC  -> deterministic host ifname
++#   /boot/usb.idVendor / usb.idProduct / usb.bcdDevice / usb.manufacturer /
++#   /boot/usb.product       pinned identity strings
++#
++# Windows MS-OS descriptor: the "WINNCM" compat id auto-binds usbncm.sys on
++# Windows 10 1709+/11 (literal string — not "NCM"; an MS-OS gotcha). Windows
++# caches the descriptor by (VID, PID, bcdDevice), so bcdDevice must be bumped
++# whenever the gadget topology changes.
++#
++# S30gadget_nic (run after this) addresses usb0 = 10.42.0.1/24.
++
++GADGET=/sys/kernel/config/usb_gadget/g0
++LOG=/var/log/usbdev.log
++
++boot() { [ -f "/boot/$1" ] && cat "/boot/$1"; }
++
++start() {
++	mkdir -p /var/log
++
++	if [ ! -f /boot/usb.dev ]; then
++		echo "S10usbdev: /boot/usb.dev absent - gadget disabled"
++		return 0
++	fi
++	if [ -e "$GADGET/UDC" ] && [ -n "$(cat "$GADGET/UDC" 2>/dev/null)" ]; then
++		echo "S10usbdev: gadget already bound"
++		return 0
++	fi
++
++	# configfs + composite framework (built-in on RNSBox kernels, but be
++	# tolerant of a modular build)
++	mountpoint -q /sys/kernel/config 2>/dev/null || \
++		mount -t configfs none /sys/kernel/config 2>>"$LOG"
++	modprobe libcomposite 2>/dev/null || true
++
++	mkdir -p "$GADGET" 2>>"$LOG" || {
++		echo "S10usbdev: cannot create $GADGET (CONFIG_USB_CONFIGFS?)" >&2
++		return 1
++	}
++
++	# identity (pinned on the boot FAT; same defaults as the LicheeRV build)
++	echo "$(boot usb.idVendor || echo 0x1d6b)" > "$GADGET/idVendor"
++	echo "$(boot usb.idProduct || echo 0x0105)" > "$GADGET/idProduct"
++	echo "$(boot usb.bcdDevice || echo 0x0105)" > "$GADGET/bcdDevice"
++	mkdir -p "$GADGET/strings/0x409"
++	echo "$(boot usb.manufacturer || echo RNSBox)" > "$GADGET/strings/0x409/manufacturer"
++	echo "$(boot usb.product || echo 'RNSBox Reticulum router')" > "$GADGET/strings/0x409/product"
++
++	mkdir -p "$GADGET/configs/c.1/strings/0x409"
++	echo "RNSBox" > "$GADGET/configs/c.1/strings/0x409/configuration"
++	echo 500 > "$GADGET/configs/c.1/MaxPower"
++
++	if [ -f /boot/usb.ncm ]; then
++		mkdir -p "$GADGET/functions/ncm.usb0"
++		ln -sfn "$GADGET/functions/ncm.usb0" "$GADGET/configs/c.1/ncm.usb0"
++
++		# MS-OS descriptor: auto-bind Windows' in-box usbncm.sys driver.
++		echo 1       > "$GADGET/os_desc/use"
++		echo 0xcd    > "$GADGET/os_desc/b_vendor_code"
++		echo MSFT100 > "$GADGET/os_desc/qw_sign"
++		ln -sfn "$GADGET/configs/c.1" "$GADGET/os_desc/c.1"
++		echo WINNCM  > "$GADGET/functions/ncm.usb0/os_desc/interface.ncm/compatible_id"
++	fi
++
++	if [ -f /boot/usb.disk0 ]; then
++		# Backing image: explicit path in /boot/usb.disk0 wins; else the
++		# shipped read-only clients ISO. Presented as an optical disc
++		# (cdrom=1): read-only, never "format/repair", autorun-friendly.
++		IMG=$(boot usb.disk0)
++		[ -n "$IMG" ] || IMG=/opt/rnsbox-clients/usbdisk.iso
++		if [ -e "$IMG" ]; then
++			mkdir -p "$GADGET/functions/mass_storage.disk0"
++			echo 1 > "$GADGET/functions/mass_storage.disk0/lun.0/removable"
++			echo 1 > "$GADGET/functions/mass_storage.disk0/lun.0/ro"
++			echo 1 > "$GADGET/functions/mass_storage.disk0/lun.0/cdrom"
++			echo "$IMG" > "$GADGET/functions/mass_storage.disk0/lun.0/file"
++			ln -sfn "$GADGET/functions/mass_storage.disk0" "$GADGET/configs/c.1/mass_storage.disk0"
++		else
++			echo "S10usbdev: usb.disk0 backing image $IMG not found - skipping mass storage" >>"$LOG"
++		fi
++	fi
++
++	UDC=$(ls /sys/class/udc 2>/dev/null | head -1)
++	if [ -z "$UDC" ]; then
++		echo "S10usbdev: no UDC found (dwc2 not in peripheral mode?)" >&2
++		return 1
++	fi
++	echo "$UDC" > "$GADGET/UDC"
++	echo "S10usbdev: gadget bound to $UDC ($(cat "$GADGET/idVendor"):$(cat "$GADGET/idProduct"))"
++}
++
++stop() {
++	if [ -e "$GADGET/UDC" ]; then
++		echo "" > "$GADGET/UDC" 2>/dev/null
++	fi
++}
++
++case "${1:-start}" in
++	start)   start ;;
++	stop)    stop ;;
++	restart) stop; sleep 1; start ;;
++	*) echo "Usage: $0 {start|stop|restart}" >&2; exit 1 ;;
++esac
+diff --git a/board/raspberrypi/rnsbox-0-2w/rootfs-overlay/etc/init.d/S30gadget_nic b/board/raspberrypi/rnsbox-0-2w/rootfs-overlay/etc/init.d/S30gadget_nic
+new file mode 100755
+index 00000000..45d3d757
+--- /dev/null
++++ b/board/raspberrypi/rnsbox-0-2w/rootfs-overlay/etc/init.d/S30gadget_nic
+@@ -0,0 +1,64 @@
++#!/bin/sh
++# S30gadget_nic — bring up the CDC-NCM gadget interface as 10.42.0.1/24.
++#
++# dnsmasq (from /etc/dnsmasq.conf, regenerated by S60routing) owns the
++# DHCP+DNS scope; this script only pins the device-side MAC (so the host-side
++# `enxXXXX` ifname is stable across reboots, read from /boot/usb.ncm.mac)
++# and addresses the interface. Runs after S10usbdev.
++. /etc/profile
++
++USB0_IPV4=10.42.0.1/24
++
++hex2mac() {
++	for i in $(seq 2 2 12); do
++		echo -n "${1}" | head -c $i | tail -c 2
++		[ $i -ne 12 ] && echo -n ':'
++	done | tr '[:upper:]' '[:lower:]'
++}
++
++start() {
++	if [ ! -e /boot/usb.dev ] || [ ! -e /boot/usb.ncm ]; then
++		echo "S30gadget_nic: usb.dev or usb.ncm flag missing; skipping" >&2
++		return 0
++	fi
++
++	# Wait briefly for usb0 to appear (the configfs gadget creates it
++	# asynchronously after the UDC bind in S10usbdev).
++	for _ in 1 2 3 4 5 6 7 8 9 10; do
++		[ -d /sys/class/net/usb0 ] && break
++		sleep 0.5
++	done
++
++	if [ ! -d /sys/class/net/usb0 ]; then
++		echo "S30gadget_nic: usb0 not present after 5s; gadget likely failed" >&2
++		return 1
++	fi
++
++	# Pin the device-side MAC if /boot/usb.ncm.mac was shipped; else derive
++	# one from the board serial (stable per-device).
++	if [ -e /boot/usb.ncm.mac ]; then
++		new_mac=$(cat /boot/usb.ncm.mac)
++	else
++		ser=$(tr -d '\0' < /proc/device-tree/serial-number 2>/dev/null | tail -c 8 | tail -c 4)
++		new_mac=$(hex2mac "021d6b01${ser:-0000}")
++	fi
++	[ -n "$new_mac" ] && ip link set usb0 address "$new_mac" 2>/dev/null
++
++	ip link set usb0 up
++	ip addr add "$USB0_IPV4" dev usb0 2>/dev/null || true
++	echo "S30gadget_nic: usb0 up, $USB0_IPV4"
++}
++
++stop() {
++	if [ -d /sys/class/net/usb0 ]; then
++		ip addr flush dev usb0
++		ip link set usb0 down
++	fi
++}
++
++case "$1" in
++	start)   start ;;
++	stop)    stop ;;
++	restart) stop; start ;;
++	*)       echo "Usage: $0 {start|stop|restart}" >&2; exit 1 ;;
++esac
+diff --git a/board/raspberrypi/rnsbox-0-2w/rootfs-overlay/etc/inittab b/board/raspberrypi/rnsbox-0-2w/rootfs-overlay/etc/inittab
+new file mode 100644
+index 00000000..4a2948f9
+--- /dev/null
++++ b/board/raspberrypi/rnsbox-0-2w/rootfs-overlay/etc/inittab
+@@ -0,0 +1,40 @@
++# /etc/inittab
++#
++# Copyright (C) 2001 Erik Andersen <andersen@codepoet.org>
++#
++# Note: BusyBox init doesn't support runlevels.  The runlevels field is
++# completely ignored by BusyBox init. If you want runlevels, use
++# sysvinit.
++#
++# Format for each entry: <id>:<runlevels>:<action>:<process>
++#
++# id        == tty to run on, or empty for /dev/console
++# runlevels == ignored
++# action    == one of sysinit, respawn, askfirst, wait, and once
++# process   == program to run
++
++# Startup the system
++::sysinit:/bin/mount -t proc proc /proc
++::sysinit:/bin/mount -o remount,rw /
++::sysinit:/bin/mkdir -p /dev/pts /dev/shm
++::sysinit:/bin/mount -a
++::sysinit:/bin/mkdir -p /run/lock/subsys
++::sysinit:/sbin/swapon -a
++null::sysinit:/bin/ln -sf /proc/self/fd /dev/fd
++null::sysinit:/bin/ln -sf /proc/self/fd/0 /dev/stdin
++null::sysinit:/bin/ln -sf /proc/self/fd/1 /dev/stdout
++null::sysinit:/bin/ln -sf /proc/self/fd/2 /dev/stderr
++::sysinit:/bin/hostname -F /etc/hostname
++# now run any rc scripts
++::sysinit:/etc/init.d/rcS
++
++
++# Stuff to do for the 3-finger salute
++#::ctrlaltdel:/sbin/reboot
++
++# Stuff to do before rebooting
++::shutdown:/etc/init.d/rcK
++::shutdown:/sbin/swapoff -a
++::shutdown:/bin/umount -a -r
++# HDMI console only - UART0 (ttyAMA0) is reserved for the SLIP link
++tty1::respawn:/sbin/getty -L tty1 0 vt100 # HDMI console

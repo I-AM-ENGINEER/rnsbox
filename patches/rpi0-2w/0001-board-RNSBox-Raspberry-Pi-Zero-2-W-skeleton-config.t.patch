@@ -1,0 +1,258 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: rnsbox <rnsbox@localhost>
+Date: Thu, 24 Sep 2026 22:58:01 +0300
+Subject: [PATCH 01/13] board: RNSBox Raspberry Pi Zero 2 W skeleton
+ (config.txt, gadget flags, kernel fragment, defconfig)
+
+Bootable base on official Buildroot 2026.02.3 LTS with the Raspberry Pi
+Foundation kernel (pinned tarball), bootlin aarch64-musl stable toolchain.
+
+- config.txt: headless (gpu_mem=16), Bluetooth disabled so the PL011 on
+  GPIO14/15 is free for the 2 Mbaud SLIP HaLow link, no serial console,
+  dwc2 in peripheral mode on the micro-USB OTG port.
+- post-image: ships the usb.* gadget flag files on the boot FAT (same /boot
+  flag semantics as the LicheeRV build) + pins cmdline.txt, then runs the
+  stock genimage sdcard assembly.
+- linux.fragment: NCM/mass-storage gadget, DWC2 dual-role, nftables, SLIP,
+  BBR+fq, TUN/VETH on top of bcm2711_defconfig.
+---
+ board/raspberrypi/rnsbox-0-2w/cmdline.txt     |  1 +
+ board/raspberrypi/rnsbox-0-2w/config.txt      | 27 +++++++++++++
+ board/raspberrypi/rnsbox-0-2w/linux.fragment  | 40 +++++++++++++++++++
+ board/raspberrypi/rnsbox-0-2w/post-build.sh   | 12 ++++++
+ board/raspberrypi/rnsbox-0-2w/post-image.sh   | 32 +++++++++++++++
+ .../rnsbox-0-2w/rootfs-overlay/etc/init.d/rcS | 33 +++++++++++++++
+ configs/rnsbox_rpi0_2w_64_defconfig           | 37 +++++++++++++++++
+ 7 files changed, 182 insertions(+)
+ create mode 100644 board/raspberrypi/rnsbox-0-2w/cmdline.txt
+ create mode 100644 board/raspberrypi/rnsbox-0-2w/config.txt
+ create mode 100644 board/raspberrypi/rnsbox-0-2w/linux.fragment
+ create mode 100755 board/raspberrypi/rnsbox-0-2w/post-build.sh
+ create mode 100755 board/raspberrypi/rnsbox-0-2w/post-image.sh
+ create mode 100755 board/raspberrypi/rnsbox-0-2w/rootfs-overlay/etc/init.d/rcS
+ create mode 100644 configs/rnsbox_rpi0_2w_64_defconfig
+
+diff --git a/board/raspberrypi/rnsbox-0-2w/cmdline.txt b/board/raspberrypi/rnsbox-0-2w/cmdline.txt
+new file mode 100644
+index 00000000..9369d279
+--- /dev/null
++++ b/board/raspberrypi/rnsbox-0-2w/cmdline.txt
+@@ -0,0 +1 @@
++root=/dev/mmcblk0p2 rootwait console=tty1
+diff --git a/board/raspberrypi/rnsbox-0-2w/config.txt b/board/raspberrypi/rnsbox-0-2w/config.txt
+new file mode 100644
+index 00000000..32199d23
+--- /dev/null
++++ b/board/raspberrypi/rnsbox-0-2w/config.txt
+@@ -0,0 +1,27 @@
++# RNSBox — Raspberry Pi Zero 2 W boot configuration
++#
++# Headless router: no display stack, minimal GPU memory. The micro-USB OTG
++# port runs as a CDC-NCM gadget (LAN); the hardware UART (PL011, GPIO14/15)
++# is reserved for the optional SLIP link to a WiFi-HaLow modem at 2 Mbaud,
++# so Bluetooth is disabled and the serial console stays OFF the UART.
++
++start_file=start.elf
++fixup_file=fixup.dat
++
++kernel=Image
++arm_64bit=1
++
++disable_overscan=1
++
++# Headless: minimum GPU memory footprint
++gpu_mem=16
++
++# PL011 (UART0) on GPIO14/15, Bluetooth off: frees the hardware UART for the
++# 2 Mbaud SLIP link (S31slip). The kernel cmdline keeps no serial console;
++# admin access is the USB network (portal/SSH) or HDMI tty1.
++enable_uart=1
++dtoverlay=disable-bt
++
++# USB OTG (micro-USB, power + data) as a peripheral from power-on so the
++# NCM gadget enumerates as soon as the host/port is up.
++dtoverlay=dwc2,dr_mode=peripheral
+diff --git a/board/raspberrypi/rnsbox-0-2w/linux.fragment b/board/raspberrypi/rnsbox-0-2w/linux.fragment
+new file mode 100644
+index 00000000..e0e6baa7
+--- /dev/null
++++ b/board/raspberrypi/rnsbox-0-2w/linux.fragment
+@@ -0,0 +1,40 @@
++# RNSBox kernel additions on top of bcm2711_defconfig (Raspberry Pi Zero 2 W)
++
++# --- USB gadget: CDC-NCM (+ optional read-only mass storage) on the
++#     micro-USB OTG port (DWC2, peripheral mode via dtoverlay=dwc2) ---
++CONFIG_USB_DWC2=y
++CONFIG_USB_DWC2_DUAL_ROLE=y
++CONFIG_USB_GADGET=y
++CONFIG_USB_CONFIGFS=y
++CONFIG_USB_CONFIGFS_F_NCM=y
++CONFIG_USB_CONFIGFS_F_MASS_STORAGE=y
++CONFIG_USB_GADGET_VBUS_DRAW=500
++CONFIG_USB_GADGET_STORAGE_NUM_BUFFERS=4
++
++# --- nftables data plane (S60routing; ruleset validated by nft -c) ---
++CONFIG_NF_TABLES=y
++CONFIG_NF_TABLES_INET=y
++CONFIG_NFT_CT=y
++CONFIG_NFT_LIMIT=y
++CONFIG_NFT_LOG=y
++CONFIG_NFT_NAT=y
++CONFIG_NFT_MASQ=y
++CONFIG_NFT_REDIR=y
++CONFIG_NF_CONNTRACK=y
++CONFIG_NF_CONNTRACK_EVENTS=y
++CONFIG_NF_NAT=y
++CONFIG_NETFILTER_XTABLES=y
++
++# --- SLIP over UART for the optional HaLow modem link (2 Mbaud PL011) ---
++CONFIG_SLIP=y
++CONFIG_SLIP_COMPRESSED=y
++CONFIG_SLIP_SMART=y
++
++# --- throughput: BBR + fq ---
++CONFIG_TCP_CONG_BBR=y
++CONFIG_DEFAULT_TCP_CONG="bbr"
++CONFIG_NET_SCH_FQ=y
++
++# --- misc router bits ---
++CONFIG_TUN=y
++CONFIG_VETH=y
+diff --git a/board/raspberrypi/rnsbox-0-2w/post-build.sh b/board/raspberrypi/rnsbox-0-2w/post-build.sh
+new file mode 100755
+index 00000000..59334d81
+--- /dev/null
++++ b/board/raspberrypi/rnsbox-0-2w/post-build.sh
+@@ -0,0 +1,12 @@
++#!/bin/sh
++# RNSBox post-build: run the stock Raspberry Pi post-build (tty1 console),
++# then keep every overlay init script executable (the patch tooling does not
++# preserve the +x bit; both the busybox rc and the portal's subprocess
++# execve() reject non-executable S* scripts).
++set -e
++mkdir -p "${TARGET_DIR}/boot" "${TARGET_DIR}/var/lock"
++exec_sh="$(dirname "$0")/../post-build.sh"
++"$exec_sh" "$@"
++if [ -d "${TARGET_DIR}/etc/init.d" ]; then
++	chmod 0755 "${TARGET_DIR}"/etc/init.d/S* 2>/dev/null || true
++fi
+diff --git a/board/raspberrypi/rnsbox-0-2w/post-image.sh b/board/raspberrypi/rnsbox-0-2w/post-image.sh
+new file mode 100755
+index 00000000..71f662ef
+--- /dev/null
++++ b/board/raspberrypi/rnsbox-0-2w/post-image.sh
+@@ -0,0 +1,32 @@
++#!/bin/bash
++# RNSBox post-image: ship the usb.* gadget flag files on the boot FAT (same
++# /boot flag-file semantics as the LicheeRV Nano-e build — /etc/init.d/
++# S10usbdev composes the gadget from them), pin our kernel cmdline, then run
++# the stock Raspberry Pi post-image (assembles boot.vfat + sdcard.img).
++#
++# The boot FAT is mounted at /boot by fstab, so the flags are visible to the
++# init scripts (and editable from any PC).
++set -e
++
++BOARD_DIR="$(dirname "$0")"
++FW="${BINARIES_DIR}/rpi-firmware"
++
++# CDC-NCM gadget identity (read at boot by S10usbdev). Windows caches the
++# MS-OS descriptor by (VID, PID, bcdDevice) — bump bcdDevice whenever the
++# gadget topology changes.
++: > "${FW}/usb.dev"
++: > "${FW}/usb.ncm"
++echo 0x1d6b                   > "${FW}/usb.idVendor"
++echo 0x0105                   > "${FW}/usb.idProduct"
++echo 0x0105                   > "${FW}/usb.bcdDevice"
++echo "RNSBox"                 > "${FW}/usb.manufacturer"
++echo "RNSBox Reticulum router (Pi Zero 2 W)" > "${FW}/usb.product"
++echo "02:1d:6b:01:04:02"      > "${FW}/usb.ncm.mac"
++echo "rnsbox"                 > "${FW}/hostname"
++# usb.disk0 (+ .size) for the read-only clients DVD is added by
++# build-rnsbox.sh for the dvd variant; lite ships NCM-only.
++
++# Our kernel cmdline (no serial console — UART0 belongs to SLIP).
++cat "${BOARD_DIR}/cmdline.txt" > "${FW}/cmdline.txt"
++
++exec "${BOARD_DIR}/../post-image.sh"
+diff --git a/board/raspberrypi/rnsbox-0-2w/rootfs-overlay/etc/init.d/rcS b/board/raspberrypi/rnsbox-0-2w/rootfs-overlay/etc/init.d/rcS
+new file mode 100755
+index 00000000..b3ca57a7
+--- /dev/null
++++ b/board/raspberrypi/rnsbox-0-2w/rootfs-overlay/etc/init.d/rcS
+@@ -0,0 +1,33 @@
++#!/bin/sh
++#
++# RNSBox rcS — run the S??* init scripts in order.
++#
++# First re-attach stdout/stderr to /dev/console: on slow boots (or under
++# emulation) the kernel's attempt to open an initial console for init can
++# fail ("Warning: unable to open an initial console"), which leaves PID 1 —
++# and every service it spawns — writing to /dev/null. devtmpfs is mounted by
++# then, so reopening here always succeeds and boot messages are never lost.
++#
++exec >/dev/console 2>&1
++
++for i in /etc/init.d/S??*; do
++
++	# Ignore dangling symlinks (if any).
++	[ ! -f "$i" ] && continue
++
++	case "$i" in
++		*.sh)
++			# Source shell script for speed.
++			(
++				trap - INT QUIT TSTP
++				set start
++				# shellcheck source=/dev/null
++				. "$i"
++			)
++			;;
++		*)
++			# No sh extension, so fork subprocess.
++			"$i" start
++			;;
++	esac
++done
+diff --git a/configs/rnsbox_rpi0_2w_64_defconfig b/configs/rnsbox_rpi0_2w_64_defconfig
+new file mode 100644
+index 00000000..b5939444
+--- /dev/null
++++ b/configs/rnsbox_rpi0_2w_64_defconfig
+@@ -0,0 +1,37 @@
++BR2_aarch64=y
++BR2_ARM_FPU_VFPV4=y
++BR2_TOOLCHAIN_EXTERNAL=y
++BR2_TOOLCHAIN_EXTERNAL_BOOTLIN=y
++BR2_TOOLCHAIN_EXTERNAL_BOOTLIN_AARCH64_MUSL_STABLE=y
++BR2_GLOBAL_PATCH_DIR="board/raspberrypi/patches"
++BR2_DOWNLOAD_FORCE_CHECK_HASHES=y
++BR2_ROOTFS_DEVICE_TABLE="system/device_table_dev.txt system/device_table.txt"
++BR2_TARGET_GENERIC_HOSTNAME="rnsbox"
++BR2_TARGET_GENERIC_ISSUE="RNSBox - Reticulum router (Raspberry Pi Zero 2 W)"
++BR2_TARGET_GENERIC_ROOT_PASSWD="admin"
++BR2_ROOTFS_POST_BUILD_SCRIPT="board/raspberrypi/rnsbox-0-2w/post-build.sh"
++BR2_ROOTFS_POST_IMAGE_SCRIPT="board/raspberrypi/rnsbox-0-2w/post-image.sh"
++BR2_LINUX_KERNEL=y
++BR2_LINUX_KERNEL_CUSTOM_TARBALL=y
++BR2_LINUX_KERNEL_CUSTOM_TARBALL_LOCATION="$(call github,raspberrypi,linux,21b410140c47ffab5668399f6f143c7d7b935c8b)/linux-21b410140c47ffab5668399f6f143c7d7b935c8b.tar.gz"
++BR2_LINUX_KERNEL_DEFCONFIG="bcm2711"
++BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="board/raspberrypi/rnsbox-0-2w/linux.fragment"
++BR2_LINUX_KERNEL_DTS_SUPPORT=y
++BR2_LINUX_KERNEL_INTREE_DTS_NAME="broadcom/bcm2710-rpi-zero-2-w"
++BR2_LINUX_KERNEL_NEEDS_HOST_OPENSSL=y
++BR2_PACKAGE_BUSYBOX_SHOW_OTHERS=y
++BR2_PACKAGE_XZ=y
++BR2_PACKAGE_RPI_FIRMWARE=y
++BR2_PACKAGE_RPI_FIRMWARE_BOOTCODE_BIN=y
++BR2_PACKAGE_RPI_FIRMWARE_VARIANT_PI=y
++BR2_PACKAGE_RPI_FIRMWARE_CONFIG_FILE="board/raspberrypi/rnsbox-0-2w/config.txt"
++BR2_PACKAGE_KMOD=y
++BR2_PACKAGE_KMOD_TOOLS=y
++BR2_TARGET_ROOTFS_EXT2=y
++BR2_TARGET_ROOTFS_EXT2_4=y
++BR2_TARGET_ROOTFS_EXT2_SIZE="400M"
++# BR2_TARGET_ROOTFS_TAR is not set
++BR2_PACKAGE_HOST_DOSFSTOOLS=y
++BR2_PACKAGE_HOST_GENIMAGE=y
++BR2_PACKAGE_HOST_KMOD_XZ=y
++BR2_PACKAGE_HOST_MTOOLS=y

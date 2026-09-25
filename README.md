@@ -103,7 +103,7 @@ Supported boards:
     at commit `679b9ead7620bbf193620d1ebf56f53c1764d37a` (2026.02.3 LTS)
 - microSD: the DVD build's size tracks the current client releases (~3.3 GB
   now; use a card comfortably larger, e.g. 8 GB); the lite build is ~217 MB
-  on the Nano-e and ~250 MB on the Zero 2 W. The rootfs auto-grows to fill
+  on the Nano-e and ~433 MB on the Zero 2 W. The rootfs auto-grows to fill
   the card on first boot.
 
 ### HaLow modem — SLIP wiring (LicheeRV Nano-e)
@@ -124,14 +124,15 @@ tab → HaLow modem (SLIP)*), then point a `TCPClientInterface` at the modem on
 
 ### HaLow modem — SLIP wiring (Raspberry Pi Zero 2 W)
 
-Same 3-wire hookup on the hardware UART (`/dev/ttyAMA0`, PL011). Bluetooth is
-disabled and the serial console moved off the UART by the RNSBox image so the
-port is free; TX and RX cross over:
+Same 3-wire hookup on the hardware UART (the primary-UART alias
+`/dev/serial0`, the PL011 on GPIO14/15). Bluetooth is disabled and the
+serial console kept off the UART by the RNSBox image so the port is free;
+TX and RX cross over:
 
 | Pi pin | GPIO | Function | Wire to modem |
 |--------|------|----------|---------------|
-| 8      | 14   | UART0_TX | RX            |
-| 10     | 15   | UART0_RX | TX            |
+| 8      | 14   | UART_TX  | RX            |
+| 10     | 15   | UART_RX  | TX            |
 | 6      | —    | GND      | GND           |
 
 Run the link at the modem's default **2000000** baud — the PL011 handles it
