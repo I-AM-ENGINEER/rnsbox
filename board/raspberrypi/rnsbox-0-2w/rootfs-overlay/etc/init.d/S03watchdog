@@ -1,0 +1,10 @@
+#!/bin/sh
+# Pet the BCM2835 hardware watchdog (15 s hard max): the SoC resets if the
+# kernel stops being serviced. No stop case: petting must survive rcK until
+# init SIGTERMs it right before the reboot syscall — busybox then writes the
+# magic 'V' close, disarming the WDT for a clean shutdown.
+case "$1" in
+	start|reload)
+		[ -c /dev/watchdog0 ] && watchdog -T 15 -t 5 /dev/watchdog0
+		;;
+esac
