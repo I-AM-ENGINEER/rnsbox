@@ -39,7 +39,7 @@ MAKE="make -C $UP O=$O BR2_EXTERNAL=$EXT"
 
 if [ "$VARIANT" = dvd ]; then
 	echo "--- DVD: (re)build the clients ISO ---"
-	( cd "$EXT" && clients-stick/build-clients-img.sh ) || { echo "FATAL: ISO build"; exit 92; }
+	( cd "$EXT" && scripts/clients-stick/build-clients-img.sh ) || { echo "FATAL: ISO build"; exit 92; }
 	# auto-size rootfs to the (dynamic, latest) clients ISO + ~400M OS.
 	ISO_MB=$(( ($(stat -c%s "$ISO_OVERLAY") + 1048575) / 1048576 ))
 	EXT2_MB=$(( ISO_MB + 400 ))

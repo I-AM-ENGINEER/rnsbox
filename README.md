@@ -1,207 +1,84 @@
-# RNSBox — a Reticulum router
+# RNSBox
 
-RNSBox turns a small single-board computer into a USB-powered
-[Reticulum](https://reticulum.network/) router and transport node with an
-OpenWrt-style web admin UI. Supported boards are listed under
-[Hardware](#hardware).
-
-It is distributed as a **patch series on top of the upstream board support
-package**, so this repository contains only the RNSBox delta — the Linux
-kernel, Buildroot and the board BSP themselves come from upstream and are
-fetched at build time. The delta: 23 patches in [`patches/`](patches),
-MIT-licensed; the exact upstream pin lives in the Hardware section below.
+A minimal-Linux Reticulum router. One repository, many boards: a Buildroot
+**external tree** — shared router software under `package/`, one defconfig +
+one board directory per board, no per-board forks and no patch churn on the
+mainline-buildroot side.
 
 ## Quick start
-
-One command clones the pinned upstream base, sets the board up and builds.
-The rpi0-2w board builds straight from this repo used as a Buildroot
-**external tree** (`BR2_EXTERNAL`, no patch series); the LicheeRV board
-applies its git-am series onto the pinned vendor BSP:
 
 ```bash
 git clone https://github.com/Smit1237/rnsbox
 cd rnsbox
-./build.sh licheerv-nano lite   # Sipeed LicheeRV Nano-e image (~217 MB)
+./build.sh licheerv-nano lite   # Sipeed LicheeRV Nano-e image
 ./build.sh rpi0-2w lite         # Raspberry Pi Zero 2 W image (~433 MB)
 ./build.sh all lite             # every board, sequentially
-# ... dvd instead of lite adds a read-only disc of the latest Reticulum clients
+# dvd instead of lite adds a read-only disc of the latest Reticulum clients
 ```
 
-The finished image lands under `~/rnsbox-work/upstream/out/<board>/images/`
-(rpi0-2w; external-style boards) or `<workdir>/install/.../images/`
-(LicheeRV). Flash it with `dd` (or a tool like balenaEtcher) to a microSD
-and boot the board.
+Finished images land under `~/rnsbox-work/upstream/out/<board>/images/`
+(rpi0-2w) or `<workdir>/install/.../images/` (LicheeRV). Flash with `dd` or
+balenaEtcher. First build is long (it compiles a whole distro: kernel,
+OpenSSL, Python, `python-cryptography` needs Rust); later builds are
+incremental. The shipped `rns` is always the **latest PyPI release** at
+build time (sha256-verified).
 
-The shipped `rns` (Reticulum) is always the **latest release at build time**:
-`build.sh` asks PyPI, re-pins the package and verifies the download's sha256.
-Set `RNSBOX_RNS_VERSION` to force a specific version; offline builds fall back
-to the pinned default.
-
-> **First build is long.** It compiles a Rust host toolchain from source
-> (needed for `python-cryptography` on `riscv64-musl`), so the first run takes
-> roughly 40 minutes on a typical machine. Later builds reuse it.
-
-Build host: a Linux machine set up for Buildroot (the upstream repo's
-`host/ubuntu` container works). `./build.sh` needs `/usr/sbin` on `PATH` for
-genimage's `mkdosfs`; it handles this itself.
+Build host: a Linux machine or WSL2 set up for Buildroot.
 
 ## What it does
 
-- **`rnsd`** (Reticulum, latest release at build time) runs as the long-lived
-  service: a transport node
-  with a `TCPServerInterface` on `0.0.0.0:4242`, an `AutoInterface` on the
-  USB-C LAN, and two public RNS-testnet uplinks preconfigured.
-- **USB gadget = LAN.** The board presents a CDC-NCM network interface
-  (`usb0 = 10.42.0.1/24`, dnsmasq DHCP + DNS). The DVD build additionally
-  exposes a read-only mass-storage "disc" pre-loaded with Reticulum client apps
-  for a zero-download quick start.
-- **WAN uplink**, DHCP or static, with NAT masquerade plus per-rule port
-  forwarding and open-port management.
-- **`rnsbox-portal`** — a compact C++/CGI admin UI (served by uhttpd, ~0
-  resident RAM) on `http://10.42.0.1/` for network,
-  Reticulum, WiFi and system settings — including setting the clock from your
-  browser and configuring NTP servers, handy on a board with no RTC. It is the
-  single source of truth for the generated `nftables` ruleset (boot and
-  live-apply both call the same module).
-- Optional **NomadNet** LXMF / pages node (off by default) and WiFi
-  STA/AP support where the board has a radio.
-- Optional **SLIP-over-UART link to an external WiFi-HaLow (RNode) modem** — a
-  [RNode_Halow_Firmware](https://github.com/I-AM-ENGINEER/RNode_Halow_Firmware)
-  bridge — for long-range sub-GHz Reticulum over a 3-wire serial link, with the
-  modem's own web UI reverse-proxied through the portal login. Off by default.
-- Optional **LXMF propagation node** (`lxmd`, off by default) for
-  store-and-forward Reticulum message routing.
-
-The design goal throughout is a minimal OS: stock board middleware (camera /
-display / audio / NPU / codec) is stripped so nearly all of the board's RAM is
-available to Linux and the router data plane.
+- **`rnsd`** (Reticulum) runs from every boot — no clock gate; NTP syncs in
+  the background once a WAN exists (or seed the clock from the browser).
+- **USB gadget = LAN.** CDC-NCM (`usb0`), with the WiFi hotspot as a second
+  port of one bridged LAN `br-lan = 10.42.0.1/24` (DHCP + DNS by dnsmasq).
+- **WAN**: automatic uplink — wired (eth0/USB adapter) or the WiFi station,
+  whichever has a route; NAT, port forwards, open ports via the web UI.
+- **Web admin** `http://10.42.0.1/` — a compact C++/CGI portal (uhttpd,
+  ~0 resident RAM): network, WiFi, Reticulum, time/clock (optional DS3231
+  RTC), in-place rnsd updates. **SSH** `root@10.42.0.1` (root/admin —
+  same for the portal; WAN :22 stays firewalled until opened in the UI).
+- Optional **SLIP-over-UART link to a WiFi-HaLow modem** (2 Mbaud on the
+  Pi's PL011) and optional NomadNet / LXMF propagation node.
 
 ## Repository layout
 
-The repo is a Buildroot **external tree**: many boards, one repository,
-no per-board forks. Shared router software lives once under `package/`
-and is instantly available to every board; a board is just a defconfig
-plus a directory. See `BOARD-GUIDE.md` for the full recipe.
-
 ```
-external.desc/.mk, Config.in  external-tree registration (package sources)
-configs/                   one defconfig per board
-board/                     per-board files (kernel fragments, overlays, gadget)
-package/                   SHARED packages: rnsbox-portal, python-rns,
-                           python-lxmf, python-nomadnet
-boards/                    per-board build glue (upstream pins, build style)
-scripts/build-variant.sh   lite/dvd packaging for external-style boards
-build.sh                   one-command builder: ./build.sh <board> [lite|dvd|all]
-patches/licheerv-nano/     git-am series (vendor-BSP board only)
-.github/                   CI: matrix-build the images on GitHub Actions + Releases
-LICENSE                    MIT (the RNSBox delta)
-README.md                  this file
-BOARD-GUIDE.md             how to add a board
+build.sh                 one-command builder: ./build.sh <board> [lite|dvd|all]
+board/<vendor>/<board>/  per-board files: kernel fragments, boot config,
+                         rootfs overlay (init scripts, /etc), image assembly
+configs/                 one defconfig per board
+package/                 SHARED packages: rnsbox-portal, python-rns,
+                         python-lxmf, python-nomadnet
+scripts/                 lite/dvd packaging, client-disc helpers
+patches/licheerv-nano/   git-am series (only for the vendor-BSP board)
+.github/                 CI: matrix-build images + Releases
 ```
 
-Board-specific notes from the original patch-series era live under
-`docs/` (`docs/rpi0-2w/README.RNSBox.md`, `APPLYING.md`).
+**Adding a board**: `configs/rnsbox_<board>_defconfig` (copy the rpi0-2w
+one; RNSBox paths use the `$(BR2_EXTERNAL_RNSBOX_PATH)` prefix) +
+`board/<vendor>/<board>/` (copy the overlay shape from
+`board/raspberrypi/rnsbox-0-2w/`, keep board differences in configs, not
+code forks) + a small entry in `build.sh` + one line in the CI matrix. A new
+shared package goes to `package/<name>/` once and is instantly available to
+every board.
 
 ## Hardware
 
-Supported boards:
+- **Sipeed LicheeRV Nano-e / Nano-e W** (SG2002, riscv64) — upstream base
+  [`sipeed/LicheeRV-Nano-Build`](https://github.com/sipeed/LicheeRV-Nano-Build)
+  @ `d4003f15b` via `patches/licheerv-nano/`. HaLow modem on UART1
+  (`/dev/ttyS1`, 1.5 Mbaud — the Nano's UART ceiling).
+- **Raspberry Pi Zero 2 W** (aarch64) — official Buildroot 2026.02.3 LTS @
+  `679b9ead` + RPF kernel 6.12. WiFi STA/AP/concurrent; WAN = WiFi station.
+  HaLow modem on the PL011: **GPIO14 TX (pin 8) / GPIO15 RX (pin 10),
+  3.3 V, `/dev/serial0` @ 2 Mbaud**; Bluetooth is disabled so the UART is
+  free. Optional DS3231 RTC on i2c1: SDA GPIO2 (pin 3), SCL GPIO3 (pin 5) —
+  enabled by `dtoverlay=i2c-rtc,ds3231`, harmless when absent.
+- microSD: lite ≈ 433 MB (Nano-e ~217 MB); the DVD build's size tracks the
+  current client releases — use a card comfortably larger. The rootfs
+  auto-grows on first boot.
 
-- **Sipeed LicheeRV Nano-e** (SG2002, T-Head C906 RISC-V, 256 MB DDR), no
-  radio, or the Nano-e **W** (AIC8800 WiFi). One image serves both; WiFi
-  bring-up is a clean no-op where there is no radio.
-  - **Upstream base:** [`sipeed/LicheeRV-Nano-Build`](https://github.com/sipeed/LicheeRV-Nano-Build)
-    at commit `d4003f15b35d43ad4842f427050ab2bba0114fa5`
-- **Raspberry Pi Zero 2 W** (BCM2710A1, quad Cortex-A53, 512 MB, aarch64),
-  onboard WiFi/BT (brcmfmac), no Ethernet. WiFi does STA / AP / concurrent
-  AP+STA; WAN uplink is the WiFi station.
-  - **Upstream base:** [`buildroot/buildroot`](https://github.com/buildroot/buildroot)
-    at commit `679b9ead7620bbf193620d1ebf56f53c1764d37a` (2026.02.3 LTS)
-- microSD: the DVD build's size tracks the current client releases (~3.3 GB
-  now; use a card comfortably larger, e.g. 8 GB); the lite build is ~217 MB
-  on the Nano-e and ~433 MB on the Zero 2 W. The rootfs auto-grows to fill
-  the card on first boot.
+## License
 
-### HaLow modem — SLIP wiring (LicheeRV Nano-e)
-
-Wire the RNode HaLow modem to **UART1** (`/dev/ttyS1` — **not** `ttyS0`, the
-serial console) with three 3.3 V-TTL lines; TX and RX cross over:
-
-| Nano-e pad | Function | Wire to modem |
-|------------|----------|---------------|
-| `GPIOA28`  | UART1_TX | RX            |
-| `GPIOA29`  | UART1_RX | TX            |
-| `GND`      | ground   | GND           |
-
-Set **both** ends to `1500000` baud — the Nano-e's UART tops out at 1,562,500,
-below the modem's 2 Mbaud default. Enable the link from the portal (*Reticulum
-tab → HaLow modem (SLIP)*), then point a `TCPClientInterface` at the modem on
-**port 8001**. Full walkthrough in `README.RNSBox.md` (shipped by the patch series).
-
-### HaLow modem — SLIP wiring (Raspberry Pi Zero 2 W)
-
-Same 3-wire hookup on the hardware UART (the primary-UART alias
-`/dev/serial0`, the PL011 on GPIO14/15). Bluetooth is disabled and the
-serial console kept off the UART by the RNSBox image so the port is free;
-TX and RX cross over:
-
-| Pi pin | GPIO | Function | Wire to modem |
-|--------|------|----------|---------------|
-| 8      | 14   | UART_TX  | RX            |
-| 10     | 15   | UART_RX  | TX            |
-| 6      | —    | GND      | GND           |
-
-Run the link at the modem's default **2000000** baud — the PL011 handles it
-fine. Enable the same as above (portal → *Reticulum tab → HaLow modem (SLIP)*),
-then point a `TCPClientInterface` at the modem on **port 8001**.
-
-## Default credentials
-
-| Service | User  | Password |
-|---------|-------|----------|
-| SSH     | root  | admin    |
-| Web UI  | admin | admin    |
-
-Change these on first use. The web password is stored hashed (pbkdf2) in
-`/etc/rnsbox/auth.json` after first login; the session-signing key is generated
-at runtime and never stored in the source tree.
-
-## Applying the patches by hand
-
-If you would rather drive it yourself instead of `build.sh`:
-
-```bash
-git clone https://github.com/sipeed/LicheeRV-Nano-Build.git
-cd LicheeRV-Nano-Build
-git checkout d4003f15b35d43ad4842f427050ab2bba0114fa5
-git clone --depth=1 https://github.com/sophgo/host-tools host-tools
-git am /path/to/rnsbox/patches/licheerv-nano/*.patch
-source build/cvisetup.sh && defconfig sg2002_licheervnano_sd && build_all
-./build-rnsbox.sh lite      # or: ./fetch-clients.sh && ./build-rnsbox.sh dvd
-```
-
-## Licensing
-
-- The **RNSBox code in this patch series** (the `rnsbox-portal` app, init
-  scripts, Buildroot package recipes, build scripts and configuration) is
-  released under the **MIT License** — see [LICENSE](LICENSE).
-- The **upstream BSP** (Linux kernel, Buildroot, Sipeed / CVITEK sources)
-  remains under its own respective licenses.
-- The bundled Reticulum client applications are **downloaded at build time**,
-  not redistributed here. They carry their own licenses, some of which are
-  non-commercial (e.g. Sideband, CC BY-NC-SA) or copyleft (e.g. Ratspeak,
-  AGPL-3.0); review them before redistributing any built image.
-
-## Support RNSBox
-
-RNSBox is free and open source (MIT). If it's useful to you, you can support
-ongoing development, test hardware, and hosting for the Reticulum testnet
-uplinks with a crypto donation. The web UI also has a **Donate** page
-(sidebar → Donate) with a scannable QR code for each wallet.
-
-| Coin | Address |
-| --- | --- |
-| Bitcoin (BTC) | `bc1q559qfr8nlqr2s6p07hgm03x357mncydehntdmlj7hu2qaud8wkqsgycagh` |
-| Ethereum (ETH) | `0x5bc9b408d67c4b8294290e1dd281526be5913864` |
-| Solana (SOL) | `HjpiqhDdLd3p2ZcutYFptjX9TFiNYMWFGZUGVQnfesxM` |
-| Litecoin (LTC) | `ltc1qaatf3kken6peg8z6s840w4kjad643y9gptt9775zgwkhpzuyxl3qjrpss2` |
-| Dogecoin (DOGE) | `9umb1Mqvq5bYg7AG8fFghvzsFHZo9fnBmf` |
+MIT (the RNSBox delta); the board reference designs and upstream components
+keep their own licenses.

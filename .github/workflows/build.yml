@@ -1,6 +1,6 @@
 name: build-images
 
-# Multi-board image builder. Each matrix entry is one board from boards/.
+# Multi-board image builder. Each matrix entry is one board (see build.sh).
 # External-tree boards (BUILD_STYLE=external, e.g. rpi0-2w) build straight
 # from this repository used as a BR2_EXTERNAL tree: build.sh clones the
 # pinned upstream once, shares the download cache and builds into a
@@ -23,7 +23,7 @@ on:
       - 'package/**'
       - 'board/**'
       - 'configs/**'
-      - 'boards/**'
+      - 'scripts/**'
       - 'scripts/**'
       - 'clients-stick/**'
       - 'build.sh'

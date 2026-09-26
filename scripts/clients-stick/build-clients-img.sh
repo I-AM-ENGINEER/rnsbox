@@ -9,10 +9,10 @@
 # perms), -V volume id RNSBOX. Output ships inside rootfs at
 # /opt/rnsbox-clients/usbdisk.iso; S10usbdev points the mass-storage LUN at it.
 set -u
-ROOT="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+ROOT="$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)"
 cd "$ROOT" || exit 90
 SRC="$ROOT/dl/clients"
-EXTRA="$ROOT/clients-stick/extra"
+EXTRA="$ROOT/scripts/clients-stick/extra"
 OUTDIR="$ROOT/board/raspberrypi/rnsbox-0-2w/rootfs-overlay/opt/rnsbox-clients"
 OUTISO="$OUTDIR/usbdisk.iso"
 LABEL="RNSBOX"
