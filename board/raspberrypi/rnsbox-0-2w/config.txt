@@ -1,39 +1,15 @@
-# RNSBox — Raspberry Pi Zero 2 W boot configuration
-#
-# Headless router: no display stack, minimal GPU memory. The micro-USB OTG
-# port runs as a CDC-NCM gadget (LAN); the hardware UART (PL011, GPIO14/15)
-# is reserved for the optional SLIP link to a WiFi-HaLow modem at 2 Mbaud,
-# so Bluetooth is disabled and the serial console stays OFF the UART.
-
-# Cut-down firmware: drops the camera pipeline and the hardware codecs —
-# the components that force the full start.elf to silently raise the GPU
-# memory floor to ~128 MB on the Zero 2 W even with gpu_mem=16 below (the
-# ARM side then sees only 384 MB). start_cd.elf honors gpu_mem=16, giving
-# Linux ~496 MB. The HDMI console (firmware framebuffer for tty1) keeps
-# working, at 16 bpp; only camera/recording use cases need start.elf, which
-# stays on the card (defconfig ships both) as a manual fallback.
+# RNSBox Pi Zero 2 W — headless: USB-C = NCM gadget LAN, PL011 = SLIP (bt off).
+# start_cd: cut-down firmware — the full start.elf silently enforces a
+# ~128 MB GPU floor (ARM sees only 384 MB); the HDMI console still works.
 start_file=start_cd.elf
 fixup_file=fixup_cd.dat
 
 kernel=Image
 arm_64bit=1
-
 disable_overscan=1
-
-# Headless: minimum GPU memory footprint
 gpu_mem=16
-
-# PL011 (UART0) on GPIO14/15, Bluetooth off: frees the hardware UART for the
-# 2 Mbaud SLIP link (S31slip). The kernel cmdline keeps no serial console;
-# admin access is the USB network (portal/SSH).
 enable_uart=1
 dtoverlay=disable-bt
-
-# USB OTG (micro-USB, power + data) as a peripheral from power-on so the
-# NCM gadget enumerates as soon as the host/port is up.
 dtoverlay=dwc2,dr_mode=peripheral
-
-# Optional DS3231 RTC on i2c1: SDA=GPIO2 (pin 3), SCL=GPIO3 (pin 5), 3.3 V.
-# Harmless when no RTC is wired — the driver simply finds nothing at 0x68
-# and S45ntpsync keeps using NTP/browser time.
+# Optional DS3231 RTC: SDA=GPIO2 (pin 3), SCL=GPIO3 (pin 5), 3.3 V
 dtoverlay=i2c-rtc,ds3231

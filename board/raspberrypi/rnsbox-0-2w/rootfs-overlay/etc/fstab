@@ -1,20 +1,6 @@
-# RNSBox fstab — boot FAT (gadget flag files) at /boot; log/state dirs
-# backed by tmpfs so their writes never hit the SD card; noatime elsewhere.
-#
-# /var/log, /var/cache, /var/spool, /var/tmp (and /var/lib/misc) are Buildroot
-# skeleton symlinks to ../tmp, and /var/lock -> ../run/lock, so the /tmp and
-# /run tmpfs below already cover them. Do NOT add separate tmpfs lines for
-# those paths: mount follows the symlink and stacks a second tmpfs on top of
-# /tmp (separate /var/log + /var/cache lines did exactly that, and the last
-# one left every log sharing a 512 KB tmpfs).
-#
-# /tmp is sized for what lands there: syslog (/var/log/messages, rotated by
-# syslogd at 200 KB x 2 — rnsd/lxmd/nomadnet log into it), the other small
-# init-script logs and the dnsmasq leases. The size is a cap, not a
-# reservation — tmpfs only uses RAM for what is actually stored. (The cron
-# spool is on /run, see S84cron.)
-# /tmp is mode 1777, so the sticky-dir symlink/FIFO protections are switched on
-# in /etc/sysctl.d/10-rnsbox-hardening.conf.
+# /boot: boot FAT (gadget flag files). /tmp covers /var/log,cache,spool
+# (skeleton symlinks -> ../tmp) — do NOT add separate tmpfs lines for those
+# (stacked mounts); /run covers /var/lock and the cron spool. noatime: SD economy.
 
 # <file system>	<mount pt>	<type>	<options>				<dump>	<pass>
 /dev/root	/		ext4	rw,noauto,noatime			0	1
@@ -22,8 +8,6 @@
 proc		/proc		proc	defaults				0	0
 devpts		/dev/pts	devpts	defaults,gid=5,mode=620,ptmxmode=0666	0	0
 sysfs		/sys		sysfs	defaults				0	0
-
-# Memory-backed mounts — kill SD writes from the chatty paths.
 tmpfs		/dev/shm	tmpfs	mode=0777				0	0
 tmpfs		/tmp		tmpfs	mode=1777,size=16M			0	0
 tmpfs		/run		tmpfs	mode=0755,nosuid,nodev			0	0
