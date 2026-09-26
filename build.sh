@@ -44,8 +44,8 @@ if [ "$BOARD" = all ]; then
     exit 0
 fi
 
-case ",$BOARDS," in
-    *",$BOARD,"*) ;;
+case " $BOARDS " in
+    *" $BOARD "*) ;;
     *) echo "unknown board '$BOARD' — expected one of: all $BOARDS" >&2; exit 1 ;;
 esac
 export RNSBOX_BOARD="$BOARD"
