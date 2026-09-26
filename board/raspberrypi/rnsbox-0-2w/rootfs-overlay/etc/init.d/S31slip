@@ -3,8 +3,8 @@
 # modem. Reads /etc/rnsbox/slip.conf; when enabled, attaches the SLIP line
 # discipline to the configured UART (ldattach) and brings up a point-to-point
 # sl0 interface to the modem. rnsd then reaches the modem as a normal
-# Reticulum interface via a TCPClientInterface to peer_ip:8001 — the modem's
-# RNode TCP server port (added to /etc/reticulum/config by the operator, or by
+# Reticulum interface via a TCPClientInterface to peer_ip:4242 — the modem's
+# TCP Radio Bridge port (added to /etc/reticulum/config by the operator, or by
 # the portal's quick-add).
 #
 # OFF by default. Harmless no-op when disabled, when the UART device is

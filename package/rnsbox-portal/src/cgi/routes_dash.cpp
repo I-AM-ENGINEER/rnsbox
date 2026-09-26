@@ -155,7 +155,7 @@ static std::string halow_script_html(const std::string& base) {
       }
       badge.className='badge ok'; badge.textContent='link up';
       var rd=d.radio||{}, st=d.stats||{}, dv=d.device||{}, b=d.best, ns=d.neighbours||[];
-      var name=(dv.hostname||'RNode-Halow'), port=(d.tcp_port||8001);
+      var name=(dv.hostname||'RNode-Halow'), port=(d.tcp_port||4242);
       var air=num(st.airtime);
       var airbar = air!=null ? '<span class="hbar"><span style="width:'+Math.max(0,Math.min(100,air))+'%"></span></span> ' : '';
       var mcs = (rd.mcs==null||rd.mcs==='') ? 'MCS?' : 'MCS'+esc((''+rd.mcs).replace(/^mcs\s*/i,''));

@@ -172,7 +172,7 @@ function doUpdate(action, btn, isApply){
       return;
     }
     var rd=d.radio||{}, st=d.stats||{}, dv=d.device||{}, ns=d.neighbours||[];
-    var name=(dv.hostname||'RNode-Halow'), port=(d.tcp_port||8001);
+    var name=(dv.hostname||'RNode-Halow'), port=(d.tcp_port||4242);
     var iface = d.rnsd_up
       ? '<span class="badge ok">UP</span> <span class="val">'+esc(name)+'</span> &rarr; :'+esc(port)
       : '<span class="badge warn">DOWN</span> '+(HALOW_IN_CONFIG?'not connected':'<span class="dim">not in rnsd config yet</span>');

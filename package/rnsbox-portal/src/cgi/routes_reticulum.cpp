@@ -92,6 +92,8 @@ static long json_num(const std::string& j, const char* key) {
 }
 
 // Port of store.reticulum_has_tcp_client (the C++ store keeps this private).
+// port_i <= 0 matches any target_port — the HaLow card only cares that some
+// TCPClientInterface points at the modem, whatever its TCP bridge port is.
 static bool reticulum_has_tcp_client(const std::string& host, int port_i) {
     std::string cfg = util::read_file(store::RETICULUM_CONFIG, 256 * 1024);
     std::string port = std::to_string(port_i);
@@ -114,7 +116,7 @@ static bool reticulum_has_tcp_client(const std::string& host, int port_i) {
         if (k == "type") is_tcp = (v == "TCPClientInterface");
         else if (k == "target_host") { cur_host = v; have_host = true; }
         else if (k == "target_port") { cur_port = v; have_port = true; }
-        if (is_tcp && have_host && have_port && cur_host == host && cur_port == port) return true;
+        if (is_tcp && have_host && cur_host == host && (port_i <= 0 || (have_port && cur_port == port))) return true;
     }
     return false;
 }
@@ -224,7 +226,7 @@ void reticulum_page(const Request& req, Response& res) {
             "    <a class=\"btn\" href=\"" + base + "/modem\" target=\"_blank\" rel=\"noopener\">Open modem web UI &rarr;</a>\n"
             "    <form method=\"post\" action=\"" + base + "/reticulum/halow/add\" class=\"inline\" id=\"halow-add-form\" hidden>\n"
             "      <input type=\"hidden\" name=\"iface_name\" id=\"halow-add-name\" value=\"\">\n"
-            "      <input type=\"hidden\" name=\"iface_port\" id=\"halow-add-port\" value=\"8001\">\n"
+            "      <input type=\"hidden\" name=\"iface_port\" id=\"halow-add-port\" value=\"4242\">\n"
             "      <button type=\"submit\" class=\"btn-primary\">+ Add to rnsd config</button>\n"
             "    </form>\n"
             "  </div>\n"
@@ -232,7 +234,7 @@ void reticulum_page(const Request& req, Response& res) {
     }
     h = R(std::move(h), "__HALOW_LIVE_BLOCK__", halow);
 
-    bool halow_in_config = reticulum_has_tcp_client(sl.peer_ip.empty() ? "192.168.7.2" : sl.peer_ip, 8001);
+    bool halow_in_config = reticulum_has_tcp_client(sl.peer_ip.empty() ? "192.168.7.2" : sl.peer_ip, 0);
     h = R(std::move(h), "__HALOW_IN_CONFIG__", halow_in_config ? "true" : "false");
 
     h = R(std::move(h), "__SLIP_ENABLED_CHECKED__", slip_on ? "checked" : "");
@@ -384,7 +386,8 @@ void reticulum_slip(const Request& req, Response& res) {
         render::redirect_flash(res, ret_redirect(), "success",
             "SLIP link enabled on " + c.device + " @ " + c.baud + " baud. Once the modem is "
             "reachable, use “Add to rnsd config” on the HaLow card below to route "
-            "Reticulum through it (TCPClientInterface → " + c.peer_ip + ":8001).");
+            "Reticulum through it (a TCPClientInterface to " + c.peer_ip +
+            " on the modem's TCP Radio Bridge port).");
     else
         render::redirect_flash(res, ret_redirect(), "success", "SLIP link disabled.");
 }
@@ -395,7 +398,7 @@ void reticulum_halow_add(const Request& req, Response& res) {
     std::string peer = sl.peer_ip.empty() ? "192.168.7.2" : sl.peer_ip;
     std::string name = util::trim(req.f("iface_name"));
     int port = atoi(req.f("iface_port").c_str());
-    if (port < 1 || port > 65535) port = 8001;
+    if (port < 1 || port > 65535) port = 4242;
     // NOTE: the old view queried the modem for its hostname when the browser
     // didn't supply one (JS off). That path needs halow_status() (no C++ port);
     // store::add_halow_interface() falls back to "RNode-Halow" for a blank name.

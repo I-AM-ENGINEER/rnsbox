@@ -438,6 +438,8 @@ static std::vector<std::string> reticulum_iface_names() {
     return names;
 }
 
+// port <= 0 matches any target_port (see add_halow_interface: the modem's
+// bridge port may have been hand-edited in the config since).
 static bool reticulum_has_tcp_client(const std::string& host, int port) {
     std::string ps = std::to_string(port);
     bool is_tcp = false;
@@ -455,7 +457,7 @@ static bool reticulum_has_tcp_client(const std::string& host, int port) {
         if (k == "type") is_tcp = (v == "TCPClientInterface");
         else if (k == "target_host") cur_host = v;
         else if (k == "target_port") cur_port = v;
-        if (is_tcp && cur_host == host && cur_port == ps) return true;
+        if (is_tcp && cur_host == host && (port <= 0 || cur_port == ps)) return true;
     }
     return false;
 }
@@ -469,7 +471,7 @@ bool add_halow_interface(const std::string& name_in, const std::string& host, in
     if (!conf_value_ok(name_in)) { msg = "interface name must not contain line breaks or control characters"; return false; }
     auto lines = read_lines(RETICULUM_CONFIG);
     if (lines.empty()) { msg = "no reticulum config"; return false; }
-    if (reticulum_has_tcp_client(host, port)) { msg = "already"; return false; }
+    if (reticulum_has_tcp_client(host, 0)) { msg = "already"; return false; }
     std::string name = sanitize_iface_name(name_in);
     if (name.empty()) name = "RNode-Halow";
     auto existing = reticulum_iface_names();
