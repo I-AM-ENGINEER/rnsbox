@@ -40,7 +40,10 @@ for i in "${BINARIES_DIR}"/*.dtb "${BINARIES_DIR}"/rpi-firmware/*; do
 done
 KERNEL=$(sed -n 's/^kernel=//p' "${BINARIES_DIR}/rpi-firmware/config.txt")
 FILES+=( "${KERNEL}" )
-BOOT_FILES=$(printf '\t\t\t"%s",\n' "${FILES[@]}")
+# NB: the printf emits LITERAL \t and \n escapes on one line (double
+# backslashes) — a real newline would terminate sed's s||| command, and
+# genimage parses the escapes itself.
+BOOT_FILES=$(printf '\\t\\t\\t"%s",\\n' "${FILES[@]}")
 sed "s|#BOOT_FILES#|${BOOT_FILES}|" "${BOARD_DIR}/genimage.cfg.in" \
 	> "${GENIMAGE_CFG}"
 
