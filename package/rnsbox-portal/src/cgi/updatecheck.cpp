@@ -119,7 +119,7 @@ namespace updatecheck {
 State display() {
     State s;
     s.installed = installed_version();
-    std::string j = util::read_file("/var/lib/rnsbox/update.json", 8192);
+    std::string j = util::read_file("/run/rnsbox-update.json", 8192);
     if (!j.empty()) {
         s.latest = json_str(j, "latest");
         s.error = json_str(j, "error");

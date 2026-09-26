@@ -245,6 +245,25 @@ auto_wants_lan() {
 start() {
 	mkdir -p /var/run "$CFG_DIR"
 
+	# SD-card economy: rnsd rewrites its state continuously (known
+	# destinations, packet hashlist, destination table, per-peer ratchets,
+	# transit resources) — hundreds of KB every few minutes on a transport
+	# node with live uplinks, and small frequent writes are exactly what
+	# wears a card and is caught mid-write by an unplanned power cut. Keep
+	# the storage in RAM so none of that touches the card, and persist only
+	# the one thing that must survive a reboot: the transport identity,
+	# which IS the box's Reticulum address (backed up to
+	# /etc/rnsbox/identity.pem below, restored from it when the RAM storage
+	# boots empty). Everything else — known destinations, paths, ratchets —
+	# re-learns from live announces within minutes of boot. lxmd's message
+	# store opt-in lives here too; its queue is lossy across boots by
+	# design anyway.
+	stor="$CFG_DIR/storage"
+	mkdir -p "$stor"
+	if ! grep -q " $stor tmpfs" /proc/mounts; then
+		mount -t tmpfs -o mode=0700,size=16M tmpfs "$stor" 2>/dev/null || true
+	fi
+
 	# Tighten what an older build (umask 022) or the 0755 overlay left
 	# readable - before the already-running check, so every start covers it.
 	# `find -perm` only touches files that still need it, so a normal boot
@@ -326,8 +345,14 @@ start() {
 	# was wrong") until rnsd restarts. Created here, rnsd and every client load
 	# the same file. RNS's own generator, so the format always matches.
 	ident="$CFG_DIR/storage/transport_identity"
+	ibak=/etc/rnsbox/identity.pem
+	# The RAM storage boots empty: restore the persisted identity so the
+	# box keeps its address across reboots.
+	if [ ! -s "$ident" ] && [ -s "$ibak" ]; then
+		( umask 077; cp "$ibak" "$ident" ) \
+			&& logger -t S82rnsd -p daemon.notice "restored the transport identity from /etc/rnsbox/identity.pem" 2>/dev/null
+	fi
 	if [ ! -s "$ident" ]; then
-		mkdir -p "$CFG_DIR/storage"
 		if ( umask 077; python3 -c 'import sys, RNS; RNS.Identity().to_file(sys.argv[1])' "$ident" ) \
 			</dev/null >/dev/null 2>&1 && [ -s "$ident" ]; then
 			logger -t S82rnsd -p daemon.notice "created the transport identity before rnsd's first start" 2>/dev/null
@@ -335,6 +360,11 @@ start() {
 			rm -f "$ident"
 			logger -t S82rnsd -p daemon.warning "could not pre-create the transport identity; rnsd creates it" 2>/dev/null
 		fi
+	fi
+	# Keep the on-card backup current (the identity is written once and
+	# never changes; cmp avoids an SD write on every start).
+	if [ -s "$ident" ] && ! cmp -s "$ident" "$ibak" 2>/dev/null; then
+		( umask 077; cp "$ident" "$ibak" )
 	fi
 
 	# No rnsd is running. If the last one exited on its own (S46wanwatch's kick

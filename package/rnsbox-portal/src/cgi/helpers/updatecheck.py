@@ -5,8 +5,9 @@ for the latest 'rns' release, compares it to the installed version, and writes
 a small JSON state file the portal reads to show an "update available" notice.
 
 Deliberately a *notifier only*:
-  * it never touches the installed package or any user config -- the only file
-    it writes is the machine-state JSON under /var/lib/rnsbox (never /etc);
+  * it never touches the installed package or any user config -- the only files
+    it writes are the machine-state JSON in /run (never /etc) and the
+    pre-update rollback tar under /var/lib/rnsbox;
   * network failures are non-fatal (the box may be offline) -- check() never
     raises and preserves the last known result.
 """
@@ -23,7 +24,10 @@ import urllib.request
 
 PKG = "rns"                       # rnsd is provided by the Reticulum 'rns' pkg
 STATE_DIR = "/var/lib/rnsbox"
-STATE_FILE = STATE_DIR + "/update.json"
+# The state JSON is rewritten on every cron check — keep it off the SD card
+# (/run is tmpfs). Only the rollback tar, written once per applied update,
+# lives on disk: a rollback must survive a reboot.
+STATE_FILE = "/run/rnsbox-update.json"
 ROLLBACK_TAR = STATE_DIR + "/rns-rollback.tar"
 PYPI_URL = "https://pypi.org/pypi/{pkg}/json"
 RNSD_INIT = "/etc/init.d/S82rnsd"
@@ -183,7 +187,6 @@ def display_state(pkg=PKG):
 
 def _write_state(state):
     try:
-        os.makedirs(STATE_DIR, exist_ok=True)
         tmp = STATE_FILE + ".tmp"
         with open(tmp, "w") as f:
             json.dump(state, f)

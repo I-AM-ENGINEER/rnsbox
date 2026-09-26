@@ -24,6 +24,10 @@ BR2_PACKAGE_XZ=y
 BR2_PACKAGE_RPI_FIRMWARE=y
 BR2_PACKAGE_RPI_FIRMWARE_BOOTCODE_BIN=y
 BR2_PACKAGE_RPI_FIRMWARE_VARIANT_PI=y
+# start_cd.elf/fixup_cd.dat ship alongside start.elf: config.txt selects the
+# cut-down one (see board config.txt — the full firmware enforces a ~128 MB
+# GPU floor on the Zero 2 W), the full one stays on the card as a fallback.
+BR2_PACKAGE_RPI_FIRMWARE_VARIANT_PI_CD=y
 BR2_PACKAGE_RPI_FIRMWARE_CONFIG_FILE="$(BR2_EXTERNAL_RNSBOX_PATH)/board/raspberrypi/rnsbox-0-2w/config.txt"
 BR2_PACKAGE_KMOD=y
 BR2_PACKAGE_KMOD_TOOLS=y

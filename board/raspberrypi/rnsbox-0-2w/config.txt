@@ -5,8 +5,14 @@
 # is reserved for the optional SLIP link to a WiFi-HaLow modem at 2 Mbaud,
 # so Bluetooth is disabled and the serial console stays OFF the UART.
 
-start_file=start.elf
-fixup_file=fixup.dat
+# Cut-down firmware: no display / camera pipeline at all. The full start.elf
+# silently enforces a ~128 MB GPU memory floor on the Zero 2 W even with
+# gpu_mem=16 below (the ARM side then sees only 384 MB); start_cd.elf honors
+# gpu_mem=16, giving Linux ~496 MB. Keep start.elf on the card (defconfig
+# ships both) so a manual edit here can undo this without a rebuild — at the
+# cost of there being NO HDMI console at all.
+start_file=start_cd.elf
+fixup_file=fixup_cd.dat
 
 kernel=Image
 arm_64bit=1
@@ -18,7 +24,7 @@ gpu_mem=16
 
 # PL011 (UART0) on GPIO14/15, Bluetooth off: frees the hardware UART for the
 # 2 Mbaud SLIP link (S31slip). The kernel cmdline keeps no serial console;
-# admin access is the USB network (portal/SSH) or HDMI tty1.
+# admin access is the USB network (portal/SSH).
 enable_uart=1
 dtoverlay=disable-bt
 
