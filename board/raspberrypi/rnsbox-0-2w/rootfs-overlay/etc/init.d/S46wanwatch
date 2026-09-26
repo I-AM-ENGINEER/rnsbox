@@ -315,8 +315,8 @@ loop() {
 		if [ -f "$ARMED_MARK" ] && [ ! -f "$STOPPED_MARK" ] && ! rnsd_running; then
 			log "rnsd not running -> kicking S82rnsd"
 			/etc/init.d/S82rnsd kick >> "$LOG" 2>&1
-			rnsd_running && { svc_enabled S83nomadnet || svc_enabled S85lxmd; } \
-				&& : > "$DEPS_MARK"
+			rnsd_running && { svc_enabled S83nomadnet || svc_enabled S85lxmd \
+				|| svc_enabled S86rnsh; } && : > "$DEPS_MARK"
 		fi
 
 		# Step 2b: nomadnet/lxmd deferred (or rnsd restarted by step 2):
@@ -330,7 +330,7 @@ loop() {
 				rm -f "$DEPS_MARK"
 			elif rnsd_running && rns_shared_up; then
 				rm -f "$DEPS_MARK"
-				for svc in S83nomadnet S85lxmd; do
+				for svc in S83nomadnet S85lxmd S86rnsh; do
 					svc_enabled "$svc" || continue
 					log "rnsd's shared instance is up -> $svc start"
 					"/etc/init.d/$svc" start >> "$LOG" 2>&1

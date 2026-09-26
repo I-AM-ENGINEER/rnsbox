@@ -82,6 +82,34 @@
 </section>
 
 <section class="card">
+  <h3>RNS Shell (rnsh)</h3>
+  <p class="muted">A root shell reachable from anywhere on the Reticulum network.
+  Client: <code>pip install rnsh</code>, <code>rnsh -p</code> prints your identity
+  hash (goes into the allow-list below), then <code>rnsh &lt;destination&gt;</code>
+  and disconnect with <code>~.</code> Authentication is by that allow-list only —
+  the service refuses to start with an empty one. Off by default.</p>
+
+  <table class="kv">
+    <tr><th>Status</th><td>__RNSH_STATUS__</td></tr>
+    <tr><th>Destination</th><td class="mono">__RNSH_DEST__</td></tr>
+  </table>
+
+  <form method="post" action="__BASE__/reticulum/rnsh">
+    <label style="margin:8px 0 0"><input type="checkbox" name="enabled"
+      __RNSH_CHECKED__> Enable RNS Shell</label>
+    <div class="row-form" style="margin-top:10px">
+      <label style="margin:0">Announce every
+        <input type="number" name="announce" value="__RNSH_ANNOUNCE__" min="0"
+          max="86400" title="seconds between network announces; 0 = once at startup"> s</label>
+    </div>
+    <label style="display:block;margin:10px 0 4px">Allowed client identities
+      (one <code>rnsh -p</code> hash per line)</label>
+    <textarea name="allowed" rows="4" spellcheck="false" class="mono">__RNSH_ALLOWED__</textarea>
+    <button type="submit" class="btn-primary" style="margin-top:10px">Save &amp; apply</button>
+  </form>
+</section>
+
+<section class="card">
   <h3>/etc/reticulum/config</h3>
   <p class="muted">Hand-edit the rnsd configuration. Comments and interface declarations are passed verbatim to Reticulum. Click <em>Save</em> then <em>Restart rnsd</em> to apply.</p>
   <form method="post" action="__BASE__/reticulum/config">

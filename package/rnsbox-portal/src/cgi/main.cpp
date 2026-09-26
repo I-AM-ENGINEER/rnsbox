@@ -47,6 +47,7 @@ static const char* const POST_ONLY[] = {
     "/reticulum/checkupdate",
     "/reticulum/applyupdate",
     "/reticulum/slip",
+    "/reticulum/rnsh",
     "/reticulum/halow/add",
     "/settings/password",
     "/settings/hostname",
@@ -399,6 +400,7 @@ int main(int argc, char** argv) {
     else if (p == "/reticulum/checkupdate")      routes::reticulum_checkupdate(req, res);
     else if (p == "/reticulum/applyupdate")      routes::reticulum_applyupdate(req, res);
     else if (p == "/reticulum/slip")             routes::reticulum_slip(req, res);
+    else if (p == "/reticulum/rnsh")             routes::reticulum_rnsh_save(req, res);
     else if (p == "/reticulum/halow/add")        routes::reticulum_halow_add(req, res);
     else if (p == "/settings")                   routes::settings_page(req, res);
     else if (p == "/settings/password")          routes::settings_password(req, res);

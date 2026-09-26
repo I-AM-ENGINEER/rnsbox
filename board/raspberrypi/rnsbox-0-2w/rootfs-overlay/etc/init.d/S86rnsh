@@ -1,0 +1,230 @@
+#!/bin/sh
+# S86rnsh — rnsh, the Reticulum remote shell (shipped DISABLED by default).
+#
+# Listens on an RNS destination and runs /bin/sh for authenticated clients.
+# Access is by explicit allow-list: /etc/rnsbox/rnsh.conf holds one
+# `allowed_id=<identity hash>` line per client (that hash is what `rnsh -p`
+# prints on the client). With no allowed_id lines the service refuses to
+# start — an unauthenticated root shell over the public Reticulum transport
+# is not a thing this box ships with. The destination's identity is
+# /etc/rnsbox/rnsh_identity, so the hash survives reboots; start() writes
+# it to /run/rnsh-dest for the portal.
+#
+# Runs AFTER S82rnsd and attaches to its shared instance (--rnsconfig
+# /etc/reticulum): no second transport stack. When rnsd's shared instance
+# is not accepting clients yet, start defers via $DEPS_MARK and
+# S46wanwatch starts it as soon as it is (same contract as S85lxmd).
+# Announces every `announce=` seconds so the destination propagates across
+# the transport network.
+
+NAME=rnsh
+DAEMON=/usr/bin/rnsh
+CONF=/etc/rnsbox/rnsh.conf
+IDENTITY=/etc/rnsbox/rnsh_identity
+RNS_CONFIGDIR=/etc/reticulum
+DESTFILE=/run/rnsh-dest
+PIDFILE=/var/run/$NAME.pid
+LOGPIPE=/var/run/$NAME.logpipe
+LOGGER_PIDFILE=/var/run/$NAME.logger.pid
+LOCKFILE=/run/rnsh.lock
+DEPS_MARK=/run/wanwatch-deps-pending
+STOP_WAIT=5
+
+if [ ! -x "$DAEMON" ]; then
+	[ "$1" = enabled ] && exit 1
+	exit 0
+fi
+
+# --- flat key=value conf; repeated allowed_id= lines build the allow-list ---
+read_conf() {
+	enabled="no"
+	announce="600"
+	ALLOWED=""
+	[ -r "$CONF" ] || return 0
+	v=$(grep -E '^[[:space:]]*enabled[[:space:]]*=' "$CONF" 2>/dev/null \
+	      | tail -1 | sed -E 's/^[^=]*=[[:space:]]*//' | tr -d '\042\047' | awk '{print tolower($1)}')
+	case "$v" in yes|true|1|on) enabled="yes" ;; esac
+	m=$(grep -E '^[[:space:]]*announce[[:space:]]*=' "$CONF" 2>/dev/null \
+	      | tail -1 | sed -E 's/^[^=]*=[[:space:]]*//' | tr -d '\042\047' | awk '{print $1}')
+	case "$m" in ''|*[!0-9]*) ;; *) announce="$m" ;; esac
+	ALLOWED=$(grep -E '^[[:space:]]*allowed_id[[:space:]]*=' "$CONF" 2>/dev/null \
+	      | sed -E 's/^[[:space:]]*allowed_id[[:space:]]*=[[:space:]]*//' \
+	      | tr -d '\042\047' | tr '[:upper:]' '[:lower:]' \
+	      | grep -E '^[0-9a-f]{16,64}$')
+}
+
+# rns_shared_up — true once rnsd's shared instance accepts clients. Same
+# test as S82rnsd/S83nomadnet/S85lxmd; builtins only.
+rns_shared_up() {
+	while read -r _num _ref _proto flags _type _st _ino path; do
+		case "$path" in
+			@rns/*/*) ;;
+			@rns/*) [ "$flags" = 00010000 ] && return 0 ;;
+		esac
+	done 2>/dev/null </proc/net/unix
+	while read -r _sl laddr _raddr st _rest; do
+		[ "$laddr" = 0100007F:9234 ] && [ "$st" = 0A ] && return 0
+	done 2>/dev/null </proc/net/tcp
+	return 1
+}
+
+pidfile_pid() {
+	_p=
+	{ read -r _p <"$1"; } 2>/dev/null
+	case "$_p" in ''|*[!0-9]*) return 1 ;; esac
+	echo "$_p"
+}
+
+pstat() {
+	PSTATE=; PPGRP=
+	case "$1" in ''|*[!0-9]*) return 1 ;; esac
+	_s=
+	{ read -r _s <"/proc/$1/stat"; } 2>/dev/null || return 1
+	set -- ${_s##*) }
+	PSTATE=$1; PPGRP=$3
+}
+
+is_rnsh() {
+	pstat "$1" && [ "$PSTATE" != Z ] || return 1
+	_c=
+	{ read -r _c <"/proc/$1/comm"; } 2>/dev/null
+	case "$_c" in
+		rnsh)   return 0 ;;
+		python*) tr '\0' '\n' <"/proc/$1/cmdline" 2>/dev/null | head -n 2 \
+		           | grep -qE '(^|/)rnsh$' ;;
+		*)      return 1 ;;
+	esac
+}
+
+group_alive() {
+	for _d in /proc/[0-9]*; do
+		pstat "${_d#/proc/}" && [ "$PPGRP" = "$1" ] && [ "$PSTATE" != Z ] && return 0
+	done
+	return 1
+}
+
+is_our_logger() {
+	_c=
+	{ read -r _c <"/proc/$1/comm"; } 2>/dev/null
+	[ "$_c" = logger ] || return 1
+	tr '\0' '\n' <"/proc/$1/cmdline" 2>/dev/null | grep -q "^$NAME\[[0-9]*\]\$"
+}
+
+stop_rnsh() {
+	p=$(pidfile_pid "$PIDFILE")
+	lp=$(pidfile_pid "$LOGGER_PIDFILE") && ! is_our_logger "$lp" && lp=
+	if ! is_rnsh "$p"; then
+		[ -n "$lp" ] && kill "$lp" 2>/dev/null
+		rm -f "$LOGGER_PIDFILE"
+		return 1
+	fi
+	kill "$p" 2>/dev/null
+	i=0
+	while [ "$i" -lt "$STOP_WAIT" ] && is_rnsh "$p"; do
+		sleep 1; i=$((i + 1))
+	done
+	is_rnsh "$p" && kill -KILL "$p" 2>/dev/null
+	pstat "$p" && group_alive "$PPGRP" && kill -KILL "-$PPGRP" 2>/dev/null
+	i=0
+	while [ "$i" -lt 5 ]; do
+		is_rnsh "$p" || { [ -n "$lp" ] && is_our_logger "$lp"; } || break
+		sleep 0.2; i=$((i + 1))
+	done
+	[ -n "$lp" ] && is_our_logger "$lp" && kill "$lp" 2>/dev/null
+	rm -f "$LOGGER_PIDFILE"
+	return 0
+}
+
+start() {
+	read_conf
+	if [ "$enabled" != "yes" ]; then
+		echo "S86rnsh: disabled in $CONF (enabled=$enabled); skipping"
+		return 0
+	fi
+
+	if p=$(pidfile_pid "$PIDFILE") && is_rnsh "$p"; then
+		echo "S86rnsh: already running (pid $p)"
+		return 0
+	fi
+	stop_rnsh
+
+	# The allow-list is the whole security model: refuse without one.
+	if [ -z "$ALLOWED" ]; then
+		logger -t S86rnsh -p daemon.warning \
+			"enabled but no allowed_id in $CONF - not starting an unauthenticated root shell" 2>/dev/null
+		echo "S86rnsh: refusing to start - no allowed_id lines in $CONF"
+		echo "         add your client's identity hash (rnsh -p on the client)"
+		return 1
+	fi
+
+	if [ -z "$(pidof rnsd)" ]; then
+		echo "S86rnsh: refusing to start - rnsd (S82rnsd) is not running"
+		return 1
+	fi
+	if ! rns_shared_up; then
+		: > "$DEPS_MARK"
+		echo "S86rnsh: deferred - rnsd's shared instance isn't accepting clients yet"
+		echo "         S46wanwatch starts rnsh as soon as it is"
+		return 0
+	fi
+
+	printf "Starting %s: " "$NAME"
+	rm -f "$DESTFILE"
+
+	# The destination hash must survive reboots, so the identity lives on
+	# the rootfs (/etc/rnsbox/), not in rnsd's tmpfs storage. rnsh creates
+	# it if missing; -l -p prints the pair and exits.
+	[ -s "$IDENTITY" ] || { umask 077; rnsh --rnsconfig "$RNS_CONFIGDIR" -i "$IDENTITY" -l -p >/dev/null 2>&1; }
+	dest=$(rnsh --rnsconfig "$RNS_CONFIGDIR" -i "$IDENTITY" -l -p 2>/dev/null \
+		| sed -n 's/^Listening on : <\([0-9a-fA-F]\{16,\}\)>.*/\1/p')
+	if [ -n "$dest" ]; then
+		echo "$dest" > "$DESTFILE"
+	else
+		logger -t S86rnsh -p daemon.warning "could not read the destination hash" 2>/dev/null
+	fi
+
+	SETSID=
+	command -v setsid >/dev/null 2>&1 && SETSID=setsid
+	rm -f "$LOGPIPE" "$LOGGER_PIDFILE"
+	set -- --rnsconfig "$RNS_CONFIGDIR" -i "$IDENTITY" -l -b "$announce"
+	for h in $ALLOWED; do
+		set -- "$@" -a "$h"
+	done
+	set -- "$@" -- /bin/sh
+	if command -v logger >/dev/null 2>&1 && mkfifo -m 600 "$LOGPIPE" 2>/dev/null; then
+		( umask 077; export PYTHONUNBUFFERED=1; exec $SETSID "$DAEMON" "$@" ) \
+			</dev/null >"$LOGPIPE" 2>&1 &
+		PID=$!
+		$SETSID logger -t "$NAME[$PID]" -p daemon.notice 9>&- <"$LOGPIPE" >/dev/null 2>&1 &
+		echo $! > "$LOGGER_PIDFILE"
+	else
+		( umask 077; export PYTHONUNBUFFERED=1; exec $SETSID "$DAEMON" "$@" ) \
+			</dev/null >/dev/null 2>&1 &
+		PID=$!
+	fi
+	echo "$PID" > "$PIDFILE"
+	sleep 1
+	is_rnsh "$PID" && echo "OK (pid $PID)" || { echo "failed"; return 1; }
+}
+
+case "$1" in
+	start|reload)
+		if command -v flock >/dev/null 2>&1; then
+			( umask 077; exec 9>"$LOCKFILE"
+			  until flock -n 9 2>/dev/null; do
+				sleep 1; i=$((i + 1)); [ "$i" -lt 15 ] || exit 1
+			  done
+			  start
+			)
+		else
+			start
+		fi
+		;;
+	stop) stop_rnsh ;;
+	restart|force-reload) "$0" stop; "$0" start ;;
+	enabled)
+		read_conf
+		[ "$enabled" = "yes" ]
+		;;
+	*) echo "Usage: $0 {start|stop|restart|reload|enabled}" ;;
+esac

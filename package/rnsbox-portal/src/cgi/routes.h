@@ -34,6 +34,7 @@ void reticulum_autoupdate(const http::Request&, http::Response&);  // POST PRG
 void reticulum_checkupdate(const http::Request&, http::Response&); // POST PRG (python helper)
 void reticulum_applyupdate(const http::Request&, http::Response&); // POST PRG (python helper)
 void reticulum_slip(const http::Request&, http::Response&);        // POST PRG
+void reticulum_rnsh_save(const http::Request&, http::Response&);   // POST PRG
 void reticulum_halow_add(const http::Request&, http::Response&);   // POST PRG
 
 // settings tab

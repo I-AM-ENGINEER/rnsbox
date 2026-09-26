@@ -27,6 +27,78 @@ static std::string R(std::string s, const std::string& a, const std::string& b) 
 static std::string E(const std::string& s) { return render::esc(s); }
 static std::string ret_redirect() { return web::base() + "/reticulum"; }
 
+// ===================== RNS Shell (rnsh) =====================
+
+constexpr const char* RNSH_CONF = "/etc/rnsbox/rnsh.conf";
+
+struct RnshConf {
+    bool enabled = false;
+    std::string announce = "600";
+    std::string allowed;   // normalized "allowed_id=<hash>" lines
+};
+
+static RnshConf rnsh_read_conf() {
+    RnshConf c;
+    std::string conf = util::read_file(RNSH_CONF, 16384);
+    bool have_en = false, have_an = false;
+    size_t i = 0;
+    while (i <= conf.size()) {
+        size_t nl = conf.find('\n', i);
+        std::string ln = util::trim(conf.substr(i, nl == std::string::npos ? std::string::npos : nl - i));
+        i = (nl == std::string::npos) ? conf.size() + 1 : nl + 1;
+        if (ln.empty() || ln[0] == '#') continue;
+        size_t eq = ln.find('=');
+        if (eq == std::string::npos) continue;
+        std::string k = util::trim(ln.substr(0, eq)), v = util::trim(ln.substr(eq + 1));
+        for (char& ch : k) ch = (char)tolower((unsigned char)ch);
+        std::string low = v;
+        for (char& ch : low) ch = (char)tolower((unsigned char)ch);
+        if (k == "enabled" && !have_en) {
+            c.enabled = (low == "yes" || low == "true" || low == "1" || low == "on");
+            have_en = true;
+        } else if (k == "announce" && !have_an) {
+            if (!v.empty() && v.find_first_not_of("0123456789") == std::string::npos) {
+                c.announce = v;
+                have_an = true;
+            }
+        } else if (k == "allowed_id") {
+            if (v.size() >= 16 && v.size() <= 64 &&
+                v.find_first_not_of("0123456789abcdefABCDEF") == std::string::npos) {
+                for (char& ch : v) ch = (char)tolower((unsigned char)ch);
+                c.allowed += v + "\n";
+            }
+        }
+    }
+    return c;
+}
+
+static bool rnsh_running() {
+    std::string ps = util::trim(util::read_file("/var/run/rnsh.pid", 32));
+    if (ps.empty() || ps.find_first_not_of("0123456789") != std::string::npos) return false;
+    std::string comm = util::trim(util::read_file("/proc/" + ps + "/comm", 64));
+    return comm == "rnsh";
+}
+
+static std::string rnsh_fill(std::string h) {
+    RnshConf rc = rnsh_read_conf();
+    bool running = rnsh_running();
+    std::string dest = util::trim(util::read_file("/run/rnsh-dest", 128));
+    std::string status;
+    if (running)
+        status = "<span class=\"badge ok\">running</span>";
+    else if (rc.enabled && util::trim(rc.allowed).empty())
+        status = "<span class=\"badge warn\">not started</span> add your client's identity hash below";
+    else
+        status = "<span class=\"badge\">stopped</span>";
+    h = R(std::move(h), "__RNSH_CHECKED__", rc.enabled ? "checked" : "");
+    h = R(std::move(h), "__RNSH_ANNOUNCE__", E(rc.announce));
+    h = R(std::move(h), "__RNSH_ALLOWED__", E(rc.allowed));
+    h = R(std::move(h), "__RNSH_STATUS__", status);
+    h = R(std::move(h), "__RNSH_DEST__",
+          dest.empty() ? "<span class=\"muted\">not running</span>" : E(dest));
+    return h;
+}
+
 // HTTPS to PyPI needs a real date. With no trusted clock (/run/clock-source
 // absent: no NTP, RTC or browser sync yet) TLS fails "certificate is not yet
 // valid", which updatecheck.py records only as "URLError" (reads as offline),
@@ -242,6 +314,7 @@ void reticulum_page(const Request& req, Response& res) {
     h = R(std::move(h), "__SLIP_BAUD__",     E(sl.baud));
     h = R(std::move(h), "__SLIP_LOCAL_IP__", E(sl.local_ip));
     h = R(std::move(h), "__SLIP_PEER_IP__",  E(sl.peer_ip));
+    h = rnsh_fill(std::move(h));
     h = R(std::move(h), "__CONFIG__",        E(cfg));
 
     res.body = render::layout(req, res, "Reticulum", "reticulum", h);
@@ -390,6 +463,53 @@ void reticulum_slip(const Request& req, Response& res) {
             " on the modem's TCP Radio Bridge port).");
     else
         render::redirect_flash(res, ret_redirect(), "success", "SLIP link disabled.");
+}
+
+void reticulum_rnsh_save(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, false)) return;
+    bool enabled = req.f("enabled") == "on";
+    std::string announce = util::trim(req.f("announce"));
+    if (announce.empty() || announce.find_first_not_of("0123456789") != std::string::npos)
+        announce = "600";
+    long an = strtol(announce.c_str(), nullptr, 10);
+    if (an < 0 || an > 86400) an = 600;
+    announce = std::to_string(an);
+
+    // The allow-list is the security model: normalize hard. One hash per
+    // line, 16..64 lowercase hex, '#' comments stripped, deduped, max 64.
+    std::string body = req.f("allowed"), o, seen[64];
+    int n = 0;
+    size_t i = 0;
+    while (i <= body.size()) {
+        size_t nl = body.find('\n', i);
+        std::string ln = util::trim(body.substr(i, nl == std::string::npos ? std::string::npos : nl - i));
+        i = (nl == std::string::npos) ? body.size() + 1 : nl + 1;
+        size_t hash = ln.find('#');
+        if (hash != std::string::npos) ln = util::trim(ln.substr(0, hash));
+        for (char& ch : ln) ch = (char)tolower((unsigned char)ch);
+        if (ln.size() < 16 || ln.size() > 64) continue;
+        if (ln.find_first_not_of("0123456789abcdef") != std::string::npos) continue;
+        bool dup = false;
+        for (int k = 0; k < n; k++) if (seen[k] == ln) { dup = true; break; }
+        if (dup || n >= 64) continue;
+        seen[n++] = ln;
+        o += "allowed_id=" + ln + "\n";
+    }
+    std::string conf = "enabled=" + std::string(enabled ? "yes" : "no") +
+                       "\nannounce=" + announce + "\n" + o;
+    if (!util::write_file_atomic(RNSH_CONF, conf, 0600)) {
+        render::redirect_flash(res, ret_redirect(), "error", "rnsh: could not write the config.");
+        return;
+    }
+    web::run_init("S86rnsh", "restart");
+    if (!enabled) {
+        render::redirect_flash(res, ret_redirect(), "success", "RNS Shell disabled.");
+        return;
+    }
+    std::string dest = util::trim(util::read_file("/run/rnsh-dest", 128));
+    render::redirect_flash(res, ret_redirect(), "success",
+        "RNS Shell saved. Destination: " +
+        (dest.empty() ? std::string("(not started — see the status line)") : dest) + ".");
 }
 
 void reticulum_halow_add(const Request& req, Response& res) {
