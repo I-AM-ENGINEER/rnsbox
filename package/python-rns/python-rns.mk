@@ -9,7 +9,7 @@
 #
 ################################################################################
 
-PYTHON_RNS_VERSION ?= 1.5.2
+PYTHON_RNS_VERSION ?= 1.5.4
 PYTHON_RNS_SOURCE = rns-$(PYTHON_RNS_VERSION).tar.gz
 PYTHON_RNS_SITE = https://files.pythonhosted.org/packages/7e/fb/d7b0b67c0e369b8533fe14688cb2b65bff21c669b0c776759015ad3d1830
 PYTHON_RNS_SETUP_TYPE = pep517
