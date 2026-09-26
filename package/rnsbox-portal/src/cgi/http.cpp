@@ -1,6 +1,7 @@
 // http.cpp — see http.h. Defensive CGI parsing for a WAN-facing root service.
 #include "http.h"
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <unistd.h>
 
@@ -33,6 +34,21 @@ std::string url_decode(const std::string& s) {
         }
     }
     return out;
+}
+
+std::string url_encode(const std::string& s) {
+    static const char* hex = "0123456789ABCDEF";
+    std::string o;
+    o.reserve(s.size());
+    for (unsigned char c : s) {
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+            c == '-' || c == '_' || c == '.' || c == '~' || c == '/') {
+            o += (char)c;
+        } else {
+            o += '%'; o += hex[c >> 4]; o += hex[c & 0xF];
+        }
+    }
+    return o;
 }
 
 void parse_urlencoded(const std::string& s, std::map<std::string, std::string>& out) {
@@ -87,6 +103,9 @@ Request read_request() {
     if (r.path.empty()) r.path = "/";
     r.query = env_str("QUERY_STRING");
     r.remote_addr = env_str("REMOTE_ADDR");
+    r.host = env_str("HTTP_HOST");
+    r.origin = env_str("HTTP_ORIGIN");
+    r.referer = env_str("HTTP_REFERER");
 
     parse_urlencoded(r.query, r.args);
     parse_cookies(env_str("HTTP_COOKIE"), r.cookies);
@@ -122,12 +141,65 @@ Request read_request() {
     return r;
 }
 
+// ---- same-origin check ----
+static std::string lower(std::string s) {
+    for (char& c : s) if (c >= 'A' && c <= 'Z') c = char(c - 'A' + 'a');
+    return s;
+}
+
+// Drop a trailing default port (":80" for http, ":443" for https) so
+// "10.42.0.1:80" and "10.42.0.1" compare equal.
+static std::string strip_default_port(const std::string& auth, const std::string& scheme) {
+    const char* dp = scheme == "https" ? ":443" : ":80";
+    size_t n = strlen(dp);
+    if (auth.size() > n && auth.compare(auth.size() - n, n, dp) == 0)
+        return auth.substr(0, auth.size() - n);
+    return auth;
+}
+
+// True if `url` ("scheme://authority[/path...]", an Origin or a Referer) names
+// this box: the request's own scheme (http unless uhttpd set HTTPS), authority == Host.
+static bool url_matches_host(const std::string& url, const std::string& host) {
+    if (host.empty()) return false;
+    std::string u = lower(url);
+    // Only the scheme this request arrived on: uhttpd exports HTTPS=on for a TLS
+    // client and leaves it unset otherwise (this build has no TLS listener), so
+    // today only http:// matches. An https:// page at the same host is a
+    // different origin (some other server, e.g. a WAN 443 port forward).
+    const std::string scheme = getenv("HTTPS") ? "https" : "http";
+    const std::string prefix = scheme + "://";
+    if (u.compare(0, prefix.size(), prefix) != 0) return false;  // other scheme, "null", garbage
+    size_t a = scheme.size() + 3;
+    size_t e = u.find_first_of("/?#", a);
+    std::string auth = u.substr(a, e == std::string::npos ? std::string::npos : e - a);
+    if (auth.empty()) return false;
+    return strip_default_port(auth, scheme) == strip_default_port(lower(host), scheme);
+}
+
+bool same_origin(const Request& r) {
+    if (!r.origin.empty()) return url_matches_host(r.origin, r.host);
+    if (!r.referer.empty()) return url_matches_host(r.referer, r.host);
+    return true;   // no Origin, no Referer: non-browser client (see http.h)
+}
+
+// Header-line hygiene: CR/LF would split a value into a new header (uhttpd's
+// relay splits CGI output on '\n' and re-emits each line verbatim), NUL would
+// truncate it. Normal values never contain any of them, so this is a no-op for
+// every legitimate response.
+static std::string header_safe(const std::string& s) {
+    if (s.find_first_of(std::string("\r\n\0", 3)) == std::string::npos) return s;
+    std::string o;
+    o.reserve(s.size());
+    for (char c : s) if (c != '\r' && c != '\n' && c != '\0') o.push_back(c);
+    return o;
+}
+
 void Response::send() const {
     std::string out;
     out.reserve(body.size() + 256);
-    out += "Status: " + status + "\r\n";
-    out += "Content-Type: " + content_type + "\r\n";
-    for (const auto& h : headers) out += h + "\r\n";
+    out += "Status: " + header_safe(status) + "\r\n";
+    out += "Content-Type: " + header_safe(content_type) + "\r\n";
+    for (const auto& h : headers) out += header_safe(h) + "\r\n";
     // Conservative security headers (WAN-facing).
     out += "X-Content-Type-Options: nosniff\r\n";
     out += "X-Frame-Options: DENY\r\n";

@@ -77,6 +77,18 @@ std::string sanitize_comment(const std::string& s) {
     return util::trim(o);
 }
 
+bool conf_value_ok(const std::string& s) {
+    for (unsigned char c : s)
+        if (c < 0x20 || c == 0x7f) return false;   // incl. CR, LF, NUL, TAB
+    return true;
+}
+
+static bool all_digits(const std::string& s) {
+    if (s.empty()) return false;
+    for (char c : s) if (c < '0' || c > '9') return false;
+    return true;
+}
+
 // ---- port forwards ----
 std::vector<PortForward> read_portforwards() {
     std::vector<PortForward> out;
@@ -116,6 +128,15 @@ bool add_portforward(const PortForward& pf, std::string& err) {
     if (pf.wan_port < 1 || pf.wan_port > 65535) { err = "wan_port out of range"; return false; }
     if (pf.lan_port < 1 || pf.lan_port > 65535) { err = "lan_port out of range"; return false; }
     if (!valid_ipv4(pf.lan_ip)) { err = "lan_ip is not a valid IPv4 address"; return false; }
+    if (!conf_value_ok(pf.comment)) { err = "comment must not contain line breaks or control characters"; return false; }
+    // WAN ports the box serves itself. Prerouting DNAT runs before INPUT, so a
+    // forward would silently take them over. The portal's cross-port redirects
+    // (main.cpp MODEM_PORT) would then send the admin, session cookie included
+    // (cookies aren't port-scoped), to the forward's target.
+    if (pf.proto == "tcp" && pf.wan_port == 8081) { err = "WAN tcp 8081 is reserved for the HaLow modem page"; return false; }
+    if (pf.proto == "tcp" && pf.wan_port == 80)
+        for (const auto& op : read_openports())
+            if (op.proto == "tcp" && op.port == 80) { err = "WAN tcp 80 is the web UI (Open ports) - remove it there first"; return false; }
     auto items = read_portforwards();
     PortForward n = pf;
     n.comment = sanitize_comment(pf.comment);
@@ -164,6 +185,7 @@ static bool write_openports(const std::vector<OpenPort>& items) {
 bool add_openport(const OpenPort& op, std::string& err) {
     if (op.proto != "tcp" && op.proto != "udp") { err = "proto must be tcp or udp"; return false; }
     if (op.port < 1 || op.port > 65535) { err = "port out of range"; return false; }
+    if (!conf_value_ok(op.comment)) { err = "comment must not contain line breaks or control characters"; return false; }
     auto items = read_openports();
     OpenPort n = op;
     n.comment = sanitize_comment(op.comment);
@@ -201,24 +223,39 @@ WanConfig read_wan() {
             c.interface = s;   // legacy single-line
         }
     }
-    if (c.interface != "eth0" && c.interface != "wlan0") c.interface = "eth0";
+    // Same rule as S30eth wan_iface / S60routing read_wan: unknown -> auto.
+    if (c.interface != "auto" && c.interface != "eth0" && c.interface != "wlan0") c.interface = "auto";
     if (c.mode != "dhcp" && c.mode != "static") c.mode = "dhcp";
     return c;
 }
 
-bool write_wan(const WanConfig& cfg, std::string& err) {
-    if (cfg.interface != "eth0" && cfg.interface != "wlan0") { err = "WAN interface must be eth0 or wlan0"; return false; }
+bool write_wan(const WanConfig& in, std::string& err) {
+    WanConfig cfg = in;
+    if (cfg.interface != "auto" && cfg.interface != "eth0" && cfg.interface != "wlan0") { err = "WAN interface must be auto, eth0 or wlan0"; return false; }
     if (cfg.mode != "dhcp" && cfg.mode != "static") { err = "WAN mode must be dhcp or static"; return false; }
     if (cfg.mode == "static") {
+        if (!conf_value_ok(cfg.address) || !conf_value_ok(cfg.prefix) ||
+            !conf_value_ok(cfg.gateway) || !conf_value_ok(cfg.dns)) {
+            err = "static fields must not contain line breaks or control characters"; return false;
+        }
         if (!valid_ipv4(cfg.address)) { err = "static address is not a valid IPv4"; return false; }
-        int pfx = -1; to_int(cfg.prefix, pfx);
+        int pfx = -1;
+        if (all_digits(cfg.prefix)) to_int(cfg.prefix, pfx);   // no sign / junk ("+24", "24x")
         if (pfx < 0 || pfx > 32) { err = "prefix must be 0-32"; return false; }
         if (!cfg.gateway.empty() && !valid_ipv4(cfg.gateway)) { err = "gateway is not a valid IPv4"; return false; }
-        if (!valid_dns_list(cfg.dns)) { err = "dns must be space-separated IPv4 addresses"; return false; }
+        // The Network tab says "space- or comma-separated": accept commas, then
+        // store the canonical single-space list S30eth iterates over.
+        std::string d = cfg.dns;
+        for (char& c : d) if (c == ',') c = ' ';
+        if (!valid_dns_list(d)) { err = "dns must be space- or comma-separated IPv4 addresses"; return false; }
+        cfg.dns.clear();
+        for (const auto& ip : split_ws(d)) { if (!cfg.dns.empty()) cfg.dns += " "; cfg.dns += ip; }
     }
     std::string o =
         "# WAN uplink config — managed by the rnsbox-portal Network tab.\n"
-        "# interface: eth0 (wired RJ45) or wlan0 (WiFi client, requires STA mode).\n"
+        "# interface: auto (eth0 while it has a cable and an address, else the\n"
+        "#            wlan0 WiFi client), eth0 (wired RJ45 only) or wlan0 (WiFi\n"
+        "#            client only, requires STA mode). Never changed by the box.\n"
         "# mode:      dhcp (lease from upstream) or static.\n"
         "# Static mode (applied to eth0 by S30eth): address/prefix/gateway/dns.\n";
     o += "interface=" + cfg.interface + "\n";
@@ -288,13 +325,18 @@ bool write_reticulum_config(const std::string& text, std::string& err) {
     std::string norm;
     norm.reserve(text.size());
     for (char c : text) { if (c != '\r') norm.push_back(c); }
-    if (!util::write_file_atomic(RETICULUM_CONFIG, norm, 0644)) { err = "write failed"; return false; }
+    // 0600: it may hold IFAC passphrases or rpc_key, and every reader
+    // (rnsd, rnstatus, lxmd, nomadnet, the portal) runs as root.
+    if (!util::write_file_atomic(RETICULUM_CONFIG, norm, 0600)) { err = "write failed"; return false; }
     return true;
 }
 
 // ---- NTP servers ----
+// A leading '-' is refused: after `server` ntp.conf reads -4/-6 as qualifiers,
+// and S45ntpsync's `ntpdate -u -b <servers>` would take it as an option (it
+// skips such names too).
 static bool valid_ntp_server(const std::string& s) {
-    if (s.empty() || s.size() > 253) return false;
+    if (s.empty() || s.size() > 253 || s[0] == '-') return false;
     for (char c : s) if (!(isalnum((unsigned char)c) || c == '.' || c == '-' || c == ':')) return false;
     return true;
 }
@@ -355,8 +397,11 @@ bool write_slip(const SlipConfig& c, std::string& err) {
     std::string en = cron_truthy(c.enabled) ? "yes" : "no";
     std::string dev = c.device.empty() ? "/dev/serial0" : c.device;
     if (!valid_tty(dev)) { err = "bad device path"; return false; }
-    int baud = atoi(c.baud.c_str());
-    if (baud < 1 || baud > 4000000) { err = "baud out of range (1-4000000)"; return false; }
+    // Digits only (atoi would take "1500000<junk>"); ceiling = the UART's
+    // 25 MHz/16 base rate — anything above can't be generated.
+    int baud = 0;
+    if (all_digits(c.baud) && c.baud.size() <= 8) baud = atoi(c.baud.c_str());
+    if (baud < 1 || baud > SLIP_MAX_BAUD) { err = "baud out of range (1-" + std::to_string(SLIP_MAX_BAUD) + ")"; return false; }
     std::string lip = c.local_ip.empty() ? "192.168.7.1" : c.local_ip;
     std::string pip = c.peer_ip.empty() ? "192.168.7.2" : c.peer_ip;
     if (!valid_ipv4(lip) || !valid_ipv4(pip)) { err = "bad IP address"; return false; }
@@ -418,6 +463,10 @@ static bool reticulum_has_tcp_client(const std::string& host, int port) {
 bool add_halow_interface(const std::string& name_in, const std::string& host, int port, std::string& msg) {
     if (!valid_ipv4(host)) { msg = "bad modem IP"; return false; }
     if (port < 1 || port > 65535) { msg = "bad port"; return false; }
+    // The name lands in a "[[name]]" header line: a CR/LF would start new
+    // config lines (e.g. a spawned-command interface). It can come from the
+    // modem's own hostname via the page JS, so never trust it.
+    if (!conf_value_ok(name_in)) { msg = "interface name must not contain line breaks or control characters"; return false; }
     auto lines = read_lines(RETICULUM_CONFIG);
     if (lines.empty()) { msg = "no reticulum config"; return false; }
     if (reticulum_has_tcp_client(host, port)) { msg = "already"; return false; }
@@ -436,7 +485,7 @@ bool add_halow_interface(const std::string& name_in, const std::string& host, in
     lines.push_back("    target_port = " + std::to_string(port));
     std::string o;
     for (const auto& l : lines) o += l + "\n";
-    if (!util::write_file_atomic(RETICULUM_CONFIG, o, 0644)) { msg = "write failed"; return false; }
+    if (!util::write_file_atomic(RETICULUM_CONFIG, o, 0600)) { msg = "write failed"; return false; }  // see write_reticulum_config
     msg = name;
     return true;
 }

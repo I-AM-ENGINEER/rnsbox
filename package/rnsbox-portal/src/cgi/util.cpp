@@ -46,6 +46,16 @@ bool write_file_atomic(const std::string& path, const std::string& data, int mod
     return true;
 }
 
+// Seconds on CLOCK_MONOTONIC, for run()'s deadline. Not time(): "Sync clock to
+// browser" (date -s), or an NTP step, can run while a child is out, and a
+// wall-clock deadline would then look long expired and SIGKILL a child that
+// already finished (time_browser's own `date -s` included).
+static time_t mono_now() {
+    struct timespec ts;
+    if (::clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return ::time(nullptr);   // never on Linux
+    return ts.tv_sec;
+}
+
 RunResult run(const std::vector<std::string>& argv, const std::string& input,
               int timeout_s, size_t out_cap) {
     RunResult rr;
@@ -85,11 +95,11 @@ RunResult run(const std::vector<std::string>& argv, const std::string& input,
     }
     ::close(inpipe[1]);
 
-    // Read output with a wall-clock deadline enforced via alarm-free polling:
+    // Read output with a monotonic deadline enforced via alarm-free polling:
     // set the read fd non-blocking and loop until child exits or timeout.
     ::fcntl(outpipe[0], F_SETFL, O_NONBLOCK);
-    time_t deadline = ::time(nullptr) + timeout_s;
-    bool killed = false;
+    time_t deadline = mono_now() + timeout_s;
+    bool killed = false, reaped = false;
     char buf[8192];
     int status = 0;
     for (;;) {
@@ -103,6 +113,7 @@ RunResult run(const std::vector<std::string>& argv, const std::string& input,
         // n < 0: EAGAIN or error
         pid_t w = ::waitpid(pid, &status, WNOHANG);
         if (w == pid) { // child gone; drain any remaining then break
+            reaped = true;
             while ((n = ::read(outpipe[0], buf, sizeof(buf))) > 0) {
                 size_t room = out_cap > rr.out.size() ? out_cap - rr.out.size() : 0;
                 if (!room) break;
@@ -110,15 +121,22 @@ RunResult run(const std::vector<std::string>& argv, const std::string& input,
             }
             break;
         }
-        if (::time(nullptr) >= deadline) { ::kill(pid, SIGKILL); killed = true; break; }
+        if (mono_now() >= deadline) { ::kill(pid, SIGKILL); killed = true; break; }
         ::usleep(20 * 1000);
     }
     ::close(outpipe[0]);
-    if (killed) { ::waitpid(pid, &status, 0); rr.timed_out = true; rr.exit_code = -1; }
-    else {
-        if (!WIFEXITED(status) && !WIFSIGNALED(status)) ::waitpid(pid, &status, 0);
-        rr.exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    // EOF usually arrives before the child is reaped. Reap it here, still under
+    // the deadline: `status` would otherwise stay at its initial 0, which reads
+    // as "exited 0", so every failing command looked like a success.
+    while (!reaped && !killed) {
+        pid_t w = ::waitpid(pid, &status, WNOHANG);
+        if (w == pid) { reaped = true; break; }
+        if (w < 0) break;
+        if (mono_now() >= deadline) { ::kill(pid, SIGKILL); killed = true; break; }
+        ::usleep(20 * 1000);
     }
+    if (killed) { ::waitpid(pid, &status, 0); rr.timed_out = true; rr.exit_code = -1; }
+    else rr.exit_code = (reaped && WIFEXITED(status)) ? WEXITSTATUS(status) : -1;
     return rr;
 }
 

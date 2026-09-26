@@ -39,6 +39,16 @@ CONFIG_NET_SCH_FQ=y
 CONFIG_TUN=y
 CONFIG_VETH=y
 
+# --- one bridged LAN (br-lan): USB-C NCM + WiFi hotspot share a subnet ---
+CONFIG_BRIDGE=y
+
+# --- optional DS3231 RTC on i2c1 (dtoverlay=i2c-rtc,ds3231 in config.txt;
+#     SDA=GPIO2/pin3, SCL=GPIO3/pin5) so the box keeps time powered off ---
+CONFIG_I2C=y
+CONFIG_I2C_BCM2835=y
+CONFIG_RTC_CLASS=y
+CONFIG_RTC_DRV_DS1307=y
+
 # --- onboard WiFi (brcmfmac, built-in so it probes before S35wifi) ---
 CONFIG_CFG80211=y
 CONFIG_BRCMFMAC=y

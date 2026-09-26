@@ -1,119 +1,304 @@
 #!/bin/sh
 # S60routing — kernel routing knobs + regenerate nftables.conf and the
-# per-LAN dnsmasq scope, then apply.
+# LAN's dnsmasq scope, then apply.
 #
-# Runs after S30gadget_nic (usb0), S30eth (eth0 lease) and S35wifi (so an
-# AP iface, if any, already exists and can be folded into the LAN side).
+# Runs after S30gadget_nic (the LAN iface: br-lan, or usb0 without a bridge;
+# recorded in /run/lan-iface), S30eth (eth0 lease) and S35wifi (wlan0 may be
+# the WAN).
+#
+# The WAN (wan.conf interface=) is one uplink, eth0 or wlan0, or `auto` (the
+# default): both are WAN ifaces at once, in the ruleset's @wan_ifaces, NAT and
+# route_localnet alike. Which one carries traffic is the kernel's routing
+# choice, not ours: eth0's default route (metric 0) beats a wlan0 STA's
+# (dhcpcd, metric 3000+) while eth0 has a cable and a lease, and is skipped
+# while it has no carrier (S30eth sets ignore_routes_with_linkdown). So a
+# cable plugged in, pulled out or a WiFi uplink joined needs no re-run here;
+# only the WAN-NATed conntrack entries are flushed when the uplink in use
+# moves (`uplink`, run by S46wanwatch), or those flows would hang on the old
+# uplink's address.
+# A wlan0 that is the hotspot (mode=ap) is a br-lan port: nftables sees its
+# traffic on br-lan, never on wlan0, so listing it as a WAN iface is inert. The hotspot needs nothing here: hostapd bridges the AP iface into
+# br-lan (S35wifi), so its clients share the one LAN iface, subnet and DHCP
+# pool with the USB host.
 # Re-runnable as `restart` whenever the portal edits the rnsbox configs.
 #
-# nftables ruleset comes from `python3 -m rnsbox_portal.nftgen` (single
-# source of truth shared with the Flask UI). Pre-validate with `nft -c -f`
-# (validate-before-swap discipline) before atomically swapping the live config so a bad
-# generated rule can't lock us out.
+# nftables ruleset comes from `/usr/sbin/rnsbox-portal nftgen` (the C++
+# portal's generator — single source of truth shared with the web UI):
+# `table ip filter` + `table ip nat`, plus a LAN-only `table ip6 filter` when
+# the kernel has IPv6 (only the LAN iface has IPv6 at all — see S09ipv6). The
+# LAN set is just the LAN iface: traffic between bridge ports (USB host <->
+# hotspot client) is switched at L2 and never reaches nftables. Pre-validate
+# with `nft -c -f` (validate-before-swap discipline) before atomically
+# swapping the live config so a bad generated rule can't lock us out.
+#
+# Failure handling — fail closed, never "no firewall":
+#   1. nftgen output fails nft -c -> retry once without the ip6 table
+#      (--no-ipv6); if that validates it is installed (IPv4 router intact).
+#   2. still nothing valid -> keep the previous $NFT_FILE only if it holds a
+#      filter table and was generated for the same WAN/LAN (topology tag on
+#      line 1) or is the shipped static fallback (LAN-only, closed toward
+#      every non-LAN iface); otherwise (incl. an empty/truncated file) go to
+#      step 3.
+#   3. $NFT_FILE won't LOAD (e.g. the static fallback's ip6 table on a kernel
+#      without IPv6) -> built-in IPv4-only emergency ruleset: lo + LAN +
+#      established in, LAN -> the WAN iface(s) out (masqueraded), everything
+#      else dropped.
+#   4. even that fails (nf_tables unusable) -> ip_forward stays 0, so the box
+#      at least doesn't route for the LAN; logged. Whatever ruleset was live
+#      before is left as it was.
+# ip_forward is switched on only once some ruleset is loaded. Details of any
+# failure land in $NFT_ERR.
+#
+# Before this runs, S29fw (`S60routing early`) has already loaded the emergency
+# ruleset (LAN = br-lan + usb0): the WAN gets its address in S30eth /
+# S35wifi and stock S50sshd listens on 0.0.0.0:22 well before S60, so without
+# it IPv4 would be unfiltered for that window on every boot. `stop` loads the
+# same emergency ruleset instead of flushing, so shutdown (rcK stops S60 before
+# S50sshd) and a manual stop leave the box closed too.
 
 WAN_CONF=/etc/rnsbox/wan.conf
 NFT_FILE=/etc/nftables.conf
+NFT_ERR=/var/log/nftgen.err
 DNSMASQ_FILE=/etc/dnsmasq.conf
 NFTGEN="/usr/sbin/rnsbox-portal nftgen"
+WAN_CANDIDATES="eth0 wlan0"   # every iface that can be a WAN (also: interface=auto)
 
-USB0_LAN_IP=10.42.0.1
-USB0_LAN_DHCP_START=10.42.0.10
-USB0_LAN_DHCP_END=10.42.0.20
+# One LAN, one pool: the USB host and every hotspot client (bridged into
+# br-lan by hostapd) draw from it. Old wifi.conf ap_ip/ap_dhcp_* keys (the
+# former separate 192.168.42.0/24 hotspot subnet) are ignored.
+LAN_IP=10.42.0.1
+LAN_DHCP_START=10.42.0.10
+LAN_DHCP_END=10.42.0.250
 AUTOGEN_DNSMASQ="# --- AUTOGEN MARKER --- per-LAN scopes appended at boot below ---"
+# Always LAN in the early/emergency rulesets, whatever /run/lan-iface says: the
+# bridge and its USB port, so a bridge that failed (usb0 addressed alone) or
+# isn't made yet (S29fw runs before S30gadget_nic) can't lock out the USB host.
+FALLBACK_LAN="br-lan usb0"
 
-# RNSBox W variant: S35wifi writes the AP iface name to /run/wifi-ap-iface
-# when a hotspot is up. Fold it into the LAN side so it gets NAT + a DHCP
-# scope automatically. WiFi subnet read from /etc/rnsbox/wifi.conf.
-WIFI_CONF=/etc/rnsbox/wifi.conf
-wifi_cfg() {
-	grep -E "^[[:space:]]*$1[[:space:]]*=" "$WIFI_CONF" 2>/dev/null | tail -1 \
-	  | sed -E "s/^[^=]*=[[:space:]]*//" | sed -E 's/[[:space:]]*#.*$//' \
-	  | sed -E 's/[[:space:]]*$//'
-}
-
+# read_wan — WAN = the wan.conf setting (auto, eth0 or wlan0), WAN_IFACES =
+# the ifaces it makes WAN (space-separated): both candidates for auto.
 read_wan() {
-	# wan.conf is now key=value (interface=eth0). Prefer the interface= key;
-	# fall back to a legacy bare "eth0"/"wlan0" line if no key is present.
+	# wan.conf is now key=value (interface=auto). Prefer the interface= key;
+	# fall back to a legacy bare "eth0"/"wlan0" line if no key is present,
+	# else auto (also for an unknown value). Same rules as S30eth wan_iface.
 	WAN=$(grep -E '^[[:space:]]*interface[[:space:]]*=' "$WAN_CONF" 2>/dev/null \
 	  | tail -1 | sed -E 's/^[^=]*=[[:space:]]*//' | sed -E 's/[[:space:]]*#.*$//' \
 	  | tr -d '[:space:]')
 	[ -z "$WAN" ] && WAN=$(grep -vE '^[[:space:]]*#|^[[:space:]]*$|=' "$WAN_CONF" 2>/dev/null | head -1 | tr -d '[:space:]')
-	case "$WAN" in eth0|wlan0) ;; *) WAN=wlan0 ;; esac
+	case "$WAN" in auto|eth0|wlan0) ;; *) WAN=auto ;; esac
+	WAN_IFACES=$WAN
+	[ "$WAN" = auto ] && WAN_IFACES=$WAN_CANDIDATES
 }
 
+# is_wan <iface> — true if <iface> is one of $WAN_IFACES.
+is_wan() {
+	case " $WAN_IFACES " in *" $1 "*) return 0 ;; esac
+	return 1
+}
+
+# read_lan — LAN_IFACES = the LAN iface S30gadget_nic recorded in
+# /run/lan-iface: br-lan, or usb0 when the bridge couldn't be made. Without
+# a valid record (S30gadget_nic hasn't run): br-lan if it exists, else usb0.
 read_lan() {
-	LAN_IFACES="usb0"
-	AP_IF=""
-	if [ -r /run/wifi-ap-iface ]; then
-		AP_IF=$(cat /run/wifi-ap-iface 2>/dev/null | tr -d '[:space:]')
-		[ -n "$AP_IF" ] && [ -e "/sys/class/net/$AP_IF" ] && LAN_IFACES="usb0,$AP_IF"
-	fi
+	LAN_IFACES=
+	{ read -r LAN_IFACES < /run/lan-iface; } 2>/dev/null
+	case "$LAN_IFACES" in
+		br-lan|usb0) ;;
+		*) LAN_IFACES=usb0; [ -d /sys/class/net/br-lan/bridge ] && LAN_IFACES=br-lan ;;
+	esac
+}
+
+# note <msg> — to the console/caller and, timestamped, to $NFT_ERR.
+note() {
+	echo "S60routing: $*"
+	echo "$(date '+%F %T') S60routing: $*" >> "$NFT_ERR"
+}
+
+# nft -c accepts an empty or comment-only file (an empty batch), so a short
+# write (full fs) must be caught by content: our tag, nftgen's marker and the
+# nat table (written last of the IPv4 tables) all present.
+nft_output_ok() {
+	[ "$(head -n 1 "$1")" = "$TOPO_TAG" ] \
+	  && grep -q '^# Generated by rnsbox nftgen' "$1" \
+	  && grep -q '^table ip nat' "$1"
 }
 
 regen_nftables() {
-	TMP=$(mktemp /tmp/nftables.conf.XXXXXX) || return 1
-	if ! $NFTGEN --wan "$WAN" --lan "$LAN_IFACES" > "$TMP" 2>/var/log/nftgen.err; then
-		echo "S60routing: nftgen failed (see /var/log/nftgen.err); keeping previous $NFT_FILE"
-		rm -f "$TMP"
-		return 1
+	# Temp file next to $NFT_FILE, not in /tmp: the mv is then an atomic
+	# same-filesystem rename, and a full (size-capped) /tmp can't empty it.
+	TMP=$(mktemp "$NFT_FILE.XXXXXX") || return 1
+	: > "$NFT_ERR"
+	# Full ruleset first (ip6 table included when the kernel has IPv6); if nft
+	# rejects it, retry IPv4-only so an unsupported ip6 table can't cost us
+	# the whole router firewall.
+	for v6 in "" --no-ipv6; do
+		# Line 1 = $TOPO_TAG (a comment to nft; see nft_file_fits). The brace
+		# group's status is nftgen's, so its failure is still caught.
+		if ! { echo "$TOPO_TAG"; $NFTGEN --wan "$(echo $WAN_IFACES | tr ' ' ',')" --lan "$LAN_IFACES" $v6; } > "$TMP" 2>>"$NFT_ERR" \
+		   || ! nft_output_ok "$TMP"; then
+			note "nftgen failed or wrote an incomplete ruleset (see $NFT_ERR); keeping previous $NFT_FILE"
+			rm -f "$TMP"
+			return 1
+		fi
+		if nft -c -f "$TMP" >>"$NFT_ERR" 2>&1; then
+			[ -n "$v6" ] && note "ruleset with ip6 table failed nft -c; installed IPv4-only (see $NFT_ERR)"
+			chmod 0644 "$TMP"
+			# sync before the rename, so a power cut can't leave a
+			# zero-length $NFT_FILE (ext4 delalloc).
+			sync
+			mv "$TMP" "$NFT_FILE"
+			return 0
+		fi
+	done
+	note "generated ruleset failed nft -c validation; keeping previous $NFT_FILE"
+	rm -f "$TMP"
+	return 1
+}
+
+# Last-resort ruleset (step 3 in the header). IPv4-only on purpose so it
+# loads on any nf_tables kernel; same LAN-only shape as the static fallback
+# but built from the live WAN names. LAN = $LAN_IFACES plus $FALLBACK_LAN.
+emergency_ruleset() {
+	lan_set=
+	for i in $(echo "$LAN_IFACES" | tr ',' ' ') $FALLBACK_LAN; do
+		case ", $lan_set, " in *", \"$i\", "*) continue ;; esac
+		lan_set="${lan_set:+$lan_set, }\"$i\""
+	done
+	wan_set=
+	for i in $WAN_IFACES; do wan_set="${wan_set:+$wan_set, }\"$i\""; done
+	cat <<EOF
+flush ruleset
+table ip filter {
+	chain input {
+		type filter hook input priority filter; policy drop;
+		ct state established,related accept
+		iifname "lo" accept
+		iifname { $lan_set } accept
+	}
+	chain forward {
+		type filter hook forward priority filter; policy drop;
+		ct state established,related accept
+		iifname { $lan_set } oifname { $wan_set } accept
+	}
+	chain output { type filter hook output priority filter; policy accept; }
+}
+table ip nat {
+	chain postrouting {
+		type nat hook postrouting priority srcnat; policy accept;
+		oifname { $wan_set } masquerade
+	}
+}
+EOF
+}
+
+# $NFT_FILE is safe to (re)load only if it was generated for the current
+# WAN/LAN: a stale one could still list e.g. wlan0 (an AP-only hotspot of an
+# image before the LAN bridge) as LAN after wlan0 became the uplink, and
+# accept everything from it. The shipped static fallback (not nftgen output)
+# is closed toward every non-LAN iface whatever the topology, so it always
+# fits. An empty or truncated file (no filter table) never counts as that
+# fallback: nft -f of it would "load" nothing and leave the box unfiltered
+# with ip_forward=1.
+nft_file_fits() {
+	grep -q '^table ip filter' "$NFT_FILE" || return 1
+	grep -q '^# Generated by rnsbox nftgen' "$NFT_FILE" || return 0
+	[ "$(head -n 1 "$NFT_FILE")" = "$TOPO_TAG" ]
+}
+
+# Load $NFT_FILE, else the emergency ruleset. 0 once SOME ruleset is live.
+# No separate `nft flush ruleset` first: every file we load begins with
+# `flush ruleset` and nft -f is one transaction, so the swap is atomic and a
+# failed load leaves the previous ruleset in place.
+apply_nftables() {
+	if [ -r "$NFT_FILE" ] && nft_file_fits && nft -f "$NFT_FILE" >>"$NFT_ERR" 2>&1; then
+		return 0
 	fi
-	if ! nft -c -f "$TMP" >>/var/log/nftgen.err 2>&1; then
-		echo "S60routing: generated ruleset failed nft -c validation; keeping previous $NFT_FILE"
-		rm -f "$TMP"
-		return 1
+	if [ -r "$NFT_FILE" ] && ! nft_file_fits; then
+		note "previous $NFT_FILE is empty/incomplete or was generated for another WAN/LAN; not reusing it, loading the built-in IPv4-only emergency ruleset"
+	else
+		note "could not load $NFT_FILE (see $NFT_ERR); loading the built-in IPv4-only emergency ruleset"
 	fi
-	mv "$TMP" "$NFT_FILE"
-	chmod 0644 "$NFT_FILE"
+	# Straight from the pipe, no temp file (an empty one on a full /tmp would
+	# "load" fine). nft maps "-" to /dev/stdin; the pipeline status is nft's.
+	emergency_ruleset | nft -f - >>"$NFT_ERR" 2>&1
+}
+
+# Re-attach $1's root qdisc so it picks up default_qdisc (fq). The default is
+# chosen when an iface is first raised, and eth0/usb0/wlan0/sl0 are all up
+# before we set it — so they'd keep pfifo_fast (mq + pfifo_fast children on
+# wlan0). (br-lan itself is noqueue, like every bridge: its egress queues on
+# the port the frame leaves by.)
+# Deleting the root makes the kernel attach the default again (mq with fq
+# children on a multi-queue device, plain fq otherwise); a default root has
+# handle 0: which tc can't delete, so swap in a handled pfifo_fast first
+# (always built in). Only touches a still-pfifo_fast root or first mq child
+# (children of unused tx queues stay pfifo_fast by design), so it's a no-op on
+# later restarts; a half-done swap is simply retried next time.
+refresh_qdisc() {
+	tc qdisc show dev "$1" 2>/dev/null \
+	  | grep -qE '^qdisc pfifo_fast [0-9a-f]+: (root|parent :1 )' || return 0
+	tc qdisc replace dev "$1" root handle 1: pfifo_fast 2>/dev/null \
+	  && tc qdisc del dev "$1" root 2>/dev/null
 }
 
 regen_dnsmasq() {
 	if grep -q "$AUTOGEN_DNSMASQ" "$DNSMASQ_FILE" 2>/dev/null; then
-		sed -i "/$AUTOGEN_DNSMASQ/q" "$DNSMASQ_FILE"
+		# busybox sed -i with q prints the cut-off lines to stdout
+		sed -i "/$AUTOGEN_DNSMASQ/q" "$DNSMASQ_FILE" >/dev/null
 	fi
 	{
 		echo
-		echo "# WAN=$WAN (DHCP not served here — eth0 receives a lease, doesn't serve one)"
-		echo "no-dhcp-interface=$WAN"
+		echo "# WAN=$WAN: no DHCP served on an uplink — the box is a client there"
+		for w in $WAN_IFACES; do echo "no-dhcp-interface=$w"; done
 		echo
-		echo "# usb0 LAN"
-		echo "interface=usb0"
-		echo "dhcp-range=set:usb0,$USB0_LAN_DHCP_START,$USB0_LAN_DHCP_END,255.255.255.0,12h"
-		echo "dhcp-option=tag:usb0,3,$USB0_LAN_IP"
-		echo "dhcp-option=tag:usb0,6,$USB0_LAN_IP"
-		# RNSBox W variant: AP hotspot scope (only when S35wifi has an AP up).
-		if [ -n "$AP_IF" ] && [ -e "/sys/class/net/$AP_IF" ]; then
-			AP_IP=$(wifi_cfg ap_ip); [ -z "$AP_IP" ] && AP_IP=192.168.42.1
-			AP_DS=$(wifi_cfg ap_dhcp_start); [ -z "$AP_DS" ] && AP_DS=192.168.42.10
-			AP_DE=$(wifi_cfg ap_dhcp_end); [ -z "$AP_DE" ] && AP_DE=192.168.42.100
-			echo
-			echo "# $AP_IF WiFi AP LAN"
-			echo "interface=$AP_IF"
-			echo "dhcp-range=set:$AP_IF,$AP_DS,$AP_DE,255.255.255.0,12h"
-			echo "dhcp-option=tag:$AP_IF,3,$AP_IP"
-			echo "dhcp-option=tag:$AP_IF,6,$AP_IP"
-		fi
+		echo "# Sole DHCP server on the LAN: ACK a renewal for a lease we no longer have (lost table, clock step) instead of NAKing it"
+		echo "dhcp-authoritative"
+		echo
+		echo "# LAN ($LAN_IFACES): the USB-C host and the hotspot clients, one pool"
+		echo "interface=$LAN_IFACES"
+		echo "dhcp-range=set:lan,$LAN_DHCP_START,$LAN_DHCP_END,255.255.255.0,12h"
+		echo "dhcp-option=tag:lan,3,$LAN_IP"
+		echo "dhcp-option=tag:lan,6,$LAN_IP"
 	} >> "$DNSMASQ_FILE"
 }
 
 start() {
 	read_wan
 	read_lan
-	echo "S60routing: WAN=$WAN LAN=$LAN_IFACES"
+	# Stamped on line 1 of every generated $NFT_FILE (see nft_file_fits).
+	TOPO_TAG="# rnsbox-topology wan=$WAN lan=$LAN_IFACES"
+	w=$WAN; [ "$WAN" = auto ] && w="auto ($WAN_IFACES)"
+	echo "S60routing: WAN=$w LAN=$LAN_IFACES"
 
 	# --- routing knobs ---
-	echo 1 > /proc/sys/net/ipv4/ip_forward
+	# (ip_forward is switched on further down, once a ruleset is loaded.)
 	echo 0 > /proc/sys/net/ipv4/conf/all/rp_filter
 	echo 0 > /proc/sys/net/ipv4/conf/default/rp_filter
 	echo 0 > /proc/sys/net/ipv4/conf/all/accept_redirects
 	echo 0 > /proc/sys/net/ipv6/conf/all/forwarding 2>/dev/null || true
+	# ARP only for an address on the iface asked, and from an address of the
+	# iface asking: every RNSBox's LAN is 10.42.0.1, so a box whose WiFi
+	# client is on another RNSBox's hotspot must not answer for it there.
+	# S02sysctl already set this (/etc/sysctl.d/20-rnsbox-net.conf) before
+	# any uplink came up; kept here with the other routing knobs.
+	echo 1 > /proc/sys/net/ipv4/conf/all/arp_ignore
+	echo 2 > /proc/sys/net/ipv4/conf/all/arp_announce
 	# route_localnet on the WAN iface: lets a port forward whose target is a
 	# loopback address (127.0.0.0/8 — e.g. a service that binds only to
 	# 127.0.0.1) actually be delivered. Without it, a packet DNAT'd to 127.x
 	# arriving on a real iface is dropped as a martian before INPUT. Forwards
 	# to the box's real LAN IP (10.42.0.1) don't need this; loopback ones do.
 	# Safe: INPUT's drop policy + the "ct status dnat" gate mean only flows
-	# our own prerouting DNAT created can reach a local service this way.
-	echo 1 > "/proc/sys/net/ipv4/conf/$WAN/route_localnet" 2>/dev/null || true
+	# our own prerouting DNAT created can reach a local service this way
+	# (nftgen drops anything else addressed to 127.0.0.0/8 from the WAN
+	# before the open-port rules).
+	# Only the current WAN ifaces get it (both for auto): reset it on any other
+	# candidate, or a WAN switch would leave it on the old uplink.
+	for w in $WAN_CANDIDATES; do
+		[ -d "/proc/sys/net/ipv4/conf/$w" ] || continue   # no wlan0 on the -e
+		v=0; is_wan "$w" && v=1
+		echo $v > "/proc/sys/net/ipv4/conf/$w/route_localnet"
+	done
 
 	# --- throughput tuning ---
 	for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
@@ -137,31 +322,132 @@ start() {
 	fi
 	[ -d /sys/module/sch_fq ] || modprobe sch_fq 2>/dev/null
 	echo fq > /proc/sys/net/core/default_qdisc 2>/dev/null
+	# default_qdisc only affects qdiscs attached from now on, and every iface
+	# already up by S60 (eth0, usb0, wlan0, the S35 AP vif, and sl0 from
+	# S31slip) got pfifo_fast when first raised. Move them all over; ifaces
+	# created later (portal SLIP re-apply, hostapd restart) get fq by themselves.
+	# refresh_qdisc only acts on a pfifo_fast root/first child, so lo
+	# (noqueue), down ifaces (noop) and ifaces already on fq are left alone.
+	if [ "$(cat /proc/sys/net/core/default_qdisc 2>/dev/null)" = "fq" ] \
+	   && command -v tc >/dev/null 2>&1; then
+		for d in /sys/class/net/*; do
+			i=${d##*/}
+			[ "$i" = lo ] || refresh_qdisc "$i"
+		done
+	fi
 
 	# --- regenerate + apply ---
 	regen_dnsmasq
 	regen_nftables
 
-	nft flush ruleset 2>/dev/null
-	if [ -r "$NFT_FILE" ]; then
-		nft -f "$NFT_FILE"
+	if apply_nftables; then
+		echo 1 > /proc/sys/net/ipv4/ip_forward
+	else
+		echo 0 > /proc/sys/net/ipv4/ip_forward
+		note "NO nftables ruleset could be loaded — LAN routing disabled (ip_forward=0)"
 	fi
 
-	if [ -x /etc/init.d/S80dnsmasq ]; then
-		/etc/init.d/S80dnsmasq restart >/dev/null 2>&1 || true
-	elif pidof dnsmasq >/dev/null 2>&1; then
-		killall -HUP dnsmasq 2>/dev/null || true
+	restart_dnsmasq
+}
+
+# dnsmasq only reads interface= / dhcp-range= at startup (SIGHUP re-reads
+# hosts and lease-related files, not the scopes regen_dnsmasq just wrote), so
+# this has to be a real restart. Stock `S80dnsmasq restart` is stop+start with
+# no wait: start-stop-daemon -K only signals, and if the old dnsmasq is still
+# exiting when -S checks the pidfile, the start is skipped as "already
+# running" — the LAN then loses DHCP+DNS after a portal network change. So:
+# stop, wait up to 3 s for every old dnsmasq to go (SIGKILL after that: a
+# leftover would hold :53/:67 and the new one could not bind), start, verify.
+# At boot (S60 runs before S80) there is nothing to stop, so this just starts it.
+restart_dnsmasq() {
+	if [ ! -x /etc/init.d/S80dnsmasq ]; then
+		pidof dnsmasq >/dev/null 2>&1 && killall -HUP dnsmasq 2>/dev/null
+		return 0
+	fi
+	old=$(pidof dnsmasq)
+	/etc/init.d/S80dnsmasq stop >/dev/null 2>&1
+	if [ -n "$old" ]; then
+		kill $old 2>/dev/null   # also any instance the pidfile didn't name
+		i=0
+		while [ "$i" -lt 30 ]; do
+			alive=
+			for p in $old; do [ -d "/proc/$p" ] && alive="$alive $p"; done
+			[ -z "$alive" ] && break
+			sleep 0.1; i=$((i + 1))
+		done
+		if [ -n "$alive" ]; then
+			note "dnsmasq (pid$alive) ignored SIGTERM for 3 s; killing it"
+			kill -9 $alive 2>/dev/null
+			sleep 0.2
+		fi
+	fi
+	/etc/init.d/S80dnsmasq start >/dev/null 2>&1
+	if ! pidof dnsmasq >/dev/null 2>&1; then
+		sleep 1
+		/etc/init.d/S80dnsmasq start >/dev/null 2>&1
+		pidof dnsmasq >/dev/null 2>&1 \
+		  || note "dnsmasq did not start - no DHCP/DNS on the LAN (see /var/log/messages)"
+	fi
+}
+
+# Boot placeholder, loaded by S29fw before any uplink has an address (S30eth,
+# S35wifi) — stock S50sshd listens on 0.0.0.0:22 well before start() runs.
+# Nothing is routed yet (ip_forward=0), so this is just the emergency ruleset
+# with $FALLBACK_LAN as the LAN (S30gadget_nic hasn't made br-lan yet): lo +
+# br-lan + usb0 + established in, every other iface dropped. start() swaps
+# the real ruleset in atomically.
+early() {
+	read_wan
+	read_lan
+	echo 0 > /proc/sys/net/ipv4/ip_forward
+	emergency_ruleset | nft -f - >>"$NFT_ERR" 2>&1 \
+	  || note "could not load the early fail-closed ruleset (see $NFT_ERR)"
+}
+
+# uplink <from> <to> — S46wanwatch: the default route in use moved from one
+# iface to another (or eth0 was re-addressed). With WAN=auto, flush the IPv4
+# conntrack entries of flows masqueraded out a WAN iface (the ct mark
+# nftgen's nat postrouting sets; `rnsbox-portal ctflush`): masquerade keeps
+# each flow's SNAT binding to the old uplink's address (the kernel drops it
+# only when that iface goes admin-down or loses the address, not on a lost
+# cable or a new, better route), so those flows would leave the new uplink
+# with the old source and hang. Flushed, each is picked up again on its next
+# packet and masqueraded to the new uplink: TCP gets reset by the peer and
+# reconnects, UDP (WireGuard, QUIC) carries on from the new address. LAN <->
+# box flows, the HaLow modem on sl0 and inbound connections keep their
+# entries. (The static fallback and emergency rulesets don't set the mark.)
+# A pinned WAN never moves the LAN's NAT uplink: nothing to do.
+uplink() {
+	read_wan
+	[ "$WAN" = auto ] || return 0
+	if /usr/sbin/rnsbox-portal ctflush 2>>"$NFT_ERR"; then
+		echo "S60routing: WAN=auto uplink $1 -> $2: conntrack flushed"
+	else
+		note "WAN=auto uplink $1 -> $2: conntrack flush failed (see $NFT_ERR)"
 	fi
 }
 
 stop() {
-	nft flush ruleset 2>/dev/null || true
+	# Close, don't open: `nft flush ruleset` left the WAN (e.g. sshd)
+	# unfiltered until S50sshd stop / power-off. Emergency ruleset, routing off.
+	read_wan
+	read_lan
 	echo 0 > /proc/sys/net/ipv4/ip_forward
+	emergency_ruleset | nft -f - >>"$NFT_ERR" 2>&1 || true
+	for w in $WAN_CANDIDATES; do
+		[ -d "/proc/sys/net/ipv4/conf/$w" ] || continue
+		echo 0 > "/proc/sys/net/ipv4/conf/$w/route_localnet"
+	done
 }
 
 case "${1:-start}" in
 	start)   start ;;
 	stop)    stop ;;
-	restart) stop; start ;;
-	*) echo "Usage: $0 {start|stop|restart}" >&2; exit 1 ;;
+	# Not stop+start: stop drops to the emergency ruleset with ip_forward=0,
+	# cutting LAN routing and every port forward / open port for the whole
+	# regen. start alone re-applies every knob and swaps the ruleset atomically.
+	restart) start ;;
+	early)   early ;;
+	uplink)  uplink "$2" "$3" ;;
+	*) echo "Usage: $0 {start|stop|restart|early|uplink <from> <to>}" >&2; exit 1 ;;
 esac

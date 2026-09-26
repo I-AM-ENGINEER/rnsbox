@@ -2,6 +2,7 @@
 #include "routes.h"
 #include "render.h"
 #include "web.h"
+#include "store.h"
 #include "wifi.h"
 #include "util.h"
 #include <cctype>
@@ -69,6 +70,13 @@ void wifi_page(const Request& req, Response& res) {
                    "        hotspot off).</div>";
         }
     }
+    // The joined network overlaps this box's LAN subnet 10.42.0.0/24 (another
+    // RNSBox's hotspot): /etc/dhcpcd.exit-hook recorded why it's no uplink.
+    if (cfg["mode"] == "sta" || cfg["mode"] == "sta+ap") {
+        std::string why = util::trim(util::read_file("/run/wifi-sta-conflict", 1024));
+        if (!why.empty())
+            sta += "\n        <div class=\"flash warn\" style=\"margin-top:4px\">" + E(why) + "</div>";
+    }
     h = R(std::move(h), "__STA_CELL__", sta);
 
     // Hotspot (AP) cell
@@ -77,7 +85,14 @@ void wifi_page(const Request& req, Response& res) {
         ap = "<span class=\"badge ok\">UP</span> on " + E(st.ap.iface) + ",\n        " +
              std::to_string(st.ap.clients) + " client(s)";
         if (!st.ap.width.empty()) ap += ", " + E(st.ap.width) + " MHz";
-        ap += ", " + E(st.ap.ip);
+        // Normally a port of the LAN bridge, sharing its subnet + DHCP pool. Not
+        // bridged (no bridge in the kernel): nothing serves its clients.
+        if (!st.ap.bridge.empty())
+            ap += ", bridged into " + E(st.ap.bridge) + (st.ap.ip.empty() ? std::string() : " (" + E(st.ap.ip) + ")");
+        else if (!st.ap.ip.empty())
+            ap += ", " + E(st.ap.ip);
+        else
+            ap += ", <span class=\"badge warn\">not in the LAN bridge</span>";
     } else {
         ap = "<span class=\"badge warn\">off</span>";
     }
@@ -103,7 +118,7 @@ void wifi_page(const Request& req, Response& res) {
     if (concurrent) {
         note = "<p class=\"muted\">Concurrent mode is on, so the client is restricted to\n"
                "  <strong>2.4&nbsp;GHz</strong> networks (same radio as the hotspot).\n"
-               "  5&nbsp;GHz networks are shown greyed out — they can't be joined until you\n"
+               "  5/6&nbsp;GHz networks are shown greyed out — they can't be joined until you\n"
                "  switch to <em>Client only</em> mode.</p>";
     }
     h = R(std::move(h), "__CONCURRENT_NOTE__", note);
@@ -114,6 +129,22 @@ void wifi_page(const Request& req, Response& res) {
     h = R(std::move(h), "__AP_ENABLE_CHECKED__", (m == "ap" || m == "sta+ap") ? "checked" : "");
     h = R(std::move(h), "__AP_SSID__", E(cfg["ap_ssid"]));
     h = R(std::move(h), "__AP_PSK__",  E(cfg["ap_psk"]));
+    // Mode says hotspot-on but S35wifi refuses a weak PSK (e.g. a box still on
+    // the old 'changeme123' default) — explain the missing AP.
+    std::string psk_note;
+    if ((m == "ap" || m == "sta+ap") && !wifi::ap_psk_ok(cfg["ap_psk"]))
+        psk_note = "<div class=\"flash warn\">The hotspot is switched on but is <strong>not running</strong>:\n"
+                   "  its password is empty, too short, or the old published default\n"
+                   "  <code>changeme123</code>. Set a new one below and apply.</div>";
+    // Any other refusal S35wifi recorded (today: no LAN bridge br-lan to put
+    // the AP in — a kernel without CONFIG_BRIDGE) — show its reason.
+    else if ((m == "ap" || m == "sta+ap") && !st.ap.active) {
+        std::string why = util::trim(util::read_file("/run/wifi-ap-refused", 512));
+        if (!why.empty())
+            psk_note = "<div class=\"flash warn\">The hotspot is switched on but is <strong>not running</strong>:\n"
+                       "  " + E(why) + "</div>";
+    }
+    h = R(std::move(h), "__AP_PSK_NOTE__", psk_note);
 
     std::string lock = concurrent ? " <span class=\"muted\">(locked — follows client link)</span>" : "";
     h = R(std::move(h), "__AP_CHANNEL_LOCK__", lock);
@@ -163,6 +194,30 @@ void wifi_status(const Request& req, Response& res) {
 
 // ---- POST-redirect-GET handlers ----
 
+// Shared error text for an SSID/password wifi.conf can't store (see
+// wifi::conf_value_ok): nothing is written when this fires.
+static const char* BAD_FIELD_MSG =
+    "SSID and password must not contain line breaks, control characters, '#' or '\"', "
+    "or start/end with a space (the WiFi config file can't store them)";
+
+// Why the hotspot can't be switched on with this stored/typed PSK ("" = OK).
+static std::string ap_psk_problem(const std::string& psk) {
+    if (psk == wifi::OLD_DEFAULT_AP_PSK)
+        return "'changeme123' was the published factory default — choose your own hotspot password (8-63 characters)";
+    if (!wifi::ap_psk_ok(psk))
+        return "The hotspot needs a password of 8-63 printable ASCII characters";
+    return "";
+}
+
+// Appended to a flash that turns the WiFi client on: with the WAN pinned to
+// eth0 (Network tab) the box itself may use the WiFi uplink, but the LAN and
+// hotspot get no internet through it (no NAT there). "" otherwise.
+static std::string wan_note() {
+    if (store::read_wan().interface != "eth0") return "";
+    return " Note: the WAN is set to eth0 only, so the LAN and hotspot won't get internet over WiFi"
+           " — choose Automatic (or wlan0) under Network → WAN uplink.";
+}
+
 void wifi_connect(const Request& req, Response& res) {
     if (!web::require_auth(req, res, false)) return;
     std::string ssid = util::trim(req.f("ssid"));
@@ -171,11 +226,35 @@ void wifi_connect(const Request& req, Response& res) {
         render::redirect_flash(res, wifi_redirect(), "error", "SSID required");
         return;
     }
+    if (!wifi::conf_value_ok(ssid) || !wifi::conf_value_ok(psk)) {
+        render::redirect_flash(res, wifi_redirect(), "error", BAD_FIELD_MSG);
+        return;
+    }
+    if (ssid.size() > 32) {
+        render::redirect_flash(res, wifi_redirect(), "error", "SSID is at most 32 bytes");
+        return;
+    }
+    if (!psk.empty() && (psk.size() < 8 || psk.size() > 63)) {   // wpa_supplicant rejects these
+        render::redirect_flash(res, wifi_redirect(), "error",
+            "WiFi password must be 8-63 characters (leave it blank for an open network)");
+        return;
+    }
     auto cur = wifi::read_conf();
     std::string mode = (cur["mode"] == "ap" || cur["mode"] == "sta+ap") ? "sta+ap" : "sta";
-    wifi::write_conf({{"mode", mode}, {"sta_ssid", ssid}, {"sta_psk", psk}});
+    if (!wifi::write_conf({{"mode", mode}, {"sta_ssid", ssid}, {"sta_psk", psk}})) {
+        render::redirect_flash(res, wifi_redirect(), "error", "Could not save the WiFi config");
+        return;
+    }
     wifi::apply();
-    render::redirect_flash(res, wifi_redirect(), "success", "Connecting to '" + ssid + "'…");
+    // Joining still works with a weak stored hotspot PSK — S35wifi just keeps
+    // the AP off (and logs why). Say so instead of a silent missing hotspot.
+    std::string note = wan_note();
+    if (mode == "sta+ap" && !wifi::ap_psk_ok(cur["ap_psk"]))
+        render::redirect_flash(res, wifi_redirect(), "warn",
+            "Connecting to '" + ssid + "'… The hotspot stays off until you set a hotspot password (8-63 characters) below." + note);
+    else
+        render::redirect_flash(res, wifi_redirect(), note.empty() ? "success" : "warn",
+            "Connecting to '" + ssid + "'…" + note);
 }
 
 void wifi_ap(const Request& req, Response& res) {
@@ -183,8 +262,23 @@ void wifi_ap(const Request& req, Response& res) {
     std::string ssid = util::trim(req.f("ap_ssid"));
     std::string psk = req.f("ap_psk");
     bool enable = req.f("ap_enable") == "on";
-    if (enable && (ssid.empty() || psk.size() < 8)) {
-        render::redirect_flash(res, wifi_redirect(), "error", "AP needs an SSID and a password of at least 8 chars");
+    if (!wifi::conf_value_ok(ssid) || !wifi::conf_value_ok(psk)) {
+        render::redirect_flash(res, wifi_redirect(), "error", BAD_FIELD_MSG);
+        return;
+    }
+    if (ssid.size() > 32) {
+        render::redirect_flash(res, wifi_redirect(), "error", "Hotspot SSID is at most 32 bytes");
+        return;
+    }
+    if (enable && ssid.empty()) {
+        render::redirect_flash(res, wifi_redirect(), "error", "The hotspot needs an SSID");
+        return;
+    }
+    // Never turn the AP on with no/short/published password (the image ships
+    // ap_psk empty; S35wifi enforces the same rule at start).
+    std::string why = enable ? ap_psk_problem(psk) : std::string();
+    if (!why.empty()) {
+        render::redirect_flash(res, wifi_redirect(), "error", why);
         return;
     }
     auto cur = wifi::read_conf();
@@ -208,7 +302,10 @@ void wifi_ap(const Request& req, Response& res) {
         updates["ap_channel"] = chan;
         updates["ap_htmode"] = htmode;
     }
-    wifi::write_conf(updates);
+    if (!wifi::write_conf(updates)) {
+        render::redirect_flash(res, wifi_redirect(), "error", "Could not save the WiFi config");
+        return;
+    }
     wifi::apply();
     render::redirect_flash(res, wifi_redirect(), "success", "AP settings applied");
 }
@@ -216,10 +313,32 @@ void wifi_ap(const Request& req, Response& res) {
 void wifi_mode(const Request& req, Response& res) {
     if (!web::require_auth(req, res, false)) return;
     std::string mode = req.f("mode");
-    if (mode != "off" && mode != "sta" && mode != "ap" && mode != "sta+ap") mode = "off";
-    wifi::write_conf({{"mode", mode}});
+    // Reject rather than default to "off": turning the radio off can drop a
+    // wlan0 WAN, so only an explicit, valid choice may change the mode.
+    if (mode != "off" && mode != "sta" && mode != "ap" && mode != "sta+ap") {
+        render::redirect_flash(res, wifi_redirect(), "error", "Unknown WiFi mode");
+        return;
+    }
+    // ap / sta+ap switch the hotspot on with the STORED ssid/password — hold
+    // them to the same rule as the Hotspot form.
+    if (mode == "ap" || mode == "sta+ap") {
+        auto cur = wifi::read_conf();
+        std::string why = cur["ap_ssid"].empty() ? std::string("The hotspot needs an SSID")
+                                                 : ap_psk_problem(cur["ap_psk"]);
+        if (!why.empty()) {
+            render::redirect_flash(res, wifi_redirect(), "error",
+                why + " — set it in the Hotspot section below, then enable the hotspot there.");
+            return;
+        }
+    }
+    if (!wifi::write_conf({{"mode", mode}})) {
+        render::redirect_flash(res, wifi_redirect(), "error", "Could not save the WiFi config");
+        return;
+    }
     wifi::apply();
-    render::redirect_flash(res, wifi_redirect(), "success", "WiFi mode set to " + mode);
+    std::string note = (mode == "sta" || mode == "sta+ap") ? wan_note() : std::string();
+    render::redirect_flash(res, wifi_redirect(), note.empty() ? "success" : "warn",
+                           "WiFi mode set to " + mode + "." + note);
 }
 
 void wifi_txpower(const Request& req, Response& res) {
@@ -235,7 +354,10 @@ void wifi_txpower(const Request& req, Response& res) {
             return;
         }
     }
-    wifi::write_conf({{"tx_power", tp}});
+    if (!wifi::write_conf({{"tx_power", tp}})) {
+        render::redirect_flash(res, wifi_redirect(), "error", "Could not save the WiFi config");
+        return;
+    }
     wifi::apply();
     render::redirect_flash(res, wifi_redirect(), "success", std::string("TX power set to ") + (tp == "auto" ? "auto" : tp + " dBm"));
 }

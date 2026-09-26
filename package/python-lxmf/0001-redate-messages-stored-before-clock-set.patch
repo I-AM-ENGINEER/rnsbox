@@ -1,0 +1,118 @@
+From: smit1237 <smit1237@gmail.com>
+Date: Thu, 24 Sep 2026 05:30:00 +0300
+Subject: [PATCH] LXMRouter: re-date state recorded before the clock was set
+
+RNSBox runs lxmd / nomadnet as propagation nodes whether or not the wall
+clock is set: with no RTC and no NTP (HaLow-, LAN- or WiFi-only meshes) the
+clock starts at 1970, or ~2000 on an unset DS3231. Timestamps LXMRouter
+takes then look decades old once the clock is set (NTP, a browser sync, a
+later trusted-RTC boot), and its wall-clock expiry drops the state:
+
+ - Stored messages are named <transient_id>_<received>_<stamp> with that
+   received time; clean_message_store() (every 8 min on a propagation node)
+   purges an entry once now > received + MESSAGE_EXPIRY, so the first clean
+   after the clock is set deletes every message stored while it was unset.
+ - peer() and a successful sync set a propagation peer's last_heard to the
+   local clock; sync_peers() (every 24 s) culls a peer once now > last_heard
+   + LXMPeer.MAX_UNREACHABLE (14 d), so every peer heard while the clock was
+   unset is dropped as unreachable, with the unhandled-message lists that
+   are rebuilt from self.peers when the store is saved.
+ - clean_transient_id_caches() purges locally delivered / processed
+   transient IDs past MESSAGE_EXPIRY*6, so messages already handled while
+   the clock was unset could be accepted and delivered again.
+
+Instead, when such a timestamp is below CLOCK_FLOOR (2020-01-01 UTC, the
+floor RNSBox's S45ntpsync and portal use for a plausible clock) and the
+clock now reads at or above it, re-date it to the current time:
+
+ - a stored message's file is renamed with the current time and the entry's
+   path and receive time updated, so it gets its full 30-day lifetime from
+   when the clock was set (updating entry[2] also keeps get_weight()'s
+   storage-limit culling from treating it as decades old);
+ - a peer's last_heard is set to now (one never heard, at 0, is left
+   alone: the startup path-request logic keys on that), so only a peer
+   genuinely unheard for 14 days is culled;
+ - a transient-ID cache entry is re-stamped with now instead of purged.
+
+While the clock is still unset, everything works on the unset clock as
+before.
+
+Signed-off-by: smit1237 <smit1237@gmail.com>
+---
+ LXMF/LXMRouter.py | 32 +++++++++++++++++++++++++++++---
+ 1 file changed, 29 insertions(+), 3 deletions(-)
+
+diff --git a/LXMF/LXMRouter.py b/LXMF/LXMRouter.py
+--- a/LXMF/LXMRouter.py
++++ b/LXMF/LXMRouter.py
+@@ -36,6 +36,10 @@
+     P_LINK_MAX_INACTIVITY = 3*60
+ 
+     MESSAGE_EXPIRY        = 30*24*60*60
++    # RNSBox: a receive timestamp below this (2020-01-01 UTC) was taken while
++    # the wall clock was unset (no RTC / no NTP yet: 1970, ~2000 on an unset
++    # DS3231). Re-dated once the clock is set instead of expired or culled.
++    CLOCK_FLOOR           = 1577836800
+     STAMP_COST_EXPIRY     = 45*24*60*60
+ 
+     NODE_ANNOUNCE_DELAY   = 20
+@@ -958,7 +962,11 @@
+         removed_entries = []
+         for transient_id in self.locally_delivered_transient_ids:
+             timestamp = self.locally_delivered_transient_ids[transient_id]
+-            if now > timestamp+LXMRouter.MESSAGE_EXPIRY*6.0:
++            if timestamp < LXMRouter.CLOCK_FLOOR <= now:
++                # RNSBox: recorded while the clock was unset; keep it
++                # (re-dated) so the message isn't accepted again.
++                self.locally_delivered_transient_ids[transient_id] = now
++            elif now > timestamp+LXMRouter.MESSAGE_EXPIRY*6.0:
+                 removed_entries.append(transient_id)
+ 
+         for transient_id in removed_entries:
+@@ -968,7 +976,9 @@
+         removed_entries = []
+         for transient_id in self.locally_processed_transient_ids:
+             timestamp = self.locally_processed_transient_ids[transient_id]
+-            if now > timestamp+LXMRouter.MESSAGE_EXPIRY*6.0:
++            if timestamp < LXMRouter.CLOCK_FLOOR <= now:
++                self.locally_processed_transient_ids[transient_id] = now
++            elif now > timestamp+LXMRouter.MESSAGE_EXPIRY*6.0:
+                 removed_entries.append(transient_id)
+ 
+         for transient_id in removed_entries:
+@@ -1106,7 +1116,18 @@
+ 
+             if len(components) == 3 and float(components[1]) > 0 and len(os.path.split(components[0])[1]) == (RNS.Identity.HASHLENGTH//8)*2 and int(components[2]) == stamp_value:
+                 timestamp = float(components[1])
+-                if now > timestamp+LXMRouter.MESSAGE_EXPIRY:
++                if timestamp < LXMRouter.CLOCK_FLOOR <= now:
++                    # Stored before the clock was set: give it its full expiry
++                    # from now rather than purging it as decades old.
++                    new_path = os.path.join(os.path.dirname(filepath), f"{components[0]}_{now}_{components[2]}")
++                    try:
++                        os.rename(filepath, new_path)
++                        entry[1] = new_path
++                        entry[2] = now
++                        RNS.log("Re-dated message "+RNS.prettyhexrep(transient_id)+" stored before the clock was set", RNS.LOG_DEBUG)
++                    except Exception as e:
++                        RNS.log("Could not re-date "+RNS.prettyhexrep(transient_id)+" in the message store. The contained exception was: "+str(e), RNS.LOG_ERROR)
++                elif now > timestamp+LXMRouter.MESSAGE_EXPIRY:
+                     RNS.log("Purging message "+RNS.prettyhexrep(transient_id)+" due to expiry", RNS.LOG_EXTREME)
+                     removed_entries[transient_id] = filepath
+             else:
+@@ -2029,8 +2050,13 @@
+         waiting_peers = []
+         unresponsive_peers = []
+         peers = self.peers.copy()
++        now = time.time()
+         for peer_id in peers:
+             peer = peers[peer_id]
++            if 0 < peer.last_heard < LXMRouter.CLOCK_FLOOR <= now:
++                # RNSBox: heard while the clock was unset. Re-date it rather
++                # than cull the peer as unreachable for decades.
++                peer.last_heard = now
+             if time.time() > peer.last_heard + LXMPeer.MAX_UNREACHABLE:
+                 if not peer_id in self.static_peers: culled_peers.append(peer_id)
+             
+-- 
+2.43.0

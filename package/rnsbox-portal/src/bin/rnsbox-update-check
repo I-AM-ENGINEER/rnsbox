@@ -1,8 +1,21 @@
 #!/bin/sh
 # rnsbox-update-check — thin launcher for the standalone update-check helper.
-# Called by S84cron (daily + a best-effort check ~30 s after boot). The helper
-# is stdlib-only Python (no Flask, no rnsbox_portal package); the C++ portal
-# invokes the same script for the on-demand "Check for updates" / "Apply update"
-# buttons on the Reticulum tab. Arg defaults to "cron" (query PyPI + persist +
-# print a human summary); the portal passes "check" / "apply" (JSON output).
+# Called by S84cron (daily at 05:00 + once per boot once the clock is trusted
+# and a default route exists: `S84cron bootcheck`, triggered by S84cron start
+# or S46wanwatch). The helper is stdlib-only Python (no Flask, no
+# rnsbox_portal package); the C++ portal invokes the same script for the
+# on-demand "Check for updates" / "Apply update" buttons on the Reticulum tab
+# (and refuses them itself while the clock isn't set). Arg defaults to "cron"
+# (query PyPI + persist + print a human summary); the portal passes "check" /
+# "apply" (JSON output).
+#
+# cron: skipped while the clock isn't trusted (/run/clock-synced, S45ntpsync):
+# HTTPS to PyPI fails "certificate is not yet valid" at a 1970 / ~2000 clock,
+# which the helper would record as an offline error with a 1970 timestamp.
+case "${1:-cron}" in
+cron)	if [ ! -f /run/clock-synced ]; then
+		echo "update-check: skipped - clock not set (no NTP, RTC or browser time yet); HTTPS to PyPI needs a correct date"
+		exit 0
+	fi ;;
+esac
 exec python3 /usr/lib/rnsbox/updatecheck.py "${1:-cron}"

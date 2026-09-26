@@ -3,8 +3,9 @@
 // PyPI, applying a pip update) stay in the python helper
 // /usr/lib/rnsbox/updatecheck.py, invoked on-demand by the Check/Apply buttons.
 // display() does NO network + NO python spawn: it reads the installed version
-// from the dist-info dir name and the last check's result from the state file
-// that the cron helper writes.
+// from RNS/_version.py (else the highest rns-* dist-info/egg-info dir name —
+// stale metadata can sit next to the real one) and the last check's result
+// from the state file that the cron helper writes.
 #ifndef RNSBOX_UPDATECHECK_H
 #define RNSBOX_UPDATECHECK_H
 

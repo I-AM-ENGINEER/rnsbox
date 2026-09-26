@@ -13,6 +13,10 @@
 #include <cstring>
 #include <ctime>
 #include <string>
+#include <fcntl.h>
+#include <sys/file.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 using http::Request;
 using http::Response;
@@ -22,6 +26,16 @@ namespace routes {
 static std::string R(std::string s, const std::string& a, const std::string& b) { return web::replace_all(std::move(s), a, b); }
 static std::string E(const std::string& s) { return render::esc(s); }
 static std::string ret_redirect() { return web::base() + "/reticulum"; }
+
+// HTTPS to PyPI needs a real date. With no trusted clock (/run/clock-source
+// absent: no NTP, RTC or browser sync yet) TLS fails "certificate is not yet
+// valid", which updatecheck.py records only as "URLError" (reads as offline),
+// and check() would persist a 1970/2000 checked_at. So don't run it at all.
+// (rnsbox-update-check applies the same rule to the cron/boot checks.)
+static bool clock_trusted() { return !sysinfo::clock_source().empty(); }
+static const char NO_CLOCK[] =
+    "the clock isn't set (no NTP, RTC or browser time yet) and HTTPS needs a "
+    "correct date. Set it under Settings → Time & Clock.";
 
 // store._truthy: falsey iff stripped/lowered value in {no,0,false,off,""}.
 static bool truthy(const std::string& s) {
@@ -160,7 +174,10 @@ void reticulum_page(const Request& req, Response& res) {
     } else {
         chk = "not checked yet";
     }
-    if (!uerror.empty())
+    if (!clock_trusted())
+        chk += " <span class=\"muted\">— paused: the clock isn't set (HTTPS needs a correct date); "
+               "set it under Settings &rarr; Time &amp; Clock</span>";
+    else if (!uerror.empty())
         chk += " <span class=\"muted\">— last attempt failed (offline?)</span>";
     h = R(std::move(h), "__UPDATE_CHECK_LINE__", chk);
 
@@ -233,8 +250,8 @@ void reticulum_page(const Request& req, Response& res) {
 void reticulum_status(const Request& req, Response& res) {
     if (!web::require_auth(req, res, true)) return;
     bool with_raw = (req.a("raw") == "1");   // slow path: cold-starts rnstatus (~5 s)
-    // sysinfo::rnsd_status uses the pidfile + /proc-cmdline scan; a plain
-    // `pidof rnsd` never matches (rnsd's comm is python3).
+    // sysinfo::rnsd_status uses the pidfile (S82rnsd) + a /proc-cmdline scan
+    // fallback — no subprocess on this path.
     sysinfo::Rnsd rn = sysinfo::rnsd_status(with_raw);
     store::SlipConfig sl = store::read_slip();
     std::string o = std::string("{\"running\":") + (rn.running ? "true" : "false") +
@@ -253,19 +270,51 @@ void reticulum_status(const Request& req, Response& res) {
     res.body = o;
 }
 
-// Best-effort live-modem endpoint. The real stats need the python halow_status()
-// helper (HTTP-over-SLIP + JSON), which has no native C++ port yet — so this
-// returns reachable:false and the page's JS renders the "unreachable / sl0 down"
-// state faithfully. See NOTE.
+// Short-TTL cache for the halow.py result. One helper run costs ~1.5 s of CPU
+// on the C906 (python start + 3 HTTP-over-SLIP calls), and the dashboard's
+// auto-refresh (5 s option) plus a Reticulum tab would otherwise each spawn one
+// per tick. Requests inside the TTL reuse the last good JSON; a flock makes
+// concurrent misses single-flight (the waiter then finds the fresh cache).
+constexpr const char* HALOW_CACHE = "/run/rnsbox-halow.json";
+constexpr const char* HALOW_LOCK  = "/run/rnsbox-halow.lock";
+constexpr int HALOW_TTL = 10;   // seconds
+
+static bool halow_cache_fresh(std::string& out) {
+    struct stat st;
+    if (::stat(HALOW_CACHE, &st) != 0) return false;
+    time_t now = ::time(nullptr);
+    // A future mtime means the clock stepped backwards (browser/NTP sync on a
+    // box that boots at 1970) — treat as stale rather than trust it for years.
+    if (st.st_mtime > now || now - st.st_mtime >= HALOW_TTL) return false;
+    out = util::read_file(HALOW_CACHE, 256 * 1024);
+    std::string t = util::trim(out);
+    return !t.empty() && t[0] == '{';
+}
+
+static void halow_cache_drop() { ::unlink(HALOW_CACHE); }
+
+// Best-effort live-modem endpoint (JSON for the dashboard + Reticulum cards).
 void reticulum_halow(const Request& req, Response& res) {
     if (!web::require_auth(req, res, true)) return;
     res.content_type = "application/json";
+    std::string cached;
+    if (halow_cache_fresh(cached)) { res.body = cached; return; }
+
+    // Single-flight: whoever holds the lock runs the helper; the rest block
+    // here (bounded by the helper's 10 s timeout) and then reuse its result.
+    // O_CLOEXEC keeps the lock fd out of the python child.
+    int lfd = ::open(HALOW_LOCK, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (lfd >= 0) ::flock(lfd, LOCK_EX);
+    struct LockGuard { int fd; ~LockGuard() { if (fd >= 0) ::close(fd); } } guard{lfd};   // close = unlock
+    if (halow_cache_fresh(cached)) { res.body = cached; return; }
+
     // Live modem status is HTTP-over-SLIP + JSON — delegated to the python helper
     // (fails soft). It only spawns on this async fetch, never on a page paint,
     // and only when the page renders the card (SLIP enabled).
     util::RunResult rr = util::run({"/usr/bin/python3", "/usr/lib/rnsbox/halow.py"}, "", 10);
     std::string out = util::trim(rr.out);
     if (rr.exit_code == 0 && !out.empty() && out[0] == '{') {
+        util::write_file_atomic(HALOW_CACHE, rr.out, 0600);   // best-effort
         res.body = rr.out;
         return;
     }
@@ -330,6 +379,7 @@ void reticulum_slip(const Request& req, Response& res) {
         return;
     }
     web::run_init("S31slip", "reload");
+    halow_cache_drop();   // link/peer changed: don't serve up to 10 s of the old modem state
     if (c.enabled == "yes")
         render::redirect_flash(res, ret_redirect(), "success",
             "SLIP link enabled on " + c.device + " @ " + c.baud + " baud. Once the modem is "
@@ -352,6 +402,7 @@ void reticulum_halow_add(const Request& req, Response& res) {
     std::string msg;
     if (store::add_halow_interface(name, peer, port, msg)) {
         web::run_init("S82rnsd");
+        halow_cache_drop();   // rnsd_up / interface state just changed
         render::redirect_flash(res, ret_redirect(), "success",
             "Added HaLow interface “" + msg + "” (TCPClientInterface → " +
             peer + ":" + std::to_string(port) + ") and restarted rnsd.");
@@ -391,6 +442,11 @@ static void update_json(Response& res, bool ok, bool reload, const std::string& 
 
 void reticulum_checkupdate(const Request& req, Response& res) {
     if (!web::require_auth(req, res, true)) return;
+    // Before python starts, so no bogus checked_at / error gets persisted.
+    if (!clock_trusted()) {
+        update_json(res, false, false, std::string("Can't check for updates: ") + NO_CLOCK);
+        return;
+    }
     auto rr = util::run({"/usr/bin/python3", "/usr/lib/rnsbox/updatecheck.py", "check"}, "", 60);
     std::string j = rr.out;
     if (j.find("installed") == std::string::npos && j.find("error") == std::string::npos) {
@@ -413,9 +469,16 @@ void reticulum_checkupdate(const Request& req, Response& res) {
 
 void reticulum_applyupdate(const Request& req, Response& res) {
     if (!web::require_auth(req, res, true)) return;
-    // Long: pip install + rnsd restart. uhttpd's script/network timeouts are
-    // raised to 200s in S81router so this isn't killed mid-flight.
-    auto rr = util::run({"/usr/bin/python3", "/usr/lib/rnsbox/updatecheck.py", "apply"}, "", 190);
+    if (!clock_trusted()) {
+        update_json(res, false, false, std::string("Can't update: ") + NO_CLOCK);
+        return;
+    }
+    // Long: pip install + rnsd restart, with a rollback on failure. Budgets nest
+    // (arithmetic in updatecheck.py, above APPLY_BUDGET): the helper finishes
+    // inside 270 s + python start-up, we give it 285 s, and uhttpd's script /
+    // network timeouts are 300 s (S81router). A kill mid-pip would leave RNS
+    // uninstalled, so keep them in step if any of the three changes.
+    auto rr = util::run({"/usr/bin/python3", "/usr/lib/rnsbox/updatecheck.py", "apply"}, "", 285);
     std::string j = rr.out;
     bool ok = json_true(j, "ok");
     bool rolled = json_true(j, "rolled_back");

@@ -28,6 +28,9 @@
 <section class="card">
   <h3>Join a network (client)</h3>
   __CONCURRENT_NOTE__
+  <p class="muted">Another RNSBox's hotspot can't be this box's uplink: every
+  RNSBox's LAN is 10.42.0.0/24, so the box refuses DHCP from such a network
+  (its router and DNS would be the box itself).</p>
   <button type="button" class="btn" onclick="doScan()">Scan</button>
   <span id="scanmsg" class="muted"></span>
   <table class="data" id="scantbl" style="margin-top:8px; display:none">
@@ -35,8 +38,8 @@
     <tbody></tbody>
   </table>
   <form method="post" action="__BASE__/wifi/connect" class="row-form" style="margin-top:10px">
-    <input name="ssid" id="ssid" type="text" placeholder="SSID" value="__STA_SSID__" required>
-    <input name="psk" id="sta_psk" type="password" placeholder="password (blank = open)">
+    <input name="ssid" id="ssid" type="text" placeholder="SSID" value="__STA_SSID__" maxlength="32" required>
+    <input name="psk" id="sta_psk" type="password" placeholder="password (blank = open)" minlength="8" maxlength="63">
     <button type="button" class="btn" onclick="togglePw('sta_psk', this)">Show</button>
     <button type="submit" class="btn-primary">Connect</button>
   </form>
@@ -45,15 +48,22 @@
 <section class="card">
   <h3>Hotspot (access point)</h3>
   <p class="muted">Runs concurrently with the client connection (onboard WiFi
-  single radio, time-shared). AP clients are NAT'd to the WAN and get DHCP
-  from the AP subnet in <code>/etc/rnsbox/wifi.conf</code>.</p>
+  single radio, time-shared). The hotspot is bridged with the USB-C link into
+  one LAN (<code>br-lan</code>): WiFi clients join the same 10.42.0.0/24
+  subnet and DHCP pool as the USB host, reach this portal at 10.42.0.1, are
+  NAT'd to the WAN, and talk to the USB host directly (switched, not
+  firewalled).</p>
+  __AP_PSK_NOTE__
   <form method="post" action="__BASE__/wifi/ap">
     <label><input type="checkbox" name="ap_enable" __AP_ENABLE_CHECKED__> Enable hotspot</label>
-    <label>SSID <input type="text" name="ap_ssid" value="__AP_SSID__"></label>
-    <label>Password (≥8 chars)
-      <input type="password" id="ap_psk" name="ap_psk" value="__AP_PSK__">
+    <label>SSID <input type="text" name="ap_ssid" value="__AP_SSID__" maxlength="32"></label>
+    <label>Password (8–63 characters — required to enable the hotspot)
+      <input type="password" id="ap_psk" name="ap_psk" value="__AP_PSK__" minlength="8" maxlength="63" autocomplete="new-password">
       <button type="button" class="btn" onclick="togglePw('ap_psk', this)">Show</button>
     </label>
+    <p class="muted">The hotspot ships with <strong>no password</strong> and stays off
+    until you choose one: 8–63 printable ASCII characters, without <code>#</code> or
+    <code>"</code>. The old published default <code>changeme123</code> is refused.</p>
     <label>Channel__AP_CHANNEL_LOCK__
       <select name="ap_channel" __AP_CHANNEL_DISABLED__>
         __AP_CHANNEL_OPTIONS__
@@ -83,9 +93,8 @@
   radio). <strong>auto</strong> = chip maximum, independent of the regulatory
   database. A number caps power; firmware still applies per-rate EVM backoff
   below it. The onboard chip (CYW43436 class) is a 2.4&nbsp;GHz-only radio; the
-  practical regulatory ceiling is 20&nbsp;dBm EIRP in most domains.
-  11b-CCK, 18&nbsp;dBm MCS7), so values above ~18 only affect legacy 11b, not
-  data-rate throughput. Set lower to cut heat/range.</p>
+  practical regulatory ceiling is 20&nbsp;dBm EIRP in most domains. Set lower
+  to cut heat/range.</p>
   <form method="post" action="__BASE__/wifi/txpower" class="row-form">
     <select name="tx_power">
       __TXPOWER_OPTIONS__
@@ -96,7 +105,7 @@
 
 <script>
 // True when the box is in concurrent sta+ap mode: the client is 2.4 GHz-only,
-// so 5 GHz scan results are shown but not selectable.
+// so 5/6 GHz scan results are shown but not selectable.
 var CONCURRENT = __CONCURRENT_JS__;
 // Show/hide a password field. Flips the input type and the button label.
 function togglePw(id, btn){
@@ -107,24 +116,42 @@ function togglePw(id, btn){
 }
 function doScan(){
   var msg=document.getElementById('scanmsg'); msg.textContent='scanning…';
-  fetch('__BASE__/wifi/scan').then(r=>r.json()).then(function(nets){
+  fetch('__BASE__/wifi/scan').then(function(r){
+    if(r.status===401) throw new Error('session expired — please log in again');
+    return r.json();
+  }).then(function(nets){
     var tbl=document.getElementById('scantbl'), tb=tbl.querySelector('tbody');
-    tb.innerHTML='';
-    if(!nets.length){ msg.textContent='no networks found'; return; }
+    while(tb.firstChild) tb.removeChild(tb.firstChild);
+    if(!Array.isArray(nets) || !nets.length){ msg.textContent='no networks found'; return; }
     msg.textContent=nets.length+' found'; tbl.style.display='';
+    // Built with DOM nodes + textContent ONLY: SSIDs come from anyone in radio
+    // range and iw prints < > " ' verbatim, so no scan field may ever reach
+    // innerHTML.
+    function td(tr, text){ var c=document.createElement('td'); c.textContent=text; tr.appendChild(c); return c; }
     nets.forEach(function(n){
       var tr=document.createElement('tr');
       var band=n.band?(n.band+' GHz'):'';
-      var block5=CONCURRENT && n.band==='5';   // 5 GHz not joinable while concurrent
-      var btn=block5
-        ? '<span class="muted" title="2.4 GHz only in concurrent mode">5&nbsp;GHz</span>'
-        : '<button type="button" class="btn">Use</button>';
-      tr.innerHTML='<td>'+(n.ssid||'(hidden)')+'</td><td>'+n.signal+' dBm</td><td>'+
-        (n.channel||'')+'</td><td>'+band+'</td><td>'+n.security+'</td><td>'+btn+'</td>';
-      if(block5){ tr.style.opacity='0.45'; }
-      else { tr.querySelector('button').onclick=function(){ document.getElementById('ssid').value=n.ssid; }; }
+      // 5/6 GHz not joinable while concurrent (the STA is pinned to 2.4 GHz)
+      var blockHi=CONCURRENT && (n.band==='5' || n.band==='6');
+      td(tr, n.ssid||'(hidden)');
+      td(tr, (n.signal||'?')+' dBm');
+      td(tr, n.channel||'');
+      td(tr, band);
+      td(tr, n.security||'');
+      var last=td(tr, '');
+      if(blockHi){
+        var s=document.createElement('span');
+        s.className='muted'; s.title='2.4 GHz only in concurrent mode'; s.textContent=band;
+        last.appendChild(s);
+        tr.style.opacity='0.45';
+      } else {
+        var b=document.createElement('button');
+        b.type='button'; b.className='btn'; b.textContent='Use';
+        b.onclick=function(){ document.getElementById('ssid').value=n.ssid||''; };
+        last.appendChild(b);
+      }
       tb.appendChild(tr);
     });
-  }).catch(function(){ msg.textContent='scan failed'; });
+  }).catch(function(e){ msg.textContent=(e && e.message && /session/.test(e.message)) ? e.message : 'scan failed'; });
 }
 </script>

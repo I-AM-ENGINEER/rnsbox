@@ -20,7 +20,7 @@
 ################################################################################
 
 RNSBOX_PORTAL_VERSION = 0.2.0
-RNSBOX_PORTAL_SITE = $(TOPDIR)/package/rnsbox-portal/src
+RNSBOX_PORTAL_SITE = $(BR2_EXTERNAL_RNSBOX_PATH)/package/rnsbox-portal/src
 RNSBOX_PORTAL_SITE_METHOD = local
 RNSBOX_PORTAL_LICENSE = MIT
 RNSBOX_PORTAL_LICENSE_FILES = LICENSE

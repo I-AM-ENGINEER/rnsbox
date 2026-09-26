@@ -19,9 +19,27 @@ bool require_auth(const http::Request& req, http::Response& res, bool json) {
         res.content_type = "application/json";
         res.body = "{\"error\":\"auth required\"}";
     } else {
-        res.redirect(base() + "/login");
+        std::string loc = base() + "/login";
+        // Come back here after signing in. GET only: replaying a POST target as
+        // a GET after login would just hit the dispatcher's 405. The dashboard
+        // (base itself) is the default anyway, so it needs no next.
+        if (req.method == "GET" && req.path != "/") {
+            std::string here = base() + req.path;
+            if (!req.query.empty()) here += "?" + req.query;
+            if (is_local_next(here)) loc += "?next=" + http::url_encode(here);
+        }
+        res.redirect(loc);
     }
     return false;
+}
+
+bool is_local_next(const std::string& next) {
+    std::string b = base();
+    if (next != b && next.compare(0, b.size() + 1, b + "/") != 0) return false;
+    if (next.find("//") != std::string::npos) return false;   // "//host" = protocol-relative
+    for (unsigned char c : next)
+        if (c == '\\' || c < 0x20 || c == 0x7f) return false;  // browsers read '\' as '/'
+    return true;
 }
 
 std::string replace_all(std::string s, const std::string& from, const std::string& to) {

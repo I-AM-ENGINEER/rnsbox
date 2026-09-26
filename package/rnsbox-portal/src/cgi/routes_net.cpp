@@ -29,8 +29,18 @@ void network_page(const Request& req, Response& res) {
 
     std::string h = render::page_file("network");
     h = R(std::move(h), "__BASE__", base);
-    h = R(std::move(h), "__WAN__", E(w.interface));
-    h = R(std::move(h), "__GATEWAY__", net.default_gateway.empty() ? "(none)" : E(net.default_gateway));
+    h = R(std::move(h), "__WAN__", E(sysinfo::wan_label(w.interface, net)));
+    // The LAN iface nftables treats as the full-access management side
+    // (/run/lan-iface: br-lan, or usb0 if the bridge couldn't be made) and,
+    // for a bridge, its ports — usb0 always, the hotspot iface while it's up.
+    std::string lan_if = sysinfo::lan_iface();
+    std::string lan = E(lan_if), ports;
+    for (const auto& p : sysinfo::bridge_ports(lan_if)) { if (!ports.empty()) ports += ", "; ports += E(p); }
+    if (!ports.empty()) lan += " (" + ports + ")";
+    h = R(std::move(h), "__LAN__", lan);
+    std::string gw = sysinfo::wan_gateway(w.interface, net);
+    h = R(std::move(h), "__GATEWAY__", gw.empty() ? "(none)" : E(gw));
+    h = R(std::move(h), "__SEL_AUTO__",  w.interface == "auto"  ? "selected" : "");
     h = R(std::move(h), "__SEL_ETH0__",  w.interface == "eth0"  ? "selected" : "");
     h = R(std::move(h), "__SEL_WLAN0__", w.interface == "wlan0" ? "selected" : "");
     bool is_static = (w.mode == "static");
@@ -65,7 +75,8 @@ void network_page(const Request& req, Response& res) {
     rows.clear();
     auto ops = store::read_openports();
     if (ops.empty()) {
-        rows = "<tr><td colspan=\"4\" class=\"muted\">No open ports &mdash; WAN access is closed (the LAN/usb0 side stays open).</td></tr>";
+        rows = "<tr><td colspan=\"4\" class=\"muted\">No open ports &mdash; WAN access is closed (the LAN side &mdash; " +
+               lan + " &mdash; stays open).</td></tr>";
     } else {
         for (size_t i = 0; i < ops.size(); ++i) {
             const auto& o = ops[i];
@@ -79,20 +90,8 @@ void network_page(const Request& req, Response& res) {
     }
     h = R(std::move(h), "__OPENPORTS_ROWS__", rows);
 
-    // DHCP leases
-    rows.clear();
-    auto leases = sysinfo::dnsmasq_leases();
-    if (leases.empty()) {
-        rows = "<tr><td colspan=\"4\" class=\"muted\">No active leases.</td></tr>";
-    } else {
-        for (const auto& l : leases) {
-            rows += "<tr><td>" + E(l.ip) + "</td><td><code>" + E(l.mac) + "</code></td>"
-                    "<td>" + E(l.name) + "</td><td>" + E(l.expires) + "</td></tr>";
-        }
-    }
-    h = R(std::move(h), "__LEASES_ROWS__", rows);
-
-    // All interfaces
+    // All interfaces. Bridge topology noted under the name: the LAN bridge
+    // carries the address; its ports (usb0, the hotspot iface) carry none.
     rows.clear();
     for (const auto& i : net.ifaces) {
         std::string addrs;
@@ -100,11 +99,33 @@ void network_page(const Request& req, Response& res) {
         std::string st = (i.state == "up")
             ? std::string("<span class=\"badge ok\">UP</span>")
             : "<span class=\"badge warn\">" + E(i.state.empty() ? "?" : i.state) + "</span>";
-        rows += "<tr><td><strong>" + E(i.name) + "</strong></td><td>" + st + "</td>"
+        std::string note;
+        if (i.bridge) {
+            note = (i.name == lan_if) ? "LAN bridge" : "bridge";
+        } else if (!i.master.empty()) {
+            std::string role = (i.master == lan_if) ? sysinfo::lan_port_role(i.name) : std::string();
+            note = "port of " + E(i.master) + (role.empty() ? std::string() : " &middot; " + E(role));
+        }
+        if (!note.empty()) note = "<br><span class=\"muted\">" + note + "</span>";
+        rows += "<tr><td><strong>" + E(i.name) + "</strong>" + note + "</td><td>" + st + "</td>"
                 "<td>" + addrs + "</td><td><code>" + E(i.mac) + "</code></td>"
                 "<td>" + E(i.mtu) + "</td><td>" + E(i.rx) + " / " + E(i.tx) + "</td></tr>";
     }
     h = R(std::move(h), "__IFACES_ROWS__", rows);
+
+    // DHCP leases — substituted LAST: the names come from LAN clients, and a
+    // hostname spelled like a __TOKEN__ must not get expanded by a later pass.
+    rows.clear();
+    auto leases = sysinfo::dnsmasq_leases();
+    if (leases.empty()) {
+        rows = "<tr><td colspan=\"4\" class=\"muted\">No active leases.</td></tr>";
+    } else {
+        for (const auto& l : leases) {
+            rows += "<tr><td>" + E(l.ip) + "</td><td><code>" + E(l.mac) + "</code></td>"
+                    "<td>" + E(l.name) + "</td><td>" + E(l.length) + "</td></tr>";
+        }
+    }
+    h = R(std::move(h), "__LEASES_ROWS__", rows);
 
     res.body = render::layout(req, res, "Network", "network", h);
 }
@@ -113,7 +134,7 @@ void network_page(const Request& req, Response& res) {
 
 void wan_set(const Request& req, Response& res) {
     if (!web::require_auth(req, res, false)) return;
-    std::string iface = util::trim(req.f("wan")); if (iface.empty()) iface = "eth0";
+    std::string iface = util::trim(req.f("wan")); if (iface.empty()) iface = "auto";
     std::string mode = util::trim(req.f("wan_mode")); if (mode != "static") mode = "dhcp";
     if (iface == "wlan0" && !wifi::present()) {
         render::redirect_flash(res, net_redirect(), "error", "No WiFi radio — wlan0 WAN needs the W variant.");
@@ -135,14 +156,19 @@ void wan_set(const Request& req, Response& res) {
     }
     web::run_init("S30eth");
     web::run_init("S60routing");
-    if (iface == "wlan0")
+    if (iface == "auto")
         render::redirect_flash(res, net_redirect(), "success",
-            "WAN set to wlan0 (WiFi). Make sure WiFi is connected as a client (WiFi tab → mode sta or sta+ap).");
+            std::string("WAN set to automatic: eth0 while it has a cable and an address") +
+            (mode == "static" ? " (static " + c.address + "/" + c.prefix + ")" : "") +
+            (wifi::present() ? ", otherwise the WiFi client (WiFi tab → mode sta or sta+ap)." : "."));
+    else if (iface == "wlan0")
+        render::redirect_flash(res, net_redirect(), "success",
+            "WAN set to wlan0 (WiFi) only. Make sure WiFi is connected as a client (WiFi tab → mode sta or sta+ap).");
     else if (mode == "static")
         render::redirect_flash(res, net_redirect(), "success",
-            "WAN set to eth0 static " + c.address + "/" + c.prefix + ".");
+            "WAN set to eth0 only, static " + c.address + "/" + c.prefix + ".");
     else
-        render::redirect_flash(res, net_redirect(), "success", "WAN set to eth0 (DHCP).");
+        render::redirect_flash(res, net_redirect(), "success", "WAN set to eth0 only (DHCP).");
 }
 
 void pf_add(const Request& req, Response& res) {

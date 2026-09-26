@@ -1,14 +1,63 @@
 #!/bin/sh
-# S46wanwatch — background watchdog that retries S45ntpsync + S82rnsd if
-# a default route appears AFTER the boot-time one-shot already gave up.
+# S46wanwatch — background watchdog (10 s tick) for what boot can't finish
+# by itself. Nothing here gates a service on the clock: rnsd (and lxmd /
+# nomadnet, when enabled) run with or without a trusted time (Reticulum has
+# to work on meshes with no internet at all).
 #
-# Scenarios this fixes:
-#   1. Cold boot with no Ethernet cable plugged in. S45 waits 30s, no
-#      default route appears, gives up. /run/clock-synced never gets
-#      set. S82rnsd refuses to start. Later the user plugs in the
-#      cable — this watchdog notices the default route, runs S45+S82.
-#   2. Reticulum crash. rnsd's PID file goes stale; the watchdog
-#      restarts it.
+# Scenarios this covers:
+#   1. NTP once a time server is reachable. While /run/clock-source isn't
+#      "ntp": when the IPv4 routing table changes (a default route appears or
+#      changes: cable plugged in after boot, WiFi client associates, the WAN
+#      switched or re-plugged into another network; or the connected subnet
+#      of a local NTP server on a LAN-, HaLow- or WiFi-only mesh comes up),
+#      and at growing intervals after that, `S45ntpsync sync` re-runs its
+#      detached NTP one-shot if a configured server is routable
+#      (single-flight: if one is already running, the next tick asks again).
+#      On success it records source=ntp and writes the RTC, if one is
+#      fitted. ntpd itself (S49ntp) runs all along; the one-shot is only the
+#      fast path.
+#   1b. ntpd not running: it exits by itself on a >1000 s offset once its -g
+#      override is used up, and S45ntpsync stops it for each one-shot step
+#      (a one-shot killed by `S45ntpsync stop` mid-step leaves it stopped).
+#      The watchdog starts it again; S49ntp start defers by itself while a
+#      one-shot is stepping, and that one-shot starts ntpd when done.
+#   2. Reticulum crash. rnsd's PID file goes stale; the watchdog restarts it
+#      — once rcS or the operator has started it this boot ($ARMED_MARK, so
+#      the first tick never races rcS's own S82rnsd start), and not after an
+#      explicit `S82rnsd stop` (rcK or the operator); `S82rnsd start`
+#      re-arms it.
+#   3. The once-per-boot rnsd update check (S84cron bootcheck) needs a
+#      trusted clock (TLS) and an uplink; when either only arrives after boot
+#      (NTP once the WAN is up, a browser sync, or a WAN that comes up after
+#      the RTC already made the clock trusted) the watchdog triggers it.
+#   4. The LAN link came up only after rnsd started (no USB host / hotspot
+#      yet): the LAN iface (br-lan; usb0 without a bridge — /run/lan-iface)
+#      had no IPv6 link-local yet, so the AutoInterface skipped it; the
+#      watchdog restarts rnsd once when the address appears.
+#   5. nomadnet / lxmd enabled by the operator (both opt-in: shipped
+#      enabled=no, and RAM is scarce): they attach to rnsd's shared
+#      instance, which takes rnsd several seconds to open. When rcS (or the
+#      operator) starts them before that, they defer via $DEPS_MARK instead
+#      of racing rnsd for it; the same mark follows a restart in scenario 2
+#      if either is enabled. The watchdog starts them once rnsd's shared
+#      instance accepts clients - each only if its conf still says enabled
+#      (svc_enabled), and its start checks that first again. A disabled one
+#      is never started from here.
+#   6. eth0 cable re-plugged, possibly into another network. busybox udhcpc
+#      doesn't watch carrier (dhcpcd used to, back when it ran on eth0), so
+#      the old address + default route would stay until T1/T2; the watchdog
+#      has S30eth restart udhcpc asking for its old address — a brief WAN
+#      re-acquire; the same network re-grants the same address (a static
+#      eth0 gets its DNS servers back). eth0 cable pulled: the kernel already
+#      skips its routes (so with interface=auto a WiFi client takes over);
+#      the watchdog has S30eth drop eth0's DNS servers, which would otherwise
+#      stay listed (a static list exclusively). The DNS part only with
+#      interface=auto; a pinned eth0 keeps its old behaviour.
+#   7. WAN=auto switched uplinks: the default route in use (lowest metric,
+#      iface with carrier) moved between eth0 and the WiFi client. Flows
+#      NATed to the old uplink's address would otherwise hang on the new one
+#      (conntrack keeps the old SNAT binding); `S60routing uplink` flushes
+#      conntrack so they are picked up again from the new address.
 #
 # Purely additive: boot-time S45/S82 still run first. The watchdog
 # only does work when something becomes finishable that the boot
@@ -17,45 +66,349 @@
 PIDFILE=/var/run/wanwatch.pid
 LOG=/var/log/wanwatch.log
 RNSD_PIDFILE=/var/run/rnsd.pid
+BOOTCHECK_MARK=/run/rnsbox-update-bootcheck   # created by S84cron bootcheck
+LL_MARK=/run/rnsd-lan-no-ll                   # created by S82rnsd start
+STOPPED_MARK=/run/rnsd.stopped                # explicit `S82rnsd stop`
+ARMED_MARK=/run/rnsd.armed                    # S82rnsd start/restart ran
+DEPS_MARK=/run/wanwatch-deps-pending          # nomadnet/lxmd wait for rnsd
+READDR_MARK=/run/wan-eth0-readdressed         # S30eth stop, WAN=auto
+CLOCK_SRC=/run/clock-source                   # rtc|ntp|browser (S45ntpsync)
+NTPD_PIDFILE=/var/run/ntpd.pid                # S49ntp / the ntpd daemon
+NTPD_OUT=/run/wanwatch-ntpd.out               # last `S49ntp start` output
+NTP_RETRY=600                                 # s before the first NTP retry,
+NTP_RETRY_MAX=3600                            # doubling up to this
 
 log() {
 	printf '%s: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG"
 }
 
+# is_rnsd PID — true if PID is the rnsd daemon (same test as S82rnsd). rnsd
+# is a python console-script and the kernel names a script process after the
+# script file, so comm is "rnsd"; a python* comm (started through the
+# interpreter) is confirmed on argv[0]/argv[1]. Busybox pidof has no -x, so
+# it can't be used for this.
+is_rnsd() {
+	comm=
+	{ read -r comm <"/proc/$1/comm"; } 2>/dev/null
+	case "$comm" in
+		rnsd)    return 0 ;;
+		python*) tr '\0' '\n' <"/proc/$1/cmdline" 2>/dev/null | head -n 2 \
+		           | grep -qE '(^|/)rnsd$' ;;
+		*)       return 1 ;;
+	esac
+}
+
+# rnsd_running — the pidfile if it still names rnsd (builtins only, so the
+# steady-state 10 s tick forks nothing); otherwise a /proc scan, so a lost or
+# stale pidfile can never make us start a second rnsd. A live rnsd found by
+# the scan is re-recorded in the pidfile for the portal and S82rnsd stop.
+rnsd_running() {
+	p=
+	{ read -r p <"$RNSD_PIDFILE"; } 2>/dev/null
+	case "$p" in
+		''|*[!0-9]*) ;;
+		*) is_rnsd "$p" && return 0 ;;
+	esac
+	for d in /proc/[0-9]*; do
+		p=${d#/proc/}
+		if is_rnsd "$p"; then
+			log "rnsd running as pid $p but $RNSD_PIDFILE was stale -> re-recorded"
+			echo "$p" > "$RNSD_PIDFILE"
+			return 0
+		fi
+	done
+	return 1
+}
+
+# lan_iface — set LAN to the LAN iface S30gadget_nic recorded in
+# /run/lan-iface: br-lan, or usb0 when the bridge couldn't be made. Without
+# a valid record: br-lan if that bridge exists, else usb0 (as S60routing).
+# Same as S82rnsd; builtins only.
+lan_iface() {
+	LAN=
+	{ read -r LAN </run/lan-iface; } 2>/dev/null
+	case "$LAN" in
+		br-lan|usb0) ;;
+		*) LAN=usb0; [ -d /sys/class/net/br-lan/bridge ] && LAN=br-lan ;;
+	esac
+}
+
+# lan_ll — true once the LAN iface has a usable IPv6 link-local address
+# (scope 0x20, DAD done: neither tentative 0x40 nor dadfailed 0x08). Same
+# test as S82rnsd; builtins only.
+lan_ll() {
+	[ -r /proc/net/if_inet6 ] || return 1
+	lan_iface
+	while read -r _addr _idx _plen scope flags dev; do
+		[ "$dev" = "$LAN" ] && [ "$scope" = 20 ] || continue
+		case "$flags" in [0-9a-f][0-9a-f]) ;; *) continue ;; esac
+		[ $((0x$flags & 0x48)) -eq 0 ] && return 0
+	done </proc/net/if_inet6
+	return 1
+}
+
+# eth0_link — set CARRIER (1 = link up; empty/0 while down, and the carrier
+# file reads EINVAL while eth0 is admin-down) and UPS (carrier_up_count, which
+# also counts an unplug/replug that fits between two ticks). Builtins only.
+eth0_link() {
+	CARRIER=; UPS=
+	{ read -r CARRIER </sys/class/net/eth0/carrier; } 2>/dev/null
+	{ read -r UPS </sys/class/net/eth0/carrier_up_count; } 2>/dev/null
+}
+
+# default_routes — ROUTES = the IPv4 default routes of the main table
+# (" iface:gateway:metric" each) whose iface has carrier, empty when there is
+# none. An unplugged eth0 keeps its lease's route, which the kernel skips
+# (ignore_routes_with_linkdown, S30eth); it isn't an uplink. Builtins only.
+default_routes() {
+	ROUTES=
+	while read -r ifc dst gw _flags _rc _use met mask _rest; do
+		[ "$dst" = 00000000 ] && [ "$mask" = 00000000 ] || continue
+		car=
+		{ read -r car <"/sys/class/net/$ifc/carrier"; } 2>/dev/null
+		[ "$car" = 1 ] || continue
+		ROUTES="$ROUTES $ifc:$gw:$met"
+	done 2>/dev/null </proc/net/route
+}
+
+# uplink_now — UPLINK = the iface of the default route in use: the lowest
+# metric one among ROUTES (default_routes: ifaces with carrier), empty when
+# there is none. Builtins only.
+uplink_now() {
+	default_routes
+	UPLINK=; best=
+	for r in $ROUTES; do
+		ifc=${r%%:*}; met=${r##*:}
+		case "$met" in ''|*[!0-9]*) continue ;; esac
+		if [ -z "$best" ] || [ "$met" -lt "$best" ]; then best=$met; UPLINK=$ifc; fi
+	done
+}
+
+# all_routes — ALLROUTES = a signature of the whole IPv4 main table
+# (" iface:dest:gateway:metric:mask" each), empty when there is none; step 1
+# reacts to any change, since a local time server needs no default route.
+# Builtins only.
+all_routes() {
+	ALLROUTES=
+	while read -r ifc dst gw _f _rc _use met mask _rest; do
+		[ "$ifc" = Iface ] && continue
+		ALLROUTES="$ALLROUTES $ifc:$dst:$gw:$met:$mask"
+	done 2>/dev/null </proc/net/route
+}
+
+# rns_shared_up — true once rnsd's shared instance accepts clients: RNS on
+# Linux listens on the abstract AF_UNIX socket @rns/<instance> (flags
+# 00010000 = listening, in /proc/net/unix; @rns/<instance>/rpc is its RPC
+# socket, not this), or on 127.0.0.1:37428 (st 0A) with shared_instance_type
+# = tcp. Same test as S83nomadnet/S85lxmd; builtins only.
+rns_shared_up() {
+	while read -r _num _ref _proto flags _type _st _ino path; do
+		case "$path" in
+			@rns/*/*) ;;
+			@rns/*) [ "$flags" = 00010000 ] && return 0 ;;
+		esac
+	done 2>/dev/null </proc/net/unix
+	while read -r _sl laddr _raddr st _rest; do
+		[ "$laddr" = 0100007F:9234 ] && [ "$st" = 0A ] && return 0
+	done 2>/dev/null </proc/net/tcp
+	return 1
+}
+
+# svc_enabled S8x... — true if that opt-in service (S83nomadnet, S85lxmd) is
+# installed and enabled=yes in its conf: its init script's own test.
+svc_enabled() {
+	[ -x "/etc/init.d/$1" ] && "/etc/init.d/$1" enabled
+}
+
 loop() {
 	log "started"
+	eth0_link; eth_carrier=$CARRIER; eth_ups=$UPS
+	# WAN=auto: bring eth0's DNS servers in line with its link now. No
+	# carrier (no cable, or the link not up yet): drop any S30eth registered
+	# (a static list is exclusive, and would hide a WiFi client's); a late
+	# link counts as carrier-up on a later tick (step 5), which registers
+	# them again. Carrier already up: a static eth0 registers them (at boot
+	# S30eth ran before the link came up, and no edge will follow).
+	if [ -x /etc/init.d/S30eth ] && /etc/init.d/S30eth auto; then
+		if [ "$CARRIER" = 1 ]; then
+			/etc/init.d/S30eth linkup >> "$LOG" 2>&1
+		else
+			/etc/init.d/S30eth linkdown >> "$LOG" 2>&1
+		fi
+	fi
+	uplink_now; last_uplink=$UPLINK
+	ntp_routes=; ntp_next=0; ntp_gap=$NTP_RETRY
 	while sleep 10; do
-		# Step 1: if clock-synced is absent but a default route exists,
-		# try S45. We must stop the running ntpd daemon first because
-		# `ntpd -gq` binds UDP/123 and would EADDRINUSE otherwise.
-		if [ ! -f /run/clock-synced ]; then
-			if ip -4 route show default 2>/dev/null | grep -q '^default'; then
-				log "default route present, /run/clock-synced absent -> kicking S45ntpsync"
-				killall ntpd 2>/dev/null
-				sleep 1
-				/etc/init.d/S45ntpsync start >> "$LOG" 2>&1
-				/etc/init.d/S49ntp start >> "$LOG" 2>&1 || true
+		# Step 1: NTP one-shot while the clock source isn't ntp — on any
+		# change of the routing table (a new or changed default route, or a
+		# local time server's subnet coming up on a mesh with no uplink), and
+		# then every NTP_RETRY s (doubling to NTP_RETRY_MAX) while it stays:
+		# its first try may have failed with the upstream still coming up or
+		# NTP briefly blocked, and a LAN-only route never gets there.
+		# `S45ntpsync sync` returns at once: 0 = one-shot started, 3 = no
+		# configured server is routable (counts as a try: the next table
+		# change or retry asks again), 2 = one is already running (the
+		# boot-time one may still be waiting for this very route) -> ask
+		# again next tick rather than lose the edge. Builtins only until a
+		# run is due; only a change that started a one-shot is logged here
+		# (the one-shot logs to ntp-step.log, which it rolls over).
+		# The default route in use; with WAN=auto a cable pulled or plugged
+		# in changes it without changing the table (a dead eth0's routes
+		# stay, flagged linkdown), so it is part of step 1's signature.
+		uplink_now
+
+		src=
+		{ read -r src <"$CLOCK_SRC"; } 2>/dev/null
+		if [ "$src" != ntp ] && [ -x /etc/init.d/S45ntpsync ]; then
+			all_routes
+			[ -n "$ALLROUTES" ] && ALLROUTES="$ALLROUTES uplink=$UPLINK"
+			if [ -z "$ALLROUTES" ]; then
+				ntp_routes=
+			else
+				up=
+				{ read -r up _ </proc/uptime; } 2>/dev/null
+				up=${up%%.*}
+				if [ "$ALLROUTES" != "$ntp_routes" ] || [ "${up:-0}" -ge "$ntp_next" ]; then
+					/etc/init.d/S45ntpsync sync >/dev/null 2>> "$LOG"
+					rc=$?
+					if [ "$rc" -ne 2 ]; then
+						if [ "$ALLROUTES" != "$ntp_routes" ]; then
+							[ "$rc" -eq 0 ] && log "routes changed, clock source ${src:-none} -> NTP one-shot (/var/log/ntp-step.log)"
+							ntp_gap=$NTP_RETRY
+						else
+							ntp_gap=$((ntp_gap * 2))
+							[ "$ntp_gap" -le "$NTP_RETRY_MAX" ] || ntp_gap=$NTP_RETRY_MAX
+						fi
+						ntp_routes=$ALLROUTES
+						ntp_next=$(( ${up:-0} + ntp_gap ))
+					fi
+				fi
 			fi
 		fi
 
-		# Step 2: clock-synced but rnsd not running -> kick S82.
-		# S82rnsd refuses to start if /run/clock-synced is absent, so
-		# rerunning is cheap when it shouldn't run anyway.
-		if [ -f /run/clock-synced ]; then
-			running=0
-			if [ -f "$RNSD_PIDFILE" ] && kill -0 "$(cat "$RNSD_PIDFILE")" 2>/dev/null; then
-				running=1
-			elif pidof -x rnsd >/dev/null 2>&1; then
-				# -x: /usr/bin/rnsd is a python console-script, so its comm is
-				# "python3" and a bare `pidof rnsd` never matches. -x matches
-				# the script by argv basename.
-				running=1
-			fi
-			if [ "$running" -eq 0 ]; then
-				log "clock-synced but rnsd not running -> kicking S82rnsd"
-				/etc/init.d/S82rnsd start >> "$LOG" 2>&1
+		# Step 1b: ntpd not running -> S49ntp start. Its pidfile, confirmed
+		# on /proc/<pid>/comm so a stale one naming a recycled pid can't hide
+		# a dead ntpd; builtins only until then. rcS started it before our
+		# first tick. While an NTP one-shot steps (ntpd stopped for it) the
+		# start defers, and isn't logged: the one-shot starts ntpd itself.
+		# Output via a file, not $(...): no pipe for the daemon to hold.
+		p=; c=
+		{ read -r p <"$NTPD_PIDFILE"; } 2>/dev/null
+		case "$p" in ''|*[!0-9]*) ;; *) { read -r c <"/proc/$p/comm"; } 2>/dev/null ;; esac
+		if [ "$c" != ntpd ] && [ -x /etc/init.d/S49ntp ]; then
+			/etc/init.d/S49ntp start > "$NTPD_OUT" 2>&1
+			out=
+			{ read -r out <"$NTPD_OUT"; } 2>/dev/null
+			case "$out" in
+				*deferred*) ;;
+				*) log "ntpd not running -> S49ntp start: $out" ;;
+			esac
+		fi
+
+		# Step 2: rnsd not running -> kick S82 (armed: rcS or the operator
+		# started it this boot). Not after an explicit `S82rnsd stop`
+		# ($STOPPED_MARK): rcK stops S82rnsd well before S46wanwatch at
+		# shutdown, and an operator's stop must stick. The check here is
+		# only a cheap filter: `kick` re-checks the mark under S82rnsd's lock
+		# (a kick queued behind rcK's stop sees it) and, unlike `start`,
+		# never clears it.
+		if [ -f "$ARMED_MARK" ] && [ ! -f "$STOPPED_MARK" ] && ! rnsd_running; then
+			log "rnsd not running -> kicking S82rnsd"
+			/etc/init.d/S82rnsd kick >> "$LOG" 2>&1
+			rnsd_running && { svc_enabled S83nomadnet || svc_enabled S85lxmd; } \
+				&& : > "$DEPS_MARK"
+		fi
+
+		# Step 2b: nomadnet/lxmd deferred (or rnsd restarted by step 2):
+		# start them once rnsd's shared instance accepts clients, so they
+		# attach to it instead of racing rnsd to open it themselves. Only
+		# those enabled in their conf (opt-in, shipped enabled=no; start
+		# checks it first again), and a no-op for one already running. After
+		# an explicit rnsd stop there is nothing to attach to: drop the mark.
+		if [ -f "$DEPS_MARK" ]; then
+			if [ -f "$STOPPED_MARK" ]; then
+				rm -f "$DEPS_MARK"
+			elif rnsd_running && rns_shared_up; then
+				rm -f "$DEPS_MARK"
+				for svc in S83nomadnet S85lxmd; do
+					svc_enabled "$svc" || continue
+					log "rnsd's shared instance is up -> $svc start"
+					"/etc/init.d/$svc" start >> "$LOG" 2>&1
+				done
 			fi
 		fi
+
+		# Step 3: once per boot, as soon as the clock is trusted
+		# (/run/clock-synced: RTC at boot, NTP, or a browser sync) AND an
+		# IPv4 default route exists, the post-boot rnsd update check. The
+		# route test (builtins) keeps an offline box with a trusted RTC from
+		# forking S84cron every tick. S84cron bootcheck is a no-op once its
+		# /run marker exists (and it honours cron.conf update_check), so
+		# this fires at most once per boot.
+		if [ -f /run/clock-synced ] && [ ! -d "$BOOTCHECK_MARK" ] \
+		   && [ -x /etc/init.d/S84cron ]; then
+			default_routes
+			[ -n "$ROUTES" ] && /etc/init.d/S84cron bootcheck >> "$LOG" 2>&1
+		fi
+
+		# Step 4: rnsd started before the LAN iface had its IPv6 link-local
+		# (no USB host had brought the link up and no hotspot was running
+		# yet), so its AutoInterface never adopted it — RNS only picks
+		# ifaces at startup. S82rnsd left $LL_MARK; restart rnsd once, as
+		# soon as the address is there. (S82rnsd kick-restart re-evaluates
+		# and clears the marker, and does nothing after an explicit stop.)
+		if [ -f "$LL_MARK" ] && lan_ll && rnsd_running; then
+			log "$LAN got its IPv6 link-local after rnsd started -> restarting rnsd (AutoInterface)"
+			rm -f "$LL_MARK"
+			/etc/init.d/S82rnsd kick-restart >> "$LOG" 2>&1
+		fi
+
+		# Step 5: eth0 carrier came back since the last tick (0 -> 1, or a
+		# higher carrier_up_count for a replug between ticks), once per edge:
+		# `S30eth renew` restarts udhcpc asking for its old address (a
+		# static eth0: registers its DNS servers again). Carrier lost (1 ->
+		# 0): `S30eth linkdown` drops eth0's DNS servers. Only while S30eth
+		# configures eth0 (`S30eth managed`: interface=auto or eth0, no
+		# /boot/eth.nodhcp); wan.conf is only parsed on a link event, not
+		# every tick. A new lease on another network changes the routing
+		# table, which step 1 picks up.
+		eth0_link
+		if [ "$CARRIER" = 1 ] && { [ "$eth_carrier" != 1 ] || [ "$UPS" != "$eth_ups" ]; } \
+		   && [ -x /etc/init.d/S30eth ] && /etc/init.d/S30eth managed; then
+			log "eth0 carrier up (up count ${eth_ups:-?} -> ${UPS:-?}) -> S30eth renew"
+			/etc/init.d/S30eth renew >> "$LOG" 2>&1
+		elif [ "$CARRIER" != 1 ] && [ "$eth_carrier" = 1 ] \
+		   && [ -x /etc/init.d/S30eth ] && /etc/init.d/S30eth auto; then
+			log "eth0 carrier lost -> S30eth linkdown"
+			/etc/init.d/S30eth linkdown >> "$LOG" 2>&1
+		fi
+		eth_carrier=$CARRIER; eth_ups=$UPS
+
+		# Step 6: the default route in use moved to another iface:
+		# `S60routing uplink` flushes the WAN-NATed conntrack entries when
+		# WAN=auto (a no-op for a pinned WAN), so flows NATed to the old
+		# uplink restart from the new one instead of hanging. Re-read here,
+		# after step 5: a renew has just dropped eth0's address and route,
+		# so the WiFi client carries the flows until the new lease arrives,
+		# and that later return to eth0 is the move that needs the flush.
+		# No uplink at all (both down) isn't a move: the next one compares
+		# against the last uplink that carried traffic. $READDR_MARK (S30eth
+		# stop re-addressed eth0 outside this loop, e.g. a portal WAN save,
+		# possibly between two ticks) counts as a move back to eth0.
+		uplink_now
+		if [ -n "$UPLINK" ] && { [ "$UPLINK" != "$last_uplink" ] \
+		   || { [ "$UPLINK" = eth0 ] && [ -f "$READDR_MARK" ]; }; }; then
+			if [ -n "$last_uplink" ] && [ -x /etc/init.d/S60routing ]; then
+				if [ "$UPLINK" = "$last_uplink" ]; then
+					log "uplink $UPLINK re-addressed"
+				else
+					log "uplink $last_uplink -> $UPLINK"
+				fi
+				/etc/init.d/S60routing uplink "$last_uplink" "$UPLINK" >> "$LOG" 2>&1
+			fi
+			last_uplink=$UPLINK
+		fi
+		[ "$UPLINK" = eth0 ] && rm -f "$READDR_MARK"
 	done
 }
 
@@ -64,7 +417,12 @@ start() {
 		echo "S46wanwatch: already running (pid $(cat "$PIDFILE"))"
 		return 0
 	fi
-	loop &
+	# `( loop )` with its own stdio: the loop and everything it runs (sleep,
+	# the S82rnsd kicks) never keep the caller's stdin/stdout/stderr, which
+	# made `S46wanwatch start | cat` wait forever. Not `loop ... &`: ash keeps
+	# a backgrounded function's redirections as saved pushes, so the loop
+	# would still hold a copy of the caller's stdout (see S45ntpsync launch).
+	( loop ) </dev/null >>"$LOG" 2>&1 &
 	echo $! > "$PIDFILE"
 	echo "S46wanwatch: started (pid $(cat "$PIDFILE"))"
 }

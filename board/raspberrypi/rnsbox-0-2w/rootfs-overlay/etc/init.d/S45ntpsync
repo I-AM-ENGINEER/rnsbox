@@ -1,84 +1,512 @@
 #!/bin/sh
-# S45ntpsync - synchronously step the system clock from a hard-coded
-# list of NTP server IPs before any service that depends on a sane
-# clock comes up.
+# S45ntpsync - boot-time wall-clock provenance, the background NTP one-shot
+# and the hourly RTC resync.
 #
-# Why this exists, in one paragraph:
-#   The board has no RTC; the clock starts at 1970 every boot. rnsd
-#   stamps every announcement / link probe with wall-clock time, and
-#   peers silently drop anything dated 1970. If S49ntp's daemon used
-#   pool.ntp.org it'd race against DNS — which may not work until much
-#   later in boot. So we run a one-shot `ntpd -gq` here against literal
-#   anycast NTP IPs, before anything time-sensitive starts, and signal
-#   success via /run/clock-synced. S82rnsd checks that file and refuses
-#   to start without it.
+# Reticulum must work with no internet at all (HaLow-, LAN- or WiFi-only
+# meshes), so nothing waits for the clock: rnsd (and lxmd / nomadnet, when
+# the operator enabled them) start whether or not the time is known (RNS
+# creates its identity on first start either way), ntpd (S49ntp, -g) always
+# runs, and this script never blocks boot.
+#
+# Clock state, in /run (tmpfs: it resets every boot):
+#   /run/clock-source  one line: rtc | ntp | browser - where the trusted wall
+#                      clock came from; absent = no trusted source yet.
+#   /run/clock-synced  exists iff clock-source does ("the wall clock is
+#                      trustworthy"). Only what genuinely needs real time uses
+#                      it (TLS: the rnsd update checks); no service gates on
+#                      it.
+# Writers: this script at boot (rtc), the NTP one-shot and the hourly resync
+# below (ntp) and the portal's Settings -> "Sync clock to browser" (browser).
+# Precedence: ntp always wins; browser replaces rtc/none; rtc only at boot,
+# over nothing.
+#
+# start (rcS):
+#   1. RTC. With a DS3231 fitted (i2c5, DTS rtc@68 -> rtc0) the kernel has
+#      already set the clock from it (CONFIG_RTC_HCTOSYS) - unless the chip
+#      lost its time: RNSBox's rtc-ds1307 then refuses to read it (see
+#      rtc_trusted) and the clock is left alone. If the kernel set it, from
+#      a plausible time, source=rtc. No RTC, or one that isn't set: no
+#      source, and the clock stays at 1970 until NTP or a browser sync sets
+#      it.
+#   2. The NTP one-shot (seed), detached. start returns at once.
+# sync (S46wanwatch: the routing table changed, or the periodic retry, while
+# the source isn't ntp; the portal's Restart NTP): the one-shot again - exit
+# 3 when no configured server is routable right now (routable_servers), 2
+# (silently) when one is already running, 0 when started.
+# resync (S84cron, hourly): re-check the clock against NTP and write it to
+# the RTC (see resync) - a no-op without an RTC or a routable server.
+# stop only ends a running one-shot or resync; the clock state is left alone.
+# status: clock source, RTC, one-shot.
 
+SRC=/run/clock-source
 FLAG=/run/clock-synced
+LOCK=/run/ntpsync.lock          # single-flight: the one-shot or a resync
+STEP_LOCK=/run/ntpsync.step.lock   # held while ntpdate steps; S49ntp defers
+BOOT_MARK=/run/ntpsync.boot     # the RTC was classified this boot
+PIDFILE=/var/run/ntpsync.pid
 LOG=/var/log/ntp-step.log
+LOG_MAX=65536                   # bytes; rolled over to $LOG.old past this
+NTP_CONF=/etc/ntp.conf
+RTC_DEV=/dev/rtc0
+RTC_SYS=/sys/class/rtc/rtc0
+ROUTE_WAIT=90                   # s a one-shot waits for a route to a server
+NTPDATE_MAX=45                  # s cap on one ntpdate run (4 samples x 2 s
+                                # per server, plus musl's DNS timeouts when a
+                                # server line is a name); also caps each -q
+                                # query
+VERIFY_MAX=2                    # s: |offset| the re-check after a step accepts
+RESYNC_MAX=0.5                  # s: |offset| at which a resync only writes the
+                                # RTC; past it, it steps the clock first
+# A plausible wall clock: 2020-01-01 .. 2100-01-01 UTC, the portal's floor
+# for a browser time and for showing the RTC as set.
+CLOCK_FLOOR=1577836800
+CLOCK_CEIL=4102444800
 
-# IPs from operators that publish stable anycast NTP. Mix providers
-# so one being down doesn't deadlock boot.
-NTP_SERVERS="162.159.200.1 162.159.200.123 216.239.35.0 216.239.35.4 216.239.35.8 216.239.35.12"
-
-start() {
-	rm -f "$FLAG"
-
-	# Wait up to 30s for ANY default route from dhcpcd (eth0 on the
-	# Nano-e SKU; future WiFi variant would also surface here per
-	# /etc/rnsbox/wan.conf). If it never appears, fail immediately —
-	# no point trying NTP without WAN.
-	printf "Waiting for default route: "
-	have_route=0
-	for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
-		if ip -4 route show default 2>/dev/null | grep -q "^default"; then
-			have_route=1
-			break
-		fi
-		sleep 1
-	done
-	if [ $have_route -eq 0 ]; then
-		echo "TIMEOUT (no default route, skipping NTP)"
-		return 1
-	fi
-	echo "OK ($(ip -4 route show default 2>/dev/null | awk 'NR==1{print $5}'))"
-
-	# One-shot synchronous NTP step. ntpd -gq exits after the first
-	# successful sync. We can't use timeout(1) because busybox's ntpd
-	# doesn't ship it - instead we background ntpd, poll the year,
-	# and kill the daemon once we see it stepped (or after 60s).
-	printf "Stepping clock from NTP: "
-	ntpd -gq $NTP_SERVERS >>"$LOG" 2>&1 &
-	NTP_PID=$!
-	stepped=0
-	for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 \
-	         21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 \
-	         41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60; do
-		sleep 1
-		if [ "$(date +%Y)" -ge 2024 ]; then
-			stepped=1
-			break
-		fi
-		# Stop early if ntpd already exited (failure) - no point waiting.
-		kill -0 $NTP_PID 2>/dev/null || break
-	done
-	# Make sure the one-shot daemon exits before S49ntp tries to bind UDP/123.
-	kill $NTP_PID 2>/dev/null
-	wait $NTP_PID 2>/dev/null
-
-	if [ $stepped -eq 1 ]; then
-		touch "$FLAG"
-		echo "OK ($(date '+%Y-%m-%d %H:%M:%S UTC'))"
-	else
-		echo "FAIL"
-		return 1
-	fi
+log() {
+	printf '%s: %s\n' "$(date -u '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG"
 }
 
-stop() { rm -f "$FLAG"; }
+# roll_log - keep $LOG (tmpfs) bounded: past LOG_MAX it becomes $LOG.old.
+roll_log() {
+	sz=$(wc -c 2>/dev/null <"$LOG")
+	[ "${sz:-0}" -gt "$LOG_MAX" ] 2>/dev/null && mv -f "$LOG" "$LOG.old"
+}
+
+utc_now() { date -u '+%Y-%m-%d %H:%M:%S'; }
+
+# clock_plausible - the system clock lies in CLOCK_FLOOR..CLOCK_CEIL.
+clock_plausible() {
+	now=$(date +%s)
+	[ "$now" -ge "$CLOCK_FLOOR" ] && [ "$now" -lt "$CLOCK_CEIL" ]
+}
+
+# cur_source - src = the recorded source, empty if none (builtins only).
+cur_source() {
+	src=
+	{ read -r src <"$SRC"; } 2>/dev/null
+}
+
+# set_source SRC - record a trusted source: clock-source first (renamed in),
+# then the derived clock-synced marker, so clock-synced never exists alone.
+set_source() {
+	printf '%s\n' "$1" > "$SRC.$$" && mv -f "$SRC.$$" "$SRC" && : > "$FLAG"
+}
+
+# rtc_trusted - the kernel set the clock from rtc0 at boot (hctosys reads 1)
+# and that time is believable (2020..2100). That is enough with RNSBox's
+# rtc-ds1307 (linux_5.10/drivers/rtc/rtc-ds1307.c): a DS3231 whose
+# oscillator stopped (never set, or the coin cell ran flat while unpowered)
+# keeps its oscillator-stop flag (OSF) until the RTC is next written, and
+# the driver refuses to read the time while it is set (EINVAL). So hctosys
+# fails ("hctosys: unable to read the hardware clock", hctosys reads 0) on
+# every boot until NTP or a browser sync writes the RTC; the flag lives in
+# the chip, so no boot log scraping or remembered verdict is needed. (The
+# stock driver cleared it at probe and read the restarted count - ~2000-01-01
+# - back as the time.) The year test catches an RTC that was written with a
+# wrong time. why = the reason when not trusted: osf (the read fails with
+# EINVAL) | unread (hctosys 0 otherwise: I2C error, ...) | range.
+rtc_trusted() {
+	why=
+	h=
+	{ read -r h <"$RTC_SYS/hctosys"; } 2>/dev/null
+	if [ "$h" != 1 ]; then
+		case "$(cat "$RTC_SYS/since_epoch" 2>&1 >/dev/null)" in
+			*'Invalid argument'*) why=osf ;;
+			*)                    why=unread ;;
+		esac
+		return 1
+	fi
+	clock_plausible || { why=range; return 1; }
+	return 0
+}
+
+# have_route - true while the main table has an IPv4 default route (S30eth:
+# eth0 udhcpc lease or static gateway; dhcpcd: wlan0 WAN on the W board)
+# whose iface has carrier (an unplugged eth0 keeps its lease's route);
+# ROUTE_IF = its interface. Builtins only.
+have_route() {
+	ROUTE_IF=
+	while read -r ifc dst _gw _flags _rc _use _met mask _rest; do
+		[ "$dst" = 00000000 ] && [ "$mask" = 00000000 ] || continue
+		car=
+		{ read -r car <"/sys/class/net/$ifc/carrier"; } 2>/dev/null
+		[ "$car" = 1 ] || continue
+		ROUTE_IF=$ifc
+		return 0
+	done 2>/dev/null </proc/net/route
+	return 1
+}
+
+# ntp_servers - the hosts of the server/pool lines in /etc/ntp.conf (the list
+# the portal edits), space-separated. Only [A-Za-z0-9.:-] names that don't
+# start with '-' (that would reach ntpdate as an option); refclock
+# pseudo-addresses (127.127.x.x) skipped.
+ntp_servers() {
+	awk '($1 == "server" || $1 == "pool") && $2 !~ /^127\.127\./ &&
+	     $2 ~ /^[A-Za-z0-9.:][A-Za-z0-9.:-]*$/ { printf "%s ", $2 }' "$NTP_CONF" 2>/dev/null
+}
+
+# routable_servers - SERVERS = the ntp_servers() the kernel can route to now.
+# With an IPv4 default route: all of them. Without one (LAN-, HaLow- or
+# WiFi-only mesh; eth0 static with no gateway) the time server sits on a
+# connected subnet: literal addresses `ip route get` resolves; names are
+# skipped (no uplink for DNS). False when none.
+routable_servers() {
+	SERVERS=
+	all=$(ntp_servers)
+	if have_route; then SERVERS=$all; else
+		for s in $all; do
+			case "$s" in *[!0-9a-fA-F.:]*) continue ;; esac
+			ip route get "$s" >/dev/null 2>&1 && SERVERS="$SERVERS$s "
+		done
+	fi
+	[ -n "$SERVERS" ]
+}
+
+# capped SECS CMD... - run CMD, killed after SECS s (no timeout(1) in
+# busybox); returns its exit status. The watchdog sends its output nowhere
+# and closes fds 8 and 9, so neither it nor its sleep (orphaned once it is
+# killed) holds a lock or a caller's pipe; it kills only while the pid is
+# still CMD, so after `stop` killed this worker it can't hit a recycled pid.
+capped() {
+	t=$1
+	shift
+	"$@" &
+	cpid=$!
+	( sleep "$t"; c=; { read -r c <"/proc/$cpid/comm"; } 2>/dev/null
+	  [ "$c" = "${1##*/}" ] && kill "$cpid" 2>/dev/null ) >/dev/null 2>&1 8>&- 9>&- &
+	cw=$!
+	wait "$cpid"
+	cr=$?
+	kill "$cw" 2>/dev/null
+	return "$cr"
+}
+
+# ntp_offset SERVER... - off = the clock's offset (s) from the servers: the
+# one `ntpdate -u -q` reports for the server it would sync to (query only,
+# it never touches the clock; -u: unprivileged port), capped at NTPDATE_MAX
+# s. False, off empty, when no server answered (or the cap hit), and for
+# anything that isn't a plain number.
+ntp_offset() {
+	off=$(capped "$NTPDATE_MAX" ntpdate -u -q "$@" 2>/dev/null | awk '
+		/ntpdate\[/ { for (i = 1; i < NF; i++) if ($i == "offset") o = $(i + 1) }
+		END { if (o !~ /^[-+]?[0-9]+(\.[0-9]+)?$/) exit 1; print o }')
+}
+
+# abs_le OFF MAX - true if |OFF| <= MAX (seconds, decimals allowed).
+abs_le() {
+	awk -v o="$1" -v m="$2" 'BEGIN { a = o + 0; if (a < 0) a = -a; exit !(a <= m + 0) }'
+}
+
+# ntpd_stop - stop the ntpd daemon and wait until no ntpd is left (bounded).
+# By name, not S49ntp's pidfile: an ntpd that rcS's S49ntp start launched
+# just before we took the step lock writes its pidfile only after
+# daemonizing, and a pidfile left by an ntpd that exited could name a
+# recycled pid. Called with the step lock held, so no new one can start.
+ntpd_stop() {
+	n=0
+	while killall ntpd 2>/dev/null; do   # exit 0 = an ntpd was still there
+		n=$((n + 1))
+		[ "$n" -le 5 ] || return 1
+		sleep 1
+	done
+	rm -f /var/run/ntpd.pid
+	return 0
+}
+
+# step_lock SECS - take STEP_LOCK on fd 8, polling up to SECS s; false (fd 8
+# closed again) if it stays busy. Anything this process starts inherits fd
+# 8, so the lock stays held while ntpdate may still step even if `stop`
+# kills this worker (`stop` kills ntpdate too). Others hold it for a moment
+# only (S49ntp start, the portal's browser sync); bounded all the same,
+# polled so any flock(1) will do.
+step_lock() {
+	exec 8>"$STEP_LOCK"
+	n=0
+	while command -v flock >/dev/null 2>&1 && ! flock -n 8; do
+		n=$((n + 1))
+		if [ "$n" -gt "$1" ]; then
+			exec 8>&-
+			return 1
+		fi
+		sleep 1
+	done
+	return 0
+}
+
+# step_clock SERVER... - step the clock from NTP: the one-shot's step, and a
+# resync's when the clock is off by more than RESYNC_MAX. Called with
+# STEP_LOCK held (step_lock), which it releases. Steps with `ntpdate -u -b
+# <servers>`, capped at NTPDATE_MAX s, and re-checks with `ntpdate -u -q`
+# (|offset| <= VERIFY_MAX s) and the year. On success: source=ntp,
+# clock-synced, and the time written to rtc0 when there is one - even an RTC
+# that was never set: writing it is exactly how it gets set.
+#
+# One stepper at a time (ntp 4.2.8p17 source):
+#   - ntpdate steps RELATIVE to the current clock (clock_adjust() ->
+#     step_systime(offset)), once every server has answered 4 samples 2 s
+#     apart: ~8 s after it starts. ntpd -g, which rcS's S49ntp starts ~0.5 s
+#     after this, steps by itself ~6 s after start (iburst). When ntpd steps
+#     first, ntpdate's earlier samples still carry the old offset and it
+#     applies it a second time: the clock lands decades ahead, ntpd then
+#     exits on its 1000 s panic limit (its -g override already used up) and
+#     that wrong time would be trusted and written to the RTC.
+#   - So the step runs with STEP_LOCK held and ntpd stopped: S49ntp start
+#     defers while the lock is held (rcS's own start at boot included), and
+#     ntpd_stop ends any ntpd already running. The lock is released and ntpd
+#     started again on every path, success or not (S46wanwatch restarts it
+#     if this worker is killed in between). The portal's browser sync takes
+#     the same lock.
+#   - -u: ntpdate binds udp/123 only without -u (init_io()); with it, an
+#     unprivileged port.
+#   - -b: settimeofday() step, whatever the size. Exit 0 only when
+#     clock_adjust() picked a server and stepped; 1 when no server was
+#     reachable/suitable, or the name server failed. The -q re-check is the
+#     backstop: a clock that isn't within VERIFY_MAX s of the servers after
+#     the step is not trusted, and not written to the RTC.
+#   - settimeofday() also clears the kernel's NTP state (TK_CLEAR_NTP ->
+#     STA_UNSYNC), so RTC_SYSTOHC's 11-minute write-back waits until ntpd
+#     re-syncs: the kernel never writes an unvetted time. Hence the explicit
+#     hwclock -w here, and the hourly resync.
+#   - ntpd backs off to 1024 s polls while its servers are unreachable, so
+#     after a long offline spell it can take many minutes to re-sync on its
+#     own; the one-shot gets the wall clock right within seconds of a route.
+step_clock() {
+	ok=
+	if ! ntpd_stop; then
+		log "ntpd would not exit - not stepping beside it"
+	else
+		via=${ROUTE_IF:+default route via $ROUTE_IF}
+		log "${via:-no default route, servers on a connected subnet} -> ntpd stopped, ntpdate -u -b $*"
+		capped "$NTPDATE_MAX" ntpdate -u -b "$@"
+		rc=$?
+		if [ "$rc" -ne 0 ]; then
+			log "ntpdate failed (exit $rc) - clock untouched, source stays ${src:-none}"
+		elif ! ntp_offset "$@" || ! abs_le "$off" "$VERIFY_MAX"; then
+			log "after the step ntpdate -q reads offset ${off:-?} s - not trusting it"
+		elif ! clock_plausible; then
+			log "ntpdate exited 0 but the clock reads $(utc_now) - not trusting it"
+		else
+			# Recorded (and the RTC written) before the lock goes, so a
+			# browser sync can't step the clock in between.
+			ok=1
+			set_source ntp
+			log "clock stepped from NTP: $(utc_now) UTC (re-check offset $off s) -> source=ntp"
+			if [ -e "$RTC_DEV" ]; then
+				if hwclock -w -u -f "$RTC_DEV" 8>&- 9>&-; then
+					log "RTC ($RTC_DEV) written"
+				else
+					log "writing the RTC ($RTC_DEV) failed"
+				fi
+			fi
+		fi
+	fi
+	# Release the lock first, or this start defers too; fd 9 stays with us,
+	# not the daemon.
+	exec 8>&-
+	if /etc/init.d/S49ntp start >/dev/null 2>&1 9>&-; then
+		log "ntpd started again"
+	else
+		log "S49ntp start failed (S46wanwatch restarts ntpd if it isn't running)"
+	fi
+	[ -n "$ok" ]
+}
+
+# seed - the NTP one-shot; runs detached (see launch), output to $LOG. Waits
+# up to ROUTE_WAIT s for a route to a configured server (routable_servers: a
+# default route, or a local server on a directly connected subnet), then
+# steps the clock from those servers (step_clock).
+seed() {
+	cur_source
+	log "one-shot started (clock source: ${src:-none})"
+	if [ -z "$(ntp_servers)" ]; then
+		log "no usable server/pool lines in $NTP_CONF - nothing to query"
+		return 1
+	fi
+	# Re-read every second, so a server list edited meanwhile is picked up.
+	i=0
+	until routable_servers; do
+		if [ "$i" -ge "$ROUTE_WAIT" ]; then
+			log "no configured NTP server routable after ${ROUTE_WAIT}s - giving up (S46wanwatch re-runs this when the routes change)"
+			return 1
+		fi
+		sleep 1
+		i=$((i + 1))
+	done
+	servers=$SERVERS
+	if ! step_lock 60; then
+		log "step lock still busy after 60s - giving up (S46wanwatch retries)"
+		return 1
+	fi
+	# shellcheck disable=SC2086 # one word per server
+	step_clock $servers
+}
+
+# launch - run seed detached, single-flight. The lock is taken here, on fd 9,
+# and the detached worker inherits that open file description, so the lock
+# is held until the worker (and ntpdate, which keeps fd 9 too) exits; this
+# process just exits. Returns 0 = started, 2 = a one-shot (or a resync) is
+# already running.
+# `( seed )`, not `seed ... &`: ash runs a function's redirections as saved
+# pushes, so a backgrounded function keeps a copy of the caller's stdout for
+# its whole run and a caller reading our output through a pipe (the portal,
+# `| tee`) would wait out the one-shot. The subshell redirects for good.
+launch() {
+	exec 9>"$LOCK"
+	if command -v flock >/dev/null 2>&1 && ! flock -n 9 2>/dev/null; then
+		return 2
+	fi
+	roll_log
+	( seed ) </dev/null >>"$LOG" 2>&1 &
+	echo $! > "$PIDFILE"
+	echo "S45ntpsync: NTP one-shot started in the background (pid $!, log $LOG)"
+	return 0
+}
+
+# resync - keep the RTC on NTP time for as long as the box runs (S84cron,
+# hourly). Nothing else does that reliably here: the kernel's own write-back
+# (RTC_SYSTOHC, every 11 min) runs only while the kernel's NTP state says
+# synced, and every step clears that state - settimeofday() in ntpdate -b
+# (step_clock), in the portal's browser sync (date -s) and in ntpd's own
+# steps - until ntpd has re-synced and told the kernel so, which after a
+# step or an offline spell can take a long time, or never come when ntpd
+# has exited on its panic limit. And with no ntpq on the box there is no way
+# to confirm ntpd's sync. Without this the RTC would keep the time of the
+# last one-shot and drift from there (a DS3231: ~2 ppm, a clone more), and
+# the next boot would start from that.
+#
+# Exits 0 at once without an RTC (/dev/rtc0), and without a word when no
+# configured server is routable (offline: nothing to check against, and the
+# RTC is never written from a clock NTP hasn't just vouched for). Takes the
+# one-shot's single-flight lock ($LOCK; busy: exit 2, silently), then
+# STEP_LOCK, so neither a one-shot nor a browser sync can step the clock
+# between the query and the write, and asks the servers for the clock's
+# offset (ntp_offset: `ntpdate -u -q`, query only, capped):
+#   - no answer: nothing written; logged.
+#   - |offset| <= RESYNC_MAX s: the RTC is written (which also sets one whose
+#     oscillator-stop flag is up), and source=ntp if it wasn't; logged.
+#   - larger: the one-shot's step path (step_clock: stop ntpd, step, verify,
+#     write the RTC, start ntpd).
+# Output to $LOG. `stop` ends it like a one-shot worker ($PIDFILE).
+resync() {
+	[ -e "$RTC_DEV" ] || return 0
+	exec 9>"$LOCK"
+	if command -v flock >/dev/null 2>&1 && ! flock -n 9 2>/dev/null; then
+		return 2
+	fi
+	routable_servers || return 0
+	servers=$SERVERS
+	roll_log
+	echo $$ > "$PIDFILE"   # ours until we exit: launch needs $LOCK too
+	# shellcheck disable=SC2086 # one word per server
+	resync_locked $servers >>"$LOG" 2>&1 </dev/null
+	rc=$?
+	rm -f "$PIDFILE"
+	return "$rc"
+}
+
+resync_locked() {
+	cur_source
+	if ! step_lock 15; then
+		log "resync: step lock still busy after 15s - skipped until the next one"
+		return 2
+	fi
+	if ! ntp_offset "$@"; then
+		exec 8>&-
+		log "resync: no answer from $* - RTC left alone"
+		return 1
+	fi
+	if ! abs_le "$off" "$RESYNC_MAX"; then
+		log "resync: clock off by $off s (over $RESYNC_MAX s) -> stepping it first"
+		step_clock "$@"
+		return
+	fi
+	if ! clock_plausible; then
+		exec 8>&-
+		log "resync: the servers agree with a clock reading $(utc_now) - not trusting it, RTC left alone"
+		return 1
+	fi
+	if [ "$src" != ntp ]; then
+		set_source ntp
+		log "resync: clock within $off s of NTP -> source=ntp (was ${src:-none})"
+	fi
+	rc=0
+	if hwclock -w -u -f "$RTC_DEV" 8>&- 9>&-; then
+		log "resync: offset $off s -> RTC ($RTC_DEV) written"
+	else
+		log "resync: offset $off s, but writing the RTC ($RTC_DEV) failed"
+		rc=1
+	fi
+	exec 8>&-
+	return "$rc"
+}
+
+start() {
+	if [ ! -f "$BOOT_MARK" ]; then
+		: > "$BOOT_MARK"
+		if [ ! -d "$RTC_SYS" ]; then
+			echo "S45ntpsync: no RTC - clock untrusted until NTP or a browser sync"
+			log "boot: no RTC"
+		elif rtc_trusted; then
+			cur_source
+			[ -n "$src" ] || set_source rtc
+			echo "S45ntpsync: clock set from the RTC ($(utc_now) UTC)"
+			log "boot: kernel set the clock from the RTC ($(utc_now) UTC) -> source=rtc"
+		else
+			echo "S45ntpsync: RTC present but not set ($why) - its time is ignored until NTP or a browser sync writes it"
+			log "boot: RTC present but its time is not trustworthy ($why; hctosys=$(cat "$RTC_SYS/hctosys" 2>/dev/null), clock $(utc_now) UTC)"
+		fi
+	fi
+	launch
+	return 0
+}
+
+stop() {
+	p=
+	{ read -r p <"$PIDFILE"; } 2>/dev/null
+	case "$p" in
+		''|*[!0-9]*) ;;
+		# only our own worker (a fork of this script), never a recycled pid
+		*) tr '\0' ' ' 2>/dev/null <"/proc/$p/cmdline" | grep -q S45ntpsync \
+		     && kill "$p" 2>/dev/null ;;
+	esac
+	killall ntpdate 2>/dev/null
+	rm -f "$PIDFILE"
+	return 0
+}
+
+status() {
+	cur_source
+	echo "clock source: ${src:-none}  (system time $(utc_now) UTC)"
+	if [ -d "$RTC_SYS" ]; then
+		# The driver refuses to read a time it knows is lost (EINVAL).
+		if t=$(cat "$RTC_SYS/date" "$RTC_SYS/time" 2>&1); then
+			t="reads $(echo $t) UTC"
+		else
+			case "$t" in
+				*'Invalid argument'*) t="not set (oscillator stopped: never set, or its backup cell ran flat)" ;;
+				*) t="unreadable" ;;
+			esac
+		fi
+		echo "RTC:          $(cat "$RTC_SYS/name" 2>/dev/null), hctosys=$(cat "$RTC_SYS/hctosys" 2>/dev/null), $t"
+	else
+		echo "RTC:          none"
+	fi
+	exec 9>"$LOCK"
+	if command -v flock >/dev/null 2>&1 && ! flock -n 9 2>/dev/null; then
+		echo "NTP one-shot: running, or an RTC resync (log $LOG)"
+	else
+		echo "NTP one-shot: idle (log $LOG)"
+	fi
+}
 
 case "${1:-start}" in
 	start)   start ;;
 	stop)    stop ;;
-	restart) stop; start ;;
-	*) echo "Usage: $0 {start|stop|restart}" >&2; exit 1 ;;
+	restart) stop; sleep 1; start ;;
+	sync)    routable_servers || { echo "S45ntpsync: no configured NTP server is routable"; exit 3; }
+	         launch ;;
+	resync)  resync ;;
+	status)  status ;;
+	*) echo "Usage: $0 {start|stop|restart|sync|resync|status}" >&2; exit 1 ;;
 esac

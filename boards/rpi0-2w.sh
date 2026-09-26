@@ -23,6 +23,7 @@ rnsbox_build() {
 
     echo ">> configuring ($DEFCONFIG) + building (first run compiles everything; be patient)"
     make -C "$UPSTREAM" O="$ODIR" BR2_EXTERNAL="$EXT" "$DEFCONFIG"
+    rnsbox_pin_dl
 
     if [ "$VARIANT" = dvd ]; then
         echo ">> fetching latest-stable client apps for the DVD"

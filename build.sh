@@ -121,6 +121,15 @@ if [ "${BUILD_STYLE:-patches}" = external ]; then
     UPSTREAM="$UPSTREAM_BASE/buildroot-$SHORT"
     mkdir -p "$UPSTREAM_BASE"
 
+    # wget shim: buildroot's dl-wrapper passes no read-timeout, so a stalled
+    # mirror (WSL2 networking hits these) hangs wget forever instead of
+    # failing over to the next mirror. --continue is safe for its temp-file
+    # scheme. First PATH entry for everything this script builds.
+    mkdir -p "$UPSTREAM_BASE/bin"
+    printf '#!/bin/bash\nexec /usr/bin/wget --read-timeout=30 --continue "$@"\n' > "$UPSTREAM_BASE/bin/wget"
+    chmod +x "$UPSTREAM_BASE/bin/wget"
+    export PATH="$UPSTREAM_BASE/bin:$PATH"
+
     if [ ! -d "$UPSTREAM/.git" ]; then
         echo ">> cloning upstream base (shared by every external board): $UPSTREAM_URL @ $UPSTREAM_COMMIT"
         git clone "$UPSTREAM_URL" "$UPSTREAM"
@@ -147,6 +156,16 @@ if [ "${BUILD_STYLE:-patches}" = external ]; then
     ODIR="${ODIR:-$UPSTREAM_BASE/out/$BOARD}"
     export BR2_DL_DIR="$DL"
     mkdir -p "$DL" "$ODIR"
+
+    # The env var only feeds the kconfig DEFAULT for BR2_DL_DIR — 2026.02
+    # keeps "$(TOPDIR)/dl" in .config, silently pulling downloads into the
+    # pristine upstream clone. Boards call this right after `make <defconfig>`
+    # to pin the shared cache into .config explicitly.
+    rnsbox_pin_dl() {
+        sed -i -e 's|^BR2_DL_DIR=.*|BR2_DL_DIR="'"$DL"'"|' "$ODIR/.config"
+        grep -q '^BR2_DL_DIR=' "$ODIR/.config" || echo "BR2_DL_DIR=\"$DL\"" >> "$ODIR/.config"
+        make -C "$UPSTREAM" O="$ODIR" BR2_EXTERNAL="$EXT" olddefconfig
+    }
 
     rnsbox_track_latest_rns "$EXT" "$DL"
     rnsbox_build

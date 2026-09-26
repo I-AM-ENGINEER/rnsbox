@@ -1,22 +1,33 @@
-// nftgen.cpp — see nftgen.h. Native port of nftgen.py; output is byte-identical.
+// nftgen.cpp — see nftgen.h. Native port of nftgen.py; the ip6 filter table
+// and the WAN iface set (one WAN, or eth0 + wlan0 for WAN=auto) came after.
 #include "nftgen.h"
+#include "conntrack.h"
 #include "store.h"
+#include "sysinfo.h"
 #include <cstdio>
 #include <cstring>
 #include <map>
 #include <set>
+#include <unistd.h>
 
 namespace nftgen {
 
-std::string generate(const std::string& wan, const std::vector<std::string>& lans) {
+// "a", "b" — the elements of an ifname set.
+static std::string ifname_elements(const std::vector<std::string>& names) {
+    std::string out;
+    for (size_t i = 0; i < names.size(); ++i) {
+        if (i) out += ", ";
+        out += "\"" + names[i] + "\"";
+    }
+    return out;
+}
+
+std::string generate(const std::vector<std::string>& wans, const std::vector<std::string>& lans, bool with_ipv6) {
     auto forwards = store::read_portforwards();
     auto openports = store::read_openports();
 
-    std::string lan_set;
-    for (size_t i = 0; i < lans.size(); ++i) {
-        if (i) lan_set += ", ";
-        lan_set += "\"" + lans[i] + "\"";
-    }
+    std::string lan_set = ifname_elements(lans);
+    std::string wan_set = ifname_elements(wans);
 
     std::string L;
     auto add = [&](const std::string& s) { L += s; L += "\n"; };
@@ -26,7 +37,8 @@ std::string generate(const std::string& wan, const std::vector<std::string>& lan
     add("flush ruleset\n");
 
     add("table ip filter {");
-    add("\tset lan_ifaces { type ifname; elements = { " + lan_set + " } }\n");
+    add("\tset lan_ifaces { type ifname; elements = { " + lan_set + " } }");
+    add("\tset wan_ifaces { type ifname; elements = { " + wan_set + " } }\n");
 
     add("\tchain input {");
     add("\t\ttype filter hook input priority filter; policy drop;");
@@ -38,11 +50,20 @@ std::string generate(const std::string& wan, const std::vector<std::string>& lan
     add("\t\tiifname @lan_ifaces accept");
     if (!forwards.empty()) {
         add("\t\t# port forwards whose target is the device itself (DNAT -> INPUT)");
-        add("\t\tiifname \"" + wan + "\" ct status dnat accept");
+        add("\t\tiifname @wan_ifaces ct status dnat accept");
     }
+    // route_localnet is on for the WAN ifaces (S60routing), for forwards to
+    // 127.x; anything else addressed to loopback from the WAN never reaches
+    // an open port (a WiFi-client neighbour could otherwise hit a service
+    // bound only to 127.0.0.1).
+    add("\t\tiifname @wan_ifaces ip daddr 127.0.0.0/8 drop");
     if (!openports.empty()) {
         std::map<std::string, std::set<int>> pp;   // proto -> sorted unique ports
         for (const auto& op : openports) pp[op.proto].insert(op.port);
+        // The HaLow modem page is the same portal on a second uhttpd port (main.cpp
+        // MODEM_PORT, S81router -p :8081): opening the web UI (tcp 80) on the WAN
+        // opens it too, so the "Open modem web UI" link keeps working from the WAN.
+        if (pp.count("tcp") && pp["tcp"].count(80)) pp["tcp"].insert(8081);
         for (const auto& kv : pp) {
             std::string ports;
             for (auto it = kv.second.begin(); it != kv.second.end(); ++it) {
@@ -50,7 +71,7 @@ std::string generate(const std::string& wan, const std::vector<std::string>& lan
                 ports += std::to_string(*it);
             }
             add("\t\t# user-managed open ports");
-            add("\t\tiifname \"" + wan + "\" " + kv.first + " dport { " + ports + " } accept");
+            add("\t\tiifname @wan_ifaces " + kv.first + " dport { " + ports + " } accept");
         }
     }
     add("\t}\n");
@@ -60,11 +81,11 @@ std::string generate(const std::string& wan, const std::vector<std::string>& lan
     add("\t\tct state invalid drop");
     add("\t\tct state established,related accept");
     add("\t\t# LAN -> WAN (free egress)");
-    add("\t\tiifname @lan_ifaces oifname \"" + wan + "\" accept");
+    add("\t\tiifname @lan_ifaces oifname @wan_ifaces accept");
     if (!forwards.empty()) {
         add("\t\t# WAN -> LAN, post-DNAT (port forward destinations)");
         for (const auto& fw : forwards)
-            add("\t\tiifname \"" + wan + "\" oifname @lan_ifaces ip daddr " + fw.lan_ip + " " +
+            add("\t\tiifname @wan_ifaces oifname @lan_ifaces ip daddr " + fw.lan_ip + " " +
                 fw.proto + " dport " + std::to_string(fw.lan_port) + " accept");
     }
     add("\t}\n");
@@ -73,41 +94,93 @@ std::string generate(const std::string& wan, const std::vector<std::string>& lan
     add("}\n");
 
     add("table ip nat {");
+    add("\tset wan_ifaces { type ifname; elements = { " + wan_set + " } }\n");   // sets are per table
     add("\tchain prerouting {");
     add("\t\ttype nat hook prerouting priority dstnat; policy accept;");
     for (const auto& fw : forwards)
-        add("\t\tiifname \"" + wan + "\" " + fw.proto + " dport " + std::to_string(fw.wan_port) +
+        add("\t\tiifname @wan_ifaces " + fw.proto + " dport " + std::to_string(fw.wan_port) +
             " dnat to " + fw.lan_ip + ":" + std::to_string(fw.lan_port));
     add("\t}\n");
     add("\tchain postrouting {");
     add("\t\ttype nat hook postrouting priority srcnat; policy accept;");
-    add("\t\toifname \"" + wan + "\" masquerade");
+    // The ct mark tags the flow as NATed to this uplink, so `rnsbox-portal
+    // ctflush` can drop just these when WAN=auto moves to the other one.
+    char mark[16];
+    snprintf(mark, sizeof mark, "0x%08x", conntrack::WAN_NAT_MARK);
+    add(std::string("\t\toifname @wan_ifaces ct mark set ct mark or ") + mark + " masquerade");
     add("\t}");
     add("}");
+
+    if (with_ipv6) {
+        // IPv6 is only there for Reticulum's AutoInterface on the LAN iface
+        // (br-lan; fe80:: link-local + ff12:: multicast; UDP 29716/29717/42671)
+        // and S09ipv6 disables it on every other iface, bridge ports included.
+        // This table is the second layer: nothing but lo + the LAN reaches the
+        // box over IPv6, nothing is routed.
+        add("");
+        add("table ip6 filter {");
+        add("\tset lan_ifaces { type ifname; elements = { " + lan_set + " } }\n");
+
+        add("\tchain input {");
+        add("\t\ttype filter hook input priority filter; policy drop;");
+        add("\t\tct state invalid drop");
+        add("\t\tct state established,related accept");
+        add("\t\tiifname \"lo\" accept");
+        add("\t\t# neighbour discovery + MLD (multicast group joins) on the LAN;");
+        add("\t\t# conntrack leaves these untracked, so they need an explicit accept");
+        add("\t\tiifname @lan_ifaces icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, "
+            "mld-listener-query, mld-listener-report, mld-listener-done, mld2-listener-report } accept");
+        add("\t\t# LAN: full surface (Reticulum AutoInterface discovery/data, SSH, ...)");
+        add("\t\tiifname @lan_ifaces accept");
+        add("\t}\n");
+
+        add("\tchain forward {");
+        add("\t\ttype filter hook forward priority filter; policy drop;");
+        add("\t}\n");
+
+        add("\tchain output { type filter hook output priority filter; policy accept; }");
+        add("}");
+    }
     return L;
 }
 
+// "a, b,c" -> {"a", "b", "c"} (comma-separated, trimmed, empty parts dropped).
+static std::vector<std::string> split_list(const std::string& s) {
+    std::vector<std::string> out;
+    size_t i = 0;
+    while (i < s.size()) {
+        size_t c = s.find(',', i);
+        if (c == std::string::npos) c = s.size();
+        std::string t = s.substr(i, c - i);
+        size_t a = t.find_first_not_of(" \t");
+        size_t b = t.find_last_not_of(" \t");
+        if (a != std::string::npos) out.push_back(t.substr(a, b - a + 1));
+        i = c + 1;
+    }
+    return out;
+}
+
 int cli_main(int argc, char** argv) {
-    std::string wan, lan = "usb0";
+    std::string wan, lan;
+    // ip6 table only on a kernel that has IPv6 (the rootfs can outlive the
+    // kernel it shipped with) — nft would reject `table ip6` otherwise and
+    // S60routing's nft -c would throw away the whole ruleset.
+    bool v6 = access("/proc/sys/net/ipv6", F_OK) == 0;
     for (int i = 2; i < argc; ++i) {   // argv[1] == "nftgen"
         if (!strcmp(argv[i], "--wan") && i + 1 < argc) wan = argv[++i];
         else if (!strcmp(argv[i], "--lan") && i + 1 < argc) lan = argv[++i];
+        else if (!strcmp(argv[i], "--no-ipv6")) v6 = false;
     }
-    if (wan.empty()) { fprintf(stderr, "usage: rnsbox-portal nftgen --wan <iface> [--lan a,b]\n"); return 2; }
-    std::vector<std::string> lans;
-    size_t i = 0;
-    while (i < lan.size()) {
-        size_t c = lan.find(',', i);
-        if (c == std::string::npos) c = lan.size();
-        std::string t = lan.substr(i, c - i);
-        // trim
-        size_t a = t.find_first_not_of(" \t");
-        size_t b = t.find_last_not_of(" \t");
-        if (a != std::string::npos) lans.push_back(t.substr(a, b - a + 1));
-        i = c + 1;
+    if (lan.empty()) lan = sysinfo::lan_iface();
+    std::vector<std::string> wans = split_list(wan), lans = split_list(lan);
+    if (wans.empty()) { fprintf(stderr, "usage: rnsbox-portal nftgen --wan <iface>[,iface] [--lan a,b] [--no-ipv6]\n"); return 2; }
+    std::string out = generate(wans, lans, v6);
+    // S60routing trusts this exit status: a short write (ENOSPC) must fail,
+    // or an empty file passes `nft -c` (empty batch) and gets installed.
+    if (fwrite(out.data(), 1, out.size(), stdout) != out.size() || fflush(stdout) != 0) {
+        perror("nftgen: write");
+        return 1;
     }
-    std::string out = generate(wan, lans);
-    fwrite(out.data(), 1, out.size(), stdout);
     return 0;
 }
 

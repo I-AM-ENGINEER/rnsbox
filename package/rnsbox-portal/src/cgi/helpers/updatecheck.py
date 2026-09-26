@@ -28,29 +28,95 @@ ROLLBACK_TAR = STATE_DIR + "/rns-rollback.tar"
 PYPI_URL = "https://pypi.org/pypi/{pkg}/json"
 RNSD_INIT = "/etc/init.d/S82rnsd"
 RNSD_PIDFILE = "/var/run/rnsd.pid"
+# S82rnsd restart takes up to ~21 s (18 s SIGTERM drain + SIGKILL fallback +
+# 1 s + start) and first waits at most 25 s for /run/rnsd.lock (one queued
+# S82rnsd operation: S46wanwatch/S84cron kick-restart, a portal restart), then
+# gives up: 25 + 21 = 46 s.
+RESTART_TIMEOUT = 50
 TIMEOUT = 8
+
+# Time budget for `apply`, in seconds. The callers kill from the outside in,
+# and a kill after the old install is cleared but before pip has finished
+# leaves RNS uninstalled with no rollback. So each layer must finish before the
+# one around it gives up:
+#   uhttpd script timeout  S81router -t/-T                    300
+#   portal util::run       routes_reticulum.cpp applyupdate    285
+#   this helper            APPLY_BUDGET, monotonic from the    270
+#                          start of apply_update(), plus ~5 s
+#                          of python start-up and imports
+# Worst case once the old install is cleared: clear, pip succeeds just inside
+# PIP_TIMEOUT, restart, rnsd never shows up, then restore + restart:
+#   10 + 90 + 50 + 30 + 10 + 50 = 240 s = POST_CLEAR_WORST.
+# apply_update() clears the old install only while at least that much of
+# APPLY_BUDGET is left (so the PyPI fetch, dep check and rollback tarball get
+# the first 30 s); otherwise it stops with nothing changed.
+PIP_TIMEOUT = 90         # one pure-python wheel: download, unpack, byte-compile
+RNSD_UP_TIMEOUT = 30     # covers a S46wanwatch kick (10 s tick) after a killed restart
+SITE_IO = 10             # clear or restore the package tree (a few MB on the SD card)
+POST_CLEAR_WORST = (SITE_IO + PIP_TIMEOUT + RESTART_TIMEOUT + RNSD_UP_TIMEOUT
+                    + SITE_IO + RESTART_TIMEOUT)
+APPLY_BUDGET = 270
 
 
 _ver_cache = {}
+
+# Packages that carry their own version file: {dist name: (top-level pkg, file)}.
+# Read as TEXT — `import RNS` would pull in the whole Reticulum stack.
+_VERSION_FILES = {"rns": ("RNS", "_version.py")}
+
+
+def _version_from_package(pkg):
+    """`__version__` from the package's own version file, or None."""
+    loc = _VERSION_FILES.get(pkg)
+    if not loc:
+        return None
+    try:
+        import importlib.util
+        import re
+        spec = importlib.util.find_spec(loc[0])       # locates, doesn't import
+        dirs = list(spec.submodule_search_locations or []) if spec else []
+        for d in dirs:
+            try:
+                with open(os.path.join(d, loc[1])) as f:
+                    m = re.search(r"""__version__\s*=\s*['"]([^'"]+)['"]""", f.read())
+            except OSError:
+                continue
+            if m:
+                return m.group(1)
+    except Exception:
+        pass
+    return None
+
+
+def _metadata_version(pkg):
+    """HIGHEST version among ALL installed metadata records for `pkg`, or None.
+
+    importlib.metadata.version() returns whichever record it meets first, and
+    an incremental buildroot build leaves the old one behind: a shipped image
+    had rns-1.2.6-py3.11.egg-info next to rns-1.5.2.dist-info (and a stale
+    cryptography-3.4.8 egg-info), so the check reported "installed 1.2.6" and
+    the dep check would have seen cryptography 3.4.8."""
+    try:
+        import importlib.metadata as md
+        vers = [d.version for d in md.distributions(name=pkg) if d.version]
+    except Exception:
+        return None
+    return max(vers, key=_vtuple) if vers else None
 
 
 def installed_version(pkg=PKG):
     """Installed version string, or None. Memoised per process.
 
-    importlib.metadata.version() scans site-packages (~0.1-0.5 s on the C906)
-    and the answer only changes when a package is (re)installed — apply_update()
-    refreshes this cache, and a reflash restarts the process — so we compute it
-    once and serve it from a dict thereafter. This is the single biggest win for
-    the dashboard + Reticulum page load, which used to pay the scan every render
-    (twice, on /reticulum). No heavy `import RNS`; RNS._version is the fallback."""
+    Source of truth is the package itself (RNS/_version.py for rns), then the
+    highest metadata record (see _metadata_version). The metadata scan costs
+    ~0.1-0.5 s on the C906 and the answer only changes when a package is
+    (re)installed — apply_update() refreshes this cache, and a reflash restarts
+    the process — so it is computed once per process."""
     if pkg in _ver_cache:
         return _ver_cache[pkg]
-    v = None
-    try:
-        import importlib.metadata as md
-        v = md.version(pkg)
-    except Exception:
-        try:                          # fallback: RNS ships _version.py
+    v = _version_from_package(pkg) or _metadata_version(pkg)
+    if v is None and pkg == PKG:
+        try:                          # last resort: the (heavy) import
             import RNS
             v = getattr(RNS, "__version__", None)
         except Exception:
@@ -222,17 +288,35 @@ def _pkg_paths(site, pkg):
     return paths
 
 
-def _rnsd_up(timeout=15):
+def _rnsd_pid():
+    try:
+        with open(RNSD_PIDFILE) as f:
+            return f.read().strip()
+    except Exception:
+        return ""
+
+
+def _rnsd_up(timeout=15, old_pid=None):
+    """True once the pidfile names a live process other than `old_pid` (the
+    rnsd from before the restart: a restart killed inside stop() leaves the
+    pidfile naming the exiting old rnsd)."""
     for _ in range(timeout):
-        try:
-            with open(RNSD_PIDFILE) as f:
-                pid = f.read().strip()
-            if pid and os.path.exists("/proc/" + pid):
-                return True
-        except Exception:
-            pass
+        pid = _rnsd_pid()
+        if pid and pid != old_pid and os.path.exists("/proc/" + pid):
+            return True
         time.sleep(1)
     return False
+
+
+def _restart_rnsd():
+    """`S82rnsd restart`. A timeout is not an install failure by itself --
+    the caller decides from _rnsd_up() whether rnsd came back (if the killed
+    restart left it down, S46wanwatch kicks it on its next 10 s tick)."""
+    try:
+        subprocess.run([RNSD_INIT, "restart"], check=False,
+                       timeout=RESTART_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        pass
 
 
 def apply_update(pkg=PKG):
@@ -241,6 +325,7 @@ def apply_update(pkg=PKG):
     tarball and restarts rnsd."""
     import shutil
     import tarfile
+    t0 = time.monotonic()              # APPLY_BUDGET clock (immune to date -s / NTP)
     res = {"ok": False, "from": installed_version(pkg), "to": None,
            "error": "", "rolled_back": False}
     site = None
@@ -263,16 +348,23 @@ def apply_update(pkg=PKG):
         with tarfile.open(ROLLBACK_TAR, "w") as tf:
             for p in remove:
                 tf.add(p, arcname=os.path.relpath(p, site))
+        # Last exit before the tree is touched: past this point the rest must
+        # fit in APPLY_BUDGET, rollback included (see POST_CLEAR_WORST).
+        if time.monotonic() - t0 > APPLY_BUDGET - POST_CLEAR_WORST:
+            res["error"] = ("PyPI or the SD card was too slow to finish inside "
+                            "the time limit — nothing changed, try again")
+            return res
         touched = True
         for p in remove:                       # clear the old distutils install
             shutil.rmtree(p) if os.path.isdir(p) else os.remove(p)
         # --no-deps + wheel-only so the compiled deps (cryptography/pyserial) are
         # never rebuilt; buildroot's rootfs is not PEP-668 externally-managed, so
         # pip installs into the system site-packages as root without extra flags.
-        # pip's temp/download dir defaults to /tmp, which is a tiny (512 KB)
-        # tmpfs on the box — a wheel download overflows it (ENOSPC) even with
-        # tens of GB free on the rootfs. Point TMPDIR at the rootfs (and skip
-        # the HTTP cache) so the download has room.
+        # pip's temp/download dir defaults to /tmp, a small RAM tmpfs on the
+        # box (16 MB, shared with syslog and the other runtime files) — a
+        # wheel download plus unpack can fill it (ENOSPC) even with tens of GB
+        # free on the rootfs. Point TMPDIR at the rootfs (and skip the HTTP
+        # cache) so the download has room.
         piptmp = os.path.join(STATE_DIR, "piptmp")
         os.makedirs(piptmp, exist_ok=True)
         env = dict(os.environ, TMPDIR=piptmp)
@@ -281,7 +373,7 @@ def apply_update(pkg=PKG):
                 [sys.executable, "-m", "pip", "install", "--no-deps",
                  "--only-binary=:all:", "--no-cache-dir", "--no-input",
                  "--disable-pip-version-check", "%s==%s" % (pkg, ver)],
-                capture_output=True, text=True, timeout=180, env=env)
+                capture_output=True, text=True, timeout=PIP_TIMEOUT, env=env)
         finally:
             # remove piptmp on EVERY exit path -- a pip timeout (or any raise)
             # would otherwise leave partial downloads on the persistent rootfs.
@@ -289,8 +381,9 @@ def apply_update(pkg=PKG):
         if cp.returncode != 0:
             raise RuntimeError("pip install failed: "
                                + (cp.stderr or cp.stdout or "")[-300:].strip())
-        subprocess.run([RNSD_INIT, "restart"], check=False, timeout=25)
-        if not _rnsd_up(15):
+        old_pid = _rnsd_pid() or None
+        _restart_rnsd()
+        if not _rnsd_up(RNSD_UP_TIMEOUT, old_pid):  # covers a S46wanwatch kick after a killed restart
             raise RuntimeError("rnsd did not come back after the update")
         res["ok"] = True
         _ver_cache[pkg] = ver          # keep the memoised version in step
@@ -307,7 +400,7 @@ def apply_update(pkg=PKG):
                     shutil.rmtree(p) if os.path.isdir(p) else os.remove(p)
                 with tarfile.open(ROLLBACK_TAR) as tf:
                     tf.extractall(site)
-                subprocess.run([RNSD_INIT, "restart"], check=False, timeout=25)
+                _restart_rnsd()
                 res["rolled_back"] = True
                 _ver_cache[pkg] = res["from"]   # restored the old version
             except Exception:

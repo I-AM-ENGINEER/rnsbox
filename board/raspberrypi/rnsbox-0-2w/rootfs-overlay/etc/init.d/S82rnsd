@@ -1,11 +1,24 @@
 #!/bin/sh
 # S82rnsd — Reticulum Network Stack daemon.
 #
-# Gated on /run/clock-synced (S45ntpsync) because Reticulum's link
-# announcements include a wall-clock timestamp and a node still at
-# 1970 will be silently filtered by every peer with a sane clock. We
-# refuse to start rather than spam invalid announcements that get
-# rate-limited.
+# No clock gate: rnsd starts whether or not the wall clock is known.
+# Reticulum has to work on meshes with no internet at all (HaLow-, LAN- or
+# WiFi-only), and RNS creates its transport identity on first start either
+# way. S45ntpsync records where the time came from in /run/clock-source (RTC
+# at boot, NTP, or a browser sync), and S46wanwatch re-runs S45ntpsync's NTP
+# one-shot whenever a WAN appears. What an untrusted clock costs: RNS keeps a
+# path until now > its receive time + 7 d, and replaces it only with a
+# later-emitted announce, so a node whose clock is behind the timestamps it
+# stored keeps stale paths indefinitely. start() therefore sets aside a path
+# table dated more than an hour after the current clock (after a reboot to
+# 1970: no RTC, or one whose time was lost), and this box re-learns its
+# paths. Peers that still hold this box's earlier, later-dated announce
+# ignore its new ones until that path expires on their own clock; another
+# RNSBox whose clock also rolled back sets its table aside at its own
+# restart, any other such node keeps it until its clock is set. And when the
+# clock is stepped later, RNS ages its paths and links by wall clock, so it
+# re-learns paths and re-establishes links once. A DS3231 RTC
+# (README.RNSBox.md), or NTP / a browser sync on every node, avoids this.
 #
 # Config: /etc/reticulum/config (shipped as an opinionated default; the
 # rnsbox-portal UI exposes a raw editor). rnsd creates the config dir
@@ -14,45 +27,357 @@
 #
 # Bind addr: rnsd listens on whatever interfaces are declared in the
 # config (typically a TCPServerInterface on 0.0.0.0:4242 + an
-# AutoInterface on usb0). The nftables INPUT chain in S60routing only
-# accepts inbound :4242 on WAN if the user added it to
-# /etc/rnsbox/openports.conf via the portal.
+# AutoInterface on the LAN iface, br-lan). The nftables INPUT chain
+# (S60routing) accepts inbound :4242 on the WAN because the shipped
+# /etc/rnsbox/openports.conf opens it (`tcp 4242`, for WAN peers); remove
+# that entry (portal: Network -> Open ports) to keep them out.
+#
+# Logging: rnsd prints its log to stdout, and Python block-buffers a
+# redirected stdout — a quiet rnsd never filled the buffer, so the old
+# /var/log/rnsd.log stayed empty. rnsd now runs unbuffered and its output
+# goes to syslog via logger: /var/log/messages, tag "rnsd[<pid>]", rotated
+# by syslogd so it stays bounded in RAM. The pipe goes through a FIFO rather
+# than `rnsd | logger &` so that $! — and so /var/run/rnsd.pid, which the
+# portal and S46wanwatch read — is the rnsd process itself, not logger.
+#
+# Process group: rnsd leads a session and process group of its own
+# (setsid; its pid is still $! and the pidfile's), so stop can end
+# everything rnsd started (a PipeInterface's command, say) along with it,
+# and nothing is tied to the caller's terminal. If rnsd exits on its own
+# (a crash, the OOM killer, a restart killed partway through stop), what it
+# started keeps running; the next start or stop ends that too (see
+# reap_dead_group), so a kick after a crash doesn't leave a PipeInterface
+# command holding its port or serial device until reboot. Neither rnsd nor
+# logger keeps the caller's stdin/stdout/stderr: `S82rnsd restart | tee`
+# over SSH used to hang until rnsd exited.
+#
+# Secrets: rnsd keeps its transport identity (a private key) under
+# /etc/reticulum/storage. It runs with umask 077, and start() tightens any
+# file an older build left group/world-readable (plus the config dir itself,
+# since the config can hold IFAC passphrases) on every start, even one that
+# finds rnsd already running — the full storage walk once per boot, a
+# top-level check after that; the portal writes the config 0600. Everything
+# that reads them — rnsd, rnstatus, lxmd, nomadnet, the portal (uhttpd) —
+# runs as root.
 
 NAME=rnsd
 DAEMON=/usr/bin/rnsd
 PIDFILE=/var/run/$NAME.pid
-LOG=/var/log/$NAME.log
+LOGPIPE=/var/run/$NAME.logpipe
 CFG_DIR=/etc/reticulum
+# Present while the running rnsd was started before the LAN iface had its
+# IPv6 link-local address (see lan_ll); S46wanwatch tests it too.
+LL_MARK=/run/rnsd-lan-no-ll
+# Present after an explicit `S82rnsd stop` (rcK at shutdown, or the operator)
+# until the next explicit start/restart. S46wanwatch and S84cron use
+# `kick`/`kick-restart`, which check it under the lock and never clear it, so
+# they don't resurrect rnsd while it exists.
+STOPPED_MARK=/run/rnsd.stopped
+# Created by every explicit start/restart (rcS's boot-time start included):
+# S46wanwatch restarts a crashed rnsd only once it exists, so its first tick
+# can't race rcS to start rnsd (and then nomadnet/lxmd) itself.
+ARMED_MARK=/run/rnsd.armed
+# Present once this boot's full permission walk over storage/ succeeded.
+PERMS_MARK=/run/rnsd-perms-done
+# The logger reading $LOGPIPE (start), ended by stop if rnsd's exit leaves it.
+LOGGER_PIDFILE=/var/run/$NAME.logger.pid
+# start() sets a path table aside only when it is dated more than this far
+# after the current clock (see there).
+CLOCK_SLACK=3600
 
 [ -x "$DAEMON" ] || exit 0
 
-start() {
-	mkdir -p /var/log /var/run "$CFG_DIR"
+# is_rnsd PID — true if PID is the rnsd daemon. rnsd is a python
+# console-script and the kernel names a script process after the script file,
+# so its comm is "rnsd" (argv: "/usr/bin/python /usr/bin/rnsd --config ...").
+# If it was started through the interpreter instead (comm python*), look at
+# argv[0]/argv[1]. A recycled pid, this script ("S82rnsd") or logger's
+# "rnsd[<pid>]" tag never match.
+is_rnsd() {
+	comm=
+	{ read -r comm <"/proc/$1/comm"; } 2>/dev/null
+	case "$comm" in
+		rnsd)    return 0 ;;
+		python*) tr '\0' '\n' <"/proc/$1/cmdline" 2>/dev/null | head -n 2 \
+		           | grep -qE '(^|/)rnsd$' ;;
+		*)       return 1 ;;
+	esac
+}
 
-	if [ -f "$PIDFILE" ] && kill -0 "$(cat $PIDFILE)" 2>/dev/null; then
-		echo "S82rnsd: already running (pid $(cat $PIDFILE))"
+# rnsd_pid — print the running rnsd's pid: the pidfile if it still names
+# rnsd, else a /proc scan, so a lost or stale pidfile can't lead to a second
+# rnsd being started (or to stop missing the live one).
+rnsd_pid() {
+	p=
+	{ read -r p <"$PIDFILE"; } 2>/dev/null
+	case "$p" in
+		''|*[!0-9]*) ;;
+		*) is_rnsd "$p" && { echo "$p"; return 0; } ;;
+	esac
+	for d in /proc/[0-9]*; do
+		p=${d#/proc/}
+		is_rnsd "$p" && { echo "$p"; return 0; }
+	done
+	return 1
+}
+
+# pstat PID — PSTATE, PPGRP and PSID = PID's state, process group and
+# session (fields 3, 5 and 6 of /proc/PID/stat, counted after comm's last
+# ")": comm may hold spaces); false once PID is gone. Builtins only. Same as
+# S83nomadnet/S85lxmd, plus PSID.
+pstat() {
+	PSTATE=; PPGRP=; PSID=
+	case "$1" in ''|*[!0-9]*) return 1 ;; esac
+	_s=
+	{ read -r _s <"/proc/$1/stat"; } 2>/dev/null || return 1
+	set -- ${_s##*) }
+	PSTATE=$1; PPGRP=$3; PSID=$4
+}
+
+# group_alive PGID — true while process group PGID has a member that has not
+# exited (a zombie holds nothing open). Builtins only.
+group_alive() {
+	for _d in /proc/[0-9]*; do
+		pstat "${_d#/proc/}" && [ "$PPGRP" = "$1" ] && [ "$PSTATE" != Z ] && return 0
+	done
+	return 1
+}
+
+# reap_dead_group — SIGKILL what an rnsd that exited on its own left running;
+# true (REAPED = its pid) if there was any. start ran rnsd as the leader of a
+# session and process group numbered by the pid in $PIDFILE, and the kernel
+# never hands that number out again while any process still has it as its
+# group or session. So once that pid is gone (or a zombie), live processes
+# whose group and session are both that number are what rnsd started. A live
+# process at that pid is not rnsd (callers have checked), so the pid was
+# reused and the group, if any, is not rnsd's. SIGKILL, not SIGTERM, as in
+# stop: a fork would run rnsd's inherited Python SIGTERM handler. Callers run
+# this while $PIDFILE still names the exited rnsd: start before it records
+# the new one, stop before removing it. Costs one /proc scan, and only when
+# the pidfile names a pid that is gone.
+reap_dead_group() {
+	REAPED=
+	_p=
+	{ read -r _p <"$PIDFILE"; } 2>/dev/null
+	case "$_p" in ''|*[!0-9]*) return 1 ;; esac
+	pstat "$_p" && [ "$PSTATE" != Z ] && return 1
+	_hit=
+	for _d in /proc/[0-9]*; do
+		pstat "${_d#/proc/}" && [ "$PPGRP" = "$_p" ] && [ "$PSID" = "$_p" ] \
+			&& [ "$PSTATE" != Z ] && { _hit=1; break; }
+	done
+	[ -n "$_hit" ] || return 1
+	kill -KILL "-$_p" 2>/dev/null
+	logger -t S82rnsd -p daemon.notice "rnsd (pid $_p) had exited, leaving processes it started running - killed them" 2>/dev/null
+	# up to 1 s for them to be gone (and so to close the FIFO)
+	_i=0
+	while group_alive "$_p" && [ "$_i" -lt 5 ]; do
+		sleep 0.2; _i=$((_i + 1))
+	done
+	REAPED=$_p
+}
+
+# logger_pid — print the logger start ran for rnsd's output, while
+# $LOGGER_PIDFILE names one: comm "logger" and an "rnsd[<pid>]" tag in its
+# argv (a zombie's argv reads empty), so a recycled pid never matches.
+logger_pid() {
+	l=
+	{ read -r l <"$LOGGER_PIDFILE"; } 2>/dev/null
+	case "$l" in ''|*[!0-9]*) return 1 ;; esac
+	c=
+	{ read -r c <"/proc/$l/comm"; } 2>/dev/null
+	[ "$c" = logger ] || return 1
+	tr '\0' '\n' <"/proc/$l/cmdline" 2>/dev/null | grep -q "^$NAME\[[0-9]*\]\$" || return 1
+	echo "$l"
+}
+
+# lan_iface — set LAN to the LAN iface S30gadget_nic recorded in
+# /run/lan-iface: br-lan, or usb0 when the bridge couldn't be made. Without
+# a valid record: br-lan if that bridge exists, else usb0 (as S60routing).
+# Builtins only. Same as S46wanwatch.
+lan_iface() {
+	LAN=
+	{ read -r LAN </run/lan-iface; } 2>/dev/null
+	case "$LAN" in
+		br-lan|usb0) ;;
+		*) LAN=usb0; [ -d /sys/class/net/br-lan/bridge ] && LAN=br-lan ;;
+	esac
+}
+
+# lan_ll — true once the LAN iface has a usable IPv6 link-local address
+# (scope 0x20, DAD done: neither tentative 0x40 nor dadfailed 0x08), read
+# from /proc/net/if_inet6 with builtins only. Same test as S46wanwatch.
+lan_ll() {
+	[ -r /proc/net/if_inet6 ] || return 1
+	lan_iface
+	while read -r _addr _idx _plen scope flags dev; do
+		[ "$dev" = "$LAN" ] && [ "$scope" = 20 ] || continue
+		case "$flags" in [0-9a-f][0-9a-f]) ;; *) continue ;; esac
+		[ $((0x$flags & 0x48)) -eq 0 ] && return 0
+	done </proc/net/if_inet6
+	return 1
+}
+
+# auto_wants_lan — true if $CFG_DIR/config has an AutoInterface that would
+# adopt the LAN iface: a [[...]] stanza with type = AutoInterface, enabled (or
+# interface_enabled) true (RNS starts an interface only then; either one
+# suffices), and no devices list (all ifaces) or one that names the LAN iface
+# (the shipped config lists br-lan and usb0). Without this, a disabled or
+# re-pointed AutoInterface would still leave $LL_MARK and S46wanwatch would
+# bounce rnsd for nothing when the LAN link comes up.
+auto_wants_lan() {
+	lan_iface
+	awk -v lan="$LAN" '
+	function chk() {
+		if (t == "autointerface" && e) {
+			if (d == "") hit = 1
+			else { n = split(d, dv, /[[:space:],]+/); for (i = 1; i <= n; i++) if (dv[i] == lan) hit = 1 }
+		}
+	}
+	/^[[:space:]]*\[/ { chk(); t = ""; e = 0; d = ""; next }
+	{ l = tolower($0); sub(/#.*/, "", l); gsub(/"/, "", l) }
+	l ~ /^[[:space:]]*type[[:space:]]*=/ { sub(/^[^=]*=[[:space:]]*/, "", l); gsub(/[[:space:]]/, "", l); t = l; next }
+	l ~ /^[[:space:]]*(interface_)?enabled[[:space:]]*=/ { if (l ~ /=[[:space:]]*(yes|true|on|1)[[:space:]]*$/) e = 1; next }
+	l ~ /^[[:space:]]*devices[[:space:]]*=/ { sub(/^[^=]*=[[:space:]]*/, "", l); d = l }
+	END { chk(); exit !hit }' "$CFG_DIR/config" 2>/dev/null
+}
+
+start() {
+	mkdir -p /var/run "$CFG_DIR"
+
+	# Tighten what an older build (umask 022) or the 0755 overlay left
+	# readable - before the already-running check, so every start covers it.
+	# `find -perm` only touches files that still need it, so a normal boot
+	# writes nothing to the SD card; `! -type l` so chmod never follows a
+	# symlink out. The recursive walk over storage/ (thousands of
+	# announce-cache files on the SD card: seconds on the C906, on a restart
+	# already close to the portal's 25 s limit) runs once per boot; later
+	# starts check only storage/ and its top level (transport_identity lives
+	# there). Anything created since is rnsd's own, under umask 077, and the
+	# config dir itself is 0700 either way.
+	find "$CFG_DIR" -maxdepth 0 -perm /077 -exec chmod go-rwx {} + 2>/dev/null
+	if [ -d "$CFG_DIR/storage" ]; then
+		if [ -f "$PERMS_MARK" ]; then
+			find "$CFG_DIR/storage" -maxdepth 1 ! -type l -perm /077 -exec chmod go-rwx {} + 2>/dev/null
+		else
+			find "$CFG_DIR/storage" ! -type l -perm /077 -exec chmod go-rwx {} + 2>/dev/null \
+				&& : > "$PERMS_MARK"
+		fi
+	fi
+
+	if PID=$(rnsd_pid); then
+		echo "$PID" > "$PIDFILE"   # re-adopt if the pidfile was lost/stale
+		echo "S82rnsd: already running (pid $PID)"
 		return 0
 	fi
 
-	if [ ! -f /run/clock-synced ]; then
-		echo "S82rnsd: refusing to start - /run/clock-synced absent"
-		echo "        (S45ntpsync did not succeed; check WAN link"
-		echo "         and /var/log/ntp-step.log)"
-		return 1
+	# A path table saved under a later clock than now pins stale routes: the
+	# box ran with NTP or a browser-set clock, or for days on an unset one,
+	# and has since rebooted to 1970. RNS drops a path only once
+	# now > its receive time + 7 d and replaces it only with a later-emitted
+	# announce, which peers whose clocks also rolled back never send. So set
+	# such a table aside and let rnsd re-learn from live announces; identity,
+	# known destinations and ratchets are kept. Checked here, with no rnsd
+	# running, so a live rnsd's table is never pulled away; not gated on
+	# /run/clock-source, since the pinning depends only on the stored times
+	# being ahead of the clock. (On an online box with no RTC that is usually
+	# one re-learn per boot: rnsd starts before NTP steps the clock.) Only a
+	# table more than CLOCK_SLACK (1 h) ahead counts. Without NTP nothing
+	# re-aligns the kernel clock with a DS3231 between boots (hctosys runs at
+	# boot only; RTC_SYSTOHC and S45ntpsync's hourly resync need NTP), so
+	# after weeks of uptime a fast SoC crystal leaves the table rcK's stop
+	# persisted tens of seconds ahead of the RTC time the next boot starts
+	# from. A gap that small only delays a path's 7-day expiry by as much,
+	# while the rollbacks this is for are decades (back to 1970). The
+	# reference file is dated CLOCK_SLACK into the future (busybox touch -d
+	# @epoch; stat -c is not built in); if touch fails the check is skipped
+	# and the table kept.
+	ref=/run/rnsd.clockref
+	if [ -d "$CFG_DIR/storage" ] \
+	   && touch -d "@$(( $(date +%s) + CLOCK_SLACK ))" "$ref" 2>/dev/null; then
+		for f in "$CFG_DIR/storage/destination_table" "$CFG_DIR/storage/tunnels"; do
+			[ "$f" -nt "$ref" ] && mv -f "$f" "$f.stale" \
+				&& logger -t S82rnsd -p daemon.notice "${f##*/} is dated over an hour after the current clock - set aside, rnsd re-learns paths" 2>/dev/null
+		done
+		rm -f "$ref"
 	fi
+
+	# RNS's AutoInterface adopts an iface only if it already has its IPv6
+	# link-local when rnsd starts (AutoInterface.__init__ scans the ifaces
+	# once), and the LAN iface only gets one once the link has carrier: for
+	# br-lan, its first port coming up — a USB host bringing up the NCM link,
+	# or the hotspot starting; for a lone usb0, the USB host. If that hasn't
+	# happened yet (host slow to bind the NCM driver, the box powered
+	# separately with no hotspot) and an enabled AutoInterface covers the LAN
+	# iface, leave a marker: S46wanwatch restarts rnsd once when the address
+	# appears.
+	if [ -r /proc/net/if_inet6 ] && ! lan_ll && auto_wants_lan; then
+		: > "$LL_MARK"
+	else
+		rm -f "$LL_MARK"
+	fi
+
+	# First boot: create the transport identity before rnsd's first launch.
+	# rnsd itself writes it only once it has finished starting (after its
+	# interfaces, i.e. many seconds on a first boot with unreachable uplinks),
+	# and an RNS client that attaches meanwhile (rnstatus, the portal's
+	# Reticulum tab) finds no identity, creates its own and saves it over
+	# rnsd's: every client then derives the wrong RPC key ("digest received
+	# was wrong") until rnsd restarts. Created here, rnsd and every client load
+	# the same file. RNS's own generator, so the format always matches.
+	ident="$CFG_DIR/storage/transport_identity"
+	if [ ! -s "$ident" ]; then
+		mkdir -p "$CFG_DIR/storage"
+		if ( umask 077; python3 -c 'import sys, RNS; RNS.Identity().to_file(sys.argv[1])' "$ident" ) \
+			</dev/null >/dev/null 2>&1 && [ -s "$ident" ]; then
+			logger -t S82rnsd -p daemon.notice "created the transport identity before rnsd's first start" 2>/dev/null
+		else
+			rm -f "$ident"
+			logger -t S82rnsd -p daemon.warning "could not pre-create the transport identity; rnsd creates it" 2>/dev/null
+		fi
+	fi
+
+	# No rnsd is running. If the last one exited on its own (S46wanwatch's kick
+	# after a crash, say), end what it left running before its number in
+	# $PIDFILE is overwritten below - the only record of it.
+	reap_dead_group && echo "S82rnsd: killed what the exited rnsd (pid $REAPED) left running"
 
 	printf "Starting %s: " "$NAME"
 	# --config points at our config dir; rnsd auto-creates files inside.
-	# -s detaches to its own process group; we still pidfile-track so
-	# the watchdog (S46wanwatch) can detect it cleanly.
-	"$DAEMON" --config "$CFG_DIR" >>"$LOG" 2>&1 &
-	PID=$!
+	# The subshell sets umask 077 + PYTHONUNBUFFERED for rnsd only and exec's
+	# setsid, which exec's rnsd, so $! is rnsd's pid - and, setsid having
+	# made it a session and group leader, its process group (see stop).
+	# busybox setsid forks only when its caller leads a process group, and
+	# the backgrounded subshell never does (no job control in a script).
+	# Without setsid rnsd still runs, and stop signals it alone. rnsd's open
+	# of the FIFO completes once logger opens the read end. stdin is
+	# /dev/null, rnsd writes only to the FIFO and logger only to syslog:
+	# nothing keeps the caller's stdin/stdout/stderr. logger gets a session of
+	# its own too; a logger left by an rnsd that died goes first.
+	SETSID=
+	command -v setsid >/dev/null 2>&1 && SETSID=setsid
+	LPID=$(logger_pid) && kill "$LPID" 2>/dev/null
+	rm -f "$LOGPIPE" "$LOGGER_PIDFILE"
+	if command -v logger >/dev/null 2>&1 && mkfifo -m 600 "$LOGPIPE" 2>/dev/null; then
+		(
+			umask 077
+			export PYTHONUNBUFFERED=1
+			exec $SETSID "$DAEMON" --config "$CFG_DIR"
+		) 9>&- </dev/null >"$LOGPIPE" 2>&1 &
+		PID=$!
+		$SETSID logger -t "$NAME[$PID]" -p daemon.notice 9>&- <"$LOGPIPE" >/dev/null 2>&1 &
+		echo $! > "$LOGGER_PIDFILE"
+	else
+		# no logger/FIFO: run unlogged rather than not at all
+		( umask 077; exec $SETSID "$DAEMON" --config "$CFG_DIR" ) 9>&- </dev/null >/dev/null 2>&1 &
+		PID=$!
+	fi
 	echo "$PID" > "$PIDFILE"
 	sleep 0.3
 	if kill -0 "$PID" 2>/dev/null; then
 		echo "OK (pid $PID)"
 	else
-		echo "FAIL (see $LOG)"
+		echo "FAIL (see /var/log/messages)"
 		rm -f "$PIDFILE"
 		return 1
 	fi
@@ -60,23 +385,109 @@ start() {
 
 stop() {
 	printf "Stopping %s: " "$NAME"
-	if [ -f "$PIDFILE" ]; then
-		kill "$(cat $PIDFILE)" 2>/dev/null
-		# Reticulum drains active links cleanly on SIGTERM; give it a moment.
-		for _ in 1 2 3 4 5; do
-			[ -f "$PIDFILE" ] && kill -0 "$(cat $PIDFILE)" 2>/dev/null || break
-			sleep 1
+	rm -f "$LL_MARK"
+	LPID=$(logger_pid)
+	if PID=$(rnsd_pid); then
+		# rnsd's process group, if start made rnsd its leader (setsid): all
+		# rnsd started is in it. Otherwise rnsd is signalled alone, never the
+		# group it shares with whoever started it.
+		GRP=
+		pstat "$PID" && [ "$PPGRP" = "$PID" ] && GRP=$PID
+		kill "$PID" 2>/dev/null
+		# Reticulum drains active links on SIGTERM and then persists its path
+		# table, packet hashlist and known destinations. That is pure Python and
+		# takes several seconds on the C906 once the caches are large. Wait
+		# until the pid is really gone: if stop returned while rnsd was still
+		# exiting, restart's start() would find it (comm is still "rnsd"),
+		# adopt it, and leave nothing running once it exits. 18 s plus the
+		# SIGKILL fallback (at most 1 s more) keeps one restart at ~21 s on its
+		# own, inside the 25 s web::run_init allows; updatecheck.py allows
+		# RESTART_TIMEOUT (50 s) because the lock below can queue it, for up to
+		# 25 s, behind another S82rnsd operation. (A SIGKILL mid-persist can
+		# only truncate destination_table/tunnels/packet_hashlist.raw, which RNS
+		# discards on load and rebuilds; known_destinations is replaced
+		# atomically.)
+		i=0
+		while kill -0 "$PID" 2>/dev/null && [ "$i" -lt 18 ]; do
+			sleep 1; i=$((i + 1))
 		done
+		# Then SIGKILL whatever is left of the group - rnsd if it overran, and
+		# anything it started that outlived it (still holding the FIFO, and so
+		# logger). SIGKILL, not SIGTERM, for those too: a fork would run
+		# rnsd's inherited Python SIGTERM handler.
+		if [ -n "$GRP" ]; then
+			group_alive "$GRP" && kill -KILL "-$GRP" 2>/dev/null
+		elif kill -0 "$PID" 2>/dev/null && is_rnsd "$PID"; then
+			kill -9 "$PID" 2>/dev/null
+		fi
+		# Up to 1 s for all of it to be gone. logger reads EOF and exits once
+		# the last writer of the FIFO has; one still running then (a writer
+		# outside the group) is killed.
+		i=0
+		while [ "$i" -lt 5 ]; do
+			kill -0 "$PID" 2>/dev/null || { [ -n "$GRP" ] && group_alive "$GRP"; } \
+				|| { [ -n "$LPID" ] && [ "$(logger_pid)" = "$LPID" ]; } || break
+			sleep 0.2; i=$((i + 1))
+		done
+		[ -n "$LPID" ] && [ "$(logger_pid)" = "$LPID" ] && kill "$LPID" 2>/dev/null
 		rm -f "$PIDFILE"
 		echo "OK"
 	else
-		echo "(not running)"
+		# rnsd exited on its own: end what it left running (reap_dead_group).
+		# That can take up to 1 s, so logger is re-checked before it is killed.
+		MSG="(not running)"
+		reap_dead_group && MSG="(not running; killed what pid $REAPED left running)"
+		rm -f "$PIDFILE"
+		# no rnsd left to log for
+		[ -n "$LPID" ] && [ "$(logger_pid)" = "$LPID" ] && kill "$LPID" 2>/dev/null
+		echo "$MSG"
 	fi
+	rm -f "$LOGGER_PIDFILE"
 }
 
+# Serialize start/stop/restart on one lock. S46wanwatch runs `kick` whenever
+# its 10 s tick finds no rnsd, and that includes the gap inside a `restart`
+# (portal, cron, update apply) and rcS's own boot-time start. Two unserialized
+# starts both pass rnsd_pid before either exec's rnsd, leaving two rnsd (the
+# second a shared-instance client with no interfaces). The lock is held on
+# fd 9 for this invocation; the spawn lines close it (9>&-, first, so it is
+# gone before the FIFO open can block) so a long-lived rnsd or logger can't
+# pin it and deadlock the next call. Same pattern as S35wifi.
+# The wait is bounded, so a wedged holder can't stall every later call (rcS's
+# boot-time start included): past the cap we log and exit 1 without doing
+# anything. kick/kick-restart (S46wanwatch's tick, cron) just come back later,
+# so they give up after 5 s; start/stop/restart wait out one full restart
+# (~21 s, see stop()) and give up after 25 s. `flock -n` in a loop, not -w:
+# busybox flock has no -w.
 case "${1:-start}" in
-	start)   start ;;
-	stop)    stop ;;
-	restart) stop; sleep 1; start ;;
-	*) echo "Usage: $0 {start|stop|restart}" >&2; exit 1 ;;
+	kick|kick-restart) LOCK_WAIT=5 ;;
+	*)                 LOCK_WAIT=25 ;;
+esac
+exec 9>/run/rnsd.lock
+if command -v flock >/dev/null 2>&1; then
+	i=0
+	until flock -n 9 2>/dev/null; do
+		if [ "$i" -ge "$LOCK_WAIT" ]; then
+			msg="${1:-start}: /run/rnsd.lock still held after ${LOCK_WAIT}s - not done"
+			echo "S82rnsd: $msg" >&2
+			logger -t S82rnsd -p daemon.warning "$msg" 2>/dev/null
+			exit 1
+		fi
+		sleep 1; i=$((i + 1))
+	done
+fi
+
+case "${1:-start}" in
+	# An explicit start (incl. rcS's boot-time one) or restart arms
+	# S46wanwatch step 2 and re-arms it after a stop.
+	start)   rm -f "$STOPPED_MARK"; : > "$ARMED_MARK"; start ;;
+	# $STOPPED_MARK first, so S46wanwatch holds off during stop's wait too.
+	stop)    : > "$STOPPED_MARK"; stop ;;
+	restart) stop; sleep 1; rm -f "$STOPPED_MARK"; : > "$ARMED_MARK"; start ;;
+	# S46wanwatch / S84cron: honour an explicit stop, re-checked under the lock
+	# (a kick queued behind rcK's or the operator's stop sees its mark), and
+	# never clear the mark.
+	kick)         [ -f "$STOPPED_MARK" ] && exit 0; start ;;
+	kick-restart) [ -f "$STOPPED_MARK" ] && exit 0; stop; sleep 1; start ;;
+	*) echo "Usage: $0 {start|stop|restart|kick|kick-restart}" >&2; exit 1 ;;
 esac

@@ -15,7 +15,10 @@
   </div>
   <nav class="topnav">
     <span class="user">__USER__</span>
-    <a class="logout" href="__BASE__/logout">Logout</a>
+    <!-- POST form, not a link: /logout is POST-only (a GET must not change state) -->
+    <form class="logout-form" method="post" action="__BASE__/logout">
+      <button type="submit" class="logout">Logout</button>
+    </form>
   </nav>
 </header>
 <div class="page">

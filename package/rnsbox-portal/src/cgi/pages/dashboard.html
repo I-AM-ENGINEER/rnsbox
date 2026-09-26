@@ -22,6 +22,7 @@
       <tr><th>Kernel</th><td>__KERNEL__</td></tr>
       <tr><th>Uptime</th><td id="d-uptime">__UPTIME__</td></tr>
       <tr><th>Load avg</th><td id="d-load">__LOAD__</td></tr>
+      <tr><th>Clock source</th><td id="d-clock">__CLOCK__</td></tr>
     </table>
     <div class="meter-label">
       <span>RAM</span>
@@ -36,7 +37,7 @@
   </section>
 
   <section class="card">
-    <h3>WAN (__WAN__)</h3>
+    <h3>WAN (<span id="d-wan-label">__WAN__</span>)</h3>
     <table class="kv">
       <tr><th>State</th><td id="d-wan-state">__WAN_STATE__</td></tr>
       <tr><th>Address</th><td id="d-wan-addr">__WAN_ADDR__</td></tr>
@@ -68,36 +69,51 @@ __HALOW_SCRIPT__
   function $(id){ return document.getElementById(id); }
   function setText(id,t){ var e=$(id); if(e) e.textContent=t; }
   function setHTML(id,h){ var e=$(id); if(e) e.innerHTML=h; }
+  // Everything dynamic that goes through setHTML() is escaped with esc() first
+  // (the JSON carries iface state, update versions from PyPI, etc.).
+  function esc(s){ return (''+(s==null?'':s)).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
   function patch(d){
     var s=d.sys||{}, m=s.mem||{}, wif=d.wan_if||{}, lif=d.lan_if||{}, rn=d.rnsd||{}, up=d.update||{};
     setText('d-uptime', s.uptime||'');
     setText('d-load', (s.load||[]).join(' / '));
+    var cm={ntp:'NTP',rtc:'RTC',browser:'browser'}, cs=cm.hasOwnProperty(d.clock_source)?cm[d.clock_source]:'';
+    setHTML('d-clock', cs?'<span class="badge ok">'+esc(cs)+'</span>':'<span class="badge warn">none</span>');
     if(m.total_mb){
       var pct=m.used_pct||0;
       setText('d-ram-label', m.used_mb+' / '+m.total_mb+' MB · '+m.avail_mb+' MB free');
       var f=$('d-ram-fill'); if(f){ f.style.width=pct+'%'; f.className='meter-fill '+(pct>=90?'crit':pct>=75?'warn':'ok'); }
       setText('d-ram-note', pct+'% used · '+m.buffcache_mb+' MB buff/cache (reclaimable)');
     }
-    setHTML('d-wan-state', wif.state==='up'?'<span class="badge ok">UP</span>':'<span class="badge err">'+(wif.state||'DOWN')+'</span>');
+    if(d.wan_label) setText('d-wan-label', d.wan_label);
+    setHTML('d-wan-state', wif.state==='up'?'<span class="badge ok">UP</span>':'<span class="badge err">'+esc(wif.state||'DOWN')+'</span>');
     setText('d-wan-addr', (wif.addrs&&wif.addrs.length)?wif.addrs.join(', '):'(none)');
     setText('d-wan-gw', d.gateway||'(none)');
     setText('d-wan-dns', (d.dns&&d.dns.length)?d.dns.join(', '):'(none)');
     setText('d-wan-rxtx', (wif.rx||'0')+' / '+(wif.tx||'0'));
     if($('d-lan-state')){
-      setHTML('d-lan-state', lif.state==='up'?'<span class="badge ok">UP</span>':'<span class="badge warn">'+(lif.state||'DOWN')+'</span>');
+      setHTML('d-lan-state', lif.state==='up'?'<span class="badge ok">UP</span>':'<span class="badge warn">'+esc(lif.state||'DOWN')+'</span>');
       setText('d-lan-addr', (lif.addrs&&lif.addrs.length)?lif.addrs.join(', '):'(none)');
       setText('d-lan-rxtx', (lif.rx||'0')+' / '+(lif.tx||'0'));
     }
+    // Bridge ports (usb0 + the hotspot iface while an AP is up) — same markup
+    // as the server-rendered row.
+    if($('d-lan-ports')){
+      var ps=d.lan_ports||[];
+      setHTML('d-lan-ports', ps.length ? ps.map(function(p){
+        return esc(p.name)+' '+(p.state==='up'?'<span class="badge ok">UP</span>':'<span class="badge warn">'+esc(p.state||'DOWN')+'</span>')+
+          (p.role?' <span class="muted">'+esc(p.role)+'</span>':'');
+      }).join(' · ') : '(none)');
+    }
     setHTML('d-rnsd-status', rn.running
-      ? '<span class="badge ok">RUNNING</span> (pid '+rn.pid+')'+(rn.rss_mb?' · '+rn.rss_mb+' MB RSS':'')
+      ? '<span class="badge ok">RUNNING</span> (pid '+esc(rn.pid)+')'+(rn.rss_mb?' · '+esc(rn.rss_mb)+' MB RSS':'')
       : '<span class="badge err">STOPPED</span>');
-    var vh='Reticulum (rnsd) <strong>'+(up.installed||'unknown')+'</strong>';
-    if(up.update_available) vh+=' <span class="badge warn">update available: '+up.latest+'</span>';
+    var vh='Reticulum (rnsd) <strong>'+esc(up.installed||'unknown')+'</strong>';
+    if(up.update_available) vh+=' <span class="badge warn">update available: '+esc(up.latest)+'</span>';
     else if(up.latest && !up.error) vh+=' <span class="badge ok">up to date</span>';
     setHTML('d-rnsd-version', vh);
   }
   function refreshData(){
-    return fetch('__BASE__/dashboard/data').then(function(r){return r.json();}).then(patch).catch(function(){});
+    return fetch('__BASE__/dashboard/data').then(function(r){return r.json();}).then(function(d){ if(d && !d.error) patch(d); }).catch(function(){});
   }
   var sel=$('autoref'), timer=null, KEY='rnsbox-autoref';
   function tick(){

@@ -1,18 +1,23 @@
 <h2>Network</h2>
-<p class="muted">WAN: <strong>__WAN__</strong> &middot; LAN: <strong>usb0</strong> &middot; default gateway: <strong>__GATEWAY__</strong></p>
+<p class="muted">WAN: <strong>__WAN__</strong> &middot; LAN: <strong>__LAN__</strong> &middot; default gateway: <strong>__GATEWAY__</strong></p>
 
 <section class="card">
   <h3>WAN uplink</h3>
   <p class="muted">Which interface reaches the internet, and how it gets its
-  address. NAT masquerade + the default route follow this choice.
-  <strong>wlan0</strong> requires the WiFi client to be connected (WiFi tab →
-  mode <em>sta</em> or <em>sta+ap</em>) and is always DHCP-addressed by the WiFi
-  stack — the static fields apply to a wired USB-Ethernet adapter (eth0); wlan0 addressing follows the WiFi tab.</p>
+  address. NAT masquerade and the open ports follow this choice.
+  <strong>Automatic</strong> (the default) uses <strong>eth0</strong> while it
+  has a cable and an address and the WiFi client otherwise, switching by itself
+  when the cable goes in or out. <strong>eth0</strong> or <strong>wlan0</strong>
+  pins the uplink to that one interface; the box never changes your choice.
+  The WiFi client needs to be connected (WiFi tab → mode <em>sta</em> or
+  <em>sta+ap</em>) and is always DHCP-addressed by the WiFi stack — the static
+  fields below apply to <strong>eth0</strong> only.</p>
   <form method="post" action="__BASE__/network/wan">
     <label>Interface
       <select name="wan">
-        <option value="eth0"  __SEL_ETH0__>eth0 — wired Ethernet</option>
-        <option value="wlan0" __SEL_WLAN0__>wlan0 — WiFi client</option>
+        <option value="auto"  __SEL_AUTO__>Automatic — eth0 when plugged in, else WiFi client</option>
+        <option value="eth0"  __SEL_ETH0__>eth0 only — wired Ethernet</option>
+        <option value="wlan0" __SEL_WLAN0__>wlan0 only — WiFi client</option>
       </select>
     </label>
     <label>Addressing
@@ -72,7 +77,7 @@
 
 <section class="card">
   <h3>Open ports (services on this router exposed on WAN)</h3>
-  <p class="muted">Allows inbound connections on the WAN to services bound on this device. <strong>SSH (22)</strong> and the <strong>web UI (80)</strong> are open by default &mdash; remove them to close WAN access (the LAN/<code>usb0</code> side always stays open). Add rnsd's TCPServerInterface port (4242) here for external Reticulum peers.</p>
+  <p class="muted">Allows inbound connections on the WAN to services bound on this device. <strong>SSH (22)</strong>, the <strong>web UI (80)</strong> (which also carries the HaLow modem page on 8081) and <strong>rnsd's TCPServerInterface (4242)</strong>, for external Reticulum peers, are open by default &mdash; remove them to close WAN access (the LAN side &mdash; <strong>__LAN__</strong>: the USB-C link, plus the WiFi hotspot while it is on &mdash; always stays open).</p>
   <table class="data">
     <thead>
       <tr><th>Proto</th><th>Port</th><th>Comment</th><th></th></tr>
@@ -95,9 +100,11 @@
 
 <section class="card">
   <h3>LAN clients (DHCP leases)</h3>
+  <p class="muted">The USB-C host and WiFi hotspot clients share one LAN subnet
+  (10.42.0.0/24) and one DHCP pool; the box is 10.42.0.1 on both.</p>
   <table class="data">
     <thead>
-      <tr><th>IP</th><th>MAC</th><th>Name</th><th>Expires (epoch)</th></tr>
+      <tr><th>IP</th><th>MAC</th><th>Name</th><th>Lease (s)</th></tr>
     </thead>
     <tbody>
       __LEASES_ROWS__

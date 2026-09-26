@@ -95,6 +95,8 @@ def halow_status(slip):
                     "tx_speed": r.get("tx_speed"), "rx_bytes": r.get("rx_bytes"),
                     "tx_bytes": r.get("tx_bytes")}
     peers = []
+    # NB: rx_last_age is in SECONDS (the modem's own UI formats it with
+    # formatNearbyLastSeen(seconds)); the portal pages render it as such.
     for n in ((near or {}).get("d") or []):
         peers.append({"mac": n.get("mac"), "rssi": n.get("rx_rssi"),
                       "snr": n.get("rx_snr"), "rx_mcs": n.get("rx_mcs"),

@@ -46,12 +46,18 @@ strong { font-weight: 600; }
 .topbar .brand-host { color: #9fbed0; font-size: 13px; }
 .topbar .topnav { display: flex; align-items: center; gap: 14px; }
 .topbar .user { color: #9fbed0; font-size: 13px; }
+/* Logout is a one-button POST form styled to look like the old link:
+   transparent background + normal weight undo the generic `button` rule. */
+.topbar .logout-form { display: inline; margin: 0; }
 .topbar .logout {
   color: #fff;
+  background: transparent;
   padding: 5px 12px;
   border: 1px solid rgba(255,255,255,0.25);
   border-radius: 3px;
   font-size: 13px;
+  font-weight: 400;
+  cursor: pointer;
 }
 .topbar .logout:hover { background: var(--primary-2); text-decoration: none; }
 
@@ -383,6 +389,8 @@ img.qr {
 textarea.ntp-servers { min-height: 64px; max-width: 360px; }
 .time-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 form.ntp-restart { margin-top: 8px; }
+button:disabled, button:disabled:hover { opacity: 0.55; cursor: not-allowed; }
+.btn-primary:disabled:hover { background: var(--primary); }
 
 /* ---- HaLow modem (dashboard summary + Reticulum live block) ---- */
 .cardhead { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }

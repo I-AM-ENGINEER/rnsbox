@@ -7,17 +7,27 @@
       <span class="timeval">__SYS_TIME__</span> <span class="muted">UTC</span>
       __TIME_BADGE__
     </td></tr>
+    <tr><th>Clock source</th><td>__CLOCK_SOURCE__</td></tr>
+    <tr><th>Hardware clock</th><td>__RTC_STATUS__</td></tr>
+    __RTC_TEMP_ROW__
   </table>
+  <p class="muted">Reticulum (and nomadnet/lxmd when enabled) runs whatever the
+  clock says — no internet needed; a correct clock just keeps timestamps
+  meaningful. At boot the time comes from the hardware clock (RTC) when one is
+  fitted and set; NTP takes over whenever a time server is reachable, and every
+  NTP or browser sync is written to the RTC (and, while a time server is
+  reachable, the NTP time once an hour).</p>
 
   <h4>Sync to browser</h4>
-  <p class="muted">The board has no real-time clock, so it boots at 1970. Set the
-  clock to this device's time — the quickest way to get a correct clock on a box
-  with no internet. rnsd picks up the new time on its own.</p>
+  <p class="muted">Set the clock to this device's time — the quickest way to get a
+  correct clock on a box with no internet (HaLow-, LAN- or WiFi-only). A fitted
+  RTC is set too, even one that was never set, so the time survives reboots.</p>
   <p>This browser reads <strong id="browser-time">…</strong> UTC</p>
   <form method="post" action="__BASE__/settings/time/browser"
         onsubmit="this.epoch.value = Math.floor(Date.now()/1000)">
     <input type="hidden" name="epoch" value="">
-    <button type="submit" class="btn-primary">Sync clock to browser</button>
+    <button type="submit" class="btn-primary"__BROWSER_BTN_ATTR__>Sync clock to browser</button>
+    __BROWSER_NOTE__
   </form>
 
   <h4>NTP servers</h4>
@@ -31,7 +41,8 @@
   </form>
   <form method="post" action="__BASE__/settings/ntp/restart" class="ntp-restart">
     <button type="submit" class="btn">Restart NTP</button>
-    <span class="muted">ntpd runs with <code>-g</code>, so it steps the clock even from 1970 once it can reach a server.</span>
+    <span class="muted">Restarts ntpd (it runs with <code>-g</code>, so it steps the clock even from 1970) and
+    runs a one-off sync against these servers right away; a successful sync is written to the RTC.</span>
   </form>
 
   <script>
@@ -76,7 +87,7 @@
 <section class="card">
   <h3>WAN interface</h3>
   <p>Currently: <strong>__WAN__</strong></p>
-  <p class="muted">Switch the WAN uplink (eth0 wired ↔ wlan0 WiFi) from the
-  <a href="__BASE__/network">Network</a> tab. On the W variant, wlan0
-  WAN also needs the WiFi client connected (<a href="__BASE__/wifi">WiFi</a> tab).</p>
+  <p class="muted">Choose the WAN uplink (automatic, eth0 wired or wlan0 WiFi)
+  on the <a href="__BASE__/network">Network</a> tab. On the W variant, a WiFi
+  uplink also needs the WiFi client connected (<a href="__BASE__/wifi">WiFi</a> tab).</p>
 </section>

@@ -1,7 +1,7 @@
 #!/bin/sh
 # S81router — RNSBox admin web UI: uhttpd serving the C++ CGI portal.
 #
-# The portal is a single aarch64 binary at /www/cgi-bin/portal (a symlink to
+# The portal is a single riscv64 binary at /www/cgi-bin/portal (a symlink to
 # /usr/sbin/rnsbox-portal), exec'd per-request by uhttpd — so the web tier
 # costs ~0 resident RAM beyond uhttpd's small event-loop listener. It runs as
 # root: it edits /etc/rnsbox/*, /etc/reticulum/config and exec's the S* init
@@ -39,11 +39,19 @@ start() {
 		return 0
 	fi
 	printf "Starting uhttpd (portal): "
-	# -t/-T 200: the Reticulum tab's "Update rnsd" apply shells to pip (in-place
-	# package update + rnsd restart) and can run well past uhttpd's 60 s default
-	# script timeout; raise both the script and network idle timeouts so the
-	# async apply isn't killed mid-flight (the browser shows a spinner meanwhile).
-	uhttpd -p 0.0.0.0:80 -h "$DOCROOT" -x /cgi-bin -I index.html -t 200 -T 200
+	# -t/-T 300: the Reticulum tab's "Update rnsd" apply shells to pip (in-place
+	# package update + rnsd restart, rollback on failure) and can run well past
+	# uhttpd's 60 s default script timeout; raise both the script and network
+	# idle timeouts so the async apply isn't killed mid-flight (the browser
+	# shows a spinner meanwhile). Must stay above the portal's 285 s run limit
+	# for the helper, which stays above the helper's own 270 s budget — the
+	# arithmetic is in updatecheck.py (APPLY_BUDGET).
+	# -p 0.0.0.0:8081: serves ONLY the proxied HaLow modem UI (the portal CGI
+	# gates routes by SERVER_PORT), so the modem's own scripts run in a separate
+	# origin and can't drive the portal on :80. Same process, same docroot; if
+	# :8081 fails to bind, uhttpd still runs on :80 (it exits only when no
+	# socket bound at all).
+	uhttpd -p 0.0.0.0:80 -p 0.0.0.0:8081 -h "$DOCROOT" -x /cgi-bin -I index.html -t 300 -T 300
 	sleep 0.3
 	if pidof uhttpd >/dev/null 2>&1; then echo "OK (pid $(pidof uhttpd))"; else echo "FAIL"; return 1; fi
 }

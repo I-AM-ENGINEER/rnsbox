@@ -3,14 +3,20 @@
 # modem. Reads /etc/rnsbox/slip.conf; when enabled, attaches the SLIP line
 # discipline to the configured UART (ldattach) and brings up a point-to-point
 # sl0 interface to the modem. rnsd then reaches the modem as a normal
-# Reticulum interface via a TCPClientInterface to peer_ip:4242 (added to
-# /etc/reticulum/config by the operator).
+# Reticulum interface via a TCPClientInterface to peer_ip:8001 — the modem's
+# RNode TCP server port (added to /etc/reticulum/config by the operator, or by
+# the portal's quick-add).
 #
 # OFF by default. Harmless no-op when disabled, when the UART device is
 # absent, or when the modem simply isn't wired (sl0 just never comes up).
 
 CONF=/etc/rnsbox/slip.conf
 LOG=/var/log/slip.log
+# sl0 MTU. The modem's lwIP slipif uses SLIP_MAX_SIZE (1500) as its MTU, but
+# the kernel SLIP driver creates sl0 at 296 — so anything over 268 bytes of
+# ICMP/UDP payload towards the modem was silently lost, and TCP only got
+# through because it clamped its MSS to 256. Match the modem.
+MTU=1500
 
 # read one key=value from the conf (single value, no shell sourcing)
 cfg() {
@@ -22,7 +28,7 @@ start() {
 	# A plain Buildroot rootfs runs devtmpfs only: the /dev/serial0 alias
 	# that Raspberry Pi OS creates with udev rules does not exist here, and
 	# this kernel generation numbers the PL011 ttyAMA1 (the mini-uart owns
-	# ttyAMA0). Create the alias ourselves — rnsd, the portal halow helper
+	# ttyAMA0). Create the alias ourselves - rnsd, the portal halow helper
 	# and the $device default below all expect it.
 	if [ ! -e /dev/serial0 ]; then
 		for c in /dev/ttyAMA1 /dev/ttyAMA0; do
@@ -73,8 +79,10 @@ start() {
 	# peer_ip goes out sl0; nothing else is affected (no default route change).
 	ip addr flush dev sl0 2>/dev/null
 	ip addr add "$local_ip" peer "$peer_ip" dev sl0 2>/dev/null
+	ip link set sl0 mtu "$MTU" >>"$LOG" 2>&1 \
+		|| echo "S31slip: could not set sl0 mtu $MTU (staying at $(cat /sys/class/net/sl0/mtu 2>/dev/null))" >>"$LOG"
 	ip link set sl0 up 2>/dev/null
-	echo "OK ($local_ip -> $peer_ip)"
+	echo "OK ($local_ip -> $peer_ip, mtu $(cat /sys/class/net/sl0/mtu 2>/dev/null))"
 }
 
 stop() {

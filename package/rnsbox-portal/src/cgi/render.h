@@ -24,8 +24,10 @@ std::string page_file(const char* name);
 // Wrap `content` in the base chrome (topbar + sidebar + footer). `active` is the
 // sidebar id to highlight: "dashboard" | "network" | "wifi" | "reticulum" |
 // "settings" | "donate". Consumes + clears the one-shot flash cookie (rendering
-// it above the content) and sets the clearing Set-Cookie on `res`. `title` and
-// the session user are HTML-escaped.
+// it above the content) and sets the clearing Set-Cookie on `res`. Every chrome
+// value except `content` (title, hostname, session user, flash text) is
+// HTML-escaped here, and tokens are filled in one pass — a value containing
+// "__SOMETHING__" is never expanded again.
 std::string layout(const http::Request& req, http::Response& res,
                    const std::string& title, const char* active,
                    const std::string& content);

@@ -50,6 +50,15 @@ static std::string fmt_pct(double p) {
     char buf[32]; snprintf(buf, sizeof(buf), "%.1f", p); return buf;
 }
 
+// /run/clock-source as a badge (the full picture is on the Settings tab). Same
+// labels as the /dashboard/data patch() below.
+static std::string clock_badge(const std::string& src) {
+    if (src == "ntp")     return "<span class=\"badge ok\">NTP</span>";
+    if (src == "rtc")     return "<span class=\"badge ok\">RTC</span>";
+    if (src == "browser") return "<span class=\"badge ok\">browser</span>";
+    return "<span class=\"badge warn\">none</span>";
+}
+
 // --- JSON helpers for /dashboard/data ---
 static std::string str_array_json(const std::vector<std::string>& v) {
     std::string o = "[";
@@ -68,6 +77,48 @@ static std::string iface_json(const sysinfo::Iface* i) {
            "\",\"addrs\":" + str_array_json(i->addrs) + "}";
 }
 
+// --- LAN (/run/lan-iface: br-lan, or usb0 when the bridge couldn't be made) ---
+// The LAN card shows the LAN iface (it holds 10.42.0.1/24) plus, for the
+// bridge, one entry per port: usb0 always, the hotspot iface while an AP is up.
+struct LanPort { std::string name, role; const sysinfo::Iface* i; };
+
+static std::vector<LanPort> lan_ports(const sysinfo::Network& net, const std::string& lan_if) {
+    std::vector<LanPort> out;
+    for (const auto& p : sysinfo::bridge_ports(lan_if))
+        out.push_back({p, sysinfo::lan_port_role(p), find_iface(net, p)});
+    return out;
+}
+
+static std::string state_badge(const sysinfo::Iface* i) {
+    if (i && i->state == "up") return "<span class=\"badge ok\">UP</span>";
+    return "<span class=\"badge warn\">" + E((i && !i->state.empty()) ? i->state : std::string("DOWN")) + "</span>";
+}
+
+// "usb0 [UP] USB-C · wlan1 [UP] WiFi hotspot" — same markup as the patch() JS.
+static std::string ports_html(const std::vector<LanPort>& ports) {
+    if (ports.empty()) return "(none)";
+    std::string o;
+    for (size_t k = 0; k < ports.size(); ++k) {
+        if (k) o += " &middot; ";
+        o += E(ports[k].name) + " " + state_badge(ports[k].i);
+        if (!ports[k].role.empty()) o += " <span class=\"muted\">" + E(ports[k].role) + "</span>";
+    }
+    return o;
+}
+
+static std::string ports_json(const std::vector<LanPort>& ports) {
+    std::string o = "[";
+    for (size_t k = 0; k < ports.size(); ++k) {
+        if (k) o += ",";
+        const sysinfo::Iface* i = ports[k].i;
+        o += "{\"name\":\"" + JE(ports[k].name) +
+             "\",\"role\":\"" + JE(ports[k].role) +
+             "\",\"state\":\"" + JE(i ? i->state : std::string()) + "\"}";
+    }
+    o += "]";
+    return o;
+}
+
 // --- HaLow card + live-status script (verbatim port of the old template) ---
 static std::string halow_card_html(const std::string& base) {
     // href must go through the portal (SCRIPT_NAME base), not the server root —
@@ -82,7 +133,9 @@ static std::string halow_card_html(const std::string& base) {
 static std::string halow_script_html(const std::string& base) {
     std::string s = R"JS(<script>
 (function(){
-  function esc(s){ return (''+(s==null?'':s)).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
+  // Every modem-supplied string (hostname, fw, speeds…) goes through esc()
+  // before innerHTML; numbers only via num()/unit(), which admit digits only.
+  function esc(s){ return (''+(s==null?'':s)).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
   function num(v){ if(v==null) return null; var m=(''+v).match(/-?\d+(\.\d+)?/); return m?parseFloat(m[0]):null; }
   function unit(v,u){ if(v==null||v==='') return '?'; return /^-?\d+(\.\d+)?$/.test(''+v)? v+' '+u : esc(v); }
   function sig(v,u,g,a){ if(v==null) return '<span class="muted">—</span>'; var c=v>=g?'sig-g':(v>=a?'sig-a':'sig-r'); return '<span class="'+c+'">'+v+' '+u+'</span>'; }
@@ -92,6 +145,7 @@ static std::string halow_script_html(const std::string& base) {
     var badge=document.getElementById('halow-badge'), body=document.getElementById('halow-body');
     if(!badge) return;
     return fetch('__BASE__/reticulum/halow').then(function(r){return r.json();}).then(function(d){
+      if(d.error){ badge.className='badge warn'; badge.textContent='login expired'; return; }   // 401 JSON
       if(!d.enabled){ var c=document.getElementById('halow-card'); if(c) c.hidden=true; return; }
       if(!d.reachable){
         badge.className='badge '+(d.sl0_up?'err':'warn');
@@ -144,8 +198,10 @@ void dashboard_page(const Request& req, Response& res) {
     store::WanConfig  wan  = store::read_wan();
     bool slip_on = slip_enabled(store::read_slip());
 
-    const sysinfo::Iface* wif = find_iface(net, wan.interface);
-    const sysinfo::Iface* lif = find_iface(net, "usb0");
+    // WAN=auto: the card follows the uplink in use (eth0 or the WiFi client).
+    const sysinfo::Iface* wif = find_iface(net, sysinfo::wan_display_iface(wan.interface, net));
+    std::string lan_if = sysinfo::lan_iface();
+    const sysinfo::Iface* lif = find_iface(net, lan_if);
 
     std::string h = render::page_file("dashboard");
     h = R(std::move(h), "__BASE__", base);
@@ -155,6 +211,7 @@ void dashboard_page(const Request& req, Response& res) {
     h = R(std::move(h), "__KERNEL__",   E(sys.kernel));
     h = R(std::move(h), "__UPTIME__",   E(sys.uptime));
     h = R(std::move(h), "__LOAD__",     E(sys.load[0]) + " / " + E(sys.load[1]) + " / " + E(sys.load[2]));
+    h = R(std::move(h), "__CLOCK__",    clock_badge(sysinfo::clock_source()));
 
     // RAM meter
     h = R(std::move(h), "__RAM_USED__",      std::to_string(sys.mem.used_mb));
@@ -167,13 +224,14 @@ void dashboard_page(const Request& req, Response& res) {
     h = R(std::move(h), "__RAM_PCT__", fmt_pct(pct));
 
     // WAN card
-    h = R(std::move(h), "__WAN__", E(wan.interface));
+    h = R(std::move(h), "__WAN__", E(sysinfo::wan_label(wan.interface, net)));
     std::string wstate = (wif && wif->state == "up")
         ? std::string("<span class=\"badge ok\">UP</span>")
         : "<span class=\"badge err\">" + E((wif && !wif->state.empty()) ? wif->state : std::string("DOWN")) + "</span>";
     h = R(std::move(h), "__WAN_STATE__", wstate);
     h = R(std::move(h), "__WAN_ADDR__", (wif && !wif->addrs.empty()) ? join_esc(wif->addrs) : "(none)");
-    h = R(std::move(h), "__WAN_GW__",   net.default_gateway.empty() ? "(none)" : E(net.default_gateway));
+    std::string wgw = sysinfo::wan_gateway(wan.interface, net);
+    h = R(std::move(h), "__WAN_GW__",   wgw.empty() ? "(none)" : E(wgw));
     h = R(std::move(h), "__WAN_DNS__",  net.dns.empty() ? "(none)" : join_esc(net.dns));
     {
         std::string rx = (wif && !wif->rx.empty()) ? E(wif->rx) : "0";
@@ -181,18 +239,25 @@ void dashboard_page(const Request& req, Response& res) {
         h = R(std::move(h), "__WAN_RXTX__", rx + " / " + tx);
     }
 
-    // LAN card — only when usb0 is actually up (a USB host is tethered)
+    // LAN card. br-lan exists (and holds 10.42.0.1/24) from boot on, whether
+    // or not a USB host or hotspot client is attached, so the card is always
+    // there; its State follows the bridge (UP once any port has a link). Ports
+    // row only for a bridge — the usb0 fallback is the whole LAN by itself.
     std::string lan;
-    if (lif && lif->state == "up") {
+    if (lif) {
         std::string addr = lif->addrs.empty() ? std::string("(none)") : join_esc(lif->addrs);
         std::string rx = lif->rx.empty() ? std::string("0") : E(lif->rx);
         std::string tx = lif->tx.empty() ? std::string("0") : E(lif->tx);
+        std::string ports;
+        if (lif->bridge)
+            ports = "      <tr><th>Ports</th><td id=\"d-lan-ports\">" + ports_html(lan_ports(net, lan_if)) + "</td></tr>\n";
         lan =
             "<section class=\"card\">\n"
-            "    <h3>LAN (usb0)</h3>\n"
+            "    <h3>LAN (" + E(lan_if) + ")</h3>\n"
             "    <table class=\"kv\">\n"
-            "      <tr><th>State</th><td id=\"d-lan-state\"><span class=\"badge ok\">UP</span></td></tr>\n"
-            "      <tr><th>Address</th><td id=\"d-lan-addr\">" + addr + "</td></tr>\n"
+            "      <tr><th>State</th><td id=\"d-lan-state\">" + state_badge(lif) + "</td></tr>\n"
+            "      <tr><th>Address</th><td id=\"d-lan-addr\">" + addr + "</td></tr>\n" +
+            ports +
             "      <tr><th>MAC</th><td>" + E(lif->mac) + "</td></tr>\n"
             "      <tr><th>RX / TX</th><td id=\"d-lan-rxtx\">" + rx + " / " + tx + "</td></tr>\n"
             "    </table>\n"
@@ -234,8 +299,9 @@ void dashboard_data(const Request& req, Response& res) {
     sysinfo::Rnsd    rnsd = sysinfo::rnsd_status();
     sysinfo::Network net  = sysinfo::network_summary();
     store::WanConfig  wan  = store::read_wan();
-    const sysinfo::Iface* wif = find_iface(net, wan.interface);
-    const sysinfo::Iface* lif = find_iface(net, "usb0");
+    const sysinfo::Iface* wif = find_iface(net, sysinfo::wan_display_iface(wan.interface, net));
+    std::string lan_if = sysinfo::lan_iface();
+    const sysinfo::Iface* lif = find_iface(net, lan_if);
 
     std::string J = "{\"sys\":{";
     J += "\"uptime\":\"" + JE(sys.uptime) + "\",";
@@ -254,10 +320,13 @@ void dashboard_data(const Request& req, Response& res) {
     J += ",\"pid\":"    + (rnsd.pid.empty()  ? std::string("null") : rnsd.pid);
     J += ",\"rss_mb\":" + (rnsd.rss_mb >= 0  ? std::to_string(rnsd.rss_mb) : std::string("null"));
     J += "},";
+    J += "\"wan_label\":\"" + JE(sysinfo::wan_label(wan.interface, net)) + "\",";
     J += "\"wan_if\":" + iface_json(wif) + ",";
     J += "\"lan_if\":" + iface_json(lif) + ",";
-    J += "\"gateway\":\"" + JE(net.default_gateway) + "\",";
+    J += "\"lan_ports\":" + ports_json(lan_ports(net, lan_if)) + ",";
+    J += "\"gateway\":\"" + JE(sysinfo::wan_gateway(wan.interface, net)) + "\",";
     J += "\"dns\":" + str_array_json(net.dns) + ",";
+    J += "\"clock_source\":\"" + JE(sysinfo::clock_source()) + "\",";
     updatecheck::State u = updatecheck::display();
     J += "\"update\":{\"installed\":" + (u.installed.empty() ? std::string("null") : "\"" + JE(u.installed) + "\"");
     J += ",\"update_available\":" + std::string(u.update_available ? "true" : "false");

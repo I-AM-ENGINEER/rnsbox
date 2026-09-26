@@ -1,7 +1,7 @@
 #!/bin/sh
 # S36wifiwatch — AP-priority watchdog for concurrent WiFi (mode=sta+ap).
 #
-# The onboard chip is a SINGLE radio. In sta+ap the AP (hostapd on uap0) shares the
+# The AIC8800 is a SINGLE radio. In sta+ap the AP (hostapd on wlan1) shares the
 # STA's channel, and ANY STA scan hops the radio off that channel — so a
 # disconnected wpa_supplicant, scanning continuously to find the upstream,
 # permanently disrupts the hotspot when you carry the device out of range.
@@ -21,8 +21,12 @@
 
 CONF=/etc/rnsbox/wifi.conf
 STA_IF=wlan0
-AP_IF=uap0
+AP_IF=wlan1
 LOG=/var/log/wifi.log
+# Written by S35wifi when it refuses to start the AP (weak/empty ap_psk, or no
+# LAN bridge). While it exists there is no hotspot to revive or protect — see
+# loop().
+AP_REFUSED=/run/wifi-ap-refused
 GRACE=8          # seconds the STA may be down before we protect the AP
 IDLE_RETRY=30    # seconds between STA reconnect attempts, but only while idle
 STEP=4           # poll interval
@@ -41,6 +45,18 @@ loop() {
 	down=0; protected=0; last_retry=0
 	while sleep "$STEP"; do
 		[ "$(cfg mode)" = "sta+ap" ] || { down=0; protected=0; continue; }
+
+		# AP refused by S35wifi (its password is empty/too short/the old
+		# published default, or there is no LAN bridge br-lan to put it in):
+		# reviving it would only re-log the refusal every STEP seconds, and
+		# freezing the STA scan would protect nothing. Leave the STA to
+		# wpa_supplicant (undoing our own disconnect, if we issued one) until
+		# an S35wifi restart that can start the AP clears the marker.
+		if [ -f "$AP_REFUSED" ]; then
+			[ "$protected" = 1 ] && wpa reconnect
+			down=0; protected=0
+			continue
+		fi
 
 		# The AP is the priority: if the firmware dropped it, bring it back.
 		# ap_ensure (not ap_restart) so that if this blocks on the wifi lock
@@ -83,8 +99,12 @@ loop() {
 	done
 }
 
+# `( loop )` with its own stdio, so neither the loop nor what it runs keeps the
+# caller's stdin/stdout/stderr (`S36wifiwatch start | cat` waited forever);
+# wpa_cli's "OK" replies go to /dev/null, errors to $LOG. Not `loop ... &`:
+# ash would keep a saved copy of the caller's stdout (see S45ntpsync launch).
 case "${1:-start}" in
-	start) loop & ;;
+	start) ( loop ) </dev/null >/dev/null 2>>"$LOG" & ;;
 	stop)  : ;;
 	*) echo "usage: $0 {start|stop}"; exit 1 ;;
 esac

@@ -90,6 +90,27 @@ start() {
 			cat /boot/usb.ncm.mac > "$GADGET/functions/ncm.usb0/dev_addr" 2>/dev/null || 				echo "S10usbdev: could not set ncm dev_addr (pre-bound MAC will be random)" >>"$LOG"
 		fi
 
+		# Host-side MAC (host_addr — what the host's NIC gets; it names
+		# Linux' `enxXXXX` iface and keys Windows' network profile): stable
+		# per unit, derived from the Pi's SoC serial, so two boxes on one
+		# host never collide. /boot/usb.ncm.host_mac overrides. Must be set
+		# before the UDC bind below.
+		host_mac=""
+		if [ -s /boot/usb.ncm.host_mac ]; then
+			host_mac=$(cat /boot/usb.ncm.host_mac)
+		else
+			ser=$(tr -d '\0' < /proc/device-tree/serial-number 2>/dev/null | tail -c 9)
+			if [ -n "$ser" ]; then
+				h=$(printf 'ncm-host:%s' "$ser" | sha256sum | cut -c1-12)
+				b0=$(( (0x$(echo "$h" | cut -c1-2) & 0xfc) | 0x02 ))
+				host_mac=$(printf '%02x%s' "$b0" "$(echo "$h" | cut -c3-12)" | sed 's/../&:/g; s/:$//')
+			fi
+		fi
+		if [ -n "$host_mac" ]; then
+			echo "$host_mac" > "$GADGET/functions/ncm.usb0/host_addr" 2>>"$LOG" \
+				|| echo "S10usbdev: could not set ncm host_addr $host_mac" >>"$LOG"
+		fi
+
 		# MS-OS descriptor: auto-bind Windows' in-box usbncm.sys driver.
 		echo 1       > "$GADGET/os_desc/use"
 		echo 0xcd    > "$GADGET/os_desc/b_vendor_code"

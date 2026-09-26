@@ -142,21 +142,36 @@ bool set_password(const std::string& user, const std::string& newpass) {
 }
 
 // ---- session token file: "user\ntoken\nexpiry" ----
+// expiry is on CLOCK_BOOTTIME (seconds since boot), not the wall clock: the board
+// has no RTC and boots at 1970 until NTP (or Settings -> "Sync clock to browser")
+// steps it, and that step must neither kill a live session nor revive a dead one.
+// The file lives on /run (tmpfs), so a boot-relative stamp never outlives its boot.
+static long boot_now() {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_BOOTTIME, &ts) != 0) return -1;
+    return (long)ts.tv_sec;
+}
+
 static std::string cookie(const std::string& token, long max_age) {
     return std::string(COOKIE_NAME) + "=" + token +
            "; HttpOnly; SameSite=Lax; Path=/; Max-Age=" + std::to_string(max_age);
 }
 
-std::string start(const std::string& user) {
-    std::string token = util::random_hex(24);   // 48 hex chars
-    long expiry = (long)::time(nullptr) + SESSION_TTL;
+static void write_session(const std::string& user, const std::string& token, long expiry) {
     std::string body = user + "\n" + token + "\n" + std::to_string(expiry) + "\n";
     util::write_file_atomic(SESSION_FILE, body, 0600);
+}
+
+std::string start(const std::string& user) {
+    std::string token = util::random_hex(24);   // 48 hex chars
+    write_session(user, token, boot_now() + SESSION_TTL);
     return cookie(token, SESSION_TTL);
 }
 
-std::string clear() {
-    ::unlink(SESSION_FILE);
+std::string clear(const std::string& cookie_token) {
+    // check() only says valid for the holder of the live token, so a cookieless
+    // or stale-cookie /logout leaves the (single, global) session alone.
+    if (check(cookie_token).valid) ::unlink(SESSION_FILE);
     return cookie("", 0);
 }
 
@@ -173,8 +188,14 @@ Info check(const std::string& cookie_token) {
     std::string user  = body.substr(0, n1);
     std::string token = body.substr(n1 + 1, n2 - n1 - 1);
     long expiry = strtol(body.c_str() + n2 + 1, nullptr, 10);
-    if ((long)::time(nullptr) >= expiry) { ::unlink(SESSION_FILE); return info; }
+    // Token first: a request that doesn't hold the live token never touches the
+    // file (no unlink).
     if (!util::const_time_eq(cookie_token, token)) return info;
+    // Fails closed if clock_gettime ever fails. An expiry more than one TTL out
+    // can't have come from start() (e.g. a wall-clock stamp left by an older
+    // portal binary): treat it as expired too.
+    long now = boot_now();
+    if (now < 0 || now >= expiry || expiry > now + SESSION_TTL) { ::unlink(SESSION_FILE); return info; }
     info.valid = true;
     info.user = user;
     return info;

@@ -1,9 +1,25 @@
 #!/bin/sh
-# S35wifi — onboard WiFi bring-up (brcmfmac, Zero 2 W).
+# S35wifi — onboard WiFi bring-up (brcmfmac).
 #
-# Runs after S30eth / S30gadget_nic (eth0 + usb0 up) and BEFORE S60routing
-# (S60 folds the AP iface into NAT/DHCP when it sees /run/wifi-ap-iface).
-# Order: load modules -> dispatch on mode (off / sta / ap / sta+ap).
+# Runs after S30eth / S30gadget_nic (eth0 + the LAN bridge br-lan up) and
+# BEFORE S60routing. Order: load modules -> dispatch on mode (off / sta / ap /
+# sta+ap).
+#
+# The hotspot is part of the LAN, not a subnet of its own: hostapd runs with
+# bridge=br-lan, so the AP iface (wlan0 in ap mode, uap0 in sta+ap) joins
+# S30gadget_nic's bridge next to usb0 and has no IP; its clients get
+# 10.42.0.x from the one LAN DHCP pool (dnsmasq on br-lan) and nftables sees
+# them as br-lan. When the AP stops, its iface leaves the bridge (hostapd
+# does it on exit; stop() makes sure — a wlan0 left as a bridge port could
+# never become a STA again, cfg80211 refuses). Without br-lan (/run/lan-iface
+# = usb0: kernel without CONFIG_BRIDGE) the AP is refused, as for a weak PSK.
+# /run/wifi-ap-iface names the AP iface while one is up (the portal's WiFi
+# status reads it).
+#
+# The same 10.42.0.0/24 LAN is on every RNSBox, so another RNSBox's hotspot
+# can't be this box's uplink: dhcpcd refuses DHCP from 10.42.0.0/24
+# (/etc/dhcpcd.conf) and /etc/dhcpcd.exit-hook writes the reason to
+# /run/wifi-sta-conflict for the WiFi tab.
 #
 # If no wlanN appears (radio or firmware fault) we detect
 # that and exit 0 so the same image boots on both SKUs.
@@ -17,10 +33,20 @@ HOSTAPD_CONF=/var/run/hostapd.conf
 STA_IF=wlan0
 AP_IF_CONCURRENT=uap0
 LOG=/var/log/wifi.log
+# Present while the AP is refused — weak ap_psk, or no LAN bridge (holds the
+# reason). Lets the refusal be logged once per start/restart instead of on
+# every S36wifiwatch revive attempt (every few seconds in sta+ap; /var/log is
+# tiny).
+AP_REFUSED=/run/wifi-ap-refused
+# The LAN bridge hostapd adds the AP iface to (S30gadget_nic makes it).
+LAN_BR=br-lan
+# Present while the STA's network overlaps the LAN subnet (holds the reason;
+# written and cleared by /etc/dhcpcd.exit-hook).
+STA_CONFLICT=/run/wifi-sta-conflict
 
 # 2.4 GHz channel centre frequencies (ch1..13, MHz). Used to pin the STA to
 # 2.4 GHz in concurrent sta+ap mode so it is ALWAYS co-band with the AP. The
-# The onboard chip is a single radio doing fullmac time-sharing: the STA
+# The onboard chip is a single radio (one RF path) doing fullmac time-sharing: the STA
 # and the hotspot must sit on one channel, and the AP is 2.4 GHz (hw_mode=g),
 # so the STA has to be 2.4 GHz too. A regdom that disallows ch12/13 simply
 # never surfaces them in scans, so listing them here is harmless (US = 1..11,
@@ -36,10 +62,52 @@ cfg() {
 	  | sed -E 's/[[:space:]]*$//' | tr -d '"'
 }
 
+# ap_psk_ok <psk> — hotspot WPA2 passphrase policy (mirrors the portal's
+# wifi::ap_psk_ok): 8..63 printable ASCII and NOT the old published factory
+# default. An empty PSK must never mean "open hotspot" (gen_hostapd_conf would
+# emit no wpa= lines), so it is refused too.
+ap_psk_ok() {
+	_p="$1"
+	[ "$_p" = "changeme123" ] && return 1
+	[ "${#_p}" -ge 8 ] && [ "${#_p}" -le 63 ] || return 1
+	case "$_p" in *[!\ -~]*) return 1 ;; esac
+	return 0
+}
+
+# ap_refuse <reason> — record why the AP is not started; log only the first time.
+ap_refuse() {
+	[ -f "$AP_REFUSED" ] || log "AP NOT started: $*"
+	echo "$*" > "$AP_REFUSED"
+}
+AP_PSK_REASON="ap_psk is empty, not 8-63 printable ASCII chars, or the old published default 'changeme123' — set a hotspot password (8-63 chars) in the portal WiFi tab"
+AP_BR_REASON="no LAN bridge $LAN_BR (/run/lan-iface is not $LAN_BR: kernel without CONFIG_BRIDGE?) — the hotspot is bridged into the LAN and cannot run without it"
+
+# lan_bridged — true if the LAN iface is the bridge (/run/lan-iface, written
+# by S30gadget_nic) and it exists. Checked before hostapd starts: with
+# bridge= naming a missing bridge, hostapd would create one of its own.
+lan_bridged() {
+	_l=
+	{ read -r _l < /run/lan-iface; } 2>/dev/null
+	[ "$_l" = "$LAN_BR" ] && [ -d "/sys/class/net/$LAN_BR/bridge" ]
+}
+
+# in_bridge <iface> — true while <iface> is a port of $LAN_BR.
+in_bridge() {
+	[ -e "/sys/class/net/$LAN_BR/brif/$1" ]
+}
+
+# ap_unbridge <iface> — take a (former) AP iface out of $LAN_BR. hostapd does
+# this itself on a clean exit; this covers a crash / SIGKILL, and a wlan0
+# that must become a STA (cfg80211 won't turn a bridge port into a station).
+ap_unbridge() {
+	in_bridge "$1" || return 0
+	ip link set dev "$1" nomaster 2>>"$LOG" && log "$1 left $LAN_BR"
+}
+
 load_modules() {
-	# brcmfmac is built into the RNSBox kernel; firmware comes from
-	# linux-firmware (brcm group) + the brcmfmac-sdio-firmware-rpi NVRAM
-	# package. modprobe is a no-op when built-in.
+	# brcmfmac is built into the RNSBox kernel; firmware comes from the
+	# brcmfmac-sdio-firmware-rpi NVRAM package. modprobe is a no-op when
+	# built-in.
 	modprobe brcmfmac 2>/dev/null || true
 	modprobe cfg80211 2>/dev/null || true
 }
@@ -110,6 +178,8 @@ gen_wpa_conf() {
 }
 
 # gen_hostapd_conf <iface> <ssid> <psk> <chan> <hidden> <htmode> [force_off]
+#   The AP always joins the LAN bridge (bridge=$LAN_BR; hostapd adds the iface
+#   after switching it to AP mode, and removes it again on exit).
 #   chan      = 1..13  or  "auto" (=> hostapd ACS, channel=0; needs the driver
 #               to implement nl80211 survey — if it doesn't, start_ap falls
 #               back to a fixed channel)
@@ -122,6 +192,7 @@ gen_hostapd_conf() {
 	iface="$1"; ssid="$2"; psk="$3"; chan="$4"; hidden="$5"; htmode="$6"; force_off="$7"
 	{
 		echo "interface=$iface"
+		echo "bridge=$LAN_BR"
 		echo "driver=nl80211"
 		echo "ssid=$ssid"
 		echo "hw_mode=g"
@@ -173,14 +244,14 @@ gen_hostapd_conf() {
 
 # apply_txpower <iface>
 # Sets WiFi TX power on the (already-up) interface from `tx_power` in wifi.conf.
-#   auto / max / empty -> iw set txpower auto: the driver
+#   auto / max / empty -> iw set txpower auto: The onboard chip set_tx_power
 #       AUTOMATIC path requests 0x7f = the chip's silicon ceiling, regardless
 #       of the regulatory database (world regdom caps 2.4 GHz at 20 dBm, which
 #       is already above the D80's ~18 dBm OFDM limit, so regdb never binds).
 #   <int dBm>          -> iw set txpower fixed (dBm x100 = mBm). Firmware still
 #       applies per-rate EVM backoff below this, so it acts as a cap. Falls
 #       back to `limit` if the driver rejects `fixed`.
-# AIC8800 is a single radio; we still set per-vif (wlan0 and uap0) explicitly.
+# The onboard chip is a single radio; we still set per-vif (wlan0 and wlan1) explicitly.
 apply_txpower() {
 	_if="$1"; tp=$(cfg tx_power); [ -z "$tp" ] && tp=auto
 	case "$tp" in
@@ -208,15 +279,25 @@ start_sta() {
 	fi
 	[ -n "$country" ] && iw reg set "$country" 2>/dev/null
 	gen_wpa_conf "$ssid" "$psk" "$hidden" "$country" "$band"
+	# Normally a no-op: stop() unbridged an AP-mode wlan0 already.
+	ap_unbridge "$STA_IF"
 	ip link set "$STA_IF" up 2>/dev/null
 	# 9>&- closes the /run/wifi.lock fd (held by the caller) for the daemon, so
 	# a long-lived wpa_supplicant can't pin the lock after S35wifi exits and
 	# deadlock the next invocation (portal apply / watchdog). Same for dhcpcd
-	# and hostapd below.
+	# and hostapd below. (wpa_supplicant -B and hostapd -B detach onto
+	# /dev/null themselves; the backgrounded dhcpcd gets </dev/null so it
+	# doesn't keep the caller's stdin either.)
 	wpa_supplicant -B -i "$STA_IF" -c "$WPA_CONF" -P /var/run/wpa_supplicant-wlan0.pid >>"$LOG" 2>&1 9>&-
 	apply_txpower "$STA_IF"
-	dhcpcd -n "$STA_IF" >>"$LOG" 2>&1 9>&- &
+	dhcpcd -b -n "$STA_IF" </dev/null >>"$LOG" 2>&1 9>&- &
 	log "STA started on $STA_IF ssid=$ssid${band:+ (2.4 GHz pinned — concurrent)}"
+}
+
+# ap_bridge_state <iface> — for the start log line. hostapd exits at init if
+# it can't add the iface to the bridge, so "not in" should never show.
+ap_bridge_state() {
+	if in_bridge "$1"; then echo "bridged into $LAN_BR"; else echo "NOT in $LAN_BR - hotspot clients get no LAN"; fi
 }
 
 # Bring up hostapd; if it exits within ~1s (ACS survey unsupported, bad
@@ -231,13 +312,23 @@ _hostapd_up() {
 start_ap() {
 	iface="$1"
 	ssid=$(cfg ap_ssid); psk=$(cfg ap_psk); chan=$(cfg ap_channel)
-	hidden=$(cfg ap_hidden); ap_ip=$(cfg ap_ip); htmode=$(cfg ap_htmode)
+	hidden=$(cfg ap_hidden); htmode=$(cfg ap_htmode)
 	[ -z "$ssid" ] && { log "AP requested but ap_ssid empty; skipping"; return 0; }
+	if ! ap_psk_ok "$psk"; then
+		ap_refuse "$AP_PSK_REASON"
+		rm -f /run/wifi-ap-iface      # no AP: don't let the portal think one is up
+		return 0
+	fi
+	if ! lan_bridged; then
+		ap_refuse "$AP_BR_REASON"
+		rm -f /run/wifi-ap-iface
+		return 0
+	fi
+	rm -f "$AP_REFUSED"
 	[ -z "$chan" ] && chan=6
-	[ -z "$ap_ip" ] && ap_ip=192.168.42.1
 	[ -z "$htmode" ] && htmode=ht20
 
-	# Concurrent STA+AP: the onboard chip is a single radio, so the AP must share
+	# Concurrent STA+AP: The onboard chip is a single radio, so the AP must share
 	# the STA's *exact* channel AND width. Read the STA's live operating
 	# channel + width: 40 MHz => inherit HT40 with the STA's secondary-channel
 	# offset (derived from center1 vs the primary freq); otherwise HT20.
@@ -266,14 +357,16 @@ start_ap() {
 	fi
 
 	gen_hostapd_conf "$iface" "$ssid" "$psk" "$chan" "$hidden" "$htmode" "$ap_sec_off"
+	# No IP on the AP iface: it is a bridge port. The flush clears anything
+	# the iface held in its previous role (e.g. an old image's hotspot
+	# address).
 	ip addr flush dev "$iface" 2>/dev/null
-	ip addr add "$ap_ip/24" dev "$iface" 2>/dev/null
 	ip link set "$iface" up 2>/dev/null
 
 	if _hostapd_up; then
 		echo "$iface" > /run/wifi-ap-iface
 		apply_txpower "$iface"
-		log "AP started on $iface ssid=$ssid ch=$chan ht=$htmode ip=$ap_ip"
+		log "AP started on $iface ssid=$ssid ch=$chan ht=$htmode $(ap_bridge_state "$iface")"
 	else
 		# Fallback: ACS or HT40 likely unsupported / mismatched. Drop to a
 		# safe HT20 config so the hotspot still comes up. In concurrent mode
@@ -286,7 +379,7 @@ start_ap() {
 		if _hostapd_up; then
 			echo "$iface" > /run/wifi-ap-iface
 			apply_txpower "$iface"
-			log "AP started on $iface ssid=$ssid ch=$fb_chan ht=ht20 ip=$ap_ip (fallback)"
+			log "AP started on $iface ssid=$ssid ch=$fb_chan ht=ht20 $(ap_bridge_state "$iface") (fallback)"
 		else
 			log "AP failed to start even on ch$fb_chan HT20 — see hostapd output above"
 		fi
@@ -295,6 +388,11 @@ start_ap() {
 
 start() {
 	mkdir -p /var/log /var/run
+	# wifi.conf holds sta_psk/ap_psk: keep it root-only. The portal writes it
+	# 0600; this narrows copies left 0644 by older images (go-rwx only ever
+	# removes bits, so an even stricter mode is kept).
+	[ -f "$CONF" ] && chmod go-rwx "$CONF" 2>/dev/null
+	rm -f "$AP_REFUSED"     # fresh start/restart: log a PSK refusal once again
 	mode=$(cfg mode); [ -z "$mode" ] && mode=off
 
 	load_modules
@@ -315,10 +413,15 @@ start() {
 			# ap_channel — the hotspot is the priority — and S36wifiwatch
 			# re-syncs the AP to the STA's channel if/when it later joins.
 			start_sta concurrent
-			if wait_sta_connected 20; then
-				log "STA associated — starting co-channel AP"
-			else
-				log "STA not associated after 20s — starting AP on ap_channel (AP priority); watchdog re-syncs when STA joins"
+			# A weak ap_psk (or no LAN bridge) refuses only the AP (start_ap
+			# logs why); the STA above keeps working. No point waiting 20 s
+			# for it in that case.
+			if ap_psk_ok "$(cfg ap_psk)" && lan_bridged; then
+				if wait_sta_connected 20; then
+					log "STA associated — starting co-channel AP"
+				else
+					log "STA not associated after 20s — starting AP on ap_channel (AP priority); watchdog re-syncs when STA joins"
+				fi
 			fi
 			start_ap "$AP_IF_CONCURRENT"
 			;;
@@ -331,13 +434,25 @@ stop() {
 	[ -f /var/run/wpa_supplicant-wlan0.pid ] && { kill "$(cat /var/run/wpa_supplicant-wlan0.pid)" 2>/dev/null; rm -f /var/run/wpa_supplicant-wlan0.pid; }
 	killall hostapd wpa_supplicant 2>/dev/null
 	dhcpcd -x "$STA_IF" 2>/dev/null
+	# Drop the STA's DNS from openresolv, and the uplink-overlap note (no-ops
+	# if dhcpcd's STOP hooks already did).
+	resolvconf -d "$STA_IF.dhcp" -f 2>/dev/null
+	rm -f "$STA_CONFLICT"
+	# The AP iface leaves the LAN bridge. hostapd removes it on a clean exit,
+	# but it may still be exiting or have died without doing so: a wlan0
+	# (AP-only mode) left as a port would bridge whatever it joins next into
+	# the LAN — and as a port it can't become a STA at all. uap0 leaves by
+	# being deleted.
+	ap_unbridge "$STA_IF"
 	iw dev "$AP_IF_CONCURRENT" del 2>/dev/null
+	# Nothing of wlan0's old role (a lease dhcpcd -x didn't drop) carries over.
+	ip addr flush dev "$STA_IF" 2>/dev/null
 	rm -f /run/wifi-ap-iface
 }
 
 # Serialize all radio state transitions on one lock so a portal-triggered
 # `restart` (wifi.py apply()) and the S36wifiwatch `ap_restart` can never init
-# hostapd on wlan1 at the same instant — the AIC8800 fullmac driver then returns
+# hostapd on uap0 at the same instant — The onboard chip fullmac driver then returns
 # `nl80211: Match already configured` and the AP fails to come up. The lock is
 # held on fd 9 for the life of this invocation and released on exit; a
 # concurrent S35wifi call blocks here until the in-flight one finishes.
@@ -370,6 +485,17 @@ case "${1:-start}" in
 		# instead of a redundant teardown/rebuild (one avoidable blip). The
 		# channel re-sync path still uses ap_restart (always restarts).
 		if ! pidof hostapd >/dev/null 2>&1; then
+			# Refused PSK / no bridge: bail before load_modules (which sleeps
+			# 1 s) — the watchdog calls this every few seconds while hostapd
+			# is absent.
+			if ! ap_psk_ok "$(cfg ap_psk)"; then
+				ap_refuse "$AP_PSK_REASON"
+				exit 0
+			fi
+			if ! lan_bridged; then
+				ap_refuse "$AP_BR_REASON"
+				exit 0
+			fi
 			load_modules
 			start_ap "$AP_IF_CONCURRENT"
 		fi

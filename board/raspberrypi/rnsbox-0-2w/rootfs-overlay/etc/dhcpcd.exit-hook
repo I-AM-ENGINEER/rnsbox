@@ -1,0 +1,72 @@
+# /etc/dhcpcd.exit-hook — RNSBox. dhcpcd-run-hooks sources this after its own
+# hooks, for every event on the one iface dhcpcd manages: wlan0, the WiFi
+# client (see /etc/dhcpcd.conf). Sourced, not run: no `exit` here, and every
+# name is rnsbox_-prefixed so nothing of run-hooks' is clobbered.
+#
+# Flags a WiFi uplink that overlaps this box's own LAN, 10.42.0.0/24
+# (br-lan 10.42.0.1/24, the same on every RNSBox, hotspot included). That is
+# normally another RNSBox's hotspot, or a Linux "shared" connection (also
+# 10.42.0.1/24). dhcpcd.conf blacklists DHCP from 10.42.0.0/24, so wlan0 just
+# stays without an address there; this says why. The reason goes to
+# /run/wifi-sta-conflict (the portal's WiFi tab shows it) and, once per
+# association, to /var/log/wifi.log.
+#   CARRIER (associated): ARP-probe the uplink for 10.42.0.1 in DAD form
+#     (sender 0.0.0.0: needs no address and never announces ours), in the
+#     background so the DHCP start isn't held up. An answer while wlan0 still
+#     has no lease -> flagged.
+#   lease: an address or router inside 10.42.0.0/24 (a relayed DHCP server
+#     outside the blacklist) -> flagged; any other lease clears the flag.
+#   link loss / dhcpcd stop -> cleared; the next association checks again.
+
+rnsbox_conflict=/run/wifi-sta-conflict
+rnsbox_lan_ip=10.42.0.1
+rnsbox_msg_dhcp="This network uses 10.42.0.0/24, the subnet of this box's own LAN (another RNSBox's hotspot, or a Linux 'shared' connection), so it can't be the uplink: its DHCP is refused, because its router and DNS (10.42.0.1) would be this box itself. Use another network or Ethernet (eth0 WAN). To link two RNSBoxes over Reticulum, point a TCPClientInterface at the other box's WAN address."
+rnsbox_msg_lease="The lease from this network is in 10.42.0.0/24, the subnet of this box's own LAN, so its router or DNS can't be reached through it and the uplink won't work properly. Use another network or Ethernet (eth0 WAN)."
+
+# rnsbox_in_lan <addr>... — true if any argument is in 10.42.0.0/24.
+rnsbox_in_lan() {
+	for rnsbox_a in "$@"; do
+		case "$rnsbox_a" in 10.42.0.*) return 0 ;; esac
+	done
+	return 1
+}
+
+# rnsbox_flag <log detail> <reason for the WiFi tab>
+rnsbox_flag() {
+	[ -f "$rnsbox_conflict" ] \
+	  || printf '%s: %s: uplink overlaps the LAN 10.42.0.0/24: %s\n' \
+	       "$(date '+%F %T')" "$interface" "$1" >> /var/log/wifi.log
+	echo "$2" > "$rnsbox_conflict"
+}
+
+# rnsbox_probe — runs in the background after CARRIER. arping -D exits 1 when
+# something answered (0 = nobody, 2 = error). Only flag while still
+# associated and without a lease: a lease meanwhile came from a server
+# outside 10.42.0.0/24, and the lease check below judges that.
+rnsbox_probe() {
+	arping -q -D -I "$interface" -c 2 -w 3 "$rnsbox_lan_ip" >/dev/null 2>&1
+	[ $? -eq 1 ] || return 0
+	[ "$(cat "/sys/class/net/$interface/carrier" 2>/dev/null)" = 1 ] || return 0
+	[ -z "$(ip -4 -o addr show dev "$interface" 2>/dev/null)" ] || return 0
+	rnsbox_flag "$rnsbox_lan_ip answers on ssid '${ifssid:-?}'; its DHCP is refused" "$rnsbox_msg_dhcp"
+}
+
+if [ "$interface" = wlan0 ]; then
+	case "$reason" in
+	CARRIER)
+		rm -f "$rnsbox_conflict"
+		( rnsbox_probe ) </dev/null >/dev/null 2>&1 &
+		;;
+	BOUND|RENEW|REBIND|REBOOT|STATIC|INFORM)
+		# shellcheck disable=SC2086 # $new_routers: one word per router
+		if rnsbox_in_lan "$new_ip_address" $new_routers; then
+			rnsbox_flag "lease $new_ip_address router ${new_routers:-none}" "$rnsbox_msg_lease"
+		else
+			rm -f "$rnsbox_conflict"
+		fi
+		;;
+	PREINIT|NOCARRIER|NOCARRIER_ROAMING|STOP|STOPPED|DEPARTED|RELEASE)
+		rm -f "$rnsbox_conflict"
+		;;
+	esac
+fi

@@ -1,21 +1,214 @@
 #!/bin/sh
 # S83nomadnet — Nomadnet daemon (LXMF propagation node + nomadnet pages
-# server). Shipped DISABLED by default — most RNSBox owners only want
-# rnsd (S82rnsd). Enable by flipping `enabled=no` -> `enabled=yes` in
-# /etc/rnsbox/nomadnet.conf, then run this script with `start`.
+# server). Opt-in: shipped DISABLED (enabled=no) — most RNSBox owners only
+# want rnsd (S82rnsd), and RAM is scarce. Enable by flipping `enabled=no` ->
+# `enabled=yes` in /etc/rnsbox/nomadnet.conf, then run this script with
+# `start`. While disabled, start does nothing at all: it checks the flag
+# before anything else, even before the lock below. `enabled` exits 0 iff
+# the flag says yes (S46wanwatch asks it before starting nomadnet itself).
 #
-# Like S82rnsd, gates on /run/clock-synced. Nomadnet stamps every LXMF
-# message + announce with wall-clock time; a 1970 clock makes peers
-# reject everything we send.
+# No clock gate, like S82rnsd: it runs with or without a trusted wall clock
+# (Reticulum must work on meshes with no internet). LXMF stamps messages and
+# announces with wall-clock time, so until the clock is trusted
+# (/run/clock-source: RTC, NTP or a browser sync) those carry a 1970 date.
+# What its propagation node recorded meanwhile would then look decades old
+# the moment the clock is set: stored messages purged by the 30-day expiry,
+# the propagation peers it heard culled as 14 days unreachable, and the caches
+# of already-handled messages emptied (so they could be accepted again). The
+# RNSBox LXMF patch (package/python-lxmf/0001-*) re-dates all three instead.
+#
+# Shared instance: nomadnet passes no --rnsconfig, so its RNS uses
+# /etc/reticulum, rnsd's config — and attaches to rnsd's shared instance if
+# rnsd has it open, else opens it (with all of rnsd's interfaces) itself.
+# rnsd takes several seconds to get there, and rcS runs this right after
+# S82rnsd. So start needs rnsd running (else it refuses) and its shared
+# instance accepting clients (rns_shared_up); until then it defers: it leaves
+# /run/wanwatch-deps-pending and S46wanwatch starts nomadnet as soon as the
+# shared instance is up. start/stop are serialized on /run/nomadnet.lock
+# (rcS, the operator and S46wanwatch can overlap).
+#
+# Also like S82rnsd: runs with umask 077 (its identity key lives under
+# $configdir/storage; start() tightens anything left group/world-readable)
+# and with unbuffered stdout/stderr fed to syslog (/var/log/messages, tag
+# "nomadnet[<pid>]") through a FIFO, so $! / the pidfile is nomadnet itself.
+# --console: log to stdout (-> syslog) instead of $configdir/logfile on the SD
+# card; --config (not --configdir) is nomadnet's flag. It leads a session and
+# process group of its own (setsid), and stop ends that whole group: nomadnet
+# embeds the same LXMF router as lxmd, whose forked stamp workers outlived a
+# SIGTERM to lxmd alone (see stop_nomadnet), and runs page scripts as child
+# processes. Nothing started here keeps the caller's stdin/stdout/stderr, so
+# `S83nomadnet start | head` returns at once instead of when nomadnet exits.
 
 NAME=nomadnet
 DAEMON=/usr/bin/nomadnet
 CONF=/etc/rnsbox/nomadnet.conf
 PIDFILE=/var/run/$NAME.pid
-LOG=/var/log/$NAME.log
+LOGPIPE=/var/run/$NAME.logpipe
+LOGGER_PIDFILE=/var/run/$NAME.logger.pid   # the logger reading $LOGPIPE
 DEFAULT_CONFIGDIR=/var/lib/nomadnetwork
+PERMS_MARK=/run/nomadnet-perms-done   # configdir whose full walk ran this boot
+DEPS_MARK=/run/wanwatch-deps-pending  # S46wanwatch starts us once rnsd's up
+STOP_WAIT=10   # s nomadnet gets to persist its state and exit after SIGTERM
 
-[ -x "$DAEMON" ] || exit 0
+# Not installed: nothing to run (and `enabled` answers no).
+if [ ! -x "$DAEMON" ]; then
+	[ "$1" = enabled ] && exit 1
+	exit 0
+fi
+
+# rns_shared_up — true once rnsd's shared instance accepts clients: RNS on
+# Linux listens on the abstract AF_UNIX socket @rns/<instance> (flags
+# 00010000 = listening, in /proc/net/unix; @rns/<instance>/rpc is its RPC
+# socket, not this), or on 127.0.0.1:37428 (st 0A) with shared_instance_type
+# = tcp. Same test as S46wanwatch/S85lxmd; builtins only.
+rns_shared_up() {
+	while read -r _num _ref _proto flags _type _st _ino path; do
+		case "$path" in
+			@rns/*/*) ;;
+			@rns/*) [ "$flags" = 00010000 ] && return 0 ;;
+		esac
+	done 2>/dev/null </proc/net/unix
+	while read -r _sl laddr _raddr st _rest; do
+		[ "$laddr" = 0100007F:9234 ] && [ "$st" = 0A ] && return 0
+	done 2>/dev/null </proc/net/tcp
+	return 1
+}
+
+# pidfile_pid FILE — print the pid FILE holds; false if none (or not a pid).
+pidfile_pid() {
+	_p=
+	{ read -r _p <"$1"; } 2>/dev/null
+	case "$_p" in ''|*[!0-9]*) return 1 ;; esac
+	echo "$_p"
+}
+
+# pstat PID — PSTATE and PPGRP = PID's state and process group (fields 3 and
+# 5 of /proc/PID/stat, counted after comm's last ")": comm may hold spaces);
+# false once PID is gone. Builtins only. Same as S82rnsd/S85lxmd.
+pstat() {
+	PSTATE=; PPGRP=
+	case "$1" in ''|*[!0-9]*) return 1 ;; esac
+	_s=
+	{ read -r _s <"/proc/$1/stat"; } 2>/dev/null || return 1
+	set -- ${_s##*) }
+	PSTATE=$1; PPGRP=$3
+}
+
+# is_nomadnet PID — true if PID is a live nomadnet, or a fork of one (LXMF's
+# stamp workers are forks without exec, so they keep its comm). nomadnet is a
+# python console-script and the kernel names a script process after the
+# script file, so its comm is "nomadnet"; started through the interpreter
+# instead (comm python*) it is confirmed on argv[0]/argv[1]. A zombie, a
+# recycled pid or logger's "nomadnet[<pid>]" tag never match.
+is_nomadnet() {
+	pstat "$1" && [ "$PSTATE" != Z ] || return 1
+	comm=
+	{ read -r comm <"/proc/$1/comm"; } 2>/dev/null
+	case "$comm" in
+		nomadnet) return 0 ;;
+		python*)  tr '\0' '\n' <"/proc/$1/cmdline" 2>/dev/null | head -n 2 \
+		            | grep -qE '(^|/)nomadnet$' ;;
+		*)        return 1 ;;
+	esac
+}
+
+# group_alive PGID — true while process group PGID has a member that has not
+# exited (a zombie holds nothing open). Builtins only.
+group_alive() {
+	for _d in /proc/[0-9]*; do
+		pstat "${_d#/proc/}" && [ "$PPGRP" = "$1" ] && [ "$PSTATE" != Z ] && return 0
+	done
+	return 1
+}
+
+# group_has_nomadnet PGID — true if nomadnet, or a fork of it, is alive in
+# process group PGID: nomadnet's group, even once nomadnet itself is gone and
+# only its forks are left.
+group_has_nomadnet() {
+	for _d in /proc/[0-9]*; do
+		pstat "${_d#/proc/}" && [ "$PPGRP" = "$1" ] && is_nomadnet "${_d#/proc/}" && return 0
+	done
+	return 1
+}
+
+# is_our_logger PID — true if PID is the logger start ran for nomadnet's
+# output: comm "logger" and a "nomadnet[<pid>]" tag in its argv (a zombie's
+# argv reads empty), so a stale $LOGGER_PIDFILE naming a recycled pid never
+# matches.
+is_our_logger() {
+	_c=
+	{ read -r _c <"/proc/$1/comm"; } 2>/dev/null
+	[ "$_c" = logger ] || return 1
+	tr '\0' '\n' <"/proc/$1/cmdline" 2>/dev/null | grep -q "^$NAME\[[0-9]*\]\$"
+}
+
+# stop_nomadnet — stop nomadnet and everything it started; false if nothing
+# was running. start made nomadnet the leader of a session and process group
+# of its own (setsid), numbered by the pid in $PIDFILE, and all it forks or
+# runs stays in that group. Same steps as S85lxmd's stop_lxmd, whose stamp
+# workers (the same LXMF code runs in nomadnet) survived a SIGTERM to lxmd
+# alone on the box, at ~100% CPU each and holding the FIFO open:
+#   1. SIGSTOP the group (so LXMF's CPU-bound forks don't starve the save on
+#      the one core), SIGTERM nomadnet and SIGCONT it alone: it tears down its
+#      links, persists its state and exits. Wait up to STOP_WAIT s for it.
+#      The three kills stay back to back: nomadnet frozen between STOP and
+#      CONT would still count as running.
+#   2. SIGKILL to whatever is left of the group: forks, page scripts, and
+#      nomadnet itself if it overran. Not SIGTERM: a fork inherits nomadnet's
+#      Python signal handlers, and a stamp worker given SIGTERM would run
+#      LXMRouter's exit handler - rewrite peers, transient-id caches and node
+#      stats from its stale fork-time copy, and send link teardowns down the
+#      shared-instance socket.
+#   3. Wait up to 1 s for the group and logger to be gone. logger reads EOF
+#      once the last writer of the FIFO has exited; one still running then
+#      (a writer outside the group) is killed.
+# nomadnet found gone with its forks still running (it crashed, or was killed
+# on its own) skips to 2 - start runs this for that case too. A stale pidfile
+# is harmless: a recycled pid is no nomadnet (is_nomadnet), and while any
+# member of nomadnet's group lives the kernel never hands out its number
+# again, so a group under that number with a nomadnet in it is nomadnet's. A
+# daemon that is not its own group leader (setsid missing) is signalled
+# alone, never its group.
+stop_nomadnet() {
+	p=$(pidfile_pid "$PIDFILE")
+	lp=$(pidfile_pid "$LOGGER_PIDFILE") && ! is_our_logger "$lp" && lp=
+	lead=; grp=
+	if [ -n "$p" ] && is_nomadnet "$p"; then
+		lead=$p
+		[ "$PPGRP" = "$p" ] && grp=$p
+	elif [ -n "$p" ] && group_has_nomadnet "$p"; then
+		grp=$p
+	fi
+	if [ -z "$lead$grp" ]; then
+		# no nomadnet left to log for
+		[ -n "$lp" ] && kill "$lp" 2>/dev/null
+		rm -f "$LOGGER_PIDFILE"
+		return 1
+	fi
+	if [ -n "$lead" ]; then
+		[ -n "$grp" ] && kill -STOP "-$grp" 2>/dev/null
+		kill "$lead" 2>/dev/null
+		kill -CONT "$lead" 2>/dev/null
+		i=0
+		while [ "$i" -lt "$STOP_WAIT" ] && is_nomadnet "$lead"; do
+			sleep 1; i=$((i + 1))
+		done
+	fi
+	if [ -n "$grp" ]; then
+		group_alive "$grp" && kill -KILL "-$grp" 2>/dev/null
+	elif is_nomadnet "$lead"; then
+		kill -KILL "$lead" 2>/dev/null
+	fi
+	i=0
+	while [ "$i" -lt 5 ]; do
+		{ [ -n "$grp" ] && group_alive "$grp"; } || is_nomadnet "$lead" \
+			|| { [ -n "$lp" ] && is_our_logger "$lp"; } || break
+		sleep 0.2; i=$((i + 1))
+	done
+	[ -n "$lp" ] && is_our_logger "$lp" && kill "$lp" 2>/dev/null
+	rm -f "$LOGGER_PIDFILE"
+	return 0
+}
 
 # --- read the enable flag (single key=value lines, no shell sourcing) ---
 read_conf() {
@@ -34,36 +227,94 @@ read_conf() {
 	fi
 }
 
-start() {
+# disabled — true, with a note, unless $CONF says enabled=yes (also loads
+# configdir). Every start path runs this first.
+disabled() {
 	read_conf
-	if [ "$enabled" != "yes" ]; then
-		echo "S83nomadnet: disabled in $CONF (enabled=$enabled); skipping"
-		echo "             flip to 'enabled=yes' to start at boot"
+	[ "$enabled" = "yes" ] && return 1
+	echo "S83nomadnet: disabled in $CONF (enabled=$enabled); skipping"
+	echo "             flip to 'enabled=yes' to start at boot"
+	return 0
+}
+
+start() {
+	disabled && return 0
+
+	mkdir -p /var/run "$configdir"
+
+	if p=$(pidfile_pid "$PIDFILE") && is_nomadnet "$p"; then
+		echo "S83nomadnet: already running (pid $p)"
 		return 0
 	fi
+	# What a nomadnet that died left behind: its forks (stamp workers still
+	# spinning) and its logger.
+	stop_nomadnet && echo "S83nomadnet: ended the forks of a nomadnet that had exited (pid ${p:-?})"
 
-	mkdir -p /var/log /var/run "$configdir"
-
-	if [ -f "$PIDFILE" ] && kill -0 "$(cat $PIDFILE)" 2>/dev/null; then
-		echo "S83nomadnet: already running (pid $(cat $PIDFILE))"
-		return 0
-	fi
-
-	if [ ! -f /run/clock-synced ]; then
-		echo "S83nomadnet: refusing to start - /run/clock-synced absent"
-		echo "             (S45ntpsync did not succeed; check WAN link)"
+	# Attach to rnsd's shared instance — never open it ourselves.
+	if [ -z "$(pidof rnsd)" ]; then
+		echo "S83nomadnet: refusing to start - rnsd (S82rnsd) is not running"
+		echo "             nomadnet shares rnsd's Reticulum instance; start rnsd first"
 		return 1
+	fi
+	if ! rns_shared_up; then
+		: > "$DEPS_MARK"
+		echo "S83nomadnet: deferred - rnsd's shared instance isn't accepting clients yet"
+		echo "             S46wanwatch starts nomadnet as soon as it is (needs"
+		echo "             share_instance = Yes in /etc/reticulum/config)"
+		return 0
+	fi
+
+	# identity + peer data live under storage/ (only that subtree, in case
+	# configdir was pointed at a shared dir); `! -type l`: never follow links.
+	# The recursive walk (the LXMF message store can hold thousands of files
+	# on the SD card) runs once per boot per configdir ($PERMS_MARK holds the
+	# dir it covered); later starts check storage/ and its top level only —
+	# storage/ itself at 0700 already fences off everything below it.
+	if [ -d "$configdir/storage" ]; then
+		done_dir=
+		{ read -r done_dir <"$PERMS_MARK"; } 2>/dev/null
+		if [ "$done_dir" = "$configdir" ]; then
+			find "$configdir/storage" -maxdepth 1 ! -type l -perm /077 -exec chmod go-rwx {} + 2>/dev/null
+		else
+			find "$configdir/storage" ! -type l -perm /077 -exec chmod go-rwx {} + 2>/dev/null \
+				&& echo "$configdir" > "$PERMS_MARK"
+		fi
 	fi
 
 	printf "Starting %s: " "$NAME"
-	"$DAEMON" --daemon --configdir "$configdir" >>"$LOG" 2>&1 &
-	PID=$!
+	# setsid: nomadnet leads a session and process group of its own
+	# (stop_nomadnet ends that group), with no controlling terminal. busybox
+	# setsid forks only when its caller leads a process group, and the
+	# backgrounded subshell never does (no job control in a script): it
+	# exec's setsid, which exec's nomadnet (--daemon doesn't fork either), so
+	# $! is nomadnet's pid and its process group. Without setsid nomadnet
+	# still runs, and stop signals it alone. stdin is /dev/null, nomadnet
+	# writes only to the FIFO and logger only to syslog: nothing keeps the
+	# caller's stdin/stdout/stderr open. logger gets a session of its own too,
+	# and its pid is kept for stop.
+	SETSID=
+	command -v setsid >/dev/null 2>&1 && SETSID=setsid
+	rm -f "$LOGPIPE" "$LOGGER_PIDFILE"
+	if command -v logger >/dev/null 2>&1 && mkfifo -m 600 "$LOGPIPE" 2>/dev/null; then
+		(
+			umask 077
+			export PYTHONUNBUFFERED=1
+			exec $SETSID "$DAEMON" --daemon --console --config "$configdir"
+		) 9>&- </dev/null >"$LOGPIPE" 2>&1 &
+		PID=$!
+		$SETSID logger -t "$NAME[$PID]" -p daemon.notice 9>&- <"$LOGPIPE" >/dev/null 2>&1 &
+		echo $! > "$LOGGER_PIDFILE"
+	else
+		( umask 077; exec $SETSID "$DAEMON" --daemon --console --config "$configdir" ) \
+			9>&- </dev/null >/dev/null 2>&1 &
+		PID=$!
+	fi
 	echo "$PID" > "$PIDFILE"
 	sleep 0.3
 	if kill -0 "$PID" 2>/dev/null; then
 		echo "OK (pid $PID, configdir $configdir)"
 	else
-		echo "FAIL (see $LOG)"
+		echo "FAIL (see /var/log/messages)"
 		rm -f "$PIDFILE"
 		return 1
 	fi
@@ -71,18 +322,42 @@ start() {
 
 stop() {
 	printf "Stopping %s: " "$NAME"
-	if [ -f "$PIDFILE" ]; then
-		kill "$(cat $PIDFILE)" 2>/dev/null
-		for _ in 1 2 3 4 5; do
-			[ -f "$PIDFILE" ] && kill -0 "$(cat $PIDFILE)" 2>/dev/null || break
-			sleep 1
-		done
-		rm -f "$PIDFILE"
+	if stop_nomadnet; then
 		echo "OK"
 	else
 		echo "(not running)"
 	fi
+	rm -f "$PIDFILE"
 }
+
+# Opt-in, checked first: a start while disabled returns before the lock
+# (never waits on it, never creates it); start() checks again under it.
+case "${1:-start}" in
+	start)   disabled && exit 0 ;;
+	enabled) read_conf; [ "$enabled" = "yes" ]; exit ;;
+esac
+
+# Serialize start/stop/restart on /run/nomadnet.lock: two starts that both
+# passed the pidfile check would run two nomadnets. The spawn lines close
+# fd 9 (first, before the FIFO open can block) so nomadnet and logger can't
+# pin the lock. Bounded wait (busybox flock has no -w), as in S82rnsd; 15 s
+# outlasts a restart queued ahead (stop: up to STOP_WAIT + 1 s, then 1 s and
+# a start).
+case "${1:-start}" in
+	start|stop|restart)
+		exec 9>/run/$NAME.lock
+		if command -v flock >/dev/null 2>&1; then
+			i=0
+			until flock -n 9 2>/dev/null; do
+				if [ "$i" -ge 15 ]; then
+					echo "S83nomadnet: ${1:-start}: /run/$NAME.lock still held after 15s - not done" >&2
+					exit 1
+				fi
+				sleep 1; i=$((i + 1))
+			done
+		fi
+		;;
+esac
 
 case "${1:-start}" in
 	start)   start ;;
@@ -91,11 +366,11 @@ case "${1:-start}" in
 	status)
 		read_conf
 		echo "enabled in conf: $enabled"
-		if [ -f "$PIDFILE" ] && kill -0 "$(cat $PIDFILE)" 2>/dev/null; then
-			echo "running:         pid $(cat $PIDFILE)"
+		if p=$(pidfile_pid "$PIDFILE") && is_nomadnet "$p"; then
+			echo "running:         pid $p"
 		else
 			echo "running:         no"
 		fi
 		;;
-	*) echo "Usage: $0 {start|stop|restart|status}" >&2; exit 1 ;;
+	*) echo "Usage: $0 {start|stop|restart|status|enabled}" >&2; exit 1 ;;
 esac

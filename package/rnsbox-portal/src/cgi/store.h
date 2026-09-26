@@ -31,7 +31,7 @@ struct OpenPort {
 };
 
 struct WanConfig {
-    std::string interface = "eth0";   // eth0 | wlan0
+    std::string interface = "auto";   // auto (eth0 + wlan0, kernel picks by metric) | eth0 | wlan0
     std::string mode = "dhcp";        // dhcp | static
     std::string address, prefix, gateway, dns;
 };
@@ -39,7 +39,12 @@ struct WanConfig {
 // --- validation helpers ---
 bool valid_ipv4(const std::string& s);
 bool valid_dns_list(const std::string& s);        // space-separated IPv4s (may be empty)
-std::string sanitize_comment(const std::string& s); // strip control chars + '#' + trim
+std::string sanitize_comment(const std::string& s); // strip '#' + trim (control chars are rejected first)
+// True if s may be stored as ONE value/entry in our line-per-entry conf files:
+// no CR/LF/NUL/TAB or other C0/DEL control char. A CR/LF would inject a whole
+// extra line (e.g. a second mode= or a new [[interface]]). Callers reject with
+// an error flash and write nothing.
+bool conf_value_ok(const std::string& s);
 
 // --- port forwards ---
 std::vector<PortForward> read_portforwards();
@@ -53,7 +58,7 @@ bool delete_openport(int idx);
 
 // --- WAN ---
 WanConfig read_wan();
-bool write_wan(const WanConfig& cfg, std::string& err);         // validates all fields
+bool write_wan(const WanConfig& cfg, std::string& err);         // validates all fields; dns may be comma- or space-separated
 
 // --- cron (rnsd auto-restart), preserving the update_check key ---
 int  read_rnsd_restart_days();                 // 0..7 (0 = off)
@@ -77,11 +82,14 @@ struct SlipConfig {
     std::string peer_ip = "192.168.7.2";
 };
 SlipConfig read_slip();
-bool write_slip(const SlipConfig& c, std::string& err);
+bool write_slip(const SlipConfig& c, std::string& err);   // baud 1..SLIP_MAX_BAUD
+// SG2002 UART: 25 MHz base clock / 16 = 1 562 500 baud is the ceiling.
+constexpr int SLIP_MAX_BAUD = 1562500;
 
 // Append a TCPClientInterface for the HaLow modem to the reticulum config.
 // Returns true + sets msg to the interface name; false + msg="already" if the
-// target is already present, else msg=error.
+// target is already present, else msg=error (incl. a name with control chars —
+// it is written into a [[section]] header line).
 bool add_halow_interface(const std::string& name, const std::string& host, int port, std::string& msg);
 
 }  // namespace store

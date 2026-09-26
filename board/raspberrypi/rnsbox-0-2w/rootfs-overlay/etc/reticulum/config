@@ -5,10 +5,11 @@
 #   - enables transport (we're a fixed-location router; routing for
 #     other nodes is the whole point of running this as a service)
 #   - listens on TCP 0.0.0.0:4242 so external Reticulum peers can
-#     connect inbound (user must also add tcp/4242 to
-#     /etc/rnsbox/openports.conf via the portal UI for WAN reach)
-#   - runs an AutoInterface on usb0 so devices on the USB-tethered
-#     LAN auto-discover this node without manual config
+#     connect inbound (WAN reach: `tcp 4242` in
+#     /etc/rnsbox/openports.conf, shipped open; the portal UI edits it)
+#   - runs an AutoInterface on the LAN (br-lan: the USB-C link and the
+#     WiFi hotspot) so devices on it auto-discover this node without
+#     manual config
 #
 # Edit live via the portal (Reticulum tab) or directly with SSH +
 # `/etc/init.d/S82rnsd restart` to apply.
@@ -27,18 +28,42 @@
 
 [interfaces]
 
-  # LAN-side auto-discovery on the USB-C gadget network. Reticulum
-  # multicasts node announcements over usb0 so any client device
-  # tethered via USB-C finds this node with no config.
-  [[USB LAN AutoInterface]]
+  # LAN-side auto-discovery. Reticulum multicasts node announcements
+  # over the LAN, so any client tethered via USB-C or joined to the
+  # hotspot (both ports of the bridge br-lan, one segment) finds this
+  # node with no config.
+  # Runs purely over IPv6 link-local: the LAN iface's fe80:: address, the
+  # ff12:: link-scope group, UDP 29716/29717 (discovery) + 42671 (data).
+  # The LAN iface is br-lan, or usb0 alone if the bridge couldn't be made
+  # (/run/lan-iface). It is the only iface with IPv6 on this box (S09ipv6
+  # / S30gadget_nic; usb0 has none while it is a bridge port), and its
+  # link-local appears only once the link has carrier: a USB host has
+  # brought usb0 up, or the hotspot is running.
+  # `devices` lists both names: AutoInterface (RNS/Interfaces/
+  # AutoInterface.py, __init__) walks the system ifaces once at startup,
+  # skips any not in `devices`, and adopts one only if it has an fe80::
+  # address, so whichever of the two is the LAN iface is used and the
+  # other is skipped. The pin also keeps it off any iface that might gain
+  # IPv6 later (with no `devices` it would try them all).
+  # rnsd adopts the LAN iface only if it already has its link-local when
+  # rnsd starts; if the link comes up later, S46wanwatch restarts rnsd
+  # once when the address appears (or restart rnsd yourself from the
+  # portal Reticulum tab).
+  [[LAN AutoInterface]]
     type = AutoInterface
     enabled = True
-    devices = usb0
+    devices = br-lan, usb0
+    # Explicit 10 Mbit/s: RNS sizes announce caps and link timeouts from this.
+    # It equals AutoInterface's own BITRATE_GUESS today; pinned here so a
+    # future RNS default can't change it. Conservative next to the real LAN
+    # (USB-C NCM / 2.4 GHz hotspot) - the C906 running Python is the limit.
+    bitrate = 10000000
 
   # Inbound TCP listener for external Reticulum peers. Bound on all
   # interfaces; nftables limits which interfaces actually reach it.
-  # Add `tcp 4242` to /etc/rnsbox/openports.conf via the portal to
-  # make this reachable from the WAN side.
+  # Reachable from the WAN side through the `tcp 4242` entry that
+  # /etc/rnsbox/openports.conf ships with; remove it via the portal
+  # (Network -> Open ports) to close it there.
   [[TCP Server]]
     type = TCPServerInterface
     enabled = True

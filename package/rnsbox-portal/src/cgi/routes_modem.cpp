@@ -9,6 +9,8 @@
 // decode is needed — a tiny HTTP/1.0 client (connect, send, read-to-close) does
 // the whole job with no libcurl/zlib. The modem page's own fetch('/api/..')
 // calls are rewritten to '<base>/modem/api/..' so they stay under the portal.
+// Both routes are served only on the separate modem port (main.cpp MODEM_PORT,
+// :8081), so the modem's scripts run in their own origin, not the portal's.
 #include "routes.h"
 #include "web.h"
 #include "store.h"
@@ -75,6 +77,59 @@ void maybe_gunzip(std::string& body) {
     if (gunzip(body, dec)) body.swap(dec);
 }
 
+// ---- request validation: nothing from the client reaches the upstream request
+// line or headers unless it passed these. uhttpd URL-decodes PATH_INFO, so a
+// %0d%0a in the URL arrives here as a real CR/LF (seen live: it injected an
+// extra header into the modem request). ----
+
+// /modem/api/<endpoint>: the modem's API names are plain words (get_stat,
+// get_all, …). Allow [A-Za-z0-9_./-] only, no leading '/', no "..", bounded.
+bool endpoint_ok(const std::string& e) {
+    if (e.empty() || e.size() > 128 || e[0] == '/') return false;
+    if (e.find("..") != std::string::npos) return false;
+    for (unsigned char c : e)
+        if (!(isalnum(c) || c == '_' || c == '.' || c == '/' || c == '-')) return false;
+    return true;
+}
+
+// QUERY_STRING is passed through still percent-encoded (uhttpd doesn't decode
+// it), so only URL-safe printable bytes are legal: no space, CR/LF, control
+// chars, quotes or '#'. Bounded.
+bool query_ok(const std::string& q) {
+    if (q.size() > 2048) return false;
+    for (unsigned char c : q) {
+        if (isalnum(c)) continue;
+        if (!strchr("-._~%&=+,;:@/!$'()*?", c) || c == '\0') return false;
+    }
+    return true;
+}
+
+// A header value we forward (Content-Type) or echo back from the modem
+// (status reason, Content-Type): printable ASCII only, else "".
+std::string header_safe(const std::string& v, size_t max_len = 128) {
+    if (v.size() > max_len) return "";
+    for (unsigned char c : v) if (c < 0x20 || c > 0x7e) return "";
+    return v;
+}
+
+// The modem's read endpoints: get_* and the *_cfg config reads (a plain word).
+// Everything else (reboot, default_rst, reset_stat, telemetry_send, ota_*) is an
+// action, and the modem UI only ever POSTs those (and the *_cfg saves). Only
+// non-GET requests are same-origin checked (main.cpp), and SameSite=Lax still
+// sends the session cookie on a cross-site top-level GET. So a GET for an action
+// would let a plain link fire it with the admin session (finding #1).
+bool modem_read_ep(const std::string& e) {
+    for (unsigned char c : e) if (!(isalnum(c) || c == '_')) return false;
+    if (e.compare(0, 4, "get_") == 0) return true;
+    return e.size() > 4 && e.compare(e.size() - 4, 4, "_cfg") == 0;
+}
+
+void json_fail(Response& res, const char* status, const char* msg) {
+    res.status = status;
+    res.content_type = "application/json";
+    res.body = std::string("{\"error\":\"") + msg + "\"}";
+}
+
 // Minimal HTTP/1.0 client to <peer>:80. Returns false on any connect/IO failure.
 // On success: `status`/`reason` from the response line, `resp_ctype` = the
 // Content-Type header, `out` = the response body.
@@ -83,6 +138,14 @@ bool modem_fetch(const std::string& peer, const std::string& method,
                  const std::string& req_ctype,
                  int& status, std::string& reason, std::string& resp_ctype, std::string& out) {
     status = 0; reason.clear(); resp_ctype.clear(); out.clear();
+
+    // Last line of defence (callers validate first): the request line and
+    // headers below are built by concatenation, so refuse anything that could
+    // split them — a non-GET/POST method, or a space/CR/LF/control byte in the
+    // target. The forwarded Content-Type is dropped unless printable.
+    if (method != "GET" && method != "POST") return false;
+    for (unsigned char c : path_and_query) if (c <= 0x20 || c >= 0x7f) return false;
+    const std::string ctype = header_safe(req_ctype, 256);   // room for a multipart boundary
 
     struct in_addr addr;
     if (inet_pton(AF_INET, peer.c_str(), &addr) != 1) return false;   // peer is an IPv4 literal
@@ -121,7 +184,7 @@ bool modem_fetch(const std::string& peer, const std::string& method,
     req += "Accept-Encoding: identity\r\n";
     req += "Connection: close\r\n";
     if (method == "POST") {
-        if (!req_ctype.empty()) req += "Content-Type: " + req_ctype + "\r\n";
+        if (!ctype.empty()) req += "Content-Type: " + ctype + "\r\n";
         req += "Content-Length: " + std::to_string(body.size()) + "\r\n";
     }
     req += "\r\n";
@@ -161,7 +224,10 @@ bool modem_fetch(const std::string& peer, const std::string& method,
         if (sp2 != std::string::npos && eol != std::string::npos && sp2 < eol)
             reason = head.substr(sp2 + 1, eol - sp2 - 1);
     }
-    if (status == 0) status = 200;
+    if (status < 100 || status > 599) status = 200;
+    // The reason phrase + Content-Type are echoed into OUR response headers:
+    // never let a (buggy or hostile) modem smuggle control bytes through.
+    reason = header_safe(reason);
     if (reason.empty()) reason = "OK";
 
     // Content-Type header (case-insensitive scan).
@@ -173,7 +239,7 @@ bool modem_fetch(const std::string& peer, const std::string& method,
         std::string low = line;
         for (char& c : low) c = (char)tolower((unsigned char)c);
         if (low.rfind("content-type:", 0) == 0) {
-            resp_ctype = util::trim(line.substr(13));
+            resp_ctype = header_safe(util::trim(line.substr(13)));
             break;
         }
     }
@@ -210,7 +276,9 @@ void modem_ui(const Request& req, Response& res) {
         body = web::replace_all(std::move(body), "/api/", web::base() + "/modem/api/");
         res.content_type = "text/html; charset=utf-8";
     } else {
-        res.content_type = ct.empty() ? "application/octet-stream" : ct;
+        // Never echo the modem's type: e.g. image/svg+xml is script-capable.
+        // The UI is one HTML page; anything else is just offered as data.
+        res.content_type = "application/octet-stream";
     }
     res.status = std::to_string(status) + " " + reason;
     res.body = body;
@@ -218,7 +286,29 @@ void modem_ui(const Request& req, Response& res) {
 
 // GET/POST /modem/api/<endpoint> — proxy the modem's JSON API.
 void modem_api(const Request& req, Response& res) {
-    if (!web::require_auth(req, res, false)) return;
+    // JSON-mode auth: the modem page's XHRs get a 401 JSON they can handle,
+    // not a 302 to the HTML login page (which they'd fail to parse).
+    if (!web::require_auth(req, res, true)) return;
+    // Only the two methods the modem UI uses (GET for reads only, see below);
+    // the method string goes verbatim into the upstream request line.
+    if (req.method != "GET" && req.method != "POST") {
+        json_fail(res, "405 Method Not Allowed", "method not allowed");
+        res.headers.push_back("Allow: GET, POST");
+        return;
+    }
+    const char* pfx = "/modem/api/";
+    std::string endpoint = (req.path.size() > strlen(pfx)) ? req.path.substr(strlen(pfx)) : std::string();
+    if (!endpoint_ok(endpoint) || !query_ok(req.query)) {
+        json_fail(res, "400 Bad Request", "invalid modem API path");
+        return;
+    }
+    // GET only for the read endpoints, and without a query (the modem UI never
+    // sends one), so no firmware can be made to act on a cross-site link.
+    if (req.method == "GET" && (!modem_read_ep(endpoint) || !req.query.empty())) {
+        json_fail(res, "405 Method Not Allowed", "method not allowed");
+        res.headers.push_back("Allow: POST");
+        return;
+    }
     std::string peer = modem_peer();
     if (!sysinfo::slip_status().up) {
         res.status = "502 Bad Gateway";
@@ -226,8 +316,6 @@ void modem_api(const Request& req, Response& res) {
         res.body = "{\"error\":\"SLIP link (sl0) is not up\",\"rc\":-502}";
         return;
     }
-    const char* pfx = "/modem/api/";
-    std::string endpoint = (req.path.size() > strlen(pfx)) ? req.path.substr(strlen(pfx)) : std::string();
     std::string pq = "/api/" + endpoint;
     if (!req.query.empty()) pq += "?" + req.query;
     std::string body = (req.method == "POST") ? req.body : std::string();
@@ -242,6 +330,12 @@ void modem_api(const Request& req, Response& res) {
     }
     maybe_gunzip(out);   // decode any gzip'd API response too
     res.status = std::to_string(status) + " " + reason;
+    // API answers are data, never a page: an HTML-typed reply would render in
+    // the portal's origin, so downgrade it to text/plain (fetch().json() in
+    // the modem UI doesn't care about the type).
+    std::string low = ct; for (char& c : low) c = (char)tolower((unsigned char)c);
+    if (low.find("html") != std::string::npos || low.find("xml") != std::string::npos)
+        ct = "text/plain; charset=utf-8";
     res.content_type = ct.empty() ? "application/json" : ct;
     res.body = out;
 }

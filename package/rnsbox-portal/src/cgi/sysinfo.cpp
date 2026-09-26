@@ -2,12 +2,18 @@
 #include "sysinfo.h"
 #include "util.h"
 #include <algorithm>
+#include <map>
 #include <cctype>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
+#include <arpa/inet.h>
 #include <dirent.h>
+#include <fcntl.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 namespace {
 
@@ -82,9 +88,55 @@ long meminfo_kb(const std::string& mi, const char* key) {
     return strtol(mi.c_str() + p + strlen(key), nullptr, 10);
 }
 
+// A strictly numeric sysfs value (optional leading '-'); false for anything
+// else, including an empty read (sysfs show() returned an error).
+bool parse_ll(const std::string& s, long long& out) {
+    if (s.empty() || s.size() > 19) return false;
+    size_t i = (s[0] == '-') ? 1 : 0;
+    if (i == s.size()) return false;
+    for (size_t k = i; k < s.size(); ++k) if (!isdigit((unsigned char)s[k])) return false;
+    out = strtoll(s.c_str(), nullptr, 10);
+    return true;
+}
+
+// One read of a small sysfs attribute, trimmed; err = the errno of a failed
+// open/read, 0 on success. (read_file() can't tell an error from an empty
+// value, and the RTC attributes report the driver's verdict as the errno.)
+std::string sysfs_read(const std::string& p, int& err) {
+    err = 0;
+    int fd = ::open(p.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) { err = errno; return std::string(); }
+    char buf[128];
+    ssize_t n = ::read(fd, buf, sizeof(buf));
+    if (n < 0) err = errno;
+    ::close(fd);
+    return n > 0 ? util::trim(std::string(buf, (size_t)n)) : std::string();
+}
+
+// Canonical path (symlinks resolved); empty if it doesn't resolve.
+std::string real_path(const std::string& p) {
+    char* r = ::realpath(p.c_str(), nullptr);
+    if (!r) return std::string();
+    std::string s(r);
+    free(r);
+    return s;
+}
+
 }  // namespace
 
 namespace sysinfo {
+
+bool ifname_ok(const std::string& n) {
+    if (n.empty() || n.size() > 15 || n == "." || n == "..") return false;
+    for (char c : n) if (!(isalnum((unsigned char)c) || c == '-' || c == '_' || c == '.')) return false;
+    return true;
+}
+
+std::string bridge_of(const std::string& iface) {
+    if (!ifname_ok(iface)) return "";
+    std::string m = real_path("/sys/class/net/" + iface + "/brport/bridge");
+    return m.empty() ? std::string() : m.substr(m.rfind('/') + 1);
+}
 
 std::string hostname() {
     std::string h = slurp_trim("/proc/sys/kernel/hostname");
@@ -171,12 +223,47 @@ Network network_summary() {
         i.rx = human_bytes(slurp_trim(base + "/statistics/rx_bytes"));
         i.tx = human_bytes(slurp_trim(base + "/statistics/tx_bytes"));
         if (auto* v = find_addrs(dev)) i.addrs = *v;
+        i.bridge = is_dir(base + "/bridge");      // br-lan
+        i.master = bridge_of(dev);                // usb0 / wlan1 -> br-lan
         net.ifaces.push_back(std::move(i));
     }
-    // default gateway
-    for (const auto& ln : split_lines(run_ip({"-4", "route", "show", "default"}))) {
-        auto p = split_ws(ln);
-        if (p.size() >= 5 && p[0] == "default") { net.default_gateway = p[2]; break; }
+    // The default route in use: the lowest-metric IPv4 default route of the
+    // main table whose iface has carrier. An unplugged eth0 keeps its lease's
+    // route, which the kernel skips (S30eth: ignore_routes_with_linkdown), so
+    // with WAN=auto the WiFi client's route is the live one. /proc/net/route
+    // prints each __be32 as a host-order integer: read back into s_addr it is
+    // the address again, on any endianness.
+    // gateway_of keeps each iface's own (lowest-metric) default gateway, so a
+    // pinned WAN card shows its iface's gateway even while another is in use.
+    {
+        long best = -1;
+        std::map<std::string, long> dev_best;
+        bool first = true;
+        for (const auto& ln : split_lines(slurp("/proc/net/route"))) {
+            auto p = split_ws(ln);
+            if (first) { first = false; continue; }   // header
+            if (p.size() < 8 || p[1] != "00000000" || p[7] != "00000000") continue;
+            unsigned long flags = strtoul(p[3].c_str(), nullptr, 16);
+            if (!(flags & 0x1) || !ifname_ok(p[0])) continue;   // RTF_UP
+            long metric = strtol(p[6].c_str(), nullptr, 10);
+            std::string gw;
+            if (flags & 0x2) {                                  // RTF_GATEWAY
+                struct in_addr a;
+                a.s_addr = (in_addr_t)strtoul(p[2].c_str(), nullptr, 16);
+                char buf[INET_ADDRSTRLEN];
+                if (inet_ntop(AF_INET, &a, buf, sizeof buf)) gw = buf;
+            }
+            auto it = dev_best.find(p[0]);
+            if (it == dev_best.end() || metric < it->second) {
+                dev_best[p[0]] = metric;
+                net.gateway_of[p[0]] = gw;
+            }
+            if (slurp_trim("/sys/class/net/" + p[0] + "/carrier") != "1") continue;
+            if (best >= 0 && metric >= best) continue;
+            best = metric;
+            net.default_dev = p[0];
+            net.default_gateway = gw;
+        }
     }
     // dns
     for (const auto& ln : split_lines(slurp("/etc/resolv.conf"))) {
@@ -189,11 +276,36 @@ Network network_summary() {
     return net;
 }
 
+std::string wan_display_iface(const std::string& wan_setting, const Network& net) {
+    if (wan_setting != "auto") return wan_setting;
+    if (net.default_dev == "eth0" || net.default_dev == "wlan0") return net.default_dev;
+    return "eth0";
+}
+
+std::string wan_gateway(const std::string& wan_setting, const Network& net) {
+    if (wan_setting == "auto") return net.default_gateway;
+    auto it = net.gateway_of.find(wan_setting);
+    return it == net.gateway_of.end() ? std::string() : it->second;
+}
+
+std::string wan_label(const std::string& wan_setting, const Network& net) {
+    if (wan_setting != "auto") return wan_setting;
+    if (net.default_dev == "eth0" || net.default_dev == "wlan0") return "auto → " + net.default_dev;
+    return "auto (no uplink)";
+}
+
 static std::string find_rnsd_pid() {
-    // 1. pidfile (authoritative — S82rnsd writes /var/run/rnsd.pid).
+    // 1. pidfile (authoritative — S82rnsd writes /var/run/rnsd.pid). Digits
+    // only: the pid is emitted raw into JSON ("pid":N) and a /proc path, so a
+    // junk pidfile ("self", "../x") must not pass the exists() test.
     std::string pid = slurp_trim("/var/run/rnsd.pid");
-    if (!pid.empty() && exists("/proc/" + pid)) return pid;
-    // 2. /proc cmdline scan (rnsd's comm is "python3", so `pidof rnsd` fails).
+    bool pid_num = !pid.empty() && pid.size() <= 10;
+    for (char c : pid) if (!isdigit((unsigned char)c)) pid_num = false;
+    if (pid_num && exists("/proc/" + pid)) return pid;
+    // 2. /proc cmdline scan (pidfile lost/stale). rnsd's argv is
+    // "/usr/bin/python /usr/bin/rnsd --config /etc/reticulum". Its syslog
+    // companion, `logger -t rnsd[<pid>] ...` (S82rnsd), must never match
+    // here: keep these patterns clear of a bare "rnsd[" tag.
     if (DIR* d = opendir("/proc")) {
         std::string found;
         while (struct dirent* e = readdir(d)) {
@@ -233,6 +345,35 @@ Rnsd rnsd_status(bool with_raw) {
     return r;
 }
 
+std::string lan_iface() {
+    // Same rule as S60routing read_lan() (and S82rnsd / S46wanwatch): only
+    // the two names S30gadget_nic ever records are taken from the file; with
+    // no valid record, br-lan if that bridge exists, else the gadget NIC.
+    std::string l = util::trim(util::read_file("/run/lan-iface", 64));
+    if (l == "br-lan" || l == "usb0") return l;
+    return is_dir("/sys/class/net/br-lan/bridge") ? std::string("br-lan") : std::string("usb0");
+}
+
+std::vector<std::string> bridge_ports(const std::string& br) {
+    std::vector<std::string> out;
+    if (!ifname_ok(br)) return out;
+    if (DIR* d = opendir(("/sys/class/net/" + br + "/brif").c_str())) {
+        while (struct dirent* e = readdir(d)) {
+            std::string n = e->d_name;
+            if (n != "." && n != ".." && ifname_ok(n)) out.push_back(n);
+        }
+        closedir(d);
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+std::string lan_port_role(const std::string& port) {
+    if (port == "usb0") return "USB-C";
+    if (port.compare(0, 4, "wlan") == 0) return "WiFi hotspot";
+    return "";
+}
+
 std::vector<Lease> dnsmasq_leases() {
     std::vector<Lease> out;
     for (const char* path : {"/var/lib/misc/dnsmasq.leases", "/tmp/dnsmasq.leases"}) {
@@ -242,7 +383,7 @@ std::vector<Lease> dnsmasq_leases() {
             auto p = split_ws(ln);
             if (p.size() >= 5) {
                 Lease l;
-                l.expires = p[0]; l.mac = p[1]; l.ip = p[2];
+                l.length = p[0]; l.mac = p[1]; l.ip = p[2];
                 l.name = (p[3] == "*") ? "(no name)" : p[3];
                 l.client_id = p[4];
                 out.push_back(std::move(l));
@@ -260,6 +401,62 @@ Slip slip_status() {
     std::string st = slurp_trim("/sys/class/net/sl0/operstate");
     s.up = !(st == "down" || st.empty());
     return s;
+}
+
+std::string clock_source() {
+    std::string s = util::trim(util::read_file("/run/clock-source", 64));
+    return (s == "rtc" || s == "ntp" || s == "browser") ? s : std::string();
+}
+
+Rtc rtc_status() {
+    Rtc r;
+    const std::string rtc = "/sys/class/rtc/rtc0";
+    if (!is_dir(rtc)) return r;   // no RTC fitted: the DS3231 probe failed quietly
+    r.present = true;
+    r.name = slurp_trim(rtc + "/name");
+    // since_epoch's read fails with the driver's error: EINVAL while RNSBox's
+    // rtc-ds1307 holds a DS3231's oscillator-stop flag (its time was lost; the
+    // flag stays until the RTC is written), EIO & co. on a bus fault. A time it
+    // does return must still lie in the 2020..2100 window S45ntpsync's boot
+    // check and the browser sync apply.
+    int err = 0;
+    std::string se = sysfs_read(rtc + "/since_epoch", err);
+    long long e = 0;
+    if (err) {
+        r.read_errno = err;
+        r.osf = (err == EINVAL);
+    } else if (parse_ll(se, e) && e >= 0) {
+        time_t t = (time_t)e;
+        struct tm tmv;
+        char buf[40];
+        if (gmtime_r(&t, &tmv) && strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tmv)) {
+            r.epoch = e;
+            r.time = buf;
+            r.valid = (e >= CLOCK_FLOOR && e < 4102444800LL);
+        }
+    }
+    // DS3231 die temperature: its hwmon device is a child of the same I2C client
+    // as rtc0, so match on the resolved `device` link; fall back to the hwmon
+    // name (the client name, "ds3231" from the DT compatible).
+    std::string client = real_path(rtc + "/device");
+    std::string hw, by_name;
+    if (DIR* d = opendir("/sys/class/hwmon")) {
+        while (struct dirent* ent = readdir(d)) {
+            std::string n = ent->d_name;
+            if (n.compare(0, 5, "hwmon") != 0) continue;
+            std::string p = "/sys/class/hwmon/" + n;
+            if (!client.empty() && real_path(p + "/device") == client) { hw = p; break; }
+            if (by_name.empty() && slurp_trim(p + "/name") == "ds3231") by_name = p;
+        }
+        closedir(d);
+    }
+    if (hw.empty()) hw = by_name;
+    long long mc = 0;
+    if (!hw.empty() && parse_ll(slurp_trim(hw + "/temp1_input"), mc) && mc > -100000 && mc < 200000) {
+        r.has_temp = true;
+        r.temp_mc = (long)mc;
+    }
+    return r;
 }
 
 }  // namespace sysinfo

@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <dirent.h>
+#include <strings.h>
 #include <vector>
 
 namespace {
@@ -28,7 +29,28 @@ bool newer(const std::string& latest, const std::string& installed) {
     return vtuple(latest) > vtuple(installed);
 }
 
-// Installed rns version from the dist-info dir name (rns-X.Y.Z.dist-info).
+// `__version__ = "1.5.2"` out of a _version.py (either quote style); "" if absent.
+std::string version_py(const std::string& text) {
+    size_t p = text.find("__version__");
+    if (p == std::string::npos) return "";
+    p = text.find('=', p);
+    if (p == std::string::npos) return "";
+    ++p;
+    while (p < text.size() && (text[p] == ' ' || text[p] == '\t')) ++p;
+    if (p >= text.size() || (text[p] != '"' && text[p] != '\'')) return "";
+    char q = text[p++];
+    size_t e = text.find(q, p);
+    if (e == std::string::npos || e - p > 32) return "";
+    std::string v = text.substr(p, e - p);
+    for (char c : v) if (!(isalnum((unsigned char)c) || c == '.' || c == '+' || c == '-')) return "";
+    return v;
+}
+
+// Installed rns version. The package's own RNS/_version.py is authoritative;
+// only if it's unreadable do we fall back to the metadata dir names — and then
+// take the HIGHEST version among ALL of them, because an incremental buildroot
+// build leaves stale records behind (seen on a shipped image: rns-1.2.6
+// egg-info next to rns-1.5.2.dist-info; readdir order made either one "win").
 std::string installed_version() {
     DIR* d = opendir("/usr/lib");
     if (!d) return "";
@@ -39,17 +61,24 @@ std::string installed_version() {
     closedir(d);
     if (pydir.empty()) return "";
     std::string sp = "/usr/lib/" + pydir + "/site-packages";
+    std::string ver = version_py(util::read_file(sp + "/RNS/_version.py", 4096));
+    if (!ver.empty()) return ver;
     DIR* s = opendir(sp.c_str());
     if (!s) return "";
-    std::string ver;
     while (dirent* e = readdir(s)) {
         std::string n = e->d_name;
-        // "rns-1.5.2.dist-info"
-        if (n.rfind("rns-", 0) == 0 && n.size() > 14 &&
-            n.compare(n.size() - 10, 10, ".dist-info") == 0) {
-            ver = n.substr(4, n.size() - 4 - 10);
-            break;
-        }
+        // "rns-1.5.2.dist-info" | "rns-1.2.6-py3.11.egg-info"
+        if (n.size() < 5 || strncasecmp(n.c_str(), "rns-", 4) != 0) continue;
+        std::string rest;
+        if (n.size() > 14 && n.compare(n.size() - 10, 10, ".dist-info") == 0)
+            rest = n.substr(4, n.size() - 4 - 10);
+        else if (n.size() > 13 && n.compare(n.size() - 9, 9, ".egg-info") == 0)
+            rest = n.substr(4, n.size() - 4 - 9);
+        else
+            continue;
+        std::string v = rest.substr(0, rest.find('-'));   // drop "-py3.11"
+        if (!v.empty() && isdigit((unsigned char)v[0]) && (ver.empty() || vtuple(v) > vtuple(ver)))
+            ver = v;
     }
     closedir(s);
     return ver;

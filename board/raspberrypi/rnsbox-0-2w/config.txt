@@ -25,3 +25,8 @@ dtoverlay=disable-bt
 # USB OTG (micro-USB, power + data) as a peripheral from power-on so the
 # NCM gadget enumerates as soon as the host/port is up.
 dtoverlay=dwc2,dr_mode=peripheral
+
+# Optional DS3231 RTC on i2c1: SDA=GPIO2 (pin 3), SCL=GPIO3 (pin 5), 3.3 V.
+# Harmless when no RTC is wired — the driver simply finds nothing at 0x68
+# and S45ntpsync keeps using NTP/browser time.
+dtoverlay=i2c-rtc,ds3231
