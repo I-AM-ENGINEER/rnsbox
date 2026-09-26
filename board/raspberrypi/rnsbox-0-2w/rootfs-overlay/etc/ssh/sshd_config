@@ -1,0 +1,9 @@
+# RNSBox sshd — explicit config (the rootfs overlay beats the upstream sample
+# installed by the openssh package). Root/admin password login over the USB
+# LAN (10.42.0.1). WAN :22 stays firewalled behind /etc/rnsbox/openports.conf
+# until the user opens it in the portal.
+PermitRootLogin yes
+PasswordAuthentication yes
+PermitEmptyPasswords no
+PrintMotd no
+Subsystem sftp /usr/libexec/sftp-server

@@ -1,0 +1,8 @@
+#!/bin/sh
+# rnsbox-update-check — thin launcher for the standalone update-check helper.
+# Called by S84cron (daily + a best-effort check ~30 s after boot). The helper
+# is stdlib-only Python (no Flask, no rnsbox_portal package); the C++ portal
+# invokes the same script for the on-demand "Check for updates" / "Apply update"
+# buttons on the Reticulum tab. Arg defaults to "cron" (query PyPI + persist +
+# print a human summary); the portal passes "check" / "apply" (JSON output).
+exec python3 /usr/lib/rnsbox/updatecheck.py "${1:-cron}"

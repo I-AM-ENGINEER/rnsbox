@@ -6,7 +6,9 @@ and smoke-tested via `qemu-aarch64-static` chroot.
 
 ## Result
 
-- **17-patch series** in `patches/rpi0-2w/` on top of official Buildroot
+- **BR2_EXTERNAL board** (no patch series): this repository *is* the external
+  tree (`external.desc` at the root); `configs/rnsbox_rpi0_2w_64_defconfig` +
+  `board/raspberrypi/rnsbox-0-2w/` build on top of official Buildroot
   **2026.02.3** (`679b9ead7620bbf193620d1ebf56f53c1764d37a`) + the Raspberry
   Pi Foundation kernel (pinned tarball, 6.12.61 class). `./build.sh rpi0-2w
   lite` builds end-to-end; the f_ncm TX-timer fix the Lichee series carried
@@ -62,3 +64,33 @@ SLIP at 2 Mbaud on real GPIO, SD/power behaviour of the micro-USB OTG port.
 | CI | build-lite-rpi.yml (GH Actions) |
 | Acceptance | build green in WSL + QEMU boot + chroot smokes (met) |
 | Layout | multi-board (patches/<board>/ + boards/), mergeable back to main |
+
+## Migration to BR2_EXTERNAL (2026-09-26)
+
+The 17-patch series was dissolved into the repository itself: the repo root
+is now a Buildroot external tree, `./build.sh rpi0-2w lite` builds from a
+pristine shared Buildroot clone (`~/rnsbox-work/upstream/buildroot-679b9ead`)
+with `O=~/rnsbox-work/upstream/out/rpi0-2w` and `BR2_EXTERNAL=<repo>`. No
+`git am`, no series regeneration — see `BOARD-GUIDE.md`.
+
+Conversion notes (what tripped, for the record):
+
+- CRLF line endings written by Windows tooling break shebangs under WSL
+  (`cannot execute: required file not found`); `.gitattributes` now pins
+  `*.sh` to LF.
+- `${1:?usage: ... {lite|dvd} ...}` — a `}` inside the `:?` word terminates
+  the expansion mid-message; keep braces out of those messages.
+- Buildroot 2026.02 ships `libubox`/`uhttpd` in-tree: an external tree must
+  NOT redefine them (duplicate-package error). The external board uses the
+  upstream recipes; our pinned-commit packages were dropped.
+- Defconfig paths into the board dir use the `$(BR2_EXTERNAL_RNSBOX_PATH)`
+  prefix; expansion happens at make level (verified empirically).
+
+Hardware follow-ups fixed during the migration:
+
+- `/dev/serial0` did not exist on the image (devtmpfs-only rootfs; the alias
+  is a Raspberry Pi OS udev artifact). `S31slip` now creates it at boot
+  (ttyAMA1 first, ttyAMA0 fallback) — this was the root cause of SLIP
+  silently skipping on hardware.
+- OpenSSH restored (parity with the Lichee defconfig): portal's default
+  open-ports entry `tcp 22` was advertising a service that did not exist.

@@ -1,0 +1,14 @@
+config BR2_PACKAGE_PYTHON_RNS
+	bool "python-rns"
+	select BR2_PACKAGE_PYTHON3_SSL
+	select BR2_PACKAGE_PYTHON3_ZLIB
+	select BR2_PACKAGE_PYTHON_CRYPTOGRAPHY  # runtime
+	select BR2_PACKAGE_PYTHON_SERIAL        # runtime
+	help
+	  Reticulum Network Stack (RNS) — a self-configuring,
+	  encrypted, resilient mesh networking stack designed to
+	  run over LoRa, packet radio, WiFi, TCP/IP, serial links
+	  and other carriers. Installs the rnsd daemon and the
+	  rnstatus / rnpath / rnid / rnodeconf CLI tools.
+
+	  https://reticulum.network/

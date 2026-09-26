@@ -1,0 +1,66 @@
+# Reticulum config — opinionated default for the RNSBox router.
+#
+# rnsd creates this file with stock defaults if it's missing. We ship
+# an opinionated version that:
+#   - enables transport (we're a fixed-location router; routing for
+#     other nodes is the whole point of running this as a service)
+#   - listens on TCP 0.0.0.0:4242 so external Reticulum peers can
+#     connect inbound (user must also add tcp/4242 to
+#     /etc/rnsbox/openports.conf via the portal UI for WAN reach)
+#   - runs an AutoInterface on usb0 so devices on the USB-tethered
+#     LAN auto-discover this node without manual config
+#
+# Edit live via the portal (Reticulum tab) or directly with SSH +
+# `/etc/init.d/S82rnsd restart` to apply.
+#
+# Full reference: https://markqvist.github.io/Reticulum/manual/
+
+[reticulum]
+  enable_transport = Yes
+  share_instance = Yes
+  shared_instance_port = 37428
+  instance_control_port = 37429
+  panic_on_interface_error = No
+
+[logging]
+  loglevel = 4
+
+[interfaces]
+
+  # LAN-side auto-discovery on the USB-C gadget network. Reticulum
+  # multicasts node announcements over usb0 so any client device
+  # tethered via USB-C finds this node with no config.
+  [[USB LAN AutoInterface]]
+    type = AutoInterface
+    enabled = True
+    devices = usb0
+
+  # Inbound TCP listener for external Reticulum peers. Bound on all
+  # interfaces; nftables limits which interfaces actually reach it.
+  # Add `tcp 4242` to /etc/rnsbox/openports.conf via the portal to
+  # make this reachable from the WAN side.
+  [[TCP Server]]
+    type = TCPServerInterface
+    enabled = True
+    listen_ip = 0.0.0.0
+    listen_port = 4242
+
+  # RNS Testnet TCP entrypoints — connect on boot to known public
+  # transport nodes so the device joins the broader Reticulum testnet
+  # without any manual peer configuration. TCPClientInterface keeps
+  # retrying indefinitely; harmless if a remote is temporarily down.
+  # Both verified reachable + actively exchanging announcements as of
+  # 2026-05-16. Earlier attempts dropped: betweentheborders.com:4242
+  # (host off the air at flash time) and rns.beleth.net:4242 (worked
+  # at first but swapped out by operator request for the .146 node).
+  [[Catz Node (TCP)]]
+    type = TCPClientInterface
+    enabled = yes
+    target_host = 77.37.146.243
+    target_port = 4242
+
+  [[RNS Node 31.129.33.146]]
+    type = TCPClientInterface
+    enabled = yes
+    target_host = 31.129.33.146
+    target_port = 4242

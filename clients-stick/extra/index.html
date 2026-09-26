@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RNSBox — Quick Start</title>
+<style>
+  :root{--teal:#0d3e54;--accent:#10bbff;--bg:#f3f4f6;--card:#fff;--mut:#6b7280;--bd:#e5e7eb}
+  *{box-sizing:border-box}
+  body{margin:0;font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:#1f2937;background:var(--bg)}
+  header{background:var(--teal);color:#fff;padding:22px 28px}
+  header h1{margin:0;font-size:22px}header .s{color:#9fbed0;font-size:14px}
+  main{max-width:880px;margin:0 auto;padding:22px}
+  .card{background:var(--card);border:1px solid var(--bd);border-radius:7px;padding:18px 22px;margin:0 0 18px}
+  h2{font-size:17px;color:var(--teal);margin:0 0 12px}
+  a{color:#1577a8}code{background:#eef2f5;padding:1px 6px;border-radius:4px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
+  .app{border:1px solid var(--bd);border-radius:6px;padding:14px}
+  .app h3{margin:0 0 6px;font-size:15px}.app .p{color:var(--mut);font-size:13px;margin:0 0 8px}
+  .dl{display:inline-block;margin:6px 0 0;font-size:14px;font-weight:600}
+  .plat{color:var(--mut);font-size:12.5px;margin:6px 0 0}
+  .tag{display:inline-block;background:var(--accent);color:#04323f;font-size:11px;font-weight:600;padding:1px 7px;border-radius:10px;vertical-align:middle}
+  .nc{background:#fde68a;color:#7c5e00}
+  table{border-collapse:collapse;width:100%;font-size:13.5px}td,th{text-align:left;padding:5px 8px;border-bottom:1px solid var(--bd)}
+  .mut{color:var(--mut);font-size:13px}
+  ol{margin:6px 0 0;padding-left:20px}ol li{margin:4px 0}
+</style>
+</head>
+<body>
+<header>
+  <h1>&#9678; RNSBox &mdash; Quick Start</h1>
+  <div class="s">Reticulum Network Router &middot; messaging apps on this read-only drive</div>
+</header>
+<main>
+
+  <div class="card">
+    <h2>Your box on the network</h2>
+    <table>
+      <tr><th>Admin web UI</th><td><a href="http://10.42.0.1/">http://10.42.0.1/</a> &nbsp;<span class="mut">(login admin / admin)</span></td></tr>
+      <tr><th>Auto-discovery</th><td>AutoInterface on the USB link &mdash; most apps find the box with no setup</td></tr>
+      <tr><th>Manual TCP interface</th><td>Host <code>10.42.0.1</code> &nbsp; Port <code>4242</code></td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Pick an app <span class="mut" style="font-weight:400">&mdash; open a folder and choose the installer for your platform</span></h2>
+    <div class="grid">
+      <div class="app">
+        <h3>MeshChat <span class="tag">recommended</span></h3>
+        <p class="p">Easiest start. MIT.</p>
+        <a class="dl" href="MeshChat/">Open MeshChat/ &rarr;</a>
+        <p class="plat">Windows (installer / portable) &middot; macOS &middot; Linux AppImage</p>
+      </div>
+      <div class="app">
+        <h3>MeshChatX</h3>
+        <p class="p">Feature-rich MeshChat fork (RNS + LXMF + LXST). 0BSD + MIT.</p>
+        <a class="dl" href="MeshChatX/">Open MeshChatX/ &rarr;</a>
+        <p class="plat">Windows &middot; macOS &middot; Linux (AppImage/deb/rpm/flatpak) &middot; Android</p>
+      </div>
+      <div class="app">
+        <h3>Sideband <span class="tag nc">NonCommercial</span></h3>
+        <p class="p">Advanced: voice calls, telemetry. CC BY-NC-SA 4.0.</p>
+        <a class="dl" href="Sideband/">Open Sideband/ &rarr;</a>
+        <p class="plat">Windows (.zip) &middot; Linux AppImage &middot; Android</p>
+      </div>
+      <div class="app">
+        <h3>Ratspeak <span class="tag nc">alpha</span></h3>
+        <p class="p">Account-free LXMF messenger, voice + games. AGPL-3.0. macOS build is unsigned.</p>
+        <a class="dl" href="Ratspeak/">Open Ratspeak/ &rarr;</a>
+        <p class="plat">Windows (.exe/.msi) &middot; macOS &middot; Linux (AppImage/deb/rpm) &middot; Android</p>
+      </div>
+      <div class="app">
+        <h3>Columba</h3>
+        <p class="p">Native Android client, Material Design. MPL-2.0.</p>
+        <a class="dl" href="Columba/">Open Columba/ &rarr;</a>
+        <p class="plat">Android APK (arm64-v8a for most phones, or universal)</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Connect an app to this box</h2>
+    <ol>
+      <li>Plug RNSBox into your computer with USB-C &mdash; your OS gets a new network connection (the box is <code>10.42.0.1</code>).</li>
+      <li>Open MeshChat (or Sideband). It usually <b>auto-discovers</b> the box over the USB link &mdash; nothing to configure.</li>
+      <li>To add it by hand: add a <b>TCP Client</b> interface &rarr; Host <code>10.42.0.1</code>, Port <code>4242</code>.</li>
+      <li>You're on Reticulum. (NomadNet is also already on the box &mdash; SSH in as root/admin and run <code>nomadnet</code>.)</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-bottom:6px">On this drive</h2>
+    <p class="mut">Apps are the latest stable releases at build time. Exact versions and SHA-256 for every file are in <code>SHA256SUMS.txt</code>. Sources: MeshChat (github.com/liamcottle/reticulum-meshchat), MeshChatX (github.com/Quad4-Software/MeshChatX), Ratspeak (github.com/ratspeak/Ratspeak), Columba (github.com/torlando-tech/columba), Sideband (github.com/markqvist/Sideband).</p>
+  </div>
+
+</main>
+</body>
+</html>

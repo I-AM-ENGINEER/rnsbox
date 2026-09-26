@@ -1,0 +1,90 @@
+#!/bin/sh
+# S30eth — bring up a WIRED WAN interface (eth0, a USB-Ethernet adapter on
+# this board) with either a DHCP lease or a static address, per
+# /etc/rnsbox/wan.conf.
+#
+# wlan0 (the onboard WiFi, the default WAN here) is NOT handled here: it is
+# owned by S35wifi (wpa_supplicant association) + dhcpcd. When wan.conf
+# selects wlan0 this script is a clean no-op.
+#
+# DHCP path: busybox udhcpc (its default.script writes the lease addr/route +
+#   /etc/resolv.conf). Backgrounded; persists, retries on late carrier.
+# Static path: `ip` assigns addr/route directly and we write resolv.conf
+#   ourselves (dnsmasq + the box's own resolver follow it).
+. /etc/profile
+
+WAN_CONF=/etc/rnsbox/wan.conf
+RESOLV=/etc/resolv.conf
+
+cfg() {
+	# value for key $1 from wan.conf (strip comments/space); empty if absent
+	grep -E "^[[:space:]]*$1[[:space:]]*=" "$WAN_CONF" 2>/dev/null | tail -1 \
+	  | sed -E "s/^[^=]*=[[:space:]]*//" | sed -E 's/[[:space:]]*#.*$//' \
+	  | sed -E 's/[[:space:]]*$//'
+}
+
+WAN_IF=$(cfg interface); [ -z "$WAN_IF" ] && WAN_IF=wlan0
+
+start_dhcp() {
+	# -t tries, -T timeout, -A wait-before-retry, -b background after lease fail
+	(udhcpc -i eth0 -t 10 -T 1 -A 5 -b -p /run/udhcpc.eth0.pid) &
+	echo "dhcp"
+}
+
+start_static() {
+	addr=$(cfg address); prefix=$(cfg prefix); gw=$(cfg gateway); dns=$(cfg dns)
+	[ -z "$prefix" ] && prefix=24
+	if [ -z "$addr" ]; then
+		echo "static requested but address empty — falling back to dhcp"
+		start_dhcp
+		return
+	fi
+	ip addr flush dev eth0 2>/dev/null
+	ip addr add "$addr/$prefix" dev eth0 2>/dev/null
+	ip link set eth0 up 2>/dev/null
+	if [ -n "$gw" ]; then
+		ip route del default 2>/dev/null
+		ip route add default via "$gw" dev eth0 2>/dev/null
+	fi
+	# Write resolv.conf for the static DNS servers. /etc/resolv.conf is a
+	# symlink into /tmp; rewrite the target so dnsmasq (upstream) + the box's
+	# own resolver pick the static servers up. Tag the lines so a later DHCP
+	# run on another iface can distinguish them.
+	if [ -n "$dns" ]; then
+		: > "$RESOLV"
+		for s in $dns; do echo "nameserver $s  # eth0-static" >> "$RESOLV"; done
+	fi
+	echo "static $addr/$prefix gw=${gw:-none} dns=${dns:-none}"
+}
+
+start() {
+	printf "start WAN (%s): " "$WAN_IF"
+	if [ "$WAN_IF" != "eth0" ]; then
+		echo "skipped (wan interface is $WAN_IF — owned by S35wifi/dhcpcd)"
+		return 0
+	fi
+	if [ ! -e /sys/class/net/eth0 ]; then
+		echo "skipped (no eth0 — no USB-Ethernet adapter present)"
+		return 0
+	fi
+	mode=$(cfg mode); [ -z "$mode" ] && mode=dhcp
+	case "$mode" in
+		static) start_static ;;
+		*)      start_dhcp ;;
+	esac
+}
+
+stop() {
+	if [ -f /run/udhcpc.eth0.pid ]; then
+		kill "$(cat /run/udhcpc.eth0.pid)" 2>/dev/null
+		rm -f /run/udhcpc.eth0.pid
+	fi
+	ip addr flush dev eth0 2>/dev/null
+}
+
+case "${1:-start}" in
+	start)   start ;;
+	stop)    stop ;;
+	restart) stop; start ;;
+	*)       echo "Usage: $0 {start|stop|restart}" >&2; exit 1 ;;
+esac

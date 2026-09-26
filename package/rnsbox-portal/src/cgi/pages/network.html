@@ -1,0 +1,118 @@
+<h2>Network</h2>
+<p class="muted">WAN: <strong>__WAN__</strong> &middot; LAN: <strong>usb0</strong> &middot; default gateway: <strong>__GATEWAY__</strong></p>
+
+<section class="card">
+  <h3>WAN uplink</h3>
+  <p class="muted">Which interface reaches the internet, and how it gets its
+  address. NAT masquerade + the default route follow this choice.
+  <strong>wlan0</strong> requires the WiFi client to be connected (WiFi tab →
+  mode <em>sta</em> or <em>sta+ap</em>) and is always DHCP-addressed by the WiFi
+  stack — the static fields apply to a wired USB-Ethernet adapter (eth0); wlan0 addressing follows the WiFi tab.</p>
+  <form method="post" action="__BASE__/network/wan">
+    <label>Interface
+      <select name="wan">
+        <option value="eth0"  __SEL_ETH0__>eth0 — wired Ethernet</option>
+        <option value="wlan0" __SEL_WLAN0__>wlan0 — WiFi client</option>
+      </select>
+    </label>
+    <label>Addressing
+      <select name="wan_mode" id="wan_mode" onchange="wanModeToggle()">
+        <option value="dhcp"   __SEL_DHCP__>DHCP (automatic)</option>
+        <option value="static" __SEL_STATIC__>Static IP</option>
+      </select>
+    </label>
+    <div id="wan_static" style="__WAN_STATIC_DISPLAY__">
+      <label>IP address
+        <input type="text" name="wan_address" value="__WAN_ADDRESS__" placeholder="192.168.1.50">
+      </label>
+      <label>Netmask (CIDR prefix, 1–32)
+        <input type="number" name="wan_prefix" min="1" max="32" value="__WAN_PREFIX__" placeholder="24">
+      </label>
+      <label>Gateway
+        <input type="text" name="wan_gateway" value="__WAN_GATEWAY__" placeholder="192.168.1.1">
+      </label>
+      <label>DNS servers (space- or comma-separated)
+        <input type="text" name="wan_dns" value="__WAN_DNS__" placeholder="1.1.1.1 8.8.8.8">
+      </label>
+    </div>
+    <button type="submit" class="btn-primary">Set WAN</button>
+  </form>
+  <script>
+    function wanModeToggle(){
+      var m = document.getElementById('wan_mode').value;
+      document.getElementById('wan_static').style.display = (m === 'static') ? '' : 'none';
+    }
+  </script>
+</section>
+
+<section class="card">
+  <h3>Port forwards (WAN → LAN)</h3>
+  <p class="muted">Inbound TCP/UDP traffic arriving on the WAN port is DNAT'd to the LAN host:port. The matching FORWARD rule is added automatically.</p>
+  <table class="data">
+    <thead>
+      <tr><th>Proto</th><th>WAN port</th><th>LAN target</th><th>Comment</th><th></th></tr>
+    </thead>
+    <tbody>
+      __FORWARDS_ROWS__
+    </tbody>
+  </table>
+
+  <form method="post" action="__BASE__/network/portforward/add" class="row-form">
+    <select name="proto" required>
+      <option value="tcp">TCP</option>
+      <option value="udp">UDP</option>
+    </select>
+    <input name="wan_port" type="number" min="1" max="65535" placeholder="WAN port" required>
+    <input name="lan_ip" type="text" placeholder="LAN IP (e.g. 10.42.0.10)" required>
+    <input name="lan_port" type="number" min="1" max="65535" placeholder="LAN port" required>
+    <input name="comment" type="text" placeholder="comment (optional)">
+    <button type="submit" class="btn-primary">Add</button>
+  </form>
+</section>
+
+<section class="card">
+  <h3>Open ports (services on this router exposed on WAN)</h3>
+  <p class="muted">Allows inbound connections on the WAN to services bound on this device. <strong>SSH (22)</strong> and the <strong>web UI (80)</strong> are open by default &mdash; remove them to close WAN access (the LAN/<code>usb0</code> side always stays open). Add rnsd's TCPServerInterface port (4242) here for external Reticulum peers.</p>
+  <table class="data">
+    <thead>
+      <tr><th>Proto</th><th>Port</th><th>Comment</th><th></th></tr>
+    </thead>
+    <tbody>
+      __OPENPORTS_ROWS__
+    </tbody>
+  </table>
+
+  <form method="post" action="__BASE__/network/openport/add" class="row-form">
+    <select name="proto" required>
+      <option value="tcp">TCP</option>
+      <option value="udp">UDP</option>
+    </select>
+    <input name="port" type="number" min="1" max="65535" placeholder="Port" required>
+    <input name="comment" type="text" placeholder="comment (optional)">
+    <button type="submit" class="btn-primary">Add</button>
+  </form>
+</section>
+
+<section class="card">
+  <h3>LAN clients (DHCP leases)</h3>
+  <table class="data">
+    <thead>
+      <tr><th>IP</th><th>MAC</th><th>Name</th><th>Expires (epoch)</th></tr>
+    </thead>
+    <tbody>
+      __LEASES_ROWS__
+    </tbody>
+  </table>
+</section>
+
+<section class="card">
+  <h3>All interfaces</h3>
+  <table class="data">
+    <thead>
+      <tr><th>Iface</th><th>State</th><th>Address</th><th>MAC</th><th>MTU</th><th>RX / TX</th></tr>
+    </thead>
+    <tbody>
+      __IFACES_ROWS__
+    </tbody>
+  </table>
+</section>

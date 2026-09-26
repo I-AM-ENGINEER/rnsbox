@@ -1,0 +1,27 @@
+# RNSBox — Raspberry Pi Zero 2 W boot configuration
+#
+# Headless router: no display stack, minimal GPU memory. The micro-USB OTG
+# port runs as a CDC-NCM gadget (LAN); the hardware UART (PL011, GPIO14/15)
+# is reserved for the optional SLIP link to a WiFi-HaLow modem at 2 Mbaud,
+# so Bluetooth is disabled and the serial console stays OFF the UART.
+
+start_file=start.elf
+fixup_file=fixup.dat
+
+kernel=Image
+arm_64bit=1
+
+disable_overscan=1
+
+# Headless: minimum GPU memory footprint
+gpu_mem=16
+
+# PL011 (UART0) on GPIO14/15, Bluetooth off: frees the hardware UART for the
+# 2 Mbaud SLIP link (S31slip). The kernel cmdline keeps no serial console;
+# admin access is the USB network (portal/SSH) or HDMI tty1.
+enable_uart=1
+dtoverlay=disable-bt
+
+# USB OTG (micro-USB, power + data) as a peripheral from power-on so the
+# NCM gadget enumerates as soon as the host/port is up.
+dtoverlay=dwc2,dr_mode=peripheral

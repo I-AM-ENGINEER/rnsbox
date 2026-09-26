@@ -1,0 +1,139 @@
+#!/bin/sh
+# S10usbdev — compose the CDC-NCM (+ optional read-only mass-storage) USB
+# gadget on the micro-USB OTG port (DWC2 peripheral, via config.txt
+# dtoverlay=dwc2,dr_mode=peripheral).
+#
+# Same /boot flag-file semantics as the LicheeRV Nano-e build (the flags are
+# shipped on the boot FAT by post-image.sh):
+#   /boot/usb.dev           present          -> bring the gadget up at all
+#   /boot/usb.ncm           present          -> CDC-NCM function (the LAN)
+#   /boot/usb.disk0         present          -> read-only mass-storage LUN
+#                          (non-empty content = backing image path; empty =
+#                           /opt/rnsbox-clients/usbdisk.iso, the clients DVD)
+#   /boot/usb.ncm.mac       device-side MAC  -> deterministic host ifname
+#   /boot/usb.idVendor / usb.idProduct / usb.bcdDevice / usb.manufacturer /
+#   /boot/usb.product       pinned identity strings
+#
+# Windows MS-OS descriptor: the "WINNCM" compat id auto-binds usbncm.sys on
+# Windows 10 1709+/11 (literal string — not "NCM"; an MS-OS gotcha). Windows
+# caches the descriptor by (VID, PID, bcdDevice), so bcdDevice must be bumped
+# whenever the gadget topology changes.
+#
+# S30gadget_nic (run after this) addresses usb0 = 10.42.0.1/24.
+
+GADGET=/sys/kernel/config/usb_gadget/g0
+LOG=/var/log/usbdev.log
+
+boot() { [ -f "/boot/$1" ] && cat "/boot/$1"; }
+
+start() {
+	mkdir -p /var/log
+
+	if [ ! -f /boot/usb.dev ]; then
+		echo "S10usbdev: /boot/usb.dev absent - gadget disabled"
+		return 0
+	fi
+	if [ -e "$GADGET/UDC" ] && [ -n "$(cat "$GADGET/UDC" 2>/dev/null)" ]; then
+		echo "S10usbdev: gadget already bound"
+		return 0
+	fi
+
+	# sysfs + configfs + composite framework. Mount them OURSELVES and verify:
+	# early in boot /sys may not be mounted yet (only devtmpfs automounts) -
+	# creating gadget dirs into an unmounted /sys would write plain ext4
+	# directories and silently break the gadget (host sees a dead device).
+	mountpoint -q /sys 2>/dev/null || mount -t sysfs sys /sys 2>>"$LOG"
+	if ! mountpoint -q /sys 2>/dev/null; then
+		echo "S10usbdev: cannot mount sysfs" >&2
+		return 1
+	fi
+	mkdir -p /sys/kernel/config 2>/dev/null || true
+	mountpoint -q /sys/kernel/config 2>/dev/null || \
+		mount -t configfs none /sys/kernel/config 2>>"$LOG"
+	if ! mountpoint -q /sys/kernel/config 2>/dev/null; then
+		echo "S10usbdev: cannot mount configfs" >&2
+		return 1
+	fi
+	modprobe libcomposite 2>/dev/null || true
+
+	mkdir -p "$GADGET" 2>>"$LOG" || {
+		echo "S10usbdev: cannot create $GADGET (CONFIG_USB_CONFIGFS?)" >&2
+		return 1
+	}
+
+	# identity (pinned on the boot FAT; same defaults as the LicheeRV build)
+	echo "$(boot usb.idVendor || echo 0x1d6b)" > "$GADGET/idVendor"
+	echo "$(boot usb.idProduct || echo 0x0105)" > "$GADGET/idProduct"
+	echo "$(boot usb.bcdDevice || echo 0x0105)" > "$GADGET/bcdDevice"
+	mkdir -p "$GADGET/strings/0x409"
+	echo "$(boot usb.manufacturer || echo RNSBox)" > "$GADGET/strings/0x409/manufacturer"
+	echo "$(boot usb.product || echo 'RNSBox Reticulum router')" > "$GADGET/strings/0x409/product"
+
+	mkdir -p "$GADGET/configs/c.1/strings/0x409"
+	echo "RNSBox" > "$GADGET/configs/c.1/strings/0x409/configuration"
+	echo 500 > "$GADGET/configs/c.1/MaxPower"
+
+	if [ -f /boot/usb.ncm ]; then
+		mkdir -p "$GADGET/functions/ncm.usb0"
+		ln -sfn "$GADGET/functions/ncm.usb0" "$GADGET/configs/c.1/ncm.usb0"
+
+		# Device-side MAC via configfs BEFORE the UDC bind: rewriting the
+		# MAC of an already-enumerated function upsets some hosts.
+		if [ -s /boot/usb.ncm.mac ]; then
+			cat /boot/usb.ncm.mac > "$GADGET/functions/ncm.usb0/dev_addr" 2>>"$LOG" || 				echo "S10usbdev: could not set ncm dev_addr pre-bind" >>"$LOG"
+		fi
+
+		# Device-side MAC: set via configfs BEFORE the UDC bind so the
+		# function never changes identity after enumeration (rewriting the
+		# MAC of a live function upsets some hosts - Code 43).
+		if [ -s /boot/usb.ncm.mac ]; then
+			cat /boot/usb.ncm.mac > "$GADGET/functions/ncm.usb0/dev_addr" 2>/dev/null || 				echo "S10usbdev: could not set ncm dev_addr (pre-bound MAC will be random)" >>"$LOG"
+		fi
+
+		# MS-OS descriptor: auto-bind Windows' in-box usbncm.sys driver.
+		echo 1       > "$GADGET/os_desc/use"
+		echo 0xcd    > "$GADGET/os_desc/b_vendor_code"
+		echo MSFT100 > "$GADGET/os_desc/qw_sign"
+		ln -sfn "$GADGET/configs/c.1" "$GADGET/os_desc/c.1"
+		echo WINNCM  > "$GADGET/functions/ncm.usb0/os_desc/interface.ncm/compatible_id"
+	fi
+
+	if [ -f /boot/usb.disk0 ]; then
+		# Backing image: explicit path in /boot/usb.disk0 wins; else the
+		# shipped read-only clients ISO. Presented as an optical disc
+		# (cdrom=1): read-only, never "format/repair", autorun-friendly.
+		IMG=$(boot usb.disk0)
+		[ -n "$IMG" ] || IMG=/opt/rnsbox-clients/usbdisk.iso
+		if [ -e "$IMG" ]; then
+			mkdir -p "$GADGET/functions/mass_storage.disk0"
+			echo 1 > "$GADGET/functions/mass_storage.disk0/lun.0/removable"
+			echo 1 > "$GADGET/functions/mass_storage.disk0/lun.0/ro"
+			echo 1 > "$GADGET/functions/mass_storage.disk0/lun.0/cdrom"
+			echo "$IMG" > "$GADGET/functions/mass_storage.disk0/lun.0/file"
+			ln -sfn "$GADGET/functions/mass_storage.disk0" "$GADGET/configs/c.1/mass_storage.disk0"
+		else
+			echo "S10usbdev: usb.disk0 backing image $IMG not found - skipping mass storage" >>"$LOG"
+		fi
+	fi
+
+	UDC=$(ls /sys/class/udc 2>/dev/null | head -1)
+	if [ -z "$UDC" ]; then
+		echo "S10usbdev: no UDC found (dwc2 not in peripheral mode?)" >&2
+		return 1
+	fi
+	echo "$UDC" > "$GADGET/UDC"
+	echo "S10usbdev: gadget bound to $UDC ($(cat "$GADGET/idVendor"):$(cat "$GADGET/idProduct"))"
+}
+
+stop() {
+	if [ -e "$GADGET/UDC" ]; then
+		echo "" > "$GADGET/UDC" 2>/dev/null
+	fi
+}
+
+case "${1:-start}" in
+	start)   start ;;
+	stop)    stop ;;
+	restart) stop; sleep 1; start ;;
+	*) echo "Usage: $0 {start|stop|restart}" >&2; exit 1 ;;
+esac

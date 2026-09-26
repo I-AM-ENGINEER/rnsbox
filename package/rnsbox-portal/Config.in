@@ -1,0 +1,28 @@
+config BR2_PACKAGE_RNSBOX_PORTAL
+	bool "rnsbox-portal"
+	select BR2_PACKAGE_OPENSSL
+	select BR2_PACKAGE_UHTTPD
+	help
+	  OpenWrt-style admin web UI for the RNSBox router build.
+
+	  A single C++/CGI binary served per-request by uhttpd
+	  (OpenWrt's tiny HTTP server; the web tier keeps ~0 resident
+	  RAM since uhttpd forks the CGI per request), replacing the
+	  former Flask app. No Python is needed for the web tier.
+
+	  uhttpd is used instead of busybox httpd because it serves the
+	  docroot index at bare "/" (busybox httpd 404s "/"), does
+	  proper redirects/error pages, and can add TLS later.
+
+	  Features:
+	    - Dashboard: system + Reticulum status at a glance
+	    - Network: WAN/LAN status, dnsmasq leases, port forwards
+	      (WAN -> LAN DNAT), WAN-side open ports (input ACCEPT)
+	    - Reticulum: live rnsd status, raw config editor, restart
+	    - Settings: admin password + hostname
+
+	  Stores port-forward / open-port / auth state under
+	  /etc/rnsbox/ and regenerates /etc/nftables.conf via
+	  rnsbox_portal.nftgen (called by /etc/init.d/S60routing).
+
+	  Pure-Python; no Go/Node toolchain needed. Source is local.

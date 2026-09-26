@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>__TITLE__ — __HOSTNAME__</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">⬢</span>
+    <span class="brand-name">RNSBox</span>
+    <span class="brand-host">__HOSTNAME__</span>
+  </div>
+  <nav class="topnav">
+    <span class="user">__USER__</span>
+    <a class="logout" href="__BASE__/logout">Logout</a>
+  </nav>
+</header>
+<div class="page">
+  <aside class="sidebar">
+    <a href="__BASE__/" class="__ACT_dashboard__">Dashboard</a>
+    <a href="__BASE__/network" class="__ACT_network__">Network</a>
+    <a href="__BASE__/wifi" class="__ACT_wifi__">WiFi</a>
+    <a href="__BASE__/reticulum" class="__ACT_reticulum__">Reticulum</a>
+    <a href="__BASE__/settings" class="__ACT_settings__">Settings</a>
+    <a href="__BASE__/donate" class="__ACT_donate__">Donate</a>
+  </aside>
+  <main class="content">
+    __FLASH__
+    __CONTENT__
+  </main>
+</div>
+<footer class="sitefoot">
+  <span class="foot-brand"><span class="logo">⬢</span> RNSBox · open-source Reticulum router</span>
+  <a class="foot-donate" href="__BASE__/donate">Donate</a>
+</footer>
+</body>
+</html>

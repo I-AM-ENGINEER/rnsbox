@@ -1,0 +1,85 @@
+#!/bin/sh
+# S46wanwatch — background watchdog that retries S45ntpsync + S82rnsd if
+# a default route appears AFTER the boot-time one-shot already gave up.
+#
+# Scenarios this fixes:
+#   1. Cold boot with no Ethernet cable plugged in. S45 waits 30s, no
+#      default route appears, gives up. /run/clock-synced never gets
+#      set. S82rnsd refuses to start. Later the user plugs in the
+#      cable — this watchdog notices the default route, runs S45+S82.
+#   2. Reticulum crash. rnsd's PID file goes stale; the watchdog
+#      restarts it.
+#
+# Purely additive: boot-time S45/S82 still run first. The watchdog
+# only does work when something becomes finishable that the boot
+# sequence couldn't.
+
+PIDFILE=/var/run/wanwatch.pid
+LOG=/var/log/wanwatch.log
+RNSD_PIDFILE=/var/run/rnsd.pid
+
+log() {
+	printf '%s: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG"
+}
+
+loop() {
+	log "started"
+	while sleep 10; do
+		# Step 1: if clock-synced is absent but a default route exists,
+		# try S45. We must stop the running ntpd daemon first because
+		# `ntpd -gq` binds UDP/123 and would EADDRINUSE otherwise.
+		if [ ! -f /run/clock-synced ]; then
+			if ip -4 route show default 2>/dev/null | grep -q '^default'; then
+				log "default route present, /run/clock-synced absent -> kicking S45ntpsync"
+				killall ntpd 2>/dev/null
+				sleep 1
+				/etc/init.d/S45ntpsync start >> "$LOG" 2>&1
+				/etc/init.d/S49ntp start >> "$LOG" 2>&1 || true
+			fi
+		fi
+
+		# Step 2: clock-synced but rnsd not running -> kick S82.
+		# S82rnsd refuses to start if /run/clock-synced is absent, so
+		# rerunning is cheap when it shouldn't run anyway.
+		if [ -f /run/clock-synced ]; then
+			running=0
+			if [ -f "$RNSD_PIDFILE" ] && kill -0 "$(cat "$RNSD_PIDFILE")" 2>/dev/null; then
+				running=1
+			elif pidof -x rnsd >/dev/null 2>&1; then
+				# -x: /usr/bin/rnsd is a python console-script, so its comm is
+				# "python3" and a bare `pidof rnsd` never matches. -x matches
+				# the script by argv basename.
+				running=1
+			fi
+			if [ "$running" -eq 0 ]; then
+				log "clock-synced but rnsd not running -> kicking S82rnsd"
+				/etc/init.d/S82rnsd start >> "$LOG" 2>&1
+			fi
+		fi
+	done
+}
+
+start() {
+	if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+		echo "S46wanwatch: already running (pid $(cat "$PIDFILE"))"
+		return 0
+	fi
+	loop &
+	echo $! > "$PIDFILE"
+	echo "S46wanwatch: started (pid $(cat "$PIDFILE"))"
+}
+
+stop() {
+	if [ -f "$PIDFILE" ]; then
+		kill "$(cat "$PIDFILE")" 2>/dev/null
+		rm -f "$PIDFILE"
+	fi
+}
+
+case "${1:-start}" in
+	start)   start ;;
+	stop)    stop ;;
+	restart) stop; sleep 1; start ;;
+	*) echo "Usage: $0 {start|stop|restart}" >&2; exit 1 ;;
+esac
+exit 0

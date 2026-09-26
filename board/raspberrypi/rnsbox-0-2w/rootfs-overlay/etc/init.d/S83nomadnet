@@ -1,0 +1,101 @@
+#!/bin/sh
+# S83nomadnet — Nomadnet daemon (LXMF propagation node + nomadnet pages
+# server). Shipped DISABLED by default — most RNSBox owners only want
+# rnsd (S82rnsd). Enable by flipping `enabled=no` -> `enabled=yes` in
+# /etc/rnsbox/nomadnet.conf, then run this script with `start`.
+#
+# Like S82rnsd, gates on /run/clock-synced. Nomadnet stamps every LXMF
+# message + announce with wall-clock time; a 1970 clock makes peers
+# reject everything we send.
+
+NAME=nomadnet
+DAEMON=/usr/bin/nomadnet
+CONF=/etc/rnsbox/nomadnet.conf
+PIDFILE=/var/run/$NAME.pid
+LOG=/var/log/$NAME.log
+DEFAULT_CONFIGDIR=/var/lib/nomadnetwork
+
+[ -x "$DAEMON" ] || exit 0
+
+# --- read the enable flag (single key=value lines, no shell sourcing) ---
+read_conf() {
+	enabled="no"
+	configdir="$DEFAULT_CONFIGDIR"
+	if [ -r "$CONF" ]; then
+		v=$(grep -E '^[[:space:]]*enabled[[:space:]]*=' "$CONF" 2>/dev/null \
+		      | tail -1 | sed -E 's/^[[:space:]]*enabled[[:space:]]*=[[:space:]]*//' \
+		      | tr -d '"' | tr -d "'" | tr '[:upper:]' '[:lower:]' \
+		      | awk '{print $1}')
+		case "$v" in yes|true|1|on) enabled="yes" ;; esac
+		c=$(grep -E '^[[:space:]]*configdir[[:space:]]*=' "$CONF" 2>/dev/null \
+		      | tail -1 | sed -E 's/^[[:space:]]*configdir[[:space:]]*=[[:space:]]*//' \
+		      | tr -d '"' | tr -d "'" | awk '{print $1}')
+		[ -n "$c" ] && configdir="$c"
+	fi
+}
+
+start() {
+	read_conf
+	if [ "$enabled" != "yes" ]; then
+		echo "S83nomadnet: disabled in $CONF (enabled=$enabled); skipping"
+		echo "             flip to 'enabled=yes' to start at boot"
+		return 0
+	fi
+
+	mkdir -p /var/log /var/run "$configdir"
+
+	if [ -f "$PIDFILE" ] && kill -0 "$(cat $PIDFILE)" 2>/dev/null; then
+		echo "S83nomadnet: already running (pid $(cat $PIDFILE))"
+		return 0
+	fi
+
+	if [ ! -f /run/clock-synced ]; then
+		echo "S83nomadnet: refusing to start - /run/clock-synced absent"
+		echo "             (S45ntpsync did not succeed; check WAN link)"
+		return 1
+	fi
+
+	printf "Starting %s: " "$NAME"
+	"$DAEMON" --daemon --configdir "$configdir" >>"$LOG" 2>&1 &
+	PID=$!
+	echo "$PID" > "$PIDFILE"
+	sleep 0.3
+	if kill -0 "$PID" 2>/dev/null; then
+		echo "OK (pid $PID, configdir $configdir)"
+	else
+		echo "FAIL (see $LOG)"
+		rm -f "$PIDFILE"
+		return 1
+	fi
+}
+
+stop() {
+	printf "Stopping %s: " "$NAME"
+	if [ -f "$PIDFILE" ]; then
+		kill "$(cat $PIDFILE)" 2>/dev/null
+		for _ in 1 2 3 4 5; do
+			[ -f "$PIDFILE" ] && kill -0 "$(cat $PIDFILE)" 2>/dev/null || break
+			sleep 1
+		done
+		rm -f "$PIDFILE"
+		echo "OK"
+	else
+		echo "(not running)"
+	fi
+}
+
+case "${1:-start}" in
+	start)   start ;;
+	stop)    stop ;;
+	restart) stop; sleep 1; start ;;
+	status)
+		read_conf
+		echo "enabled in conf: $enabled"
+		if [ -f "$PIDFILE" ] && kill -0 "$(cat $PIDFILE)" 2>/dev/null; then
+			echo "running:         pid $(cat $PIDFILE)"
+		else
+			echo "running:         no"
+		fi
+		;;
+	*) echo "Usage: $0 {start|stop|restart|status}" >&2; exit 1 ;;
+esac

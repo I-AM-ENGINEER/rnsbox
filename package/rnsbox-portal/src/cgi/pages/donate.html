@@ -1,0 +1,39 @@
+<h2>Support RNSBox</h2>
+
+<section class="card donate-intro">
+  <p>RNSBox is free and open source (MIT). If it's useful to you, you can
+  support ongoing development, test hardware, and the Reticulum testnet
+  uplinks with a crypto donation.</p>
+  <p class="muted">Scan a QR with your wallet app, or copy an address below.
+  The QR encodes exactly the address shown — nothing else.</p>
+</section>
+
+<div class="wallet-grid">
+  __WALLET_CARDS__
+</div>
+
+<script>
+document.querySelectorAll('.copy-btn').forEach(function(b){
+  b.addEventListener('click', function(){
+    var addr = b.getAttribute('data-addr');
+    var done = function(){
+      var old = b.getAttribute('data-label');
+      b.textContent = 'Copied ✓';
+      b.classList.add('copied');
+      setTimeout(function(){ b.textContent = old; b.classList.remove('copied'); }, 1500);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(addr).then(done, function(){ fallback(addr, done); });
+    } else { fallback(addr, done); }
+  });
+});
+function fallback(text, done){
+  // clipboard API is only exposed on secure origins; the box is plain-HTTP LAN,
+  // so fall back to a hidden textarea + execCommand on every non-HTTPS visit.
+  var t = document.createElement('textarea');
+  t.value = text; t.style.position = 'fixed'; t.style.opacity = '0';
+  document.body.appendChild(t); t.focus(); t.select();
+  try { document.execCommand('copy'); done(); } catch(e){}
+  document.body.removeChild(t);
+}
+</script>

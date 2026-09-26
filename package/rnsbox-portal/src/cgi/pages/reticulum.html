@@ -1,0 +1,208 @@
+<h2>Reticulum</h2>
+
+<section class="card">
+  <h3>rnsd status</h3>
+  <table class="kv">
+    <tr><th>State</th><td id="rnsd-state">
+      __RNSD_STATE__
+    </td></tr>
+    <tr><th>Version</th><td>
+      Reticulum (rnsd) <strong>__RNS_VERSION__</strong>
+      __UPDATE_BADGE__
+    </td></tr>
+    <tr><th>Update check</th><td>
+      __UPDATE_CHECK_LINE__
+    </td></tr>
+  </table>
+  <form method="post" action="__BASE__/reticulum/restart" class="inline">
+    <button type="submit" class="btn-primary">Restart rnsd</button>
+  </form>
+  <button type="button" class="btn" onclick="loadRnstatus()">Refresh</button>
+  <button type="button" class="btn" id="btn-checkupd" onclick="doUpdate('checkupdate', this, false)">Check for updates</button>
+  __APPLY_UPDATE_FORM__
+  <span id="update-msg" class="msg" style="margin-left:8px"></span>
+
+  <form method="post" action="__BASE__/reticulum/autoupdate" class="row-form" style="margin-top:10px">
+    <label style="margin:0"><input type="checkbox" name="auto_update"
+      __AUTO_UPDATE_CHECKED__ onchange="this.form.submit()"> check for updates daily</label>
+    <noscript><button type="submit" class="btn">Save</button></noscript>
+    <span class="muted">in-place update replaces only the rnsd package (pure-Python); your config is untouched and it rolls back if rnsd fails to restart</span>
+  </form>
+
+  <form method="post" action="__BASE__/reticulum/autorestart" class="row-form" style="margin-top:10px">
+    <label for="rnsd_days" style="margin:0">Auto-restart rnsd</label>
+    <select id="rnsd_days" name="days">
+      __RESTART_DAYS_OPTIONS__
+    </select>
+    <button type="submit" class="btn">Save schedule</button>
+    <span class="muted">restarts at 04:00 — bounds rnsd's announce-cache RAM growth</span>
+  </form>
+
+  <h4>rnstatus -a</h4>
+  <pre class="log" id="rnstatus"><span class="muted">loading… (querying the rnsd instance, can take a few seconds)</span></pre>
+</section>
+
+<section class="card">
+  <h3>HaLow modem (SLIP)</h3>
+  <p class="muted">Optional point-to-point serial link (<code>sl0</code>) to an external
+  WiFi-HaLow RNode modem over a UART. When the modem is reachable, the
+  <strong>Add to rnsd config</strong> button below routes Reticulum through it
+  (a <code>TCPClientInterface</code> named after the modem's hostname). Off by default.</p>
+
+  <table class="kv">
+    <tr><th>Link (sl0)</th><td>
+      __SLIP_LINK_STATUS__
+    </td></tr>
+  </table>
+
+  __HALOW_LIVE_BLOCK__
+
+  <form method="post" action="__BASE__/reticulum/slip">
+    <label style="margin:8px 0 0"><input type="checkbox" name="enabled"
+      __SLIP_ENABLED_CHECKED__> Enable SLIP link at boot</label>
+    <div class="row-form" style="margin-top:10px">
+      <label style="margin:0">UART device
+        <input type="text" name="device" value="__SLIP_DEVICE__"></label>
+      <label style="margin:0">Baud
+        <input type="number" name="baud" value="__SLIP_BAUD__" min="1" max="4000000"></label>
+      <label style="margin:0">This box (local IP)
+        <input type="text" name="local_ip" value="__SLIP_LOCAL_IP__"></label>
+      <label style="margin:0">Modem (peer IP)
+        <input type="text" name="peer_ip" value="__SLIP_PEER_IP__"></label>
+    </div>
+    <button type="submit" class="btn-primary" style="margin-top:10px">Save &amp; apply</button>
+    <p class="muted">Wire the hardware UART (<code>GPIO14</code> TX = physical pin 8,
+    <code>GPIO15</code> RX = pin 10, 3.3&nbsp;V) to the modem, cross TX&harr;RX, common ground &mdash;
+    device <code>/dev/serial0</code>. Bluetooth is disabled and the serial console kept off the
+    UART so the port is free. <strong>Baud must match the modem</strong> &mdash; 2&nbsp;Mbaud (the
+    modem default; the PL011 handles it) is pre-filled. The IPs must match the modem&rsquo;s SLIP
+    config (defaults <code>192.168.7.2</code> modem / <code>192.168.7.1</code> box).</p>
+  </form>
+</section>
+
+<section class="card">
+  <h3>/etc/reticulum/config</h3>
+  <p class="muted">Hand-edit the rnsd configuration. Comments and interface declarations are passed verbatim to Reticulum. Click <em>Save</em> then <em>Restart rnsd</em> to apply.</p>
+  <form method="post" action="__BASE__/reticulum/config">
+    <textarea name="config" rows="24" spellcheck="false">__CONFIG__</textarea>
+    <button type="submit" class="btn-primary">Save</button>
+  </form>
+</section>
+
+<script>
+function loadRnstatus(){
+  var pre = document.getElementById('rnstatus');
+  var st  = document.getElementById('rnsd-state');
+  pre.innerHTML = '<span class="muted">loading… (querying the rnsd instance, can take a few seconds)</span>';
+  fetch('__BASE__/reticulum/status?raw=1').then(function(r){ return r.json(); }).then(function(d){
+    // refresh the state badge too (it's free and may have changed since load)
+    if (d.running) {
+      st.innerHTML = '<span class="badge ok">RUNNING</span> (pid ' + d.pid + ')' +
+                     (d.rss_mb ? ' · ' + d.rss_mb + ' MB RSS' : '');
+    } else {
+      st.innerHTML = '<span class="badge err">STOPPED</span>';
+    }
+    pre.textContent = d.raw ? d.raw : (d.running ? '(rnstatus returned nothing)' : 'rnsd is not running.');
+  }).catch(function(){
+    pre.textContent = 'failed to fetch rnstatus (request timed out or rnsd unreachable).';
+  });
+}
+document.addEventListener('DOMContentLoaded', loadRnstatus);
+</script>
+<script>
+// Update check / apply — async with a live spinner so the page never blank-hangs
+// (an in-place apply can take a minute) and never navigates away (no phantom
+// logout). Shows "⠹ Updating rnsd…" while it runs, then the result; on a
+// version change it reloads so the badge + version refresh.
+function doUpdate(action, btn, isApply){
+  if(isApply && !confirm('Update rnsd now?\n\nThe rns package is replaced in place and rnsd restarts. Your config is not touched, and it rolls back automatically if rnsd fails to come up.')) return;
+  var msg=document.getElementById('update-msg');
+  var frames='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏', fi=0;
+  var verb=isApply?'Updating rnsd':'Checking for updates';
+  var wasText=btn.textContent;
+  btn.disabled=true; if(isApply) btn.textContent='Working…';
+  msg.style.color='var(--muted)';
+  var timer=setInterval(function(){ msg.textContent=' '+frames[fi=(fi+1)%frames.length]+' '+verb+'…'; }, 90);
+  msg.textContent=' '+frames[0]+' '+verb+'…';
+  fetch('__BASE__/reticulum/'+action, {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}})
+    .then(function(r){ if(r.status===401){ throw new Error('session expired — please log in again'); } return r.json(); })
+    .then(function(d){
+      clearInterval(timer); btn.disabled=false; if(isApply) btn.textContent=wasText;
+      msg.textContent=' '+(d.message||(d.ok?'done':'failed'));
+      msg.style.color=d.ok?'var(--ok)':'var(--err)';
+      if(d.reload){ setTimeout(function(){ location.reload(); }, 2500); }
+    })
+    .catch(function(e){
+      clearInterval(timer); btn.disabled=false; if(isApply) btn.textContent=wasText;
+      msg.textContent=' '+(e.message||'request failed');
+      msg.style.color='var(--err)';
+    });
+}
+</script>
+<script>
+(function(){
+  var live=document.getElementById('halow-live'), det=document.getElementById('halow-neigh');
+  var addForm=document.getElementById('halow-add-form');
+  var HALOW_IN_CONFIG = __HALOW_IN_CONFIG__;
+  if(!live) return;
+  function esc(s){ return (''+(s==null?'':s)).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
+  function num(v){ if(v==null) return null; var m=(''+v).match(/-?\d+(\.\d+)?/); return m?parseFloat(m[0]):null; }
+  function unit(v,u){ if(v==null||v==='') return '?'; return /^-?\d+(\.\d+)?$/.test(''+v)? v+' '+u : esc(v); }
+  function sig(v,u,g,a){ if(v==null) return '<span class="muted">—</span>'; var c=v>=g?'sig-g':(v>=a?'sig-a':'sig-r'); return '<span class="'+c+'">'+v+' '+u+'</span>'; }
+  function noise(v){ var n=num(v); if(n==null) return '<span class="muted">—</span>'; var c=n<=-80?'sig-g':(n<=-70?'sig-a':'sig-r'); return '<span class="'+c+'">'+n+' dBm</span>'; }
+  function mac(m){ if(!m) return '?'; m=(''+m).replace(/[:\-]/g,''); return (m.match(/../g)||[m]).join(':').toLowerCase(); }
+  fetch('__BASE__/reticulum/halow').then(function(r){return r.json();}).then(function(d){
+    if(!d.enabled) return;
+    if(!d.reachable){
+      live.className='halow-live';
+      live.innerHTML=d.sl0_up
+        ? '<span class="badge err">unreachable</span> sl0 is up but the modem isn\'t answering over SLIP.'
+        : '<span class="badge warn">sl0 down</span> the SLIP link isn\'t up.';
+      return;
+    }
+    var rd=d.radio||{}, st=d.stats||{}, dv=d.device||{}, ns=d.neighbours||[];
+    var name=(dv.hostname||'RNode-Halow'), port=(d.tcp_port||8001);
+    var iface = d.rnsd_up
+      ? '<span class="badge ok">UP</span> <span class="val">'+esc(name)+'</span> &rarr; :'+esc(port)
+      : '<span class="badge warn">DOWN</span> '+(HALOW_IN_CONFIG?'not connected':'<span class="dim">not in rnsd config yet</span>');
+    var air=num(st.airtime);
+    var airbar = air!=null ? '<span class="hbar"><span style="width:'+Math.max(0,Math.min(100,air))+'%"></span></span> ' : '';
+    // mcs_index arrives as "MCS0" on this firmware, but strip any leading
+    // "MCS" and re-add it so a bare index renders identically.
+    var mcs = (rd.mcs==null||rd.mcs==='') ? 'MCS?' : 'MCS'+esc((''+rd.mcs).replace(/^mcs\s*/i,''));
+    var fw = (dv.fw ? esc((''+dv.fw).split(' ')[0]) : '?');   // "2.3.0 (build…)" -> "2.3.0"
+    var rows=[
+      ['Link (sl0)','<span class="badge ok">UP</span> <span class="val">'+esc(d.local)+' &rarr; '+esc(d.peer)+'</span>'],
+      ['rnsd interface', iface],
+      ['Radio','<span class="val">'+unit(rd.freq,'MHz')+' · '+unit(rd.bw,'MHz')+' · '+mcs+' · '+unit(rd.power,'dBm')+'</span>'],
+      ['Airtime', airbar+'<span class="val">'+esc(st.airtime||'?')+'</span> <span class="dim">· ch-util '+esc(st.ch_util||'?')+'</span>'],
+      ['Noise floor', noise(st.noise)],
+      ['Throughput','<span class="val">&darr; '+esc(st.rx_speed||'?')+' · &uarr; '+esc(st.tx_speed||'?')+'</span>'+((st.rx_bytes||st.tx_bytes)?' <span class="dim">('+esc(st.rx_bytes||'?')+' / '+esc(st.tx_bytes||'?')+')</span>':'')],
+      ['Modem','<span class="val">'+esc(dv.temp||'?')+' · fw '+fw+' · up '+esc(dv.uptime||'?')+'</span>'],
+    ];
+    live.className='halow-live';
+    live.innerHTML='<table class="kv halow-kv">'+rows.map(function(x){return '<tr><th>'+x[0]+'</th><td>'+x[1]+'</td></tr>';}).join('')+'</table>';
+    // Quick-add: the modem is reachable but no interface routes through it yet.
+    if(addForm && !HALOW_IN_CONFIG){
+      var nf=document.getElementById('halow-add-name'), pf=document.getElementById('halow-add-port');
+      if(nf) nf.value=(dv.hostname||'');   // blank -> server queries the modem
+      if(pf) pf.value=port;
+      addForm.hidden=false;
+    }
+    if(ns.length){
+      document.getElementById('halow-ncount').textContent=ns.length;
+      var head='<tr><th>Node</th><th>RSSI</th><th>SNR</th><th>MCS &darr;/&uarr;</th><th>TX acked</th><th>TX loss</th><th>Last</th></tr>';
+      var body=ns.map(function(p){
+        return '<tr><td class="mono">'+esc(mac(p.mac))+'</td>'+
+          '<td>'+sig(num(p.rssi),'dBm',-75,-88)+'</td><td>'+sig(num(p.snr),'dB',10,5)+'</td>'+
+          '<td class="val">'+esc(p.rx_mcs)+' / '+esc(p.tx_mcs)+'</td>'+
+          '<td class="val">'+esc(p.tx_acked)+' / '+esc(p.tx_frames)+'</td>'+
+          '<td>'+esc(p.tx_loss||0)+'%</td>'+
+          '<td class="val dim">'+(p.age!=null?Math.round(p.age/1000)+' s':'—')+'</td></tr>';
+      }).join('');
+      document.getElementById('halow-ntable').innerHTML=head+body;
+      det.hidden=false;   // reveal the section; it stays collapsed (no `open`)
+    }
+  }).catch(function(){ live.className='halow-live'; live.textContent='Could not read modem status.'; });
+})();
+</script>

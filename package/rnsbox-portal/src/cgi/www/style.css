@@ -1,0 +1,453 @@
+/* RNSBox portal — OpenWrt-inspired admin UI */
+:root {
+  --bg:        #f3f4f6;
+  --card:      #ffffff;
+  --text:      #1f2937;
+  --muted:     #6b7280;
+  --border:    #e5e7eb;
+  --primary:   #0d3e54;       /* dark teal — header / sidebar */
+  --primary-2: #155873;       /* mid teal — hover */
+  --accent:    #10bbff;       /* bright cyan — links / active */
+  --ok:        #10b981;
+  --warn:      #f59e0b;
+  --err:       #ef4444;
+  --tcp:       #2563eb;
+  --udp:       #7c3aed;
+  --mono:      ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  padding: 0;
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: var(--text);
+  background: var(--bg);
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code { font-family: var(--mono); font-size: 12.5px; background: #f1f5f9; padding: 1px 4px; border-radius: 3px; }
+strong { font-weight: 600; }
+
+/* ---- Top bar ---- */
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--primary);
+  color: #fff;
+  padding: 0 18px;
+  height: 52px;
+  box-shadow: 0 1px 0 rgba(0,0,0,0.1);
+}
+.topbar .brand { display: flex; align-items: baseline; gap: 10px; }
+.topbar .logo { color: var(--accent); font-size: 20px; line-height: 1; }
+.topbar .brand-name { font-weight: 600; font-size: 16px; letter-spacing: 0.5px; }
+.topbar .brand-host { color: #9fbed0; font-size: 13px; }
+.topbar .topnav { display: flex; align-items: center; gap: 14px; }
+.topbar .user { color: #9fbed0; font-size: 13px; }
+.topbar .logout {
+  color: #fff;
+  padding: 5px 12px;
+  border: 1px solid rgba(255,255,255,0.25);
+  border-radius: 3px;
+  font-size: 13px;
+}
+.topbar .logout:hover { background: var(--primary-2); text-decoration: none; }
+
+/* ---- Layout ---- */
+.page { display: flex; min-height: calc(100vh - 52px); }
+.sidebar {
+  background: #1f2937;
+  width: 200px;
+  padding: 16px 0;
+  flex-shrink: 0;
+}
+.sidebar a {
+  display: block;
+  padding: 10px 18px;
+  color: #cbd5e1;
+  border-left: 3px solid transparent;
+  font-size: 14px;
+}
+.sidebar a:hover {
+  background: #2c3a4c;
+  color: #fff;
+  text-decoration: none;
+}
+.sidebar a.active {
+  background: #111827;
+  color: #fff;
+  border-left-color: var(--accent);
+}
+
+.content { flex: 1; padding: 22px 28px; max-width: 1200px; }
+.content h2 { margin: 0 0 14px; font-size: 22px; font-weight: 600; }
+.content h3 { margin: 0 0 12px; font-size: 16px; font-weight: 600; color: var(--primary); }
+.content h4 { margin: 18px 0 6px; font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+
+/* ---- Cards ---- */
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 18px 20px;
+  margin-bottom: 18px;
+}
+.dash-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 0 0 6px; }
+.dash-head h2 { margin: 0; }
+.autoref { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); }
+.autoref label { display: flex; align-items: center; gap: 6px; margin: 0; }
+.autoref select { padding: 3px 6px; }
+#autoref-status { font-variant-numeric: tabular-nums; }
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 14px;
+}
+.cards .card { margin-bottom: 0; }
+
+/* ---- Tables ---- */
+table.kv { width: 100%; border-collapse: collapse; }
+table.kv th, table.kv td { padding: 6px 8px; vertical-align: top; }
+table.kv th {
+  font-weight: 500;
+  color: var(--muted);
+  text-align: left;
+  width: 32%;
+  white-space: nowrap;
+}
+table.kv td { color: var(--text); }
+table.kv tr + tr th, table.kv tr + tr td { border-top: 1px solid var(--border); }
+
+table.data {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 4px 0 12px;
+  font-size: 13.5px;
+}
+table.data th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--muted);
+  padding: 6px 10px;
+  border-bottom: 2px solid var(--border);
+  background: #fafafa;
+}
+table.data td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+table.data tr:hover td { background: #fafbfc; }
+
+/* ---- Badges ---- */
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  font-size: 11.5px;
+  font-weight: 600;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: #fff;
+  background: var(--muted);
+}
+.badge.ok   { background: var(--ok); }
+.badge.warn { background: var(--warn); }
+.badge.err  { background: var(--err); }
+.badge.tcp  { background: var(--tcp); }
+.badge.udp  { background: var(--udp); }
+
+/* ---- Forms ---- */
+label {
+  display: block;
+  margin-bottom: 10px;
+  font-size: 13px;
+  color: var(--muted);
+}
+label > input,
+label > select,
+label > textarea {
+  display: block;
+  margin-top: 4px;
+}
+input[type=text], input[type=password], input[type=number], select, textarea {
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 7px 10px;
+  font: inherit;
+  background: #fff;
+  color: var(--text);
+  width: 100%;
+  max-width: 360px;
+}
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(16,187,255,0.15);
+}
+textarea {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  width: 100%;
+  max-width: 100%;
+  resize: vertical;
+  min-height: 200px;
+}
+
+button, .btn, .btn-primary, .btn-danger {
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--text);
+  padding: 7px 14px;
+  border-radius: 3px;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 500;
+  display: inline-block;
+}
+button:hover, .btn:hover { background: #f1f5f9; text-decoration: none; }
+.btn-primary {
+  background: var(--primary);
+  color: #fff;
+  border-color: var(--primary);
+}
+.btn-primary:hover { background: var(--primary-2); color: #fff; }
+.btn-danger {
+  background: #fff;
+  color: var(--err);
+  border-color: var(--err);
+}
+.btn-danger:hover { background: var(--err); color: #fff; }
+/* The `hidden` attribute must always win — even over author display rules
+   like form.inline below. Without this reset, a JS-toggled hidden form (e.g.
+   the HaLow "Add to rnsd config" button) stays visible because form.inline's
+   `display: inline` outranks the browser's built-in [hidden] { display:none }. */
+[hidden] { display: none !important; }
+form.inline { display: inline; }
+
+.row-form {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  padding: 10px;
+  background: #fafbfc;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+.row-form input, .row-form select { max-width: 180px; }
+.row-form input[name=comment] { flex: 1; min-width: 180px; max-width: none; }
+
+/* ---- Flash ---- */
+.flash {
+  padding: 10px 14px;
+  border-radius: 3px;
+  margin-bottom: 14px;
+  font-size: 13.5px;
+}
+.flash.success { background: #d1fae5; color: #065f46; border: 1px solid #34d399; }
+.flash.error   { background: #fee2e2; color: #991b1b; border: 1px solid #f87171; }
+.flash.warn    { background: #fef3c7; color: #92400e; border: 1px solid #fbbf24; }
+
+/* ---- Misc ---- */
+.muted { color: var(--muted); font-size: 13px; }
+pre.log {
+  background: #0b1220;
+  color: #d1d5db;
+  padding: 12px 14px;
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  overflow-x: auto;
+  max-height: 360px;
+}
+
+/* ---- Login screen ---- */
+body.login-screen { background: var(--primary); }
+.login-page {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 100vh;
+  padding: 20px;
+}
+.login-box {
+  background: #fff;
+  border-radius: 6px;
+  padding: 30px 36px;
+  width: 100%;
+  max-width: 360px;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.25);
+}
+.login-brand {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  justify-content: center;
+  margin-bottom: 6px;
+}
+.login-brand .logo { color: var(--accent); font-size: 22px; }
+.login-brand .brand-name { font-weight: 600; font-size: 18px; color: var(--primary); }
+.login-box h1 { margin: 0 0 18px; font-size: 18px; font-weight: 500; text-align: center; color: var(--muted); }
+.login-box button { width: 100%; }
+.login-box .muted { margin-top: 14px; text-align: center; font-size: 12px; }
+
+/* ---- RAM / resource meter (dashboard) ---- */
+.meter-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12.5px;
+  color: var(--muted);
+  margin: 10px 0 4px;
+}
+.meter {
+  height: 14px;
+  background: #e9edf1;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  overflow: hidden;
+}
+.meter-fill {
+  height: 100%;
+  border-radius: 7px 0 0 7px;
+  transition: width 0.4s ease;
+  min-width: 2px;
+}
+.meter-fill.ok   { background: var(--ok); }
+.meter-fill.warn { background: var(--warn); }
+.meter-fill.crit { background: var(--err); }
+
+/* ---- Donate ---- */
+.sitefoot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 28px;
+  background: #111827;
+  color: #94a3b8;
+  font-size: 12.5px;
+}
+.sitefoot .foot-brand { display: flex; align-items: center; gap: 7px; }
+.sitefoot .foot-brand .logo { color: var(--accent); }
+.sitefoot .foot-donate { color: #cbd5e1; }
+.sitefoot .foot-donate:hover { color: #fff; text-decoration: none; }
+
+.donate-intro p { margin: 0 0 8px; max-width: 68ch; }
+.donate-intro p:last-child { margin-bottom: 0; }
+
+.wallet-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 14px;
+  margin-bottom: 18px;
+}
+.wallet-grid .card.wallet { margin-bottom: 0; display: flex; flex-direction: column; align-items: center; text-align: center; }
+.wallet-head { display: flex; align-items: center; gap: 8px; width: 100%; margin-bottom: 12px; }
+.wallet-head .coin-sym { font-size: 20px; line-height: 1; color: var(--primary); }
+.wallet-head .coin-name { font-weight: 600; font-size: 15px; }
+.wallet-head .coin-ticker { margin-left: auto; }
+
+.qr-link { display: block; line-height: 0; }
+img.qr {
+  width: 160px;
+  height: 160px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px;
+}
+.wallet-addr {
+  display: block;
+  width: 100%;
+  margin: 12px 0 10px;
+  padding: 8px 10px;
+  background: #f1f5f9;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  word-break: break-all;
+  color: var(--text);
+}
+.wallet-actions { display: flex; gap: 8px; width: 100%; }
+.wallet-actions .btn { flex: 1; text-align: center; }
+.copy-btn.copied { background: var(--ok); color: #fff; border-color: var(--ok); }
+
+/* ---- Time & Clock (Settings) ---- */
+.timeval { font-family: var(--mono); font-size: 15px; font-weight: 600; }
+textarea.ntp-servers { min-height: 64px; max-width: 360px; }
+.time-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+form.ntp-restart { margin-top: 8px; }
+
+/* ---- HaLow modem (dashboard summary + Reticulum live block) ---- */
+.cardhead { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.cardhead h3 { margin: 0; }
+.cardfoot { margin-top: 12px; margin-bottom: 0; }
+.val { font-family: var(--mono); font-size: 12.5px; }
+.mono { font-family: var(--mono); font-size: 11.5px; }
+.dim { color: var(--muted); }
+.sig-g { color: var(--ok);   font-weight: 600; }
+.sig-a { color: var(--warn); font-weight: 600; }
+.sig-r { color: var(--err);  font-weight: 600; }
+.halow-live {
+  background: #f6fbf9;
+  border: 1px solid #cdeee2;
+  border-radius: 4px;
+  padding: 10px 12px;
+  margin: 10px 0;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.halow-live .hrow { display: flex; flex-wrap: wrap; gap: 4px 16px; }
+.halow-live .k { color: var(--muted); }
+/* Clean single-column key/value layout for the live modem card. */
+.halow-live table.halow-kv { background: transparent; }
+.halow-live table.halow-kv th { width: 128px; font-weight: 600; color: var(--muted); white-space: nowrap; }
+.halow-live table.halow-kv td { color: var(--text); }
+.halow-live table.halow-kv tr + tr th,
+.halow-live table.halow-kv tr + tr td { border-top: 1px solid #d9ece4; }
+/* Airtime / channel-utilisation mini bar. */
+.hbar { display: inline-block; width: 90px; height: 7px; border-radius: 4px;
+  background: #dfeee7; overflow: hidden; vertical-align: middle; }
+.hbar > span { display: block; height: 100%; background: var(--ok); }
+/* Card action row: "Open modem web UI" + the quick-add form (side by side). */
+.halow-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 12px 0 0; }
+.halow-actions form.inline { margin: 0; }
+.halow-actions .btn, .halow-actions .btn-primary { margin: 0; }
+
+/* Full-width dashboard card: spans every column of the .cards auto-fit grid
+   so the HaLow modem becomes a horizontal stats strip below the square cards. */
+.card-wide { grid-column: 1 / -1; }
+/* Responsive metric-tile strip. auto-fit reflows the tiles from ~8 across on a
+   wide screen down to 1 on a phone; min-width:0 + overflow-wrap keep long values
+   (IPs, hostnames) inside their tile so the page never scrolls sideways. */
+.hstats { display: grid; grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)); gap: 10px 12px; margin: 4px 0 2px; }
+.hstat { min-width: 0; padding: 9px 11px; background: #f6fbf9; border: 1px solid #cdeee2; border-radius: 5px; }
+.hstat-k { font-size: 10.5px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted);
+  margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hstat-v { font-size: 12.5px; line-height: 1.45; color: var(--text); overflow-wrap: anywhere; }
+.hstat-v .hbar { margin-bottom: 2px; }
+details.neigh { border: 1px solid var(--border); border-radius: 4px; margin: 0 0 10px; }
+details.neigh > summary {
+  cursor: pointer;
+  padding: 8px 12px;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--primary);
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  user-select: none;
+}
+details.neigh > summary::-webkit-details-marker { display: none; }
+details.neigh > summary::after { content: "\25BE"; color: var(--muted); font-weight: 400; }
+details.neigh[open] > summary::after { content: "\25B4"; }
+details.neigh > summary:hover { background: #fafbfc; }
+details.neigh .body { border-top: 1px solid var(--border); }
+details.neigh .data { margin: 0; }

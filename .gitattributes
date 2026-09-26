@@ -1,0 +1,3 @@
+# WSL builds rsync straight from a Windows checkout; CRLF anywhere
+# breaks shebangs and shell parsing inside the image. Force LF repo-wide.
+* text=auto eol=lf

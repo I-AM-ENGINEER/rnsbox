@@ -1,0 +1,128 @@
+<div class="dash-head">
+  <h2>Dashboard</h2>
+  <div class="autoref">
+    <span class="muted" id="autoref-status"></span>
+    <label>Auto-refresh
+      <select id="autoref">
+        <option value="0">Off</option>
+        <option value="5">5s</option>
+        <option value="10">10s</option>
+        <option value="15">15s</option>
+      </select>
+    </label>
+  </div>
+</div>
+
+<div class="cards">
+
+  <section class="card">
+    <h3>System</h3>
+    <table class="kv">
+      <tr><th>Hostname</th><td>__HOSTNAME__</td></tr>
+      <tr><th>Kernel</th><td>__KERNEL__</td></tr>
+      <tr><th>Uptime</th><td id="d-uptime">__UPTIME__</td></tr>
+      <tr><th>Load avg</th><td id="d-load">__LOAD__</td></tr>
+    </table>
+    <div class="meter-label">
+      <span>RAM</span>
+      <span id="d-ram-label">__RAM_USED__ / __RAM_TOTAL__ MB &middot; __RAM_AVAIL__ MB free</span>
+    </div>
+    <div class="meter">
+      <div class="meter-fill __RAM_FILL_CLASS__" id="d-ram-fill" style="width: __RAM_PCT__%"></div>
+    </div>
+    <p class="muted" id="d-ram-note" style="margin-top:4px">
+      __RAM_PCT__% used &middot; __RAM_BUFFCACHE__ MB buff/cache (reclaimable)
+    </p>
+  </section>
+
+  <section class="card">
+    <h3>WAN (__WAN__)</h3>
+    <table class="kv">
+      <tr><th>State</th><td id="d-wan-state">__WAN_STATE__</td></tr>
+      <tr><th>Address</th><td id="d-wan-addr">__WAN_ADDR__</td></tr>
+      <tr><th>Gateway</th><td id="d-wan-gw">__WAN_GW__</td></tr>
+      <tr><th>DNS</th><td id="d-wan-dns">__WAN_DNS__</td></tr>
+      <tr><th>RX / TX</th><td id="d-wan-rxtx">__WAN_RXTX__</td></tr>
+    </table>
+  </section>
+
+  __LAN_CARD__
+
+  <section class="card">
+    <h3>Reticulum</h3>
+    <table class="kv">
+      <tr><th>Status</th><td id="d-rnsd-status">__RNSD_STATUS__</td></tr>
+      <tr><th>Version</th><td id="d-rnsd-version">__RNSD_VERSION__</td></tr>
+    </table>
+    <p><a class="btn" href="__BASE__/reticulum">Manage &rarr;</a></p>
+  </section>
+
+  __HALOW_CARD__
+
+</div>
+
+__HALOW_SCRIPT__
+
+<script>
+(function(){
+  function $(id){ return document.getElementById(id); }
+  function setText(id,t){ var e=$(id); if(e) e.textContent=t; }
+  function setHTML(id,h){ var e=$(id); if(e) e.innerHTML=h; }
+  function patch(d){
+    var s=d.sys||{}, m=s.mem||{}, wif=d.wan_if||{}, lif=d.lan_if||{}, rn=d.rnsd||{}, up=d.update||{};
+    setText('d-uptime', s.uptime||'');
+    setText('d-load', (s.load||[]).join(' / '));
+    if(m.total_mb){
+      var pct=m.used_pct||0;
+      setText('d-ram-label', m.used_mb+' / '+m.total_mb+' MB · '+m.avail_mb+' MB free');
+      var f=$('d-ram-fill'); if(f){ f.style.width=pct+'%'; f.className='meter-fill '+(pct>=90?'crit':pct>=75?'warn':'ok'); }
+      setText('d-ram-note', pct+'% used · '+m.buffcache_mb+' MB buff/cache (reclaimable)');
+    }
+    setHTML('d-wan-state', wif.state==='up'?'<span class="badge ok">UP</span>':'<span class="badge err">'+(wif.state||'DOWN')+'</span>');
+    setText('d-wan-addr', (wif.addrs&&wif.addrs.length)?wif.addrs.join(', '):'(none)');
+    setText('d-wan-gw', d.gateway||'(none)');
+    setText('d-wan-dns', (d.dns&&d.dns.length)?d.dns.join(', '):'(none)');
+    setText('d-wan-rxtx', (wif.rx||'0')+' / '+(wif.tx||'0'));
+    if($('d-lan-state')){
+      setHTML('d-lan-state', lif.state==='up'?'<span class="badge ok">UP</span>':'<span class="badge warn">'+(lif.state||'DOWN')+'</span>');
+      setText('d-lan-addr', (lif.addrs&&lif.addrs.length)?lif.addrs.join(', '):'(none)');
+      setText('d-lan-rxtx', (lif.rx||'0')+' / '+(lif.tx||'0'));
+    }
+    setHTML('d-rnsd-status', rn.running
+      ? '<span class="badge ok">RUNNING</span> (pid '+rn.pid+')'+(rn.rss_mb?' · '+rn.rss_mb+' MB RSS':'')
+      : '<span class="badge err">STOPPED</span>');
+    var vh='Reticulum (rnsd) <strong>'+(up.installed||'unknown')+'</strong>';
+    if(up.update_available) vh+=' <span class="badge warn">update available: '+up.latest+'</span>';
+    else if(up.latest && !up.error) vh+=' <span class="badge ok">up to date</span>';
+    setHTML('d-rnsd-version', vh);
+  }
+  function refreshData(){
+    return fetch('__BASE__/dashboard/data').then(function(r){return r.json();}).then(patch).catch(function(){});
+  }
+  var sel=$('autoref'), timer=null, KEY='rnsbox-autoref';
+  function tick(){
+    setText('autoref-status','updating…');
+    if(window.__loadHalow) window.__loadHalow();
+    refreshData().then(function(){
+      var t=new Date();
+      setText('autoref-status','updated '+t.toTimeString().slice(0,8));
+    });
+  }
+  function apply(sec){
+    if(timer){ clearInterval(timer); timer=null; }
+    if(sec>0){ timer=setInterval(tick, sec*1000); setText('autoref-status','every '+sec+'s'); }
+    else setText('autoref-status','');
+  }
+  if(sel){
+    var saved=0; try{ saved=parseInt(localStorage.getItem(KEY)||'0',10)||0; }catch(e){}
+    if([0,5,10,15].indexOf(saved)<0) saved=0;
+    sel.value=String(saved);
+    sel.addEventListener('change', function(){
+      var v=parseInt(sel.value,10)||0;
+      try{ localStorage.setItem(KEY, String(v)); }catch(e){}
+      apply(v);
+    });
+    apply(saved);
+  }
+})();
+</script>

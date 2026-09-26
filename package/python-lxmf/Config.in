@@ -1,0 +1,11 @@
+config BR2_PACKAGE_PYTHON_LXMF
+	bool "python-lxmf"
+	select BR2_PACKAGE_PYTHON_RNS  # runtime
+	help
+	  LXMF (Lightweight eXtensible Message Format) — the
+	  message-passing layer that nomadnet, Sideband, MeshChat
+	  and other Reticulum-based apps share. Provides delivery,
+	  storage, propagation and addressing for ~secure msg routes
+	  across the Reticulum mesh.
+
+	  https://github.com/markqvist/LXMF

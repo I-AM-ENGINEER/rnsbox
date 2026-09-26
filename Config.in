@@ -1,0 +1,6 @@
+menu "RNSBox packages"
+source "$BR2_EXTERNAL_RNSBOX_PATH/package/python-lxmf/Config.in"
+source "$BR2_EXTERNAL_RNSBOX_PATH/package/python-nomadnet/Config.in"
+source "$BR2_EXTERNAL_RNSBOX_PATH/package/python-rns/Config.in"
+source "$BR2_EXTERNAL_RNSBOX_PATH/package/rnsbox-portal/Config.in"
+endmenu

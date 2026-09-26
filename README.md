@@ -13,25 +13,29 @@ MIT-licensed; the exact upstream pin lives in the Hardware section below.
 
 ## Quick start
 
-One command clones the pinned upstream base, fetches the cross toolchain,
-applies the patch series for the board and builds:
+One command clones the pinned upstream base, sets the board up and builds.
+The rpi0-2w board builds straight from this repo used as a Buildroot
+**external tree** (`BR2_EXTERNAL`, no patch series); the LicheeRV board
+applies its git-am series onto the pinned vendor BSP:
 
 ```bash
 git clone https://github.com/Smit1237/rnsbox
 cd rnsbox
 ./build.sh licheerv-nano lite   # Sipeed LicheeRV Nano-e image (~217 MB)
-./build.sh rpi0-2w lite         # Raspberry Pi Zero 2 W image
+./build.sh rpi0-2w lite         # Raspberry Pi Zero 2 W image (~433 MB)
+./build.sh all lite             # every board, sequentially
 # ... dvd instead of lite adds a read-only disc of the latest Reticulum clients
 ```
 
-The finished image lands under `<workdir>/install/.../images/` (LicheeRV) or
-`buildroot-rpi0-2w/output/images/` (Pi). Flash it with `dd` (or a tool like
-balenaEtcher) to a microSD and boot the board.
+The finished image lands under `~/rnsbox-work/upstream/out/<board>/images/`
+(rpi0-2w; external-style boards) or `<workdir>/install/.../images/`
+(LicheeRV). Flash it with `dd` (or a tool like balenaEtcher) to a microSD
+and boot the board.
 
 The shipped `rns` (Reticulum) is always the **latest release at build time**:
 `build.sh` asks PyPI, re-pins the package and verifies the download's sha256.
 Set `RNSBOX_RNS_VERSION` to force a specific version; offline builds fall back
-to the pinned default from the patch series.
+to the pinned default.
 
 > **First build is long.** It compiles a Rust host toolchain from source
 > (needed for `python-cryptography` on `riscv64-musl`), so the first run takes
@@ -74,18 +78,29 @@ available to Linux and the router data plane.
 
 ## Repository layout
 
+The repo is a Buildroot **external tree**: many boards, one repository,
+no per-board forks. Shared router software lives once under `package/`
+and is instantly available to every board; a board is just a defconfig
+plus a directory. See `BOARD-GUIDE.md` for the full recipe.
+
 ```
-patches/licheerv-nano/     RNSBox series for the LicheeRV Nano-e (git am-able)
-patches/rpi0-2w/           RNSBox series for the Raspberry Pi Zero 2 W
-boards/                    per-board build glue (upstream pins, build steps)
-build.sh                   one-command: clone upstream -> apply patches -> build
-.github/                   CI: build the lite images on GitHub Actions + Releases
+external.desc/.mk, Config.in  external-tree registration (package sources)
+configs/                   one defconfig per board
+board/                     per-board files (kernel fragments, overlays, gadget)
+package/                   SHARED packages: rnsbox-portal, python-rns,
+                           python-lxmf, python-nomadnet
+boards/                    per-board build glue (upstream pins, build style)
+scripts/build-variant.sh   lite/dvd packaging for external-style boards
+build.sh                   one-command builder: ./build.sh <board> [lite|dvd|all]
+patches/licheerv-nano/     git-am series (vendor-BSP board only)
+.github/                   CI: matrix-build the images on GitHub Actions + Releases
 LICENSE                    MIT (the RNSBox delta)
 README.md                  this file
+BOARD-GUIDE.md             how to add a board
 ```
 
-Applying the series brings the full documentation into the built tree
-(`README.RNSBox.md`, `APPLYING.md`) alongside the RNSBox sources.
+Board-specific notes from the original patch-series era live under
+`docs/` (`docs/rpi0-2w/README.RNSBox.md`, `APPLYING.md`).
 
 ## Hardware
 

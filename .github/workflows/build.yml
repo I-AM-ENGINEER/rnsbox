@@ -1,0 +1,180 @@
+name: build-images
+
+# Multi-board image builder. Each matrix entry is one board from boards/.
+# External-tree boards (BUILD_STYLE=external, e.g. rpi0-2w) build straight
+# from this repository used as a BR2_EXTERNAL tree: build.sh clones the
+# pinned upstream once, shares the download cache and builds into a
+# per-board O= directory. Adding a board = one more matrix include.
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: "Image variant to build"
+        type: choice
+        options: [lite, dvd]
+        default: lite
+      version:
+        description: "Release tag (blank = r<date>-<shortsha>). A GitHub Release is published only on manual runs."
+        type: string
+        default: ""
+  push:
+    branches: [raspberry-pi-zero-2w]
+    paths:
+      - 'package/**'
+      - 'board/**'
+      - 'configs/**'
+      - 'boards/**'
+      - 'scripts/**'
+      - 'clients-stick/**'
+      - 'build.sh'
+      - 'fetch-clients.sh'
+      - '.github/workflows/build.yml'
+
+concurrency:
+  group: build-${{ matrix.board }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write   # needed to publish a Release
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - board: rpi0-2w
+    env:
+      BOARD: ${{ matrix.board }}
+      VARIANT: ${{ github.event.inputs.variant || 'lite' }}
+    steps:
+      - name: Free up disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          docker-images: true
+          large-packages: false   # slow apt-remove; /mnt gives us the room
+          haskell: false
+          swap-storage: false     # keep swap — the build wants memory
+
+      - name: Disk + memory before
+        run: |
+          echo "## disk"; df -h / /mnt
+          echo "## mem";  free -h
+          echo "## cpu";  nproc
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential git wget curl cpio unzip rsync bc file \
+            python3 python3-dev python3-setuptools \
+            libssl-dev flex bison gawk texinfo help2man gettext \
+            autoconf automake libtool pkg-config cmake ninja-build \
+            libncurses5-dev device-tree-compiler u-boot-tools \
+            genext2fs dosfstools mtools parted squashfs-tools jq
+
+      - name: Checkout rnsbox (the external tree)
+        uses: actions/checkout@v4
+        with:
+          path: rnsbox
+
+      - name: Prepare scratch on /mnt (the roomy disk)
+        run: |
+          sudo mkdir -p /mnt/rnsbox/upstream /mnt/rnsbox/out /mnt/dl /mnt/tmp
+          sudo chown -R "$USER":"$USER" /mnt/rnsbox /mnt/dl /mnt/tmp
+
+      - name: Cache buildroot downloads (shared across boards)
+        uses: actions/cache@v4
+        with:
+          path: /mnt/dl
+          key: br-dl-${{ matrix.board }}-${{ hashFiles('rnsbox/configs/**', 'rnsbox/package/**') }}
+          restore-keys: |
+            br-dl-${{ matrix.board }}-
+            br-dl-
+
+      - name: Build ${{ matrix.board }} ${{ env.VARIANT }}
+        env:
+          UPSTREAM_BASE: /mnt/rnsbox/upstream
+          BR2_DL_DIR: /mnt/dl
+          TMPDIR: /mnt/tmp
+        run: |
+          export PATH=/usr/sbin:/sbin:$PATH
+          cd rnsbox
+          START=$(date +%s)
+          set -o pipefail
+          # Rust's bootstrap (x.py) panics on --stage 1 when it detects CI
+          # markers (GITHUB_ACTIONS / TF_BUILD) and demands a full stage-2
+          # bootstrap. Scrub those markers for the build only (relevant the
+          # day a board pulls host-rust).
+          ( unset GITHUB_ACTIONS TF_BUILD CI
+            /usr/bin/time -v ./build.sh "$BOARD" "$VARIANT" ) \
+            2>&1 | tee /mnt/tmp/build.log
+          echo "BUILD_SECONDS=$(( $(date +%s) - START ))" | tee -a "$GITHUB_ENV"
+
+      - name: Disk after + image + timing
+        if: always()
+        run: |
+          echo "## disk after"; df -h / /mnt
+          echo "## build minutes: $(( ${BUILD_SECONDS:-0} / 60 ))"
+          IMGDIR=/mnt/rnsbox/out/$BOARD/images
+          echo "## images"; ls -lh "$IMGDIR" 2>/dev/null || echo "(no images dir — build did not reach packaging)"
+          echo "## last 40 build.log lines"; tail -n 40 /mnt/tmp/build.log 2>/dev/null || true
+
+      - name: Package image (.img.xz + SHA256SUMS)
+        if: success()
+        run: |
+          IMGDIR=/mnt/rnsbox/out/$BOARD/images
+          IMG="rnsbox-$BOARD-$VARIANT.img"
+          cd "$IMGDIR"
+          echo "compressing $IMG …"
+          xz -T0 -9 -k -f "$IMG"
+          sha256sum "$IMG" "$IMG.xz" | tee SHA256SUMS
+          ls -lh "$IMG" "$IMG.xz"
+          { echo "IMG=$IMG"; echo "IMGDIR=$PWD"; } >> "$GITHUB_ENV"
+
+      - name: Publish GitHub Release (manual runs only)
+        if: success() && github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER="${{ github.event.inputs.version }}"
+          [ -z "$VER" ] && VER="r$(date -u +%Y.%m.%d)-${GITHUB_SHA:0:7}"
+          cd "$IMGDIR"
+          printf '%s\n' \
+            "Automated RNSBox **$VARIANT** build for \`${{ matrix.board }}\` from \`${GITHUB_SHA:0:7}\` (branch \`${GITHUB_REF_NAME}\`)." \
+            "" \
+            "Decompress and flash to a microSD:" \
+            '```' \
+            "xz -d ${IMG}.xz && sudo dd if=${IMG} of=/dev/sdX bs=4M conv=fsync status=progress" \
+            '```' \
+            "Verify first with \`sha256sum -c SHA256SUMS\`. Default web admin: http://10.42.0.1 (admin/admin); ssh root@10.42.0.1 (root/admin)." > /tmp/notes.md
+          gh release create "$VER" \
+            --repo "${{ github.repository }}" \
+            --target "${{ github.sha }}" \
+            --title "RNSBox ${{ matrix.board }} $VER" \
+            --notes-file /tmp/notes.md \
+            "${IMG}.xz" SHA256SUMS
+          echo "Published release: $VER"
+
+      - name: Upload image
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rnsbox-${{ matrix.board }}-${{ env.VARIANT }}-image
+          path: /mnt/rnsbox/out/${{ matrix.board }}/images/rnsbox-${{ matrix.board }}-${{ env.VARIANT }}.img
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ matrix.board }}
+          path: /mnt/tmp/build.log
+          if-no-files-found: warn
+          retention-days: 7

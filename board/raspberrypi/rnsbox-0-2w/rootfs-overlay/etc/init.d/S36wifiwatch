@@ -1,0 +1,90 @@
+#!/bin/sh
+# S36wifiwatch — AP-priority watchdog for concurrent WiFi (mode=sta+ap).
+#
+# The onboard chip is a SINGLE radio. In sta+ap the AP (hostapd on uap0) shares the
+# STA's channel, and ANY STA scan hops the radio off that channel — so a
+# disconnected wpa_supplicant, scanning continuously to find the upstream,
+# permanently disrupts the hotspot when you carry the device out of range.
+#
+# The hotspot is what local clients depend on, so it is the priority and must be
+# ROCK-SOLID when the WAN uplink is gone. The rule: the STA may only scan when
+# the AP has ZERO connected clients — so a connected client NEVER sees a blip.
+#   * STA drops           -> `wpa_cli disconnect` immediately: stop the scan, the
+#                            AP keeps beaconing on its channel (no blips, ever).
+#   * uplink still down    -> re-attempt the STA ONLY while the AP is idle (no
+#                            associated stations); if anyone is connected, leave
+#                            the radio untouched.
+#   * STA back / AP dropped -> re-establish + re-sync the AP (S35wifi ap_restart).
+#
+# Background loop (like S46wanwatch); re-reads the mode each pass. No-op unless
+# mode=sta+ap.
+
+CONF=/etc/rnsbox/wifi.conf
+STA_IF=wlan0
+AP_IF=uap0
+LOG=/var/log/wifi.log
+GRACE=8          # seconds the STA may be down before we protect the AP
+IDLE_RETRY=30    # seconds between STA reconnect attempts, but only while idle
+STEP=4           # poll interval
+
+cfg() { grep -E "^[[:space:]]*$1[[:space:]]*=" "$CONF" 2>/dev/null | tail -1 \
+	| sed -E "s/^[^=]*=[[:space:]]*//;s/[[:space:]]*#.*$//;s/[[:space:]]*$//" | tr -d '"'; }
+log() { printf '%s: wifiwatch %s\n' "$(date '+%F %T')" "$*" >> "$LOG"; }
+wpa() { wpa_cli -i "$STA_IF" "$@" 2>/dev/null; }
+sta_up()   { wpa status 2>/dev/null | grep -q '^wpa_state=COMPLETED'; }
+ap_up()    { pidof hostapd >/dev/null 2>&1; }
+ap_idle()  { [ "$(iw dev "$AP_IF" station dump 2>/dev/null | grep -c '^Station')" = "0" ]; }
+now_s()    { cut -d. -f1 /proc/uptime; }
+
+loop() {
+	log "watchdog started"
+	down=0; protected=0; last_retry=0
+	while sleep "$STEP"; do
+		[ "$(cfg mode)" = "sta+ap" ] || { down=0; protected=0; continue; }
+
+		# The AP is the priority: if the firmware dropped it, bring it back.
+		# ap_ensure (not ap_restart) so that if this blocks on the wifi lock
+		# behind a deliberate restart (portal apply), it finds the AP already up
+		# once the lock releases and does nothing — no redundant blip.
+		if ! ap_up; then
+			log "hostapd down — reviving AP"
+			/etc/init.d/S35wifi ap_ensure >>"$LOG" 2>&1
+		fi
+
+		if sta_up; then
+			if [ "$protected" = 1 ]; then
+				log "STA reconnected — re-syncing AP to its channel"
+				/etc/init.d/S35wifi ap_restart >>"$LOG" 2>&1
+				protected=0
+			fi
+			down=0
+			continue
+		fi
+
+		# STA not connected.
+		down=$((down + STEP))
+		if [ "$protected" = 0 ] && [ "$down" -ge "$GRACE" ]; then
+			log "STA down (${down}s) — protecting AP: stopping STA scan"
+			wpa disconnect            # radio is now 100% the AP's — no blips
+			protected=1
+			last_retry=$(now_s)
+		fi
+
+		# Re-attempt the uplink ONLY while nobody is on the AP (a scan then can't
+		# disturb anyone). If clients are connected, never touch the radio.
+		if [ "$protected" = 1 ] && ap_idle; then
+			n=$(now_s)
+			if [ $((n - last_retry)) -ge "$IDLE_RETRY" ]; then
+				log "AP idle — trying STA reconnect"
+				wpa reconnect
+				last_retry=$n
+			fi
+		fi
+	done
+}
+
+case "${1:-start}" in
+	start) loop & ;;
+	stop)  : ;;
+	*) echo "usage: $0 {start|stop}"; exit 1 ;;
+esac

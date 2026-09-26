@@ -1,0 +1,16 @@
+config BR2_PACKAGE_PYTHON_NOMADNET
+	bool "python-nomadnet"
+	select BR2_PACKAGE_PYTHON_RNS         # runtime
+	select BR2_PACKAGE_PYTHON_LXMF        # runtime
+	select BR2_PACKAGE_PYTHON_URWID       # runtime (TUI)
+	select BR2_PACKAGE_PYTHON_QRCODE      # runtime (QR identity codes)
+	help
+	  Nomad Network — a Reticulum-based application stack that
+	  ships an LXMF propagation node, a nomadnet "page" server
+	  (gopher-like browsable content over Reticulum), and a
+	  terminal UI client. Installed here primarily so users can
+	  host nomadnet pages from the device; the init script
+	  S83nomadnet is shipped disabled by default and gated on a
+	  flag in /etc/rnsbox/nomadnet.conf.
+
+	  https://github.com/markqvist/NomadNet

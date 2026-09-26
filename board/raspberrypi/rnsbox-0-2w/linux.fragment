@@ -1,0 +1,45 @@
+# RNSBox kernel additions on top of bcm2711_defconfig (Raspberry Pi Zero 2 W)
+
+# --- USB gadget: CDC-NCM (+ optional read-only mass storage) on the
+#     micro-USB OTG port (DWC2, peripheral mode via dtoverlay=dwc2) ---
+CONFIG_USB_DWC2=y
+CONFIG_USB_DWC2_DUAL_ROLE=y
+CONFIG_USB_GADGET=y
+CONFIG_USB_CONFIGFS=y
+CONFIG_USB_CONFIGFS_NCM=y
+CONFIG_USB_CONFIGFS_MASS_STORAGE=y
+CONFIG_USB_GADGET_VBUS_DRAW=500
+CONFIG_USB_GADGET_STORAGE_NUM_BUFFERS=4
+
+# --- nftables data plane (S60routing; ruleset validated by nft -c) ---
+CONFIG_NF_TABLES=y
+CONFIG_NF_TABLES_INET=y
+CONFIG_NFT_CT=y
+CONFIG_NFT_LIMIT=y
+CONFIG_NFT_LOG=y
+CONFIG_NFT_NAT=y
+CONFIG_NFT_MASQ=y
+CONFIG_NFT_REDIR=y
+CONFIG_NF_CONNTRACK=y
+CONFIG_NF_CONNTRACK_EVENTS=y
+CONFIG_NF_NAT=y
+CONFIG_NETFILTER_XTABLES=y
+
+# --- SLIP over UART for the optional HaLow modem link (2 Mbaud PL011) ---
+CONFIG_SLIP=y
+CONFIG_SLIP_COMPRESSED=y
+CONFIG_SLIP_SMART=y
+
+# --- throughput: BBR + fq ---
+CONFIG_TCP_CONG_BBR=y
+CONFIG_DEFAULT_TCP_CONG="bbr"
+CONFIG_NET_SCH_FQ=y
+
+# --- misc router bits ---
+CONFIG_TUN=y
+CONFIG_VETH=y
+
+# --- onboard WiFi (brcmfmac, built-in so it probes before S35wifi) ---
+CONFIG_CFG80211=y
+CONFIG_BRCMFMAC=y
+CONFIG_BRCMFMAC_SDIO=y

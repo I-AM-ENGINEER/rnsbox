@@ -1,0 +1,62 @@
+#!/bin/sh
+# S81router — RNSBox admin web UI: uhttpd serving the C++ CGI portal.
+#
+# The portal is a single aarch64 binary at /www/cgi-bin/portal (a symlink to
+# /usr/sbin/rnsbox-portal), exec'd per-request by uhttpd — so the web tier
+# costs ~0 resident RAM beyond uhttpd's small event-loop listener. It runs as
+# root: it edits /etc/rnsbox/*, /etc/reticulum/config and exec's the S* init
+# scripts to apply changes, exactly like the old Flask app did.
+#
+# Why uhttpd (not busybox httpd): uhttpd serves the docroot index at bare "/"
+# (busybox httpd hard-404s "/"), does proper redirects/error pages, and leaves
+# room for TLS later. It is a documented drop-in replacement for busybox httpd.
+#
+# uhttpd specifics (verified against the pinned source, commit 15346de8):
+#   -p 0.0.0.0:80   HTTP listen
+#   -h /www         docroot (realpath'd; must exist)
+#   -x /cgi-bin     CGI url prefix — any file under <docroot>/cgi-bin is exec'd
+#                   directly as CGI regardless of extension (our binary has none)
+#   -I index.html   index file served for "/" (index.html is a default anyway)
+#   NB: do NOT pass -S. -S sets no_symlinks=1, which makes uhttpd realpath() the
+#       request and enforce docroot-containment — that would resolve our
+#       /www/cgi-bin/portal symlink to /usr/sbin/... (outside /www) and REJECT
+#       it. Without -S the containment check is lexical, so the symlink passes
+#       and the kernel dereferences it at exec. (cgi env: SCRIPT_NAME=
+#       /cgi-bin/portal, PATH_INFO=/<route> — same as busybox httpd, so the CGI
+#       binary is unchanged.)
+#   uhttpd self-daemonizes when -f is absent; it has no pidfile option, so we
+#   track it with pidof and stop it with killall (same as the old httpd script).
+#
+# Listens on 0.0.0.0:80. WAN reachability is governed by nftables (the Open
+# Ports list ships tcp/80), matching the pre-uhttpd behaviour.
+
+DOCROOT=/www
+
+start() {
+	mkdir -p /var/log "$DOCROOT/cgi-bin"
+	if pidof uhttpd >/dev/null 2>&1; then
+		echo "S81router: uhttpd already running (pid $(pidof uhttpd))"
+		return 0
+	fi
+	printf "Starting uhttpd (portal): "
+	# -t/-T 200: the Reticulum tab's "Update rnsd" apply shells to pip (in-place
+	# package update + rnsd restart) and can run well past uhttpd's 60 s default
+	# script timeout; raise both the script and network idle timeouts so the
+	# async apply isn't killed mid-flight (the browser shows a spinner meanwhile).
+	uhttpd -p 0.0.0.0:80 -h "$DOCROOT" -x /cgi-bin -I index.html -t 200 -T 200
+	sleep 0.3
+	if pidof uhttpd >/dev/null 2>&1; then echo "OK (pid $(pidof uhttpd))"; else echo "FAIL"; return 1; fi
+}
+
+stop() {
+	printf "Stopping uhttpd: "
+	killall uhttpd 2>/dev/null
+	echo "OK"
+}
+
+case "${1:-start}" in
+	start)   start ;;
+	stop)    stop ;;
+	restart) stop; sleep 1; start ;;
+	*) echo "Usage: $0 {start|stop|restart}" >&2; exit 1 ;;
+esac

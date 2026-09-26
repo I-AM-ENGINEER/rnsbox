@@ -1,0 +1,82 @@
+<h2>Settings</h2>
+
+<section class="card">
+  <h3>Time &amp; Clock</h3>
+  <table class="kv">
+    <tr><th>System time</th><td>
+      <span class="timeval">__SYS_TIME__</span> <span class="muted">UTC</span>
+      __TIME_BADGE__
+    </td></tr>
+  </table>
+
+  <h4>Sync to browser</h4>
+  <p class="muted">The board has no real-time clock, so it boots at 1970. Set the
+  clock to this device's time — the quickest way to get a correct clock on a box
+  with no internet. rnsd picks up the new time on its own.</p>
+  <p>This browser reads <strong id="browser-time">…</strong> UTC</p>
+  <form method="post" action="__BASE__/settings/time/browser"
+        onsubmit="this.epoch.value = Math.floor(Date.now()/1000)">
+    <input type="hidden" name="epoch" value="">
+    <button type="submit" class="btn-primary">Sync clock to browser</button>
+  </form>
+
+  <h4>NTP servers</h4>
+  <form method="post" action="__BASE__/settings/ntp">
+    <label>Upstream time servers — one per line; leave blank to run without NTP
+      <textarea name="servers" class="ntp-servers" rows="3" spellcheck="false">__NTP_SERVERS__</textarea>
+    </label>
+    <div class="time-actions">
+      <button type="submit" class="btn-primary">Save servers</button>
+    </div>
+  </form>
+  <form method="post" action="__BASE__/settings/ntp/restart" class="ntp-restart">
+    <button type="submit" class="btn">Restart NTP</button>
+    <span class="muted">ntpd runs with <code>-g</code>, so it steps the clock even from 1970 once it can reach a server.</span>
+  </form>
+
+  <script>
+  (function(){
+    function p(n){ return String(n).padStart(2,'0'); }
+    function fmt(d){ return d.getUTCFullYear()+'-'+p(d.getUTCMonth()+1)+'-'+p(d.getUTCDate())+' '
+                          +p(d.getUTCHours())+':'+p(d.getUTCMinutes())+':'+p(d.getUTCSeconds()); }
+    var el = document.getElementById('browser-time');
+    function tick(){ el.textContent = fmt(new Date()); }
+    tick(); setInterval(tick, 1000);
+  })();
+  </script>
+</section>
+
+<section class="card">
+  <h3>Change admin password</h3>
+  <form method="post" action="__BASE__/settings/password">
+    <label>Current password
+      <input type="password" name="old" autocomplete="current-password" required>
+    </label>
+    <label>New password (≥6 chars)
+      <input type="password" name="new" autocomplete="new-password" required minlength="6">
+    </label>
+    <label>Confirm new password
+      <input type="password" name="confirm" autocomplete="new-password" required minlength="6">
+    </label>
+    <button type="submit" class="btn-primary">Change password</button>
+  </form>
+</section>
+
+<section class="card">
+  <h3>Hostname</h3>
+  <form method="post" action="__BASE__/settings/hostname">
+    <label>New hostname
+      <input type="text" name="hostname" value="__HOSTNAME__" maxlength="63" required>
+    </label>
+    <button type="submit" class="btn-primary">Apply</button>
+    <p class="muted">Alphanumerics, dashes, underscores. Effective immediately for new connections; reboot for SSH banners + log file naming.</p>
+  </form>
+</section>
+
+<section class="card">
+  <h3>WAN interface</h3>
+  <p>Currently: <strong>__WAN__</strong></p>
+  <p class="muted">Switch the WAN uplink (eth0 wired ↔ wlan0 WiFi) from the
+  <a href="__BASE__/network">Network</a> tab. On the W variant, wlan0
+  WAN also needs the WiFi client connected (<a href="__BASE__/wifi">WiFi</a> tab).</p>
+</section>

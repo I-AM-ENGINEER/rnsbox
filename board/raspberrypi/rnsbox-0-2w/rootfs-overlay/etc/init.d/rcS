@@ -1,0 +1,33 @@
+#!/bin/sh
+#
+# RNSBox rcS — run the S??* init scripts in order.
+#
+# First re-attach stdout/stderr to /dev/console: on slow boots (or under
+# emulation) the kernel's attempt to open an initial console for init can
+# fail ("Warning: unable to open an initial console"), which leaves PID 1 —
+# and every service it spawns — writing to /dev/null. devtmpfs is mounted by
+# then, so reopening here always succeeds and boot messages are never lost.
+#
+exec >/dev/console 2>&1
+
+for i in /etc/init.d/S??*; do
+
+	# Ignore dangling symlinks (if any).
+	[ ! -f "$i" ] && continue
+
+	case "$i" in
+		*.sh)
+			# Source shell script for speed.
+			(
+				trap - INT QUIT TSTP
+				set start
+				# shellcheck source=/dev/null
+				. "$i"
+			)
+			;;
+		*)
+			# No sh extension, so fork subprocess.
+			"$i" start
+			;;
+	esac
+done

@@ -1,0 +1,82 @@
+#!/bin/sh
+# S82rnsd — Reticulum Network Stack daemon.
+#
+# Gated on /run/clock-synced (S45ntpsync) because Reticulum's link
+# announcements include a wall-clock timestamp and a node still at
+# 1970 will be silently filtered by every peer with a sane clock. We
+# refuse to start rather than spam invalid announcements that get
+# rate-limited.
+#
+# Config: /etc/reticulum/config (shipped as an opinionated default; the
+# rnsbox-portal UI exposes a raw editor). rnsd creates the config dir
+# + default file on first run if missing, so the placeholder we ship is
+# just a hint.
+#
+# Bind addr: rnsd listens on whatever interfaces are declared in the
+# config (typically a TCPServerInterface on 0.0.0.0:4242 + an
+# AutoInterface on usb0). The nftables INPUT chain in S60routing only
+# accepts inbound :4242 on WAN if the user added it to
+# /etc/rnsbox/openports.conf via the portal.
+
+NAME=rnsd
+DAEMON=/usr/bin/rnsd
+PIDFILE=/var/run/$NAME.pid
+LOG=/var/log/$NAME.log
+CFG_DIR=/etc/reticulum
+
+[ -x "$DAEMON" ] || exit 0
+
+start() {
+	mkdir -p /var/log /var/run "$CFG_DIR"
+
+	if [ -f "$PIDFILE" ] && kill -0 "$(cat $PIDFILE)" 2>/dev/null; then
+		echo "S82rnsd: already running (pid $(cat $PIDFILE))"
+		return 0
+	fi
+
+	if [ ! -f /run/clock-synced ]; then
+		echo "S82rnsd: refusing to start - /run/clock-synced absent"
+		echo "        (S45ntpsync did not succeed; check WAN link"
+		echo "         and /var/log/ntp-step.log)"
+		return 1
+	fi
+
+	printf "Starting %s: " "$NAME"
+	# --config points at our config dir; rnsd auto-creates files inside.
+	# -s detaches to its own process group; we still pidfile-track so
+	# the watchdog (S46wanwatch) can detect it cleanly.
+	"$DAEMON" --config "$CFG_DIR" >>"$LOG" 2>&1 &
+	PID=$!
+	echo "$PID" > "$PIDFILE"
+	sleep 0.3
+	if kill -0 "$PID" 2>/dev/null; then
+		echo "OK (pid $PID)"
+	else
+		echo "FAIL (see $LOG)"
+		rm -f "$PIDFILE"
+		return 1
+	fi
+}
+
+stop() {
+	printf "Stopping %s: " "$NAME"
+	if [ -f "$PIDFILE" ]; then
+		kill "$(cat $PIDFILE)" 2>/dev/null
+		# Reticulum drains active links cleanly on SIGTERM; give it a moment.
+		for _ in 1 2 3 4 5; do
+			[ -f "$PIDFILE" ] && kill -0 "$(cat $PIDFILE)" 2>/dev/null || break
+			sleep 1
+		done
+		rm -f "$PIDFILE"
+		echo "OK"
+	else
+		echo "(not running)"
+	fi
+}
+
+case "${1:-start}" in
+	start)   start ;;
+	stop)    stop ;;
+	restart) stop; sleep 1; start ;;
+	*) echo "Usage: $0 {start|stop|restart}" >&2; exit 1 ;;
+esac
