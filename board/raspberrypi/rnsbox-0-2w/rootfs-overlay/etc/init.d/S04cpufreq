@@ -1,0 +1,11 @@
+#!/bin/sh
+# CPU governor: schedutil — frequency follows the load (600 MHz idle).
+start() {
+	for p in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+		[ -w "$p" ] && echo schedutil > "$p" 2>/dev/null
+	done
+}
+case "$1" in
+	start|reload) start ;;
+	*) echo "Usage: $0 start" ;;
+esac

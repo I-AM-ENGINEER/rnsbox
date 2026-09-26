@@ -8,6 +8,8 @@ kernel=Image
 arm_64bit=1
 disable_overscan=1
 gpu_mem=16
+# ACT LED: heartbeat = the "alive" pulse (default actpwr burns constantly)
+dtparam=act_led_trigger=heartbeat
 enable_uart=1
 dtoverlay=disable-bt
 dtoverlay=dwc2,dr_mode=peripheral
