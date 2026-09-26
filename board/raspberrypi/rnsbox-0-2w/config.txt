@@ -5,12 +5,13 @@
 # is reserved for the optional SLIP link to a WiFi-HaLow modem at 2 Mbaud,
 # so Bluetooth is disabled and the serial console stays OFF the UART.
 
-# Cut-down firmware: no display / camera pipeline at all. The full start.elf
-# silently enforces a ~128 MB GPU memory floor on the Zero 2 W even with
-# gpu_mem=16 below (the ARM side then sees only 384 MB); start_cd.elf honors
-# gpu_mem=16, giving Linux ~496 MB. Keep start.elf on the card (defconfig
-# ships both) so a manual edit here can undo this without a rebuild — at the
-# cost of there being NO HDMI console at all.
+# Cut-down firmware: drops the camera pipeline and the hardware codecs —
+# the components that force the full start.elf to silently raise the GPU
+# memory floor to ~128 MB on the Zero 2 W even with gpu_mem=16 below (the
+# ARM side then sees only 384 MB). start_cd.elf honors gpu_mem=16, giving
+# Linux ~496 MB. The HDMI console (firmware framebuffer for tty1) keeps
+# working, at 16 bpp; only camera/recording use cases need start.elf, which
+# stays on the card (defconfig ships both) as a manual fallback.
 start_file=start_cd.elf
 fixup_file=fixup_cd.dat
 
