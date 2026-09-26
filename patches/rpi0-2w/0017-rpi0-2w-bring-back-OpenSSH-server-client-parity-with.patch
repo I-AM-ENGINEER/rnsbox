@@ -1,0 +1,50 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Taixin Reverse <reverse@taixin.local>
+Date: Sat, 26 Sep 2026 16:18:33 +0300
+Subject: [PATCH 17/17] rpi0-2w: bring back OpenSSH server+client (parity with
+ the lichee build)
+
+The lichee defconfig ships BR2_PACKAGE_OPENSSH=y (server+client) and
+openports.conf lists tcp/22 by default; the port had dropped the daemon
+while keeping the port entry, so the portal advertised an SSH service
+that did not exist. Enable openssh and ship an explicit sshd_config:
+root/admin password login (WAN :22 stays behind the openports firewall),
+sftp via /usr/libexec/sftp-server.
+---
+ .../rnsbox-0-2w/rootfs-overlay/etc/ssh/sshd_config       | 9 +++++++++
+ configs/rnsbox_rpi0_2w_64_defconfig                      | 3 +++
+ 2 files changed, 12 insertions(+)
+ create mode 100644 board/raspberrypi/rnsbox-0-2w/rootfs-overlay/etc/ssh/sshd_config
+
+diff --git a/board/raspberrypi/rnsbox-0-2w/rootfs-overlay/etc/ssh/sshd_config b/board/raspberrypi/rnsbox-0-2w/rootfs-overlay/etc/ssh/sshd_config
+new file mode 100644
+index 00000000..020f3a23
+--- /dev/null
++++ b/board/raspberrypi/rnsbox-0-2w/rootfs-overlay/etc/ssh/sshd_config
+@@ -0,0 +1,9 @@
++# RNSBox sshd — explicit config (the rootfs overlay beats the upstream sample
++# installed by the openssh package). Root/admin password login over the USB
++# LAN (10.42.0.1). WAN :22 stays firewalled behind /etc/rnsbox/openports.conf
++# until the user opens it in the portal.
++PermitRootLogin yes
++PasswordAuthentication yes
++PermitEmptyPasswords no
++PrintMotd no
++Subsystem sftp /usr/libexec/sftp-server
+diff --git a/configs/rnsbox_rpi0_2w_64_defconfig b/configs/rnsbox_rpi0_2w_64_defconfig
+index a415fb70..a081b6a9 100644
+--- a/configs/rnsbox_rpi0_2w_64_defconfig
++++ b/configs/rnsbox_rpi0_2w_64_defconfig
+@@ -47,6 +47,9 @@ BR2_PACKAGE_ZLIB=y
+ BR2_PACKAGE_RNSBOX_PORTAL=y
+ # router data plane
+ BR2_PACKAGE_DNSMASQ=y
++BR2_PACKAGE_OPENSSH=y
++BR2_PACKAGE_OPENSSH_CLIENT=y
++BR2_PACKAGE_OPENSSH_SERVER=y
+ BR2_PACKAGE_NFTABLES=y
+ BR2_PACKAGE_DHCPCD=y
+ BR2_PACKAGE_OPENRESOLV=y
+-- 
+2.43.0
+

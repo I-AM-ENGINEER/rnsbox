@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: rnsbox <rnsbox@localhost>
 Date: Sat, 26 Sep 2026 03:49:09 +0300
-Subject: [PATCH 15/16] gadget: mount sysfs+configfs before composing (root
+Subject: [PATCH 15/17] gadget: mount sysfs+configfs before composing (root
  cause of the dead USB device)
 
 /sys was never mounted at rcS time (only devtmpfs automounts; the fstab
@@ -70,3 +70,6 @@ index b56e2b3d..3b11ea04 100755
  		# Device-side MAC: set via configfs BEFORE the UDC bind so the
  		# function never changes identity after enumeration (rewriting the
  		# MAC of a live function upsets some hosts - Code 43).
+-- 
+2.43.0
+

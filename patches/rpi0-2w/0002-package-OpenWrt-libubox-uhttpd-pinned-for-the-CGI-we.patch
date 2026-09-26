@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: rnsbox <rnsbox@localhost>
 Date: Thu, 24 Sep 2026 23:01:38 +0300
-Subject: [PATCH 02/16] package: OpenWrt libubox + uhttpd (pinned), for the CGI
+Subject: [PATCH 02/17] package: OpenWrt libubox + uhttpd (pinned), for the CGI
  web tier
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -189,3 +189,6 @@ index f4fcccfa..74deed93 100644
 +UHTTPD_CONF_OPTS = -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DLUA_SUPPORT=OFF -DUBUS_SUPPORT=OFF -DTLS_SUPPORT=OFF
  
  $(eval $(cmake-package))
+-- 
+2.43.0
+

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: rnsbox <rnsbox@localhost>
 Date: Thu, 24 Sep 2026 23:21:44 +0300
-Subject: [PATCH 12/16] docs: README.RNSBox.md + APPLYING.md for the Pi Zero 2
+Subject: [PATCH 12/17] docs: README.RNSBox.md + APPLYING.md for the Pi Zero 2
  W build; kernel -rnsbox suffix
 
 Nano dropped from the image: it is a non-essential editor and its upstream
@@ -330,3 +330,6 @@ index dbbda314..b1b12de5 100644
  if BR2_PACKAGE_PYTHON3
  menu "External python modules"
  	source "package/python-aenum/Config.in"
+-- 
+2.43.0
+

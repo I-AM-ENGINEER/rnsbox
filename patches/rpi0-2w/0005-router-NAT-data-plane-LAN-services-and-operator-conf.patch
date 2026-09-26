@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: rnsbox <rnsbox@localhost>
 Date: Thu, 24 Sep 2026 23:07:18 +0300
-Subject: [PATCH 05/16] router: NAT data plane, LAN services and operator
+Subject: [PATCH 05/17] router: NAT data plane, LAN services and operator
  config (WAN = wlan0)
 
 Same shape as the LicheeRV router layer, adapted to the board:
@@ -567,3 +567,6 @@ index 60d6d4e5..916400c2 100644
 +BR2_PACKAGE_DOSFSTOOLS_FSCK_FAT=y
 +BR2_PACKAGE_DOSFSTOOLS_MKFS_FAT=y
 +BR2_PACKAGE_NANO=y
+-- 
+2.43.0
+

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: rnsbox <rnsbox@localhost>
 Date: Sat, 26 Sep 2026 03:01:27 +0300
-Subject: [PATCH 14/16] gadget: set NCM MAC pre-bind via configfs; correct
+Subject: [PATCH 14/17] gadget: set NCM MAC pre-bind via configfs; correct
  fragment symbol names
 
 Windows Code 43 (device descriptor failed) on first hardware boot: the
@@ -79,3 +79,6 @@ index 45d3d757..ceea5e54 100755
  
  	ip link set usb0 up
  	ip addr add "$USB0_IPV4" dev usb0 2>/dev/null || true
+-- 
+2.43.0
+

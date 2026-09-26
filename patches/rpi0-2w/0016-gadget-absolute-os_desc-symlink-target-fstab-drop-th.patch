@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: rnsbox <rnsbox@localhost>
 Date: Sat, 26 Sep 2026 03:58:00 +0300
-Subject: [PATCH 16/16] gadget: absolute os_desc symlink target; fstab: drop
+Subject: [PATCH 16/17] gadget: absolute os_desc symlink target; fstab: drop
  the /var/lock tmpfs line
 
 configfs resolves symlink targets from the string given - a relative
@@ -36,3 +36,6 @@ index 3b11ea04..a4d56a32 100755
  		echo WINNCM  > "$GADGET/functions/ncm.usb0/os_desc/interface.ncm/compatible_id"
  	fi
  
+-- 
+2.43.0
+

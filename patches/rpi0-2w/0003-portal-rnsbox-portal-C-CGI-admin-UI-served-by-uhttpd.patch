@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: rnsbox <rnsbox@localhost>
 Date: Thu, 24 Sep 2026 23:04:06 +0300
-Subject: [PATCH 03/16] portal: rnsbox-portal C++/CGI admin UI served by uhttpd
+Subject: [PATCH 03/17] portal: rnsbox-portal C++/CGI admin UI served by uhttpd
  (S81router)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -6516,3 +6516,6 @@ index 00000000..599bcf43
 +details.neigh > summary:hover { background: #fafbfc; }
 +details.neigh .body { border-top: 1px solid var(--border); }
 +details.neigh .data { margin: 0; }
+-- 
+2.43.0
+

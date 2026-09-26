@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: rnsbox <rnsbox@localhost>
 Date: Thu, 24 Sep 2026 23:10:49 +0300
-Subject: [PATCH 08/16] wifi: STA / AP / concurrent AP+STA on the onboard
+Subject: [PATCH 08/17] wifi: STA / AP / concurrent AP+STA on the onboard
  brcmfmac radio
 
 Same wpa_supplicant/hostapd layer as the LicheeRV W build, on the Zero 2 W's
@@ -606,3 +606,6 @@ index cdb72962..f230eb78 100644
 +BR2_PACKAGE_HOSTAPD_ACS=y
 +BR2_PACKAGE_HOSTAPD_DRIVER_NL80211=y
 +BR2_PACKAGE_IW=y
+-- 
+2.43.0
+

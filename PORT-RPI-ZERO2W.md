@@ -6,7 +6,7 @@ and smoke-tested via `qemu-aarch64-static` chroot.
 
 ## Result
 
-- **13-patch series** in `patches/rpi0-2w/` on top of official Buildroot
+- **17-patch series** in `patches/rpi0-2w/` on top of official Buildroot
   **2026.02.3** (`679b9ead7620bbf193620d1ebf56f53c1764d37a`) + the Raspberry
   Pi Foundation kernel (pinned tarball, 6.12.61 class). `./build.sh rpi0-2w
   lite` builds end-to-end; the f_ncm TX-timer fix the Lichee series carried

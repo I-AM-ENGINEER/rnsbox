@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: rnsbox <rnsbox@localhost>
 Date: Thu, 24 Sep 2026 23:08:59 +0300
-Subject: [PATCH 07/16] rnsd: Reticulum daemon service, shipped config and
+Subject: [PATCH 07/17] rnsd: Reticulum daemon service, shipped config and
  python-rns package
 
 python-rns installs rns as a PEP 517 wheel so pip can upgrade it in place
@@ -258,3 +258,6 @@ index 00000000..cefd14d8
 +PYTHON_RNS_LICENSE_FILES = LICENSE
 +
 +$(eval $(python-package))
+-- 
+2.43.0
+
