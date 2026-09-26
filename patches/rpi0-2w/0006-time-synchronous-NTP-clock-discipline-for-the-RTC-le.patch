@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: rnsbox <rnsbox@localhost>
 Date: Thu, 24 Sep 2026 23:08:59 +0300
-Subject: [PATCH 06/13] time: synchronous NTP clock discipline for the RTC-less
+Subject: [PATCH 06/16] time: synchronous NTP clock discipline for the RTC-less
  board
 
 S45ntpsync one-shot steps the clock from anycast NTP IPs before anything

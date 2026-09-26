@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: rnsbox <rnsbox@localhost>
 Date: Thu, 24 Sep 2026 23:01:38 +0300
-Subject: [PATCH 02/13] package: OpenWrt libubox + uhttpd (pinned), for the CGI
+Subject: [PATCH 02/16] package: OpenWrt libubox + uhttpd (pinned), for the CGI
  web tier
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

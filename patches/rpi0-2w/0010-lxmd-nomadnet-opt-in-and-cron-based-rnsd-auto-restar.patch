@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: rnsbox <rnsbox@localhost>
 Date: Thu, 24 Sep 2026 23:17:47 +0300
-Subject: [PATCH 10/13] lxmd + nomadnet (opt-in) and cron-based rnsd
+Subject: [PATCH 10/16] lxmd + nomadnet (opt-in) and cron-based rnsd
  auto-restart
 
 python-lxmf (lxmd propagation node) and python-nomadnet recipes ported

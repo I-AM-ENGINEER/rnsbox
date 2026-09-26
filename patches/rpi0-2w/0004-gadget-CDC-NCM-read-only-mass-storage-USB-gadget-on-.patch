@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: rnsbox <rnsbox@localhost>
 Date: Thu, 24 Sep 2026 23:06:15 +0300
-Subject: [PATCH 04/13] gadget: CDC-NCM (+ read-only mass-storage) USB gadget
+Subject: [PATCH 04/16] gadget: CDC-NCM (+ read-only mass-storage) USB gadget
  on the OTG port
 
 S10usbdev composes the gadget via configfs from the same /boot/usb.* flag

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: rnsbox <rnsbox@localhost>
 Date: Fri, 25 Sep 2026 06:42:41 +0300
-Subject: [PATCH 13/13] slip: default UART device is /dev/serial0 (primary-UART
+Subject: [PATCH 13/16] slip: default UART device is /dev/serial0 (primary-UART
  alias)
 
 With this kernel generation the PL011 can enumerate as ttyAMA1 (the
