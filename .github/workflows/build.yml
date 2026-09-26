@@ -31,7 +31,9 @@ on:
       - '.github/workflows/build.yml'
 
 concurrency:
-  group: build-${{ matrix.board }}-${{ github.ref }}
+  # NB: the workflow-level context has no `matrix`, so the group is ref-only;
+  # per-board grouping is unnecessary — each board has its own workflow file.
+  group: build-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
