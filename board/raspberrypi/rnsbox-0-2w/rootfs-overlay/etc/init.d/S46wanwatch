@@ -75,8 +75,10 @@ STOPPED_MARK=/run/rnsd.stopped                # explicit `S82rnsd stop`
 ARMED_MARK=/run/rnsd.armed                    # S82rnsd start/restart ran
 DOWN_SINCE=/run/rnsd-down-since               # step 2a: uptime when the
                                               # current rnsd outage began
-RNSD_DOWN_LIMIT=3600                          # step 2a: reboot after this
-                                              # much continuous rnsd absence
+RNSD_DOWN_LIMIT=3600                          # step 2a default, if
+                                              # /etc/rnsbox/rnsdmon.conf
+                                              # is missing (portal-editable)
+MON_CONF=/etc/rnsbox/rnsdmon.conf             # step 2a: enabled=/down_limit=
 DEPS_MARK=/run/wanwatch-deps-pending          # nomadnet/lxmd wait for rnsd
 READDR_MARK=/run/wan-eth0-readdressed         # S30eth stop, WAN=auto
 CLOCK_SRC=/run/clock-source                   # rtc|ntp|browser (S45ntpsync)
@@ -319,13 +321,24 @@ loop() {
 		# supposed to run: armed this boot and not after an explicit stop;
 		# anything else (boot not there yet, rcK's stop, a healthy rnsd)
 		# clears the streak. A legit restart is down ~20 s; the 04:00 cron
-		# restart likewise — far below the limit.
+		# restart likewise — far below the limit. Portal-editable via
+		# /etc/rnsbox/rnsdmon.conf (enabled=, down_limit=); re-read every
+		# tick so a web save applies at once. Missing file = defaults.
+		me=yes
+		ml=$RNSD_DOWN_LIMIT
+		while read -r _k _v; do
+			case "$_k" in
+				enabled)    me=$_v ;;
+				down_limit) case "$_v" in ''|*[!0-9]*) ;; *) [ "$_v" -ge 60 ] && ml=$_v ;; esac ;;
+			esac
+		done < "$MON_CONF" 2>/dev/null
 		up=
 		{ read -r up _ </proc/uptime; } 2>/dev/null
 		up=${up%%.*}
 		case "$up" in ''|*[!0-9]*) up= ;; esac
 		countable=
-		if [ -f "$ARMED_MARK" ] && [ ! -f "$STOPPED_MARK" ] && [ -n "$up" ]; then
+		if [ "$me" != no ] && [ -f "$ARMED_MARK" ] && [ ! -f "$STOPPED_MARK" ] \
+		   && [ -n "$up" ]; then
 			countable=1
 		fi
 		if [ -z "$countable" ] || rnsd_running; then
@@ -336,9 +349,9 @@ loop() {
 			case "$since" in
 				''|*[!0-9]*) echo "$up" > "$DOWN_SINCE" ;;
 				*)
-					if [ "$up" -ge $((since + RNSD_DOWN_LIMIT)) ]; then
-						log "rnsd down for ${RNSD_DOWN_LIMIT}s despite kicks -> sync + reboot"
-						logger -t S46wanwatch -p daemon.alert "rnsd down ${RNSD_DOWN_LIMIT}s - rebooting" 2>/dev/null
+					if [ "$up" -ge $((since + ml)) ]; then
+						log "rnsd down for ${ml}s despite kicks -> sync + reboot"
+						logger -t S46wanwatch -p daemon.alert "rnsd down ${ml}s - rebooting" 2>/dev/null
 						sync
 						reboot
 					fi ;;

@@ -116,6 +116,96 @@ static bool truthy(const std::string& s) {
     return !(v == "no" || v == "0" || v == "false" || v == "off" || v.empty());
 }
 
+// ===================== rnsd down-watchdog (S46wanwatch step 2a) ============
+// The watchdog syncs+reboots when rnsd has been continuously absent for
+// down_limit seconds despite wanwatch's 10 s kicks. Config is portal-editable
+// and re-read by wanwatch every tick, so a save here takes effect at once and
+// the reboot is never a surprise: this card shows the live outage state too.
+
+constexpr const char* RNSDMON_CONF = "/etc/rnsbox/rnsdmon.conf";
+
+struct RnsdMonConf {
+    bool enabled = true;
+    long down_limit = 3600;
+};
+
+static const long RNSDMON_LIMITS[] = { 1800, 3600, 7200, 21600, 43200 };
+
+static RnsdMonConf rnsdmon_read_conf() {
+    RnsdMonConf c;
+    std::string conf = util::read_file(RNSDMON_CONF, 512);
+    bool have_en = false, have_l = false;
+    size_t i = 0;
+    while (i <= conf.size()) {
+        size_t nl = conf.find('\n', i);
+        std::string ln = util::trim(conf.substr(i, nl == std::string::npos ? std::string::npos : nl - i));
+        i = (nl == std::string::npos) ? conf.size() + 1 : nl + 1;
+        if (ln.empty() || ln[0] == '#') continue;
+        size_t eq = ln.find('=');
+        if (eq == std::string::npos) continue;
+        std::string k = util::trim(ln.substr(0, eq)), v = util::trim(ln.substr(eq + 1));
+        if (k == "enabled" && !have_en) {
+            c.enabled = truthy(v);
+            have_en = true;
+        } else if (k == "down_limit" && !have_l) {
+            if (!v.empty() && v.find_first_not_of("0123456789") == std::string::npos) {
+                long l = strtol(v.c_str(), nullptr, 10);
+                if (l >= 300 && l <= 86400) { c.down_limit = l; have_l = true; }
+            }
+        }
+    }
+    return c;
+}
+
+static std::string rnsdmon_fill(std::string h) {
+    RnsdMonConf c = rnsdmon_read_conf();
+    h = R(std::move(h), "__RNSDMON_CHECKED__", c.enabled ? "checked" : "");
+
+    std::string o;
+    bool matched = false;
+    for (long v : RNSDMON_LIMITS) {
+        if (v == c.down_limit) matched = true;
+        std::string lbl = v < 3600 ? std::to_string(v / 60) + " minutes"
+                                   : std::to_string(v / 3600) + " hour" + (v >= 7200 ? "s" : "");
+        o += "\n      <option value=\"" + std::to_string(v) + "\" " +
+             (v == c.down_limit ? "selected" : "") + ">" + lbl + "</option>";
+    }
+    if (!matched)
+        o += "\n      <option value=\"" + std::to_string(c.down_limit) +
+             "\" selected>" + std::to_string(c.down_limit / 60) + " minutes (custom)</option>";
+    h = R(std::move(h), "__RNSDMON_OPTIONS__", o);
+
+    // Live outage state: /run/rnsd-down-since holds the uptime second at
+    // which the current continuous outage began (tmpfs, wanwatch-owned).
+    std::string state;
+    if (!c.enabled) {
+        state = "<span class=\"badge\">off</span> rnsd outages never trigger a reboot";
+    } else {
+        std::string since = util::trim(util::read_file("/run/rnsd-down-since", 32));
+        if (since.empty() || since.find_first_not_of("0123456789") != std::string::npos) {
+            state = "<span class=\"badge ok\">watching</span> rnsd healthy";
+        } else {
+            std::string up = util::read_file("/proc/uptime", 64);
+            size_t sp = up.find(' ');
+            if (sp != std::string::npos) up = up.substr(0, sp);
+            up = util::trim(up.substr(0, up.find('.')));
+            long down = -1;
+            if (!up.empty() && up.find_first_not_of("0123456789") == std::string::npos) {
+                down = strtol(up.c_str(), nullptr, 10) - strtol(since.c_str(), nullptr, 10);
+                if (down < 0) down = 0;
+            }
+            if (down < 0)
+                state = "<span class=\"badge ok\">watching</span> rnsd healthy";
+            else
+                state = "<span class=\"badge warn\">rnsd DOWN " +
+                        std::to_string(down / 60) + " min</span> — reboots after " +
+                        std::to_string(c.down_limit / 60) + " min of continuous outage";
+        }
+    }
+    h = R(std::move(h), "__RNSDMON_STATE__", state);
+    return h;
+}
+
 // --- tiny best-effort JSON field readers (state file / python helper out) ---
 static std::string json_str(const std::string& j, const char* key) {
     std::string pat = std::string("\"") + key + "\"";
@@ -315,6 +405,7 @@ void reticulum_page(const Request& req, Response& res) {
     h = R(std::move(h), "__SLIP_LOCAL_IP__", E(sl.local_ip));
     h = R(std::move(h), "__SLIP_PEER_IP__",  E(sl.peer_ip));
     h = rnsh_fill(std::move(h));
+    h = rnsdmon_fill(std::move(h));
     h = R(std::move(h), "__CONFIG__",        E(cfg));
 
     res.body = render::layout(req, res, "Reticulum", "reticulum", h);
@@ -438,6 +529,30 @@ void reticulum_autorestart(const Request& req, Response& res) {
     else
         render::redirect_flash(res, ret_redirect(), "success",
             "rnsd will auto-restart every " + std::to_string(days) + " day(s) at 04:00.");
+}
+
+void reticulum_rnsdwatchdog(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, false)) return;
+    bool enabled = req.f("enabled") == "on";
+    long limit = strtol(req.f("limit").c_str(), nullptr, 10);
+    bool known = false;
+    for (long v : RNSDMON_LIMITS) if (v == limit) { known = true; break; }
+    if (!known) limit = 3600;
+    std::string conf = "enabled=" + std::string(enabled ? "yes" : "no") +
+                       "\ndown_limit=" + std::to_string(limit) + "\n";
+    if (!util::write_file_atomic(RNSDMON_CONF, conf, 0644)) {
+        render::redirect_flash(res, ret_redirect(), "error",
+            "Watchdog: could not write the config.");
+        return;
+    }
+    // No service reload: S46wanwatch re-reads the file on every 10 s tick.
+    if (!enabled)
+        render::redirect_flash(res, ret_redirect(), "success",
+            "rnsd outage watchdog disabled — wanwatch still kicks rnsd, it just never reboots.");
+    else
+        render::redirect_flash(res, ret_redirect(), "success",
+            "Watchdog armed: the box reboots if rnsd stays down for " +
+            std::to_string(limit / 60) + " minutes despite the automatic restarts.");
 }
 
 void reticulum_slip(const Request& req, Response& res) {

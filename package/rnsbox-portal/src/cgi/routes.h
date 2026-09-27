@@ -30,6 +30,7 @@ void reticulum_halow(const http::Request&, http::Response&);       // GET  JSON 
 void reticulum_config_save(const http::Request&, http::Response&); // POST PRG
 void reticulum_restart(const http::Request&, http::Response&);     // POST PRG
 void reticulum_autorestart(const http::Request&, http::Response&); // POST PRG
+void reticulum_rnsdwatchdog(const http::Request&, http::Response&); // POST PRG
 void reticulum_autoupdate(const http::Request&, http::Response&);  // POST PRG
 void reticulum_checkupdate(const http::Request&, http::Response&); // POST PRG (python helper)
 void reticulum_applyupdate(const http::Request&, http::Response&); // POST PRG (python helper)

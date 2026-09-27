@@ -14,7 +14,7 @@ on:
         options: [lite, dvd]
         default: lite
       version:
-        description: "Release tag (blank = r<date>-<shortsha>). A GitHub Release is published only on manual runs."
+        description: "Release tag (blank = r<date>-<shortsha>-<board>). A GitHub Release is published only on manual runs."
         type: string
         default: ""
   push:
@@ -24,15 +24,12 @@ on:
       - 'board/**'
       - 'configs/**'
       - 'scripts/**'
-      - 'scripts/**'
-      - 'clients-stick/**'
       - 'build.sh'
-      - 'fetch-clients.sh'
       - '.github/workflows/build.yml'
 
 concurrency:
   # NB: the workflow-level context has no `matrix`, so the group is ref-only;
-  # per-board grouping is unnecessary — each board has its own workflow file.
+  # boards build as parallel matrix jobs of this one workflow.
   group: build-${{ github.ref }}
   cancel-in-progress: true
 
@@ -47,7 +44,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # external tree: images at $ODIR/images/rnsbox-<board>-<variant>.img
           - board: rpi0-2w
+            imgdir: /mnt/rnsbox/out/rpi0-2w/images
+          # patch series over the vendor BSP: build.sh clones the BSP into
+          # $WORKDIR and the packer leaves <...>-<variant>.img in install/
+          - board: licheerv-nano
+            imgdir: /mnt/rnsbox/lichee/install/soc_sg2002_licheervnano_sd/images
     env:
       BOARD: ${{ matrix.board }}
       VARIANT: ${{ github.event.inputs.variant || 'lite' }}
@@ -105,6 +108,9 @@ jobs:
           BR2_DL_DIR: /mnt/dl
           TMPDIR: /mnt/tmp
           ODIR: /mnt/rnsbox/out/${{ matrix.board }}
+          # patch-flow boards (licheerv-nano) clone the BSP here, off the
+          # checkout dir; the external flow ignores it
+          WORKDIR: /mnt/rnsbox/lichee
         run: |
           export PATH=/usr/sbin:/sbin:$PATH
           cd rnsbox
@@ -124,18 +130,26 @@ jobs:
         run: |
           echo "## disk after"; df -h / /mnt
           echo "## build minutes: $(( ${BUILD_SECONDS:-0} / 60 ))"
-          IMGDIR=/mnt/rnsbox/out/$BOARD/images
-          echo "## images"; ls -lh "$IMGDIR" 2>/dev/null || echo "(no images dir — build did not reach packaging)"
+          echo "## images"; ls -lh "${{ matrix.imgdir }}" 2>/dev/null || echo "(no images dir — build did not reach packaging)"
           echo "## last 40 build.log lines"; tail -n 40 /mnt/tmp/build.log 2>/dev/null || true
 
       - name: Package image (.img.xz + SHA256SUMS)
         if: success()
         run: |
           set -x
-          IMGDIR=/mnt/rnsbox/out/$BOARD/images
-          IMG="rnsbox-$BOARD-$VARIANT.img"
+          IMGDIR="${{ matrix.imgdir }}"
           df -h / /mnt
           ls -la "$IMGDIR" || echo "::error::images dir missing: $IMGDIR"
+          # rpi names the image deterministically; the lichee packer copies its
+          # genimage output to <vendor-name>-<variant>.img — glob for it.
+          IMG="$(ls -t "$IMGDIR"/*-"$VARIANT".img 2>/dev/null | head -1)"
+          [ -n "$IMG" ] || IMG="$(ls -t "$IMGDIR"/*.img 2>/dev/null | head -1)"
+          if [ -z "$IMG" ]; then
+            echo "::error::no .img in $IMGDIR for variant $VARIANT"
+            exit 1
+          fi
+          IMG="$(basename "$IMG")"
+          echo "Packaging $IMG"
           STAGE="$RUNNER_TEMP/pkg"; rm -rf "$STAGE"; mkdir -p "$STAGE"
           cp -v "$IMGDIR/$IMG" "$STAGE/" || echo "::error::cp failed; df=$(df -h / /mnt | tr -s ' ' | tr '\n' ';')"
           cd "$STAGE"
@@ -154,6 +168,9 @@ jobs:
         run: |
           VER="${{ github.event.inputs.version }}"
           [ -z "$VER" ] && VER="r$(date -u +%Y.%m.%d)-${GITHUB_SHA:0:7}"
+          # two boards publish in parallel: tags must be per-board or the
+          # second `gh release create` dies on "tag already exists"
+          case "$VER" in *-"$BOARD") ;; *) VER="$VER-$BOARD" ;; esac
           cd "$IMGDIR"
           printf '%s\n' \
             "Automated RNSBox **$VARIANT** build for \`${{ matrix.board }}\` from \`${GITHUB_SHA:0:7}\` (branch \`${GITHUB_REF_NAME}\`)." \

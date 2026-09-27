@@ -43,6 +43,7 @@ static const char* const POST_ONLY[] = {
     "/reticulum/config",
     "/reticulum/restart",
     "/reticulum/autorestart",
+    "/reticulum/rnsdwatchdog",
     "/reticulum/autoupdate",
     "/reticulum/checkupdate",
     "/reticulum/applyupdate",
@@ -396,6 +397,7 @@ int main(int argc, char** argv) {
     else if (p == "/reticulum/config")           routes::reticulum_config_save(req, res);
     else if (p == "/reticulum/restart")          routes::reticulum_restart(req, res);
     else if (p == "/reticulum/autorestart")      routes::reticulum_autorestart(req, res);
+    else if (p == "/reticulum/rnsdwatchdog")     routes::reticulum_rnsdwatchdog(req, res);
     else if (p == "/reticulum/autoupdate")       routes::reticulum_autoupdate(req, res);
     else if (p == "/reticulum/checkupdate")      routes::reticulum_checkupdate(req, res);
     else if (p == "/reticulum/applyupdate")      routes::reticulum_applyupdate(req, res);

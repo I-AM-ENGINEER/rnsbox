@@ -38,6 +38,18 @@
     <span class="muted">restarts at 04:00 — bounds rnsd's announce-cache RAM growth</span>
   </form>
 
+  <form method="post" action="__BASE__/reticulum/rnsdwatchdog" class="row-form" style="margin-top:10px">
+    <label style="margin:0"><input type="checkbox" name="enabled" __RNSDMON_CHECKED__> Watchdog:
+      reboot if rnsd stays down</label>
+    <select name="limit">
+      __RNSDMON_OPTIONS__
+    </select>
+    <button type="submit" class="btn">Save</button>
+    <span class="muted">last resort — a background watcher restarts rnsd within 10&nbsp;s; if it still
+    hasn't stayed up for this long, the box syncs and reboots</span>
+    <div style="margin-top:6px" class="muted">__RNSDMON_STATE__</div>
+  </form>
+
   <h4>rnstatus -a</h4>
   <pre class="log" id="rnstatus"><span class="muted">loading… (querying the rnsd instance, can take a few seconds)</span></pre>
 </section>
