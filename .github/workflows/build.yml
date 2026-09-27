@@ -132,15 +132,19 @@ jobs:
         run: |
           IMGDIR=/mnt/rnsbox/out/$BOARD/images
           IMG="rnsbox-$BOARD-$VARIANT.img"
-          cd "$IMGDIR"
-          echo "compressing $IMG …"
-          xz -T0 -9 -k -f "$IMG"
+          echo "## df before compress"; df -h / /mnt
+          # /mnt is tight after the build (buildroot tree + dl cache + image):
+          # stage and compress on the big root disk instead.
+          STAGE="$RUNNER_TEMP/pkg"; mkdir -p "$STAGE"
+          cp "$IMGDIR/$IMG" "$STAGE/"
+          cd "$STAGE"
+          xz -T2 -9 -k -f "$IMG"
           sha256sum "$IMG" "$IMG.xz" | tee SHA256SUMS
           ls -lh "$IMG" "$IMG.xz"
-          { echo "IMG=$IMG"; echo "IMGDIR=$PWD"; } >> "$GITHUB_ENV"
+          { echo "IMG=$IMG"; echo "IMGDIR=$STAGE"; } >> "$GITHUB_ENV"
 
-      - name: Publish GitHub Release (manual runs only)
-        if: success() && github.event_name == 'workflow_dispatch'
+      - name: Publish GitHub Release
+        if: success()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -168,7 +172,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: rnsbox-${{ matrix.board }}-${{ env.VARIANT }}-image
-          path: /mnt/rnsbox/out/${{ matrix.board }}/images/rnsbox-${{ matrix.board }}-${{ env.VARIANT }}.img
+          path: ${{ env.IMGDIR }}/${{ env.IMG }}
           if-no-files-found: warn
           retention-days: 7
 
