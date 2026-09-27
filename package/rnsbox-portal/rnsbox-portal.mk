@@ -20,7 +20,11 @@
 ################################################################################
 
 RNSBOX_PORTAL_VERSION = 0.2.0
-RNSBOX_PORTAL_SITE = $(BR2_EXTERNAL_RNSBOX_PATH)/package/rnsbox-portal/src
+# The repo is used two ways: as a BR2_EXTERNAL tree (external-flow boards,
+# where BR2_EXTERNAL_RNSBOX_PATH is set) and rsynced into a vendor BSP's
+# buildroot/package by build.sh (patch-flow boards, where it is not and
+# $(TOPDIR) is the buildroot root). Resolve the source dir for both.
+RNSBOX_PORTAL_SITE = $(if $(BR2_EXTERNAL_RNSBOX_PATH),$(BR2_EXTERNAL_RNSBOX_PATH),$(TOPDIR))/package/rnsbox-portal/src
 RNSBOX_PORTAL_SITE_METHOD = local
 RNSBOX_PORTAL_LICENSE = MIT
 RNSBOX_PORTAL_LICENSE_FILES = LICENSE

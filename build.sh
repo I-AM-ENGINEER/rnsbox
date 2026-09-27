@@ -251,6 +251,16 @@ else
     fi
 fi
 
+# Shared packages live in ONE place — <repo>/package/ — no matter how many
+# boards this repo grows to. The patch series deliberately does not vendor
+# them (its last patch deletes the copies the early series added); copy the
+# current shared versions into the BSP buildroot before configuring.
+echo ">> syncing shared packages from $HERE/package"
+for p in rnsbox-portal python-rns python-lxmf python-nomadnet; do
+    rm -rf "$WORKDIR/buildroot/package/$p"
+    cp -a "$HERE/package/$p" "$WORKDIR/buildroot/package/$p"
+done
+
 rnsbox_track_latest_rns "$PWD"
 rnsbox_build
 
