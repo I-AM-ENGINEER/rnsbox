@@ -104,6 +104,7 @@ jobs:
           UPSTREAM_BASE: /mnt/rnsbox/upstream
           BR2_DL_DIR: /mnt/dl
           TMPDIR: /mnt/tmp
+          ODIR: /mnt/rnsbox/out/${{ matrix.board }}
         run: |
           export PATH=/usr/sbin:/sbin:$PATH
           cd rnsbox
