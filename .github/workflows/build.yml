@@ -130,17 +130,20 @@ jobs:
       - name: Package image (.img.xz + SHA256SUMS)
         if: success()
         run: |
+          set -x
           IMGDIR=/mnt/rnsbox/out/$BOARD/images
           IMG="rnsbox-$BOARD-$VARIANT.img"
-          echo "## df before compress"; df -h / /mnt
-          # /mnt is tight after the build (buildroot tree + dl cache + image):
-          # stage and compress on the big root disk instead.
-          STAGE="$RUNNER_TEMP/pkg"; mkdir -p "$STAGE"
-          cp "$IMGDIR/$IMG" "$STAGE/"
+          df -h / /mnt
+          ls -la "$IMGDIR" || echo "::error::images dir missing: $IMGDIR"
+          STAGE="$RUNNER_TEMP/pkg"; rm -rf "$STAGE"; mkdir -p "$STAGE"
+          cp -v "$IMGDIR/$IMG" "$STAGE/" || echo "::error::cp failed; df=$(df -h / /mnt | tr -s ' ' | tr '\n' ';')"
           cd "$STAGE"
-          xz -T2 -9 -k -f "$IMG"
+          if ! xz -T2 -9 -k -f "$IMG"; then
+            echo "::error::xz -9 failed; df=$(df -h / /mnt | tr -s ' ' | tr '\n' ';')"
+            xz -T2 -6 -k -f "$IMG" || { echo "::error::xz -6 failed too"; ls -la; exit 1; }
+          fi
           sha256sum "$IMG" "$IMG.xz" | tee SHA256SUMS
-          ls -lh "$IMG" "$IMG.xz"
+          ls -lh
           { echo "IMG=$IMG"; echo "IMGDIR=$STAGE"; } >> "$GITHUB_ENV"
 
       - name: Publish GitHub Release
@@ -168,7 +171,7 @@ jobs:
           echo "Published release: $VER"
 
       - name: Upload image
-        if: always()
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: rnsbox-${{ matrix.board }}-${{ env.VARIANT }}-image
