@@ -25,7 +25,10 @@
 #      — once rcS or the operator has started it this boot ($ARMED_MARK, so
 #      the first tick never races rcS's own S82rnsd start), and not after an
 #      explicit `S82rnsd stop` (rcK or the operator); `S82rnsd start`
-#      re-arms it.
+#      re-arms it. If kicks can't keep rnsd up at all — it is still absent
+#      after RNSD_DOWN_LIMIT (1 h on the uptime clock) — step 2a syncs and
+#      reboots the box: the hardware watchdog (S03watchdog) only covers a
+#      dead kernel, this covers a userspace that lost rnsd for good.
 #   3. The once-per-boot rnsd update check (S84cron bootcheck) needs a
 #      trusted clock (TLS) and an uplink; when either only arrives after boot
 #      (NTP once the WAN is up, a browser sync, or a WAN that comes up after
@@ -70,6 +73,10 @@ BOOTCHECK_MARK=/run/rnsbox-update-bootcheck   # created by S84cron bootcheck
 LL_MARK=/run/rnsd-lan-no-ll                   # created by S82rnsd start
 STOPPED_MARK=/run/rnsd.stopped                # explicit `S82rnsd stop`
 ARMED_MARK=/run/rnsd.armed                    # S82rnsd start/restart ran
+DOWN_SINCE=/run/rnsd-down-since               # step 2a: uptime when the
+                                              # current rnsd outage began
+RNSD_DOWN_LIMIT=3600                          # step 2a: reboot after this
+                                              # much continuous rnsd absence
 DEPS_MARK=/run/wanwatch-deps-pending          # nomadnet/lxmd wait for rnsd
 READDR_MARK=/run/wan-eth0-readdressed         # S30eth stop, WAN=auto
 CLOCK_SRC=/run/clock-source                   # rtc|ntp|browser (S45ntpsync)
@@ -302,6 +309,39 @@ loop() {
 			case "$out" in
 				*deferred*) ;;
 				*) log "ntpd not running -> S49ntp start: $out" ;;
+			esac
+		fi
+
+		# Step 2a: track a continuous rnsd outage, observed before step 2's
+		# kick — so a crash-loop where every kick still dies before the next
+		# tick accumulates too. Counted on the uptime clock (/proc/uptime):
+		# an NTP step must not shift the countdown. Only while rnsd is
+		# supposed to run: armed this boot and not after an explicit stop;
+		# anything else (boot not there yet, rcK's stop, a healthy rnsd)
+		# clears the streak. A legit restart is down ~20 s; the 04:00 cron
+		# restart likewise — far below the limit.
+		up=
+		{ read -r up _ </proc/uptime; } 2>/dev/null
+		up=${up%%.*}
+		case "$up" in ''|*[!0-9]*) up= ;; esac
+		countable=
+		if [ -f "$ARMED_MARK" ] && [ ! -f "$STOPPED_MARK" ] && [ -n "$up" ]; then
+			countable=1
+		fi
+		if [ -z "$countable" ] || rnsd_running; then
+			rm -f "$DOWN_SINCE"
+		else
+			since=
+			{ read -r since <"$DOWN_SINCE"; } 2>/dev/null
+			case "$since" in
+				''|*[!0-9]*) echo "$up" > "$DOWN_SINCE" ;;
+				*)
+					if [ "$up" -ge $((since + RNSD_DOWN_LIMIT)) ]; then
+						log "rnsd down for ${RNSD_DOWN_LIMIT}s despite kicks -> sync + reboot"
+						logger -t S46wanwatch -p daemon.alert "rnsd down ${RNSD_DOWN_LIMIT}s - rebooting" 2>/dev/null
+						sync
+						reboot
+					fi ;;
 			esac
 		fi
 
