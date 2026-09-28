@@ -14,7 +14,7 @@ on:
         options: [lite, dvd]
         default: lite
       version:
-        description: "Release tag (blank = r<date>-<shortsha>-<board>). A GitHub Release is published only on manual runs."
+        description: "Release tag (blank = r<date>-<shortsha>). One release per run holds every board's image; checksums are in the notes."
         type: string
         default: ""
   push:
@@ -133,7 +133,7 @@ jobs:
           echo "## images"; ls -lh "${{ matrix.imgdir }}" 2>/dev/null || echo "(no images dir — build did not reach packaging)"
           echo "## last 40 build.log lines"; tail -n 40 /mnt/tmp/build.log 2>/dev/null || true
 
-      - name: Package image (.img.xz + SHA256SUMS)
+      - name: Package image (.img.xz, normalized name)
         if: success()
         run: |
           set -x
@@ -141,59 +141,38 @@ jobs:
           df -h / /mnt
           ls -la "$IMGDIR" || echo "::error::images dir missing: $IMGDIR"
           # rpi names the image deterministically; the lichee packer copies its
-          # genimage output to <vendor-name>-<variant>.img — glob for it.
+          # genimage output to <vendor-name>-<variant>.img — glob for it, then
+          # normalize: every board ships as rnsbox-<board>-<variant>.img so the
+          # single multi-board release holds consistently named assets.
           IMG="$(ls -t "$IMGDIR"/*-"$VARIANT".img 2>/dev/null | head -1)"
           [ -n "$IMG" ] || IMG="$(ls -t "$IMGDIR"/*.img 2>/dev/null | head -1)"
           if [ -z "$IMG" ]; then
             echo "::error::no .img in $IMGDIR for variant $VARIANT"
             exit 1
           fi
-          IMG="$(basename "$IMG")"
           echo "Packaging $IMG"
+          BASE="rnsbox-$BOARD-$VARIANT"
           STAGE="$RUNNER_TEMP/pkg"; rm -rf "$STAGE"; mkdir -p "$STAGE"
-          cp -v "$IMGDIR/$IMG" "$STAGE/" || echo "::error::cp failed; df=$(df -h / /mnt | tr -s ' ' | tr '\n' ';')"
+          cp -v "$IMGDIR/$IMG" "$STAGE/$BASE.img" || echo "::error::cp failed; df=$(df -h / /mnt | tr -s ' ' | tr '\n' ';')"
           cd "$STAGE"
-          if ! xz -T2 -9 -k -f "$IMG"; then
+          if ! xz -T2 -9 -k -f "$BASE.img"; then
             echo "::error::xz -9 failed; df=$(df -h / /mnt | tr -s ' ' | tr '\n' ';')"
-            xz -T2 -6 -k -f "$IMG" || { echo "::error::xz -6 failed too"; ls -la; exit 1; }
+            xz -T2 -6 -k -f "$BASE.img" || { echo "::error::xz -6 failed too"; ls -la; exit 1; }
           fi
-          sha256sum "$IMG" "$IMG.xz" | tee SHA256SUMS
+          # checksums go into the release notes text; keep the file internal
+          # to the artifact so the release job can quote it there
+          sha256sum "$BASE.img.xz" | tee SHA256SUMS
           ls -lh
-          { echo "IMG=$IMG"; echo "IMGDIR=$STAGE"; } >> "$GITHUB_ENV"
-
-      - name: Publish GitHub Release
-        if: success()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          VER="${{ github.event.inputs.version }}"
-          [ -z "$VER" ] && VER="r$(date -u +%Y.%m.%d)-${GITHUB_SHA:0:7}"
-          # two boards publish in parallel: tags must be per-board or the
-          # second `gh release create` dies on "tag already exists"
-          case "$VER" in *-"$BOARD") ;; *) VER="$VER-$BOARD" ;; esac
-          cd "$IMGDIR"
-          printf '%s\n' \
-            "Automated RNSBox **$VARIANT** build for \`${{ matrix.board }}\` from \`${GITHUB_SHA:0:7}\` (branch \`${GITHUB_REF_NAME}\`)." \
-            "" \
-            "Decompress and flash to a microSD:" \
-            '```' \
-            "xz -d ${IMG}.xz && sudo dd if=${IMG} of=/dev/sdX bs=4M conv=fsync status=progress" \
-            '```' \
-            "Verify first with \`sha256sum -c SHA256SUMS\`. Default web admin: http://10.42.0.1 (admin/admin); ssh root@10.42.0.1 (root/admin)." > /tmp/notes.md
-          gh release create "$VER" \
-            --repo "${{ github.repository }}" \
-            --target "${{ github.sha }}" \
-            --title "RNSBox ${{ matrix.board }} $VER" \
-            --notes-file /tmp/notes.md \
-            "${IMG}.xz" SHA256SUMS
-          echo "Published release: $VER"
+          { echo "IMG=$BASE.img"; echo "IMGDIR=$STAGE"; } >> "$GITHUB_ENV"
 
       - name: Upload image
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: rnsbox-${{ matrix.board }}-${{ env.VARIANT }}-image
-          path: ${{ env.IMGDIR }}/${{ env.IMG }}
+          path: |
+            ${{ env.IMGDIR }}/${{ env.IMG }}.xz
+            ${{ env.IMGDIR }}/SHA256SUMS
           if-no-files-found: warn
           retention-days: 7
 
@@ -205,3 +184,70 @@ jobs:
           path: /mnt/tmp/build.log
           if-no-files-found: warn
           retention-days: 7
+
+  release:
+    # ONE release per run holding every board's image. The matrix jobs only
+    # upload artifacts; the tag is created exactly once, here, so parallel
+    # boards can never collide on it. Checksums are quoted in the notes —
+    # no SHA256SUMS asset.
+    name: release (all boards)
+    needs: build
+    if: success()
+    runs-on: ubuntu-latest
+    env:
+      VARIANT: ${{ github.event.inputs.variant || 'lite' }}
+    steps:
+      - name: Collect images from all boards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rnsbox-*-${{ env.VARIANT }}-image
+          path: dist
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -x
+          VER="${{ github.event.inputs.version }}"
+          [ -z "$VER" ] && VER="r$(date -u +%Y.%m.%d)-${GITHUB_SHA:0:7}"
+          mkdir -p rel
+          {
+            echo "Automated RNSBox **$VARIANT** build from \`${GITHUB_SHA:0:7}\` (branch \`${GITHUB_REF_NAME}\`)."
+            echo
+            echo "| Board | Image | sha256 |"
+            echo "|---|---|---|"
+            for d in dist/*/; do
+              board=$(basename "$d" | sed "s/^rnsbox-//; s/-$VARIANT-image\$//")
+              xz=$(ls "$d"/*.img.xz 2>/dev/null | head -1)
+              [ -n "$xz" ] || { echo "::error::no .img.xz in $d"; exit 1; }
+              cp "$xz" rel/
+              sum=$(awk '{print $1}' "$d/SHA256SUMS")
+              echo "| $board | \`$(basename "$xz")\` | \`$sum\` |"
+            done
+            echo
+            echo "Flash the image for your board to a microSD:"
+            echo '```'
+            echo "xz -d rnsbox-<board>-$VARIANT.img.xz"
+            echo "sudo dd if=rnsbox-<board>-$VARIANT.img of=/dev/sdX bs=4M conv=fsync status=progress"
+            echo '```'
+            echo
+            echo "Default web admin: http://10.42.0.1 (admin/admin); ssh root@10.42.0.1 (root/admin)."
+          } > /tmp/notes.md
+          cd rel
+          if gh release view "$VER" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload "$VER" --repo "${{ github.repository }}" --clobber *.img.xz
+          else
+            gh release create "$VER" --repo "${{ github.repository }}" --target "${{ github.sha }}" \
+              --title "RNSBox $VER" --notes-file /tmp/notes.md *.img.xz
+          fi
+          cat /tmp/notes.md
+
+      - name: One-off cleanup — remove the two per-board releases this scheme replaced
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # remove this step after it has run once
+          for t in r2026.09.28-fb5b1ab-rpi0-2w r2026.09.28-fb5b1ab-licheerv-nano; do
+            gh release delete "$t" --repo "${{ github.repository }}" --yes --cleanup-tag || true
+          done
