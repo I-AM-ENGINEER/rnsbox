@@ -25,6 +25,15 @@ static std::string ifname_elements(const std::vector<std::string>& names) {
 std::string generate(const std::vector<std::string>& wans, const std::vector<std::string>& lans, bool with_ipv6) {
     auto forwards = store::read_portforwards();
     auto openports = store::read_openports();
+    // HaLow modem over SLIP (S31slip): the kernel SLIP driver always names
+    // the interface sl0. When the link is configured, the modem gets the
+    // same surface as the LAN (its web UI, DNS, MQTT out) and free egress —
+    // the WAN postrouting masquerade is source-unrestricted, so NAT needs
+    // no extra rule of its own. Invalid conf values simply skip the rules
+    // (never inject unvalidated strings into the ruleset).
+    auto slip = store::read_slip();
+    bool slip_on = slip.enabled == "yes" && store::valid_ipv4(slip.local_ip)
+                                     && store::valid_ipv4(slip.peer_ip);
 
     std::string lan_set = ifname_elements(lans);
     std::string wan_set = ifname_elements(wans);
@@ -48,6 +57,10 @@ std::string generate(const std::vector<std::string>& wans, const std::vector<std
     add("\t\ticmp type echo-request limit rate 10/second accept");
     add("\t\t# LAN: full management surface (HTTP UI on :80, DHCP/DNS, SSH, etc.)");
     add("\t\tiifname @lan_ifaces accept");
+    if (slip_on) {
+        add("\t\t# HaLow modem over SLIP: management surface like the LAN");
+        add("\t\tiifname \"sl0\" accept");
+    }
     if (!forwards.empty()) {
         add("\t\t# port forwards whose target is the device itself (DNAT -> INPUT)");
         add("\t\tiifname @wan_ifaces ct status dnat accept");
@@ -82,6 +95,10 @@ std::string generate(const std::vector<std::string>& wans, const std::vector<std
     add("\t\tct state established,related accept");
     add("\t\t# LAN -> WAN (free egress)");
     add("\t\tiifname @lan_ifaces oifname @wan_ifaces accept");
+    if (slip_on) {
+        add("\t\t# HaLow modem over SLIP: free egress (telemetry, RNS uplink)");
+        add("\t\tiifname \"sl0\" oifname @wan_ifaces accept");
+    }
     if (!forwards.empty()) {
         add("\t\t# WAN -> LAN, post-DNAT (port forward destinations)");
         for (const auto& fw : forwards)

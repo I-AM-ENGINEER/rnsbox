@@ -69,6 +69,8 @@
 
   __HALOW_LIVE_BLOCK__
 
+  <div id="halow-tlm" class="halow-live muted" style="margin-top:10px"></div>
+
   <form method="post" action="__BASE__/reticulum/slip">
     <label style="margin:8px 0 0"><input type="checkbox" name="enabled"
       __SLIP_ENABLED_CHECKED__> Enable SLIP link at boot</label>
@@ -202,7 +204,31 @@ function doUpdate(action, btn, isApply){
   // The modem's rx_last_age is in SECONDS (its own UI formats it as a duration).
   function ago(v){ var s=num(v); if(s==null) return '—'; s=Math.max(0,Math.round(s));
     if(s<120) return s+' s'; if(s<7200) return Math.round(s/60)+' min'; if(s<172800) return Math.round(s/3600)+' h'; return Math.round(s/86400)+' d'; }
+  var tlm=document.getElementById('halow-tlm');
+  // Node telemetry: the JSON the firmware publishes to rnode-halow/telemetry
+  // (collected by S87halowtlm into /run/halow-tlm). Rendered even when SLIP
+  // is off — a node can also reach the broker over the LAN.
+  function renderTlm(list){
+    if(!tlm) return;
+    if(!list || !list.length){ tlm.hidden=true; tlm.innerHTML=''; return; }
+    tlm.hidden=false; tlm.className='halow-live';
+    var rows=list.map(function(t){
+      var lx=t.lxmf?esc(t.lxmf):'<span class="dim">—</span>';
+      var loc=(t.loc && !/^0[.,]0+/.test(t.loc)) ? esc(t.loc) : '<span class="dim">—</span>';
+      var traf=(t.tx_b!=null) ? ('&uarr; '+esc(t.tx_b)+' / &darr; '+esc(t.rx_b)+' <span class="dim">('+esc(t.tx_p||0)+' / '+esc(t.rx_p||0)+' pkt)</span>') : '<span class="dim">—</span>';
+      var mcs=(t.mcs==null||t.mcs==='') ? 'MCS?' : 'MCS'+esc((''+t.mcs).replace(/^mcs\s*/i,''));
+      return '<tr><td class="val">'+esc(t.name||('id-'+(t.id!=null?t.id:'?')))+
+        ' <span class="dim">fw '+esc(t.fw||'?')+'</span></td>'+
+        '<td class="val">'+esc(t.freq||'?')+' · '+esc(t.bw||'?')+' · '+mcs+'</td>'+
+        '<td class="val">'+ago(t.uptime||0)+'</td>'+
+        '<td class="val dim">'+ago(t.age||0)+' ago</td>'+
+        '<td class="val">'+loc+'</td><td class="mono">'+lx+'</td>'+
+        '<td class="val">'+traf+'</td></tr>';
+    }).join('');
+    tlm.innerHTML='<table class="data"><tr><th>Node</th><th>Radio</th><th>Uptime</th><th>Seen</th><th>Location</th><th>LXMF</th><th>Traffic</th></tr>'+rows+'</table>';
+  }
   fetch('__BASE__/reticulum/halow').then(function(r){return r.json();}).then(function(d){
+    renderTlm(d.telemetry);
     if(!d.enabled) return;
     if(!d.reachable){
       live.className='halow-live';

@@ -8,9 +8,11 @@ just yields {"reachable": false, ...}. Mirrors the old sysinfo.halow_status().
 """
 import json
 import os
+import time
 import urllib.request
 
 SLIP_CONF = "/etc/rnsbox/slip.conf"
+TLM_DIR = "/run/halow-tlm"   # written by S87halowtlm / halow_tlm.py
 
 
 def read_slip():
@@ -63,13 +65,36 @@ def _modem_api(peer, name, timeout=2.5):
         return None
 
 
+def telemetry_nodes():
+    """Latest telemetry record per node (see RNode_Halow_Firmware
+    src/telemetry.c for the payload). age = seconds since it arrived."""
+    out = []
+    try:
+        names = sorted(os.listdir(TLM_DIR))
+    except OSError:
+        return out
+    for fn in names:
+        if not fn.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(TLM_DIR, fn)) as f:
+                d = json.load(f)
+        except Exception:
+            continue
+        if isinstance(d, dict):
+            d["age"] = max(0, int(time.time() - d.pop("_seen", 0)))
+            out.append(d)
+    return out
+
+
 def halow_status(slip):
     peer = (slip.get("peer_ip") or "192.168.7.2").strip()
     enabled = (slip.get("enabled", "no").strip().lower()
                not in ("no", "0", "false", "off", ""))
     out = {"enabled": enabled, "peer": peer,
            "local": (slip.get("local_ip") or "").strip(),
-           "sl0_up": _oper_up("sl0"), "reachable": False, "neighbours": []}
+           "sl0_up": _oper_up("sl0"), "reachable": False, "neighbours": [],
+           "telemetry": telemetry_nodes()}
     if not out["enabled"] or not out["sl0_up"]:
         return out
     stat = _modem_api(peer, "get_stat")

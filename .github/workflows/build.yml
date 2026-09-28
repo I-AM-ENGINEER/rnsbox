@@ -18,7 +18,7 @@ on:
         type: string
         default: ""
   push:
-    branches: [raspberry-pi-zero-2w]
+    branches: [raspberry-pi-zero-2w, halow-telemetry]
     paths:
       - 'package/**'
       - 'board/**'

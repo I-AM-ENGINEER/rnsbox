@@ -1,0 +1,79 @@
+#!/bin/sh
+# S87halowtlm — collect HaLow node telemetry (MQTT) into /run/halow-tlm.
+#
+# The modem firmware (RNode_Halow_Firmware) periodically publishes a JSON
+# blob to topic rnode-halow/telemetry on an MQTT broker; when it sits on the
+# other end of the SLIP line (or the LAN) it publishes here, to the local
+# broker (S50mosquitto, installed with BR2_PACKAGE_MOSQUITTO). This script
+# runs the stdlib collector halow_tlm.py, which keeps mosquitto_sub attached
+# and stores each message as /run/halow-tlm/<node>.json for the portal's
+# HaLow card; the S50 bridge relays the topic to the telemetry server when
+# the box has an uplink.
+#
+# Inert no-op when mosquitto isn't installed. /run is tmpfs — records are
+# per-boot, a node re-publishes within its send period anyway.
+
+DAEMON=/usr/lib/rnsbox/halow_tlm.py
+PIDFILE=/var/run/halowtlm.pid
+LOGPIPE=/var/run/halowtlm.logpipe
+
+[ -x /usr/bin/mosquitto_sub ] || exit 0
+[ -x "$DAEMON" ] || exit 0
+
+# running — the pidfile still names a live halow_tlm.py (comm is python*,
+# so look at argv, like S82rnsd's is_rnsd).
+running() {
+	p=
+	{ read -r p <"$PIDFILE"; } 2>/dev/null
+	case "$p" in ''|*[!0-9]*) return 1 ;; esac
+	kill -0 "$p" 2>/dev/null || return 1
+	tr '\0' '\n' <"/proc/$p/cmdline" 2>/dev/null | grep -q halow_tlm.py
+}
+
+start() {
+	running && { echo "S87halowtlm: already running (pid $(cat "$PIDFILE"))"; return 0; }
+	mkdir -p /run/halow-tlm
+	printf "Starting halow telemetry collector: "
+	# FIFO -> logger, setsid + exec so $! is the collector itself (S86rnsh
+	# pattern). stdin is /dev/null; the subshell exec's setsid, which exec's
+	# python, so the pidfile names the real process.
+	LPID=$(pgrep -f "logger -t halowtlm\[" 2>/dev/null | head -1)
+	[ -n "$LPID" ] && kill "$LPID" 2>/dev/null
+	rm -f "$LOGPIPE"
+	if mkfifo -m 600 "$LOGPIPE" 2>/dev/null; then
+		( exec setsid python3 -u "$DAEMON" ) </dev/null >"$LOGPIPE" 2>&1 &
+		PID=$!
+		setsid logger -t "halowtlm[$PID]" -p daemon.notice 9>&- <"$LOGPIPE" >/dev/null 2>&1 &
+	else
+		( exec setsid python3 -u "$DAEMON" ) </dev/null >/dev/null 2>&1 &
+		PID=$!
+	fi
+	echo "$PID" > "$PIDFILE"
+	sleep 0.3
+	kill -0 "$PID" 2>/dev/null && echo "OK (pid $PID)" || { echo "FAIL"; rm -f "$PIDFILE"; return 1; }
+}
+
+stop() {
+	printf "Stopping halow telemetry collector: "
+	p=
+	{ read -r p <"$PIDFILE"; } 2>/dev/null
+	case "$p" in ''|*[!0-9]*) p= ;; esac
+	[ -n "$p" ] && kill "$p" 2>/dev/null
+	# killing the collector closes its FIFO writer: logger reads EOF and
+	# exits on its own, like rnsd's. Up to 1 s for the pipe to unwind.
+	i=0
+	while [ "$i" -lt 5 ]; do
+		{ [ -z "$p" ] || ! kill -0 "$p" 2>/dev/null; } && ! pgrep -f "logger -t halowtlm\[" >/dev/null 2>&1 && break
+		sleep 0.2; i=$((i + 1))
+	done
+	pgrep -f "logger -t halowtlm\[" >/dev/null 2>&1 && pkill -f "logger -t halowtlm\[" 2>/dev/null
+	rm -f "$PIDFILE" "$LOGPIPE"
+	echo "OK"
+}
+
+case "${1:-start}" in
+	start)          start ;;
+	stop)           stop ;;
+	restart|reload) stop; sleep 1; start ;;
+	*) echo "Usage: $0 {start|stop|restart|reload}" >&2; exit 1 ;;
+esac
