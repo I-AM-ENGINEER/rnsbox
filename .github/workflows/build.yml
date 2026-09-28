@@ -150,6 +150,7 @@ jobs:
             echo "::error::no .img in $IMGDIR for variant $VARIANT"
             exit 1
           fi
+          IMG="$(basename "$IMG")"
           echo "Packaging $IMG"
           BASE="rnsbox-$BOARD-$VARIANT"
           STAGE="$RUNNER_TEMP/pkg"; rm -rf "$STAGE"; mkdir -p "$STAGE"
