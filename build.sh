@@ -24,7 +24,7 @@
 set -e
 
 HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
-BOARDS="licheerv-nano rpi0-2w"
+BOARDS="licheerv-nano milkv-duo-01-rv rpi0-2w"
 
 BOARD=""
 VARIANT=""
@@ -59,6 +59,20 @@ case "$BOARD" in
         HOST_TOOLS_URL="${HOST_TOOLS_URL:-https://github.com/sophgo/host-tools}"
         WORKDIR="${WORKDIR:-LicheeRV-Nano-Build}"
         RNSBOX_IMAGES_DIR="install/soc_sg2002_licheervnano_sd/images"
+        ;;
+    milkv-duo-01-rv)
+        # Milk-V Duo Module 01 (Evaluation Board) — SG2000, C906B RISC-V boot.
+        # Same vendor BSP + patch-series flow as the licheerv-nano; a
+        # sibling board dir (sg2000_duomodule01_sd) carries the SG2000
+        # grafts. RNSBOX_BSP_BOARD tells the BSP's build-rnsbox.sh which
+        # board dir to defconfig and pack.
+        BUILD_STYLE=patches
+        UPSTREAM_URL="${UPSTREAM_URL:-https://github.com/sipeed/LicheeRV-Nano-Build.git}"
+        UPSTREAM_COMMIT="${UPSTREAM_COMMIT:-d4003f15b35d43ad4842f427050ab2bba0114fa5}"
+        HOST_TOOLS_URL="${HOST_TOOLS_URL:-https://github.com/sophgo/host-tools}"
+        WORKDIR="${WORKDIR:-LicheeRV-Nano-Build-duo01}"
+        RNSBOX_IMAGES_DIR="install/soc_sg2000_duomodule01_sd/images"
+        export RNSBOX_BSP_BOARD=sg2000_duomodule01_sd
         ;;
     rpi0-2w)
         BUILD_STYLE=external
@@ -147,6 +161,33 @@ rnsbox_build_licheerv_nano() {
     ./build-rnsbox.sh "$VARIANT"
 }
 
+rnsbox_build_milkv_duo_01() {
+    # Same shape as the licheerv-nano build; the board dir (and with it the
+    # DRAM map, dts, defconfigs) differs, everything else — headless strip,
+    # shared packages, gadget/router/portal/rnsd series — is identical.
+    echo ">> initial full build (first run compiles Rust from source; be patient)"
+    source build/cvisetup.sh
+    defconfig sg2000_duomodule01_sd
+    export PATH=/usr/sbin:/sbin:$PATH
+    sed -i 's/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE="200M"/' \
+        buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig
+    sed -i 's#\(<partition label="ROOTFS" size_in_kb=\)"[0-9]*"#\1"1638400"#' \
+        build/boards/sg200x/sg2000_duomodule01_sd/partition/partition_sd.xml
+    sed -i '/"usb.disk0",/d; /"usb.disk0.size",/d' \
+        build/tools/common/sd_tools/genimage_rootless.cfg
+    chmod 0755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/S* 2>/dev/null || true
+    export RNSBOX_WITH_DVD=0
+    defconfig sg2000_duomodule01_sd
+    build_all
+
+    if [ "$VARIANT" = dvd ]; then
+        echo ">> fetching latest-stable client apps for the DVD"
+        ./fetch-clients.sh
+    fi
+    echo ">> packaging [$VARIANT] image"
+    ./build-rnsbox.sh "$VARIANT"
+}
+
 rnsbox_build_rpi0_2w() {
     # Set up by the external flow below: $UPSTREAM (pristine clone at the
     # pin), $EXT (this repo, WSL-local copy when run from /mnt), $ODIR.
@@ -169,8 +210,9 @@ rnsbox_build_rpi0_2w() {
 
 rnsbox_build() {
     case "$BOARD" in
-        licheerv-nano) rnsbox_build_licheerv_nano ;;
-        rpi0-2w)       rnsbox_build_rpi0_2w ;;
+        licheerv-nano)    rnsbox_build_licheerv_nano ;;
+        milkv-duo-01-rv)  rnsbox_build_milkv_duo_01 ;;
+        rpi0-2w)          rnsbox_build_rpi0_2w ;;
     esac
 }
 
