@@ -1,0 +1,1621 @@
+From 9b5a8b04772711dbee98aba06dd9739103b1cee7 Mon Sep 17 00:00:00 2001
+From: rnsbox <rnsbox@localhost>
+Date: Wed, 14 Oct 2026 01:32:21 +0300
+Subject: [PATCH 3/5] ramdisk: 64bit overlay for SDK_VER=64bit rootfs packing
+
+pack_rootfs merges ramdisk/rootfs/overlay/${SDK_VER}; the BSP only had
+32bit/glibc_riscv64/musl_riscv64. 64bit mirrors musl_riscv64 (scripts
+only, no per-arch binaries; cvi_pinmux is not referenced by the RNSBox
+rootfs).
+---
+ ramdisk/rootfs/overlay/64bit/cmdline.sh       |  27 ++
+ .../rootfs/overlay/64bit/etc/crontabs/root    |   1 +
+ ramdisk/rootfs/overlay/64bit/etc/group        |  27 ++
+ ramdisk/rootfs/overlay/64bit/etc/hostname     |   1 +
+ .../overlay/64bit/etc/init.d/P99boottime      |  62 ++++
+ .../rootfs/overlay/64bit/etc/init.d/S00board  |  13 +
+ .../overlay/64bit/etc/init.d/S20network       |  55 ++++
+ .../rootfs/overlay/64bit/etc/init.d/S23ntp    |  34 ++
+ .../overlay/64bit/etc/init.d/S24cvidaemon     |   9 +
+ .../rootfs/overlay/64bit/etc/init.d/S99user   |  37 +++
+ ramdisk/rootfs/overlay/64bit/etc/init.d/rcK   |  49 +++
+ ramdisk/rootfs/overlay/64bit/etc/init.d/rcP   |  28 ++
+ ramdisk/rootfs/overlay/64bit/etc/issue        |   1 +
+ .../rootfs/overlay/64bit/etc/logrotate.conf   |  44 +++
+ .../overlay/64bit/etc/network/hostapd.conf    |  82 +++++
+ .../overlay/64bit/etc/network/ifcfg-eth0      |   6 +
+ .../overlay/64bit/etc/network/ifcfg-wlan0     |   9 +
+ .../overlay/64bit/etc/network/udhcpd.conf     |  91 ++++++
+ ramdisk/rootfs/overlay/64bit/etc/passwd       |  11 +
+ ramdisk/rootfs/overlay/64bit/etc/run_usb.sh   | 293 ++++++++++++++++++
+ ramdisk/rootfs/overlay/64bit/etc/shadow       |  11 +
+ ramdisk/rootfs/overlay/64bit/etc/uhubon.sh    |  85 +++++
+ .../rootfs/overlay/64bit/init.sh.overlayfssh  |  64 ++++
+ .../rootfs/overlay/64bit/init.sh.recoverysh   |  73 +++++
+ ramdisk/rootfs/overlay/64bit/init.sh.sqsh     |  69 +++++
+ .../rootfs/overlay/64bit/init_ramboot.sh.sqsh |  15 +
+ ramdisk/rootfs/overlay/64bit/system/auto.sh   |  13 +
+ .../overlay/64bit/system/ko/loadsystemko.sh   |  35 +++
+ .../overlay/64bit/usr/local/bin/autologin     |   2 +
+ .../overlay/64bit/usr/local/etc/sshd_config   | 119 +++++++
+ 30 files changed, 1366 insertions(+)
+ create mode 100755 ramdisk/rootfs/overlay/64bit/cmdline.sh
+ create mode 100644 ramdisk/rootfs/overlay/64bit/etc/crontabs/root
+ create mode 100644 ramdisk/rootfs/overlay/64bit/etc/group
+ create mode 100644 ramdisk/rootfs/overlay/64bit/etc/hostname
+ create mode 100755 ramdisk/rootfs/overlay/64bit/etc/init.d/P99boottime
+ create mode 100755 ramdisk/rootfs/overlay/64bit/etc/init.d/S00board
+ create mode 100755 ramdisk/rootfs/overlay/64bit/etc/init.d/S20network
+ create mode 100755 ramdisk/rootfs/overlay/64bit/etc/init.d/S23ntp
+ create mode 100755 ramdisk/rootfs/overlay/64bit/etc/init.d/S24cvidaemon
+ create mode 100755 ramdisk/rootfs/overlay/64bit/etc/init.d/S99user
+ create mode 100755 ramdisk/rootfs/overlay/64bit/etc/init.d/rcK
+ create mode 100755 ramdisk/rootfs/overlay/64bit/etc/init.d/rcP
+ create mode 100644 ramdisk/rootfs/overlay/64bit/etc/issue
+ create mode 100644 ramdisk/rootfs/overlay/64bit/etc/logrotate.conf
+ create mode 100644 ramdisk/rootfs/overlay/64bit/etc/network/hostapd.conf
+ create mode 100644 ramdisk/rootfs/overlay/64bit/etc/network/ifcfg-eth0
+ create mode 100644 ramdisk/rootfs/overlay/64bit/etc/network/ifcfg-wlan0
+ create mode 100644 ramdisk/rootfs/overlay/64bit/etc/network/udhcpd.conf
+ create mode 100644 ramdisk/rootfs/overlay/64bit/etc/passwd
+ create mode 100755 ramdisk/rootfs/overlay/64bit/etc/run_usb.sh
+ create mode 100644 ramdisk/rootfs/overlay/64bit/etc/shadow
+ create mode 100755 ramdisk/rootfs/overlay/64bit/etc/uhubon.sh
+ create mode 100755 ramdisk/rootfs/overlay/64bit/init.sh.overlayfssh
+ create mode 100755 ramdisk/rootfs/overlay/64bit/init.sh.recoverysh
+ create mode 100755 ramdisk/rootfs/overlay/64bit/init.sh.sqsh
+ create mode 100755 ramdisk/rootfs/overlay/64bit/init_ramboot.sh.sqsh
+ create mode 100755 ramdisk/rootfs/overlay/64bit/system/auto.sh
+ create mode 100644 ramdisk/rootfs/overlay/64bit/system/ko/loadsystemko.sh
+ create mode 100755 ramdisk/rootfs/overlay/64bit/usr/local/bin/autologin
+ create mode 100644 ramdisk/rootfs/overlay/64bit/usr/local/etc/sshd_config
+
+diff --git a/ramdisk/rootfs/overlay/64bit/cmdline.sh b/ramdisk/rootfs/overlay/64bit/cmdline.sh
+new file mode 100755
+index 000000000..d1f95196e
+--- /dev/null
++++ b/ramdisk/rootfs/overlay/64bit/cmdline.sh
+@@ -0,0 +1,27 @@
++#!/bin/sh
++
++# read the kernel options. we need surve things like:
++#  acpi_osi="!Windows 2006" xen-pciback.hide=(01:00.0)
++set -- $(busybox cat /proc/cmdline)
++
++myopts="root"
++
++for opt; do
++	case "$opt" in
++	s|single|1)
++		SINGLEMODE=yes
++		continue
++		;;
++	esac
++
++	for i in $myopts; do
++		case "$opt" in
++		$i=*)	eval "KOPT_${i}"='${opt#*=}';;
++		$i)	eval "KOPT_${i}=yes";;
++		no$i)	eval "KOPT_${i}=no";;
++		esac
++	done
++done
++
++echo "${KOPT_root}"
++
+diff --git a/ramdisk/rootfs/overlay/64bit/etc/crontabs/root b/ramdisk/rootfs/overlay/64bit/etc/crontabs/root
+new file mode 100644
+index 000000000..601e428ab
+--- /dev/null
++++ b/ramdisk/rootfs/overlay/64bit/etc/crontabs/root
+@@ -0,0 +1 @@
++* */1 * * * /usr/sbin/logrotate /etc/logrotate.conf
+diff --git a/ramdisk/rootfs/overlay/64bit/etc/group b/ramdisk/rootfs/overlay/64bit/etc/group
+new file mode 100644
+index 000000000..c79997844
+--- /dev/null
++++ b/ramdisk/rootfs/overlay/64bit/etc/group
+@@ -0,0 +1,27 @@
++root:x:0:
++daemon:x:1:
++bin:x:2:
++sys:x:3:
++adm:x:4:
++tty:x:5:
++disk:x:6:
++lp:x:7:
++mail:x:8:
++kmem:x:9:
++wheel:x:10:root
++cdrom:x:11:
++dialout:x:18:
++floppy:x:19:
++video:x:28:
++audio:x:29:
++tape:x:32:
++www-data:x:33:
++operator:x:37:
++utmp:x:43:
++plugdev:x:46:
++staff:x:50:
++lock:x:54:
++netdev:x:82:
++users:x:100:
++user:x:1000:cvitek
++nogroup:x:65534:
+diff --git a/ramdisk/rootfs/overlay/64bit/etc/hostname b/ramdisk/rootfs/overlay/64bit/etc/hostname
+new file mode 100644
+index 000000000..cb1220e76
+--- /dev/null
++++ b/ramdisk/rootfs/overlay/64bit/etc/hostname
+@@ -0,0 +1 @@
++cvitek
+diff --git a/ramdisk/rootfs/overlay/64bit/etc/init.d/P99boottime b/ramdisk/rootfs/overlay/64bit/etc/init.d/P99boottime
+new file mode 100755
+index 000000000..3c7ca6496
+--- /dev/null
++++ b/ramdisk/rootfs/overlay/64bit/etc/init.d/P99boottime
+@@ -0,0 +1,62 @@
++#!/bin/sh
++${CVI_SHOPTS}
++
++# from fsbl/plat/mars/include/platform_def.h
++# struct _time_records { ... }
++
++fields="
++fsbl_start
++ddr_init_start
++ddr_init_end
++release_blcp_2nd
++load_loader_2nd_end
++fsbl_decomp_start
++fsbl_decomp_end
++fsbl_exit
++uboot_start
++bootcmd_start
++decompress_kernel_start
++kernel_start
++kernel_run_init_start
++NONE
++"
++
++fields=$(echo $fields)
++
++TIME_RECORDS_ADDR=0x0e000010
++TIME_RECORDS_SIZE=$((2 * 14))
++
++OUTPUT=/tmp/boottime
++
++echo > "$OUTPUT"
++
++for i in $(seq 0 4 $((TIME_RECORDS_SIZE - 4))); do
++	addr=$((TIME_RECORDS_ADDR + i))
++	ts=$(devmem $addr 32)
++	# printf "0x%08x=0x%08x\n" "$a" "$ts"
++
++	t0=$((ts & 0xffff))
++	t1=$((ts >> 16))
++
++	f0="${fields%% *}"
++	fields="${fields#* }"
++	f1="${fields%% *}"
++	fields="${fields#* }"
++
++	eval "${f0}=${t0}"
++	eval "${f1}=${t1}"
++
++	{
++		echo "${f0}=${t0}ms"
++		echo "${f1}=${t1}ms"
++	} >> "$OUTPUT"
++done
++
++{
++	uname -a
++	echo "ROM elapsed time: ${fsbl_start} milliseconds"
++	echo "DDR init elapsed time: $((ddr_init_end - ddr_init_start)) milliseconds"
++	echo "C906L FreeRTOS start at: ${release_blcp_2nd} milliseconds"
++	echo "Kernel uptime: $(awk '{print $1}' /proc/uptime) seconds"
++	echo "Total boottime: ?"
++} >> "$OUTPUT"
+diff --git a/ramdisk/rootfs/overlay/64bit/etc/init.d/S00board b/ramdisk/rootfs/overlay/64bit/etc/init.d/S00board
+new file mode 100755
+index 000000000..27dfa1818
+--- /dev/null
++++ b/ramdisk/rootfs/overlay/64bit/etc/init.d/S00board
+@@ -0,0 +1,13 @@
++#! /bin/sh
++
++case $1 in
++  start)
++    # Eanble Hotplug
++    echo /sbin/mdev >/proc/sys/kernel/hotplug
++    mdev -s
++    # Set RR timeslice
++    echo 20 > /proc/sys/kernel/sched_rr_timeslice_ms
++    # Set min_free_kbytes
++    #echo 3072 > /proc/sys/vm/min_free_kbytes
++    ;;
++esac
+diff --git a/ramdisk/rootfs/overlay/64bit/etc/init.d/S20network b/ramdisk/rootfs/overlay/64bit/etc/init.d/S20network
+new file mode 100755
+index 000000000..f28b83631
+--- /dev/null
++++ b/ramdisk/rootfs/overlay/64bit/etc/init.d/S20network
+@@ -0,0 +1,55 @@
++#!/bin/sh
++${CVI_SHOPTS}
++#
++# Start the network....
++#
++
++#Configure local network
++ifconfig lo 127.0.0.1
++
++#mount network and etc folder under suqashFS systen
++#if [ -d /mnt/data/system/usr/local/etc ] && [ -L /usr/local/etc ]
++#then
++#    if [ ! -e /mnt/data/system/usr/local/etc/sshd_config ]; then
++# echo "[data partition]/usr/local/etc exists, create and copy conf files"
++# cp -rf /usr/local/etc_bak/* /mnt/data/system/usr/local/etc/
++#    fi
++#fi
++#
++#if [ -d /mnt/data/system/etc/network ] && [ -L /etc/network ]
++#then
++#    if [ ! -e /mnt/data/system/etc/network/ifcfg-eth0 ]; then
++# echo "[data partition]/etc/network exists, create and copy conf files"
++# cp -rf /etc/network_bak/* /mnt/data/system/etc/network/
++#    fi
++#fi
++
++# Debian ifupdown needs the /run/network lock directory
++if [ -e "/sys/class/net/eth0" ]; then
++  mkdir -p /run/network
++
++  case "$1" in
++    start)
++      /sbin/ifconfig eth0 up
++      printf "Starting network: "
++      start-stop-daemon -b -q -S -x /sbin/udhcpc -- -b -i eth0 -R
++      [ $? = 0 ] && echo "OK" || echo "FAIL"
++      ;;
++    stop)
++      printf "Stopping network: "
++      /sbin/ifdown -a
++      [ $? = 0 ] && echo "OK" || echo "FAIL"
++      ;;
++    restart|reload)
++      "$0" stop
++      "$0" start
++      ;;
++    *)
++      echo "Usage: $0 {start|stop|restart}"
++      exit 1
++  esac
++fi
++
++
++exit $?
++
+diff --git a/ramdisk/rootfs/overlay/64bit/etc/init.d/S23ntp b/ramdisk/rootfs/overlay/64bit/etc/init.d/S23ntp
+new file mode 100755
+index 000000000..35e58746b
+--- /dev/null
++++ b/ramdisk/rootfs/overlay/64bit/etc/init.d/S23ntp
+@@ -0,0 +1,34 @@
++#! /bin/sh
++
++NAME=ntpd
++
++# Read config file if it is present.
++if [ -r /etc/default/$NAME ]
++then
++  . /etc/default/$NAME
++fi
++
++case "$1" in
++  start)
++    printf "Starting $NAME: "
++    start-stop-daemon -S -q -x /usr/sbin/ntpd -- -g
++    [ $? = 0 ] && echo "OK" || echo "FAIL"
++    ;;
++  stop)
++    printf "Stopping $NAME: "
++    start-stop-daemon -K -q -n $NAME
++    [ $? = 0 ] && echo "OK" || echo "FAIL"
++    ;;
++  restart|reload)
++    echo "Restarting $NAME: "
++    $0 stop
++    sleep 1
++    $0 start
++    ;;
++  *)
++    echo "Usage: $0 {start|stop|restart|reload}" >&2
++    exit 1
++    ;;
++esac
++
++exit 0
+diff --git a/ramdisk/rootfs/overlay/64bit/etc/init.d/S24cvidaemon b/ramdisk/rootfs/overlay/64bit/etc/init.d/S24cvidaemon
+new file mode 100755
+index 000000000..4f11cca52
+--- /dev/null
++++ b/ramdisk/rootfs/overlay/64bit/etc/init.d/S24cvidaemon
+@@ -0,0 +1,9 @@
++#! /bin/sh
++if [ -f /usr/bin/cvidaemon ];then
++    printf "Starting cvidaemon: "
++    start-stop-daemon -S -q -b -x /usr/bin/cvidaemon eth0 8888
++    [ $? = 0 ] && echo "OK" || echo "FAIL"
++fi
++
++
++exit 0
+diff --git a/ramdisk/rootfs/overlay/64bit/etc/init.d/S99user b/ramdisk/rootfs/overlay/64bit/etc/init.d/S99user
+new file mode 100755
+index 000000000..528e71afe
+--- /dev/null
++++ b/ramdisk/rootfs/overlay/64bit/etc/init.d/S99user
+@@ -0,0 +1,37 @@
++#!/bin/sh
++${CVI_SHOPTS}
++#
++# Start firmware
++#
++export USERDATAPATH=/mnt/data/
++export SYSTEMPATH=/mnt/system/
++
++case "$1" in
++  start)
++        echo "init mpp system..."
++        if [ -d $SYSTEMPATH/ko ]; then
++                sh $SYSTEMPATH/ko/loadsystemko.sh
++        fi
++
++        echo "Starting app..."
++        if [ -f $USERDATAPATH/auto.sh ]; then
++                usleep 30000
++                . $USERDATAPATH/auto.sh &
++		exit 1
++        fi
++	if [ -f $SYSTEMPATH/auto.sh ]; then
++                usleep 30000
++                . $SYSTEMPATH/auto.sh &
++        fi
++        ;;
++  stop)
++        ;;
++  restart|reload)
++        ;;
++  *)
++        echo "Usage: $0 {start|stop|restart}"
++        exit 1
++esac
++
++exit $?
++
+diff --git a/ramdisk/rootfs/overlay/64bit/etc/init.d/rcK b/ramdisk/rootfs/overlay/64bit/etc/init.d/rcK
+new file mode 100755
+index 000000000..8af34bbdb
+--- /dev/null
++++ b/ramdisk/rootfs/overlay/64bit/etc/init.d/rcK
+@@ -0,0 +1,49 @@
++#!/bin/sh
++${CVI_SHOPTS}
++
++
++# Stop all init scripts in /etc/init.d
++# executing them in reversed numerical order.
++#
++for i in $(ls -r /etc/init.d/P??*) ;do
++
++     # Ignore dangling symlinks (if any).
++     [ ! -f "$i" ] && continue
++
++     case "$i" in
++	*.sh)
++	    # Source shell script for speed.
++	    (
++		trap - INT QUIT TSTP
++		set stop
++		. $i
++	    )
++	    ;;
++	*)
++	    # No sh extension, so fork subprocess.
++	    $i stop
++	    ;;
++    esac
++done
++
++for i in $(ls -r /etc/init.d/S??*) ;do
++
++     # Ignore dangling symlinks (if any).
++     [ ! -f "$i" ] && continue
++
++     case "$i" in
++	*.sh)
++	    # Source shell script for speed.
++	    (
++		trap - INT QUIT TSTP
++		set stop
++		. $i
++	    )
++	    ;;
++	*)
++	    # No sh extension, so fork subprocess.
++	    $i stop
++	    ;;
++    esac
++done
++
+diff --git a/ramdisk/rootfs/overlay/64bit/etc/init.d/rcP b/ramdisk/rootfs/overlay/64bit/etc/init.d/rcP
+new file mode 100755
+index 000000000..5345a08a4
+--- /dev/null
++++ b/ramdisk/rootfs/overlay/64bit/etc/init.d/rcP
+@@ -0,0 +1,28 @@
++#!/bin/sh
++${CVI_SHOPTS}
++
++
++# Start all post init scripts in /etc/init.d
++# executing them in numerical order.
++#
++for i in /etc/init.d/P??* ;do
++
++     # Ignore dangling symlinks (if any).
++     [ ! -f "$i" ] && continue
++
++     case "$i" in
++	*.sh)
++	    # Source shell script for speed.
++	    (
++		trap - INT QUIT TSTP
++		set start
++		. $i
++	    )
++	    ;;
++	*)
++	    # No sh extension, so fork subprocess.
++	    $i start
++	    ;;
++    esac
++done
++
+diff --git a/ramdisk/rootfs/overlay/64bit/etc/issue b/ramdisk/rootfs/overlay/64bit/etc/issue
+new file mode 100644
+index 000000000..fcb9dac62
+--- /dev/null
++++ b/ramdisk/rootfs/overlay/64bit/etc/issue
+@@ -0,0 +1 @@
++Welcome to Cvitek
+diff --git a/ramdisk/rootfs/overlay/64bit/etc/logrotate.conf b/ramdisk/rootfs/overlay/64bit/etc/logrotate.conf
+new file mode 100644
+index 000000000..58c0653d5
+--- /dev/null
++++ b/ramdisk/rootfs/overlay/64bit/etc/logrotate.conf
+@@ -0,0 +1,44 @@
++# Global settings
++# see "man logrotate" for details
++# keep 1 files
++rotate 1
++# create new (empty) log files after rotating old ones
++create
++# uncomment this if you want your log files compressed
++compress
++size 128k
++
++# /var/log/middleware
++/var/log/middleware {
++#postrotate
++#/etc/init.d/P01rsyslog restart
++#endscript
++}
++
++# /var/log/aisdk
++/var/log/aisdk {
++#postrotate
++#/etc/init.d/P01rsyslog restart
++#endscript
++}
++
++# /var/log/tpu
++/var/log/tpu {
++#postrotate
++#/etc/init.d/P01rsyslog restart
++#endscript
++}
++
++# /var/log/kern
++/var/log/kern {
++#postrotate
++#/etc/init.d/P01rsyslog restart
++#endscript
++}
++
++# /var/log/messages
++/var/log/messages {
++#postrotate
++#/etc/init.d/P01rsyslog restart
++#endscript
++}
+diff --git a/ramdisk/rootfs/overlay/64bit/etc/network/hostapd.conf b/ramdisk/rootfs/overlay/64bit/etc/network/hostapd.conf
+new file mode 100644
+index 000000000..35128f1ae
+--- /dev/null
++++ b/ramdisk/rootfs/overlay/64bit/etc/network/hostapd.conf
+@@ -0,0 +1,82 @@
++##### hostapd configuration file ##############################################
++
++interface=wlan0
++ctrl_interface=/var/run/hostapd
++ssid=CV1835_EVB
++channel=6
++wpa=3
++wpa_passphrase=012345678
++#bridge=br0
++
++
++
++##### Wi-Fi Protected Setup (WPS) #############################################
++
++eap_server=1
++
++# WPS state
++# 0 = WPS disabled (default)
++# 1 = WPS enabled, not configured
++# 2 = WPS enabled, configured
++wps_state=2
++
++uuid=12345678-9abc-def0-1234-56789abcdef0
++
++# Device Name
++# User-friendly description of device; up to 32 octets encoded in UTF-8
++device_name=RTL8189FS
++
++# Manufacturer
++# The manufacturer of the device (up to 64 ASCII characters)
++manufacturer=Realtek
++
++# Model Name
++# Model of the device (up to 32 ASCII characters)
++model_name=RTW_SOFTAP
++
++# Model Number
++# Additional device description (up to 32 ASCII characters)
++model_number=WLAN_FS
++
++# Serial Number
++# Serial number of the device (up to 32 characters)
++serial_number=12345
++
++# Primary Device Type
++# Used format: <categ>-<OUI>-<subcateg>
++# categ = Category as an integer value
++# OUI = OUI and type octet as a 4-octet hex-encoded value; 0050F204 for
++#       default WPS OUI
++# subcateg = OUI-specific Sub Category as an integer value
++# Examples:
++#   1-0050F204-1 (Computer / PC)
++#   1-0050F204-2 (Computer / Server)
++#   5-0050F204-1 (Storage / NAS)
++#   6-0050F204-1 (Network Infrastructure / AP)
++device_type=6-0050F204-1
++
++# OS Version
++# 4-octet operating system version number (hex string)
++os_version=01020300
++
++# Config Methods
++# List of the supported configuration methods
++config_methods=label display push_button keypad
++
++
++##### default configuration #######################################
++
++#driver=rtl871xdrv
++driver=nl80211
++beacon_int=100
++hw_mode=g
++ieee80211n=1
++wme_enabled=1
++ht_capab=[SHORT-GI-20][SHORT-GI-40][HT40+]
++wpa_key_mgmt=WPA-PSK
++wpa_pairwise=CCMP
++max_num_sta=8
++wpa_group_rekey=86400
++supported_rates=60 90 120 180 240 360 480 540
++basic_rates=60 120 240
++
+diff --git a/ramdisk/rootfs/overlay/64bit/etc/network/ifcfg-eth0 b/ramdisk/rootfs/overlay/64bit/etc/network/ifcfg-eth0
+new file mode 100644
+index 000000000..175aade5b
+--- /dev/null
++++ b/ramdisk/rootfs/overlay/64bit/etc/network/ifcfg-eth0
+@@ -0,0 +1,6 @@
++DEVICE=eth0
++BOOTPROTO=dhcp
++IPADDR=192.168.0.3
++NETMASK=255.255.255.0
++BROADCAST=192.168.0.255
++GATEWAY=192.168.0.1
+diff --git a/ramdisk/rootfs/overlay/64bit/etc/network/ifcfg-wlan0 b/ramdisk/rootfs/overlay/64bit/etc/network/ifcfg-wlan0
+new file mode 100644
+index 000000000..a772105d2
+--- /dev/null
++++ b/ramdisk/rootfs/overlay/64bit/etc/network/ifcfg-wlan0
+@@ -0,0 +1,9 @@
++ssid=SW-test
++psk=012345678
++
++DEVICE=wlan0
++BOOTPROTO=dhcp
++IPADDR=192.168.0.4
++NETMASK=255.255.255.0
++BROADCAST=192.168.0.255
++GATEWAY=192.168.0.1
+diff --git a/ramdisk/rootfs/overlay/64bit/etc/network/udhcpd.conf b/ramdisk/rootfs/overlay/64bit/etc/network/udhcpd.conf
+new file mode 100644
+index 000000000..5e69622e1
+--- /dev/null
++++ b/ramdisk/rootfs/overlay/64bit/etc/network/udhcpd.conf
+@@ -0,0 +1,91 @@
++# Sample udhcpd configuration file (/etc/udhcpd.conf)
++# Values shown are defaults
++
++# The start and end of the IP lease block
++start		192.168.1.10
++end		192.168.1.254
++
++# The interface that udhcpd will use
++interface	wlan0
++
++# The maximim number of leases (includes addresses reserved
++# by OFFER's, DECLINE's, and ARP conficts). Will be corrected
++# if it's bigger than IP lease block, but it ok to make it
++# smaller than lease block.
++#max_leases	254
++max_leases	20
++
++# The time period at which udhcpd will write out a dhcpd.leases
++# file. If this is 0, udhcpd will never automatically write a
++# lease file. Specified in seconds.
++#auto_time	7200
++
++# The amount of time that an IP will be reserved (leased to nobody)
++# if a DHCP decline message is received (seconds).
++#decline_time	3600
++
++# The amount of time that an IP will be reserved
++# if an ARP conflct occurs (seconds).
++#conflict_time	3600
++
++# How long an offered address is reserved (seconds).
++#offer_time	60
++
++# If client asks for lease below this value, it will be rounded up
++# to this value (seconds).
++#min_lease	60
++
++# The location of the leases file
++lease_file	/var/lib/misc/udhcpd.leases
++
++# The location of the pid file
++#pidfile	/var/run/udhcpd.pid
++
++# Everytime udhcpd writes a leases file, the below script will be called.
++#notify_file			# default: no script
++#notify_file	dumpleases	# useful for debugging
++
++# The following are bootp specific options, settable by udhcpd.
++#siaddr		192.168.0.22		#default: 0.0.0.0
++#sname		zorak			#default: none
++#boot_file	/var/nfs_root		#default: none
++
++# The remainer of options are DHCP options and can be specifed with the
++# keyword 'opt' or 'option'. If an option can take multiple items, such
++# as the dns option, they can be listed on the same line, or multiple
++# lines. The only option with a default is 'lease'.
++# Examples:
++#opt	dns	192.168.0.1 
++option	subnet	255.255.255.0
++opt	router	192.168.1.1
++#opt	wins	192.168.1.10
++#option	dns	129.219.13.81	# appened to above DNS servers for a total of 3
++option	domain	local
++option	lease	864000		# 10 days of seconds
++
++# Currently supported options (for more info, see options.c):
++#opt subnet
++#opt timezone
++#opt router
++#opt timesrv
++#opt namesrv
++#opt dns
++#opt logsrv
++#opt cookiesrv
++#opt lprsrv
++#opt bootsize
++#opt domain
++#opt swapsrv
++#opt rootpath
++#opt ipttl
++#opt mtu
++#opt broadcast
++#opt wins
++#opt lease
++#opt ntpsrv
++#opt tftp
++#opt bootfile
++
++# Static leases map
++#static_lease 00:60:08:11:CE:4E 192.168.0.54
++#static_lease 00:60:08:11:CE:3E 192.168.0.44
+diff --git a/ramdisk/rootfs/overlay/64bit/etc/passwd b/ramdisk/rootfs/overlay/64bit/etc/passwd
+new file mode 100644
+index 000000000..206effce5
+--- /dev/null
++++ b/ramdisk/rootfs/overlay/64bit/etc/passwd
+@@ -0,0 +1,11 @@
++root:x:0:0:root:/root:/bin/sh
++daemon:x:1:1:daemon:/usr/sbin:/bin/false
++bin:x:2:2:bin:/bin:/bin/false
++sys:x:3:3:sys:/dev:/bin/false
++sync:x:4:100:sync:/bin:/bin/sync
++mail:x:8:8:mail:/var/spool/mail:/bin/false
++www-data:x:33:33:www-data:/var/www:/bin/false
++operator:x:37:37:Operator:/var:/bin/false
++sshd:x:108:65534:sshd privsep:/var/run/sshd:/bin/false
++cvitek:x:1000:1000:main user:/home/cvitek:/bin/sh
++nobody:x:65534:65534:nobody:/home:/bin/false
+diff --git a/ramdisk/rootfs/overlay/64bit/etc/run_usb.sh b/ramdisk/rootfs/overlay/64bit/etc/run_usb.sh
+new file mode 100755
+index 000000000..9ae480ac2
+--- /dev/null
++++ b/ramdisk/rootfs/overlay/64bit/etc/run_usb.sh
+@@ -0,0 +1,293 @@
++CLASS=acm
++VID=0x3346
++PID=0x1003
++MSC_PID=0x1008
++RNDIS_PID=0x1009
++UVC_PID=0x100A
++UAC_PID=0x100B
++ADB_VID=0x18D1
++ADB_PID=0x4EE0
++ADB_PID_M1=0x4EE2
++ADB_PID_M2=0x4EE4
++MANUFACTURER="Cvitek"
++PRODUCT="USB Com Port"
++PRODUCT_RNDIS="RNDIS"
++PRODUCT_UVC="UVC"
++PRODUCT_UAC="UAC"
++PRODUCT_ADB="ADB"
++ADBD_PATH=/usr/bin/
++SERIAL="0123456789"
++MSC_FILE=$3
++CVI_DIR=/tmp/usb
++CVI_GADGET=$CVI_DIR/usb_gadget/cvitek
++CVI_FUNC=$CVI_GADGET/functions
++FUNC_NUM=0
++MAX_EP_NUM=4
++TMP_NUM=0
++INTF_NUM=0
++EP_IN=0
++EP_OUT=0
++
++case "$2" in
++  acm)
++	CLASS=acm
++	;;
++  msc)
++	CLASS=mass_storage
++	PID=$MSC_PID
++	;;
++  cvg)
++	CLASS=cvg
++	;;
++  rndis)
++	CLASS=rndis
++	PID=$RNDIS_PID
++	PRODUCT=$PRODUCT_RNDIS
++	;;
++  uvc)
++	CLASS=uvc
++	PID=$UVC_PID
++	PRODUCT=$PRODUCT_UVC
++	;;
++  uac1)
++	CLASS=uac1
++	PID=$UAC_PID
++	PRODUCT=$PRODUCT_UAC
++	;;
++  adb)
++	CLASS=ffs.adb
++	VID=$ADB_VID
++	PID=$ADB_PID
++	PRODUCT=$PRODUCT_ADB
++	;;
++  *)
++	if [ "$1" = "probe" ] ; then
++	  echo "Usage: $0 probe {acm|msc|cvg|rndis|uvc|uac1|adb}"
++	  exit 1
++	fi
++esac
++
++calc_func() {
++  FUNC_NUM=$(ls $CVI_GADGET/functions -l | grep ^d | wc -l)
++  echo "$FUNC_NUM file(s)"
++}
++
++res_check() {
++  TMP_NUM=$(find $CVI_GADGET/functions/ -name "acm*" | wc -l)
++  EP_OUT=$(($EP_OUT+$TMP_NUM))
++  TMP_NUM=$(($TMP_NUM * 2))
++  EP_IN=$(($EP_IN+$TMP_NUM))
++  INTF_NUM=$(($INTF_NUM+$TMP_NUM))
++  TMP_NUM=$(find $CVI_GADGET/functions/ -name "mass_storage*" | wc -l)
++  EP_IN=$(($EP_IN+$TMP_NUM))
++  EP_OUT=$(($EP_OUT+$TMP_NUM))
++  INTF_NUM=$(($INTF_NUM+$TMP_NUM))
++  TMP_NUM=$(find $CVI_GADGET/functions/ -name "cvg*" | wc -l)
++  EP_IN=$(($EP_IN+$TMP_NUM))
++  EP_OUT=$(($EP_OUT+$TMP_NUM))
++  INTF_NUM=$(($INTF_NUM+$TMP_NUM))
++  TMP_NUM=$(find $CVI_GADGET/functions/ -name "rndis*" | wc -l)
++  EP_OUT=$(($EP_OUT+$TMP_NUM))
++  TMP_NUM=$(($TMP_NUM * 2))
++  EP_IN=$(($EP_IN+$TMP_NUM))
++  INTF_NUM=$(($INTF_NUM+$TMP_NUM))
++  TMP_NUM=$(find $CVI_GADGET/functions/ -name "uvc*" | wc -l)
++  TMP_NUM=$(($TMP_NUM * 2))
++  EP_IN=$(($EP_IN+$TMP_NUM))
++  INTF_NUM=$(($INTF_NUM+$TMP_NUM))
++  TMP_NUM=$(find $CVI_GADGET/functions/ -name "uac1*" | wc -l)
++  TMP_NUM=$(($TMP_NUM * 2))
++  EP_IN=$(($EP_IN+$TMP_NUM))
++  EP_OUT=$(($EP_OUT+$TMP_NUM))
++  INTF_NUM=$(($INTF_NUM+$TMP_NUM))
++  TMP_NUM=$(find $CVI_GADGET/functions/ -name ffs.adb | wc -l)
++  EP_IN=$(($EP_IN+$TMP_NUM))
++  EP_OUT=$(($EP_OUT+$TMP_NUM))
++  INTF_NUM=$(($INTF_NUM+$TMP_NUM))
++
++  if [ "$CLASS" = "acm" ] ; then
++    EP_IN=$(($EP_IN+2))
++    EP_OUT=$(($EP_OUT+1))
++  fi
++  if [ "$CLASS" = "mass_storage" ] ; then
++    EP_IN=$(($EP_IN+1))
++    EP_OUT=$(($EP_OUT+1))
++  fi
++  if [ "$CLASS" = "cvg" ] ; then
++    EP_IN=$(($EP_IN+1))
++    EP_OUT=$(($EP_OUT+1))
++  fi
++  if [ "$CLASS" = "rndis" ] ; then
++    EP_IN=$(($EP_IN+2))
++    EP_OUT=$(($EP_OUT+1))
++  fi
++  if [ "$CLASS" = "uvc" ] ; then
++    EP_IN=$(($EP_IN+2))
++  fi
++  if [ "$CLASS" = "uac1" ] ; then
++    EP_IN=$(($EP_IN+1))
++    EP_OUT=$(($EP_OUT+1))
++  fi
++  if [ "$CLASS" = "ffs.adb" ] ; then
++    EP_IN=$(($EP_IN+1))
++    EP_OUT=$(($EP_OUT+1))
++  fi
++  echo "$EP_IN in ep"
++  echo "$EP_OUT out ep"
++  if [ $EP_IN -gt $MAX_EP_NUM ]; then
++    echo "reach maximum resource"
++    exit 1
++  fi
++  if [ $EP_OUT -gt $MAX_EP_NUM ]; then
++    echo "reach maximum resource"
++    exit 1
++  fi
++}
++
++probe() {
++  if [ ! -d $CVI_DIR ]; then
++    mkdir $CVI_DIR
++  fi
++  if [ ! -d $CVI_DIR/usb_gadget ]; then
++    # Enale USB ConfigFS
++    mount none $CVI_DIR -t configfs
++    # Create gadget dev
++    mkdir $CVI_GADGET
++    # Set the VID and PID
++    echo $VID >$CVI_GADGET/idVendor
++    echo $PID >$CVI_GADGET/idProduct
++    # Set the product information string
++    mkdir $CVI_GADGET/strings/0x409
++    echo $MANUFACTURER>$CVI_GADGET/strings/0x409/manufacturer
++    echo $PRODUCT>$CVI_GADGET/strings/0x409/product
++    echo $SERIAL>$CVI_GADGET/strings/0x409/serialnumber
++    # Set the USB configuration
++    mkdir $CVI_GADGET/configs/c.1
++    mkdir $CVI_GADGET/configs/c.1/strings/0x409
++    echo "config1">$CVI_GADGET/configs/c.1/strings/0x409/configuration
++    # Set the MaxPower of USB descriptor
++    echo 120 >$CVI_GADGET/configs/c.1/MaxPower
++  fi
++  # get current functions number
++  calc_func
++  # assign the class code for composite device
++  if [ ! $FUNC_NUM -eq 0 ]; then
++    echo 0xEF >$CVI_GADGET/bDeviceClass
++    echo 0x02 >$CVI_GADGET/bDeviceSubClass
++    echo 0x01 >$CVI_GADGET/bDeviceProtocol
++  fi
++  # resource check
++  res_check
++  # create the desired function
++  if [ "$CLASS" = "ffs.adb" ] ; then
++    # adb shall be the last function to probe. Override the pid/vid
++    echo $VID >$CVI_GADGET/idVendor
++    echo $PID >$CVI_GADGET/idProduct
++    # choose pid for different function number
++    if [ $INTF_NUM -eq 1 ]; then
++      echo $ADB_PID_M1 >$CVI_GADGET/idProduct
++    fi
++    if [ $INTF_NUM -eq 2 ]; then
++      echo $ADB_PID_M2 >$CVI_GADGET/idProduct
++    fi
++    mkdir $CVI_GADGET/functions/$CLASS
++  else
++    mkdir $CVI_GADGET/functions/$CLASS.usb$FUNC_NUM
++  fi
++  if [ "$CLASS" = "mass_storage" ] ; then
++    echo $MSC_FILE >$CVI_GADGET/functions/$CLASS.usb$FUNC_NUM/lun.0/file
++  fi
++  if [ "$CLASS" = "rndis" ] ; then
++    #OS STRING
++    echo 1 >$CVI_GADGET/os_desc/use
++    echo 0xcd >$CVI_GADGET/os_desc/b_vendor_code
++    echo MSFT100 >$CVI_GADGET/os_desc/qw_sign
++    #COMPATIBLE ID
++    echo RNDIS >$CVI_FUNC/rndis.usb$FUNC_NUM/os_desc/interface.rndis/compatible_id
++    #MAKE c.1 THE ONE ASSOCIATED WITH OS DESCRIPTORS
++    ln -s $CVI_GADGET/configs/c.1 $CVI_GADGET/os_desc
++    #MAKE "Icons" EXTENDED PROPERTY
++    mkdir $CVI_FUNC/rndis.usb$FUNC_NUM/os_desc/interface.rndis/Icons
++    echo 2 >$CVI_FUNC/rndis.usb$FUNC_NUM/os_desc/interface.rndis/Icons/type
++    echo "%SystemRoot%\\system32\\shell32.dll,-233" >$CVI_FUNC/rndis.usb$FUNC_NUM/os_desc/interface.rndis/Icons/data
++    #MAKE "Label" EXTENDED PROPERTY
++    mkdir $CVI_FUNC/rndis.usb$FUNC_NUM/os_desc/interface.rndis/Label
++    echo 1 >$CVI_FUNC/rndis.usb$FUNC_NUM/os_desc/interface.rndis/Label/type
++    echo "XYZ Device" >$CVI_FUNC/rndis.usb$FUNC_NUM/os_desc/interface.rndis/Label/data
++  fi
++
++}
++
++start() {
++  # link this function to the configuration
++  calc_func
++  if [ $FUNC_NUM -eq 0 ]; then
++    echo "Functions Empty!"
++    exit 1
++  fi
++  if [ -d $CVI_GADGET/functions/ffs.adb ]; then
++    FUNC_NUM=$(($FUNC_NUM-1))
++  fi
++  for i in `seq 0 $(($FUNC_NUM-1))`;
++  do
++    find $CVI_GADGET/functions/ -name "*.usb$i" | xargs -I % ln -s % $CVI_GADGET/configs/c.1
++  done
++  if [ -d $CVI_GADGET/functions/ffs.adb ]; then
++    ln -s $CVI_GADGET/functions/ffs.adb $CVI_GADGET/configs/c.1
++    mkdir /dev/usb-ffs/adb -p
++    mount -t functionfs adb /dev/usb-ffs/adb
++    if [ -f $ADBD_PATH/adbd ]; then
++	$ADBD_PATH/adbd &
++    fi
++  else
++    # Start the gadget driver
++    UDC=`ls /sys/class/udc/ | awk '{print $1}'`
++    echo ${UDC} >$CVI_GADGET/UDC
++  fi
++}
++
++stop() {
++  if [ -d $CVI_GADGET/configs/c.1/ffs.adb ]; then
++    pkill adbd
++    rm $CVI_GADGET/configs/c.1/ffs.adb
++  else
++    echo "" >$CVI_GADGET/UDC
++  fi
++  find $CVI_GADGET/configs/ -name "*.usb*" | xargs rm -f
++  rmdir $CVI_GADGET/configs/c.*/strings/0x409/
++  tmp_dirs=$(find $CVI_GADGET/os_desc/c.* -type d)
++  if [ -n tmp_dirs ]; then
++    echo "remove os_desc!"
++    rm -rf $CVI_GADGET/os_desc/c.*/
++    find $CVI_GADGET/functions/ -name Icons | xargs rmdir
++    find $CVI_GADGET/functions/ -name Label | xargs rmdir
++  fi
++  rmdir $CVI_GADGET/configs/c.*/
++  rmdir $CVI_GADGET/functions/*
++  rmdir $CVI_GADGET/strings/0x409/
++  rmdir $CVI_GADGET
++  umount $CVI_DIR
++  rmdir $CVI_DIR
++}
++
++case "$1" in
++  start)
++	start
++	;;
++  stop)
++	stop
++	;;
++  probe)
++	probe
++	;;
++  UDC)
++  UDC=`ls /sys/class/udc/ | awk '{print $1}'`
++  echo ${UDC} >$CVI_GADGET/UDC
++	;;
++  *)
++	echo "Usage: $0 probe {acm|msc|cvg|uvc|uac1} {file (msc)}"
++	echo "Usage: $0 start"
++	echo "Usage: $0 stop"
++	exit 1
++esac
++exit $?
+diff --git a/ramdisk/rootfs/overlay/64bit/etc/shadow b/ramdisk/rootfs/overlay/64bit/etc/shadow
+new file mode 100644
+index 000000000..2052be39c
+--- /dev/null
++++ b/ramdisk/rootfs/overlay/64bit/etc/shadow
+@@ -0,0 +1,11 @@
++root:RiJDe6smbGGFE:18003:0:99999:7:::
++daemon:*:10933:0:99999:7:::
++bin:*:10933:0:99999:7:::
++sys:*:10933:0:99999:7:::
++sync:*:10933:0:99999:7:::
++mail:*:10933:0:99999:7:::
++www-data:*:10933:0:99999:7:::
++operator:*:10933:0:99999:7:::
++sshd:!:0:0:99999:7:::
++cvitek:GxGA.2aVrZqnQ:10933:0:99999:7:::
++nobody:*:10933:0:99999:7:::
+diff --git a/ramdisk/rootfs/overlay/64bit/etc/uhubon.sh b/ramdisk/rootfs/overlay/64bit/etc/uhubon.sh
+new file mode 100755
+index 000000000..62fbd8607
+--- /dev/null
++++ b/ramdisk/rootfs/overlay/64bit/etc/uhubon.sh
+@@ -0,0 +1,85 @@
++GPIO_HUBPORT_EN=449
++GPIO_ROLESEL=450
++GPIO_HUBRST=451
++SYS_GPIO=/sys/class/gpio
++
++hub_on() {
++  echo "turn on usb hub"
++  if [ ! -d $SYS_GPIO/gpio$GPIO_HUBPORT_EN ]; then
++      echo $GPIO_HUBPORT_EN >/sys/class/gpio/export
++  fi
++
++  if [ ! -d $SYS_GPIO/gpio$GPIO_ROLESEL ]; then
++      echo $GPIO_ROLESEL >/sys/class/gpio/export
++  fi
++
++  if [ ! -d $SYS_GPIO/gpio$GPIO_HUBRST ]; then
++      echo $GPIO_HUBRST >/sys/class/gpio/export
++  fi
++
++  echo "out" >/sys/class/gpio/gpio$GPIO_HUBPORT_EN/direction
++  echo "out" >/sys/class/gpio/gpio$GPIO_ROLESEL/direction
++  echo "out" >/sys/class/gpio/gpio$GPIO_HUBRST/direction
++
++  echo 1 >/sys/class/gpio/gpio$GPIO_HUBPORT_EN/value
++  echo 0 >/sys/class/gpio/gpio$GPIO_ROLESEL/value
++  echo 0 >/sys/class/gpio/gpio$GPIO_HUBRST/value
++}
++
++hub_off() {
++  echo "turn off usb hub"
++  if [ ! -d $SYS_GPIO/gpio$GPIO_HUBPORT_EN ]; then
++      echo $GPIO_HUBPORT_EN >/sys/class/gpio/export
++  fi
++
++  if [ ! -d $SYS_GPIO/gpio$GPIO_ROLESEL ]; then
++      echo $GPIO_ROLESEL >/sys/class/gpio/export
++  fi
++
++  if [ ! -d $SYS_GPIO/gpio$GPIO_HUBRST ]; then
++      echo $GPIO_HUBRST >/sys/class/gpio/export
++  fi
++
++  echo "out" >/sys/class/gpio/gpio$GPIO_HUBPORT_EN/direction
++  echo "out" >/sys/class/gpio/gpio$GPIO_ROLESEL/direction
++  echo "out" >/sys/class/gpio/gpio$GPIO_HUBRST/direction
++
++  echo 0 >/sys/class/gpio/gpio$GPIO_HUBPORT_EN/value
++  echo 1 >/sys/class/gpio/gpio$GPIO_ROLESEL/value
++  echo 1 >/sys/class/gpio/gpio$GPIO_HUBRST/value
++}
++
++inst_mod() {
++  insmod /mnt/system/ko/configfs.ko
++  insmod /mnt/system/ko/libcomposite.ko
++  insmod /mnt/system/ko/u_serial.ko
++  insmod /mnt/system/ko/usb_f_acm.ko
++  insmod /mnt/system/ko/cvi_usb_f_cvg.ko
++  insmod /mnt/system/ko/usb_f_uvc.ko
++  insmod /mnt/system/ko/usb_f_fs.ko
++  insmod /mnt/system/ko/u_audio.ko
++  insmod /mnt/system/ko/usb_f_uac1.ko
++  insmod /mnt/system/ko/usb_f_serial.ko
++  insmod /mnt/system/ko/usb_f_mass_storage.ko
++  insmod /mnt/system/ko/u_ether.ko
++  insmod /mnt/system/ko/usb_f_ecm.ko
++  insmod /mnt/system/ko/usb_f_eem.ko
++  insmod /mnt/system/ko/usb_f_rndis.ko
++}
++
++case "$1" in
++  host)
++	insmod /mnt/system/ko/dwc2.ko
++	hub_on
++	;;
++  device)
++	hub_off
++	inst_mod
++	echo device > /proc/cviusb/otg_role
++	;;
++  *)
++	echo "Usage: $0 host"
++	echo "Usage: $0 device"
++	exit 1
++esac
++exit $?
+diff --git a/ramdisk/rootfs/overlay/64bit/init.sh.overlayfssh b/ramdisk/rootfs/overlay/64bit/init.sh.overlayfssh
+new file mode 100755
+index 000000000..b09d7cbc9
+--- /dev/null
++++ b/ramdisk/rootfs/overlay/64bit/init.sh.overlayfssh
+@@ -0,0 +1,64 @@
++#!/bin/sh
++${CVI_SHOPTS}
++
++# Copyright (c) 2015, ARM Limited and Contributors. All rights reserved.
++#
++# Redistribution and use in source and binary forms, with or without
++# modification, are permitted provided that the following conditions are met:
++#
++# Redistributions of source code must retain the above copyright notice, this
++# list of conditions and the following disclaimer.
++#
++# Redistributions in binary form must reproduce the above copyright notice,
++# this list of conditions and the following disclaimer in the documentation
++# and/or other materials provided with the distribution.
++#
++# Neither the name of ARM nor the names of its contributors may be used
++# to endorse or promote products derived from this software without specific
++# prior written permission.
++#
++# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++# ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
++# LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
++# POSSIBILITY OF SUCH DAMAGE.
++
++#Mount filesystems needed by mount and mdev
++mount -t proc proc /proc
++mount -t sysfs sysfs /sys
++
++#Create things under /dev
++mdev -s
++
++if [ -e /dev/ubiblock0_0 ]; then
++  echo "Mounting spinand rootfs"
++  mount -t squashfs -o ro /dev/ubiblock0_0 /mnt
++else
++  DEV=`/root/cmdline.sh`
++  echo "Mounting emmc rootfs (${DEV})"
++  until [ -e "${DEV}"  ]; do
++    echo -ne "If the log shows more then 5 seconds, you may need to check your rootfs\r"
++    mdev -s
++    DEV=`/root/cmdline.sh`
++  done
++  mount -t squashfs -o ro "${DEV}" /mnt
++fi
++
++if [ $? != 0 ];then
++    echo -e "\033[0;31mMount rootfs failed!\033[0m"
++fi
++
++# Mount tmpfs to new root /dev since squashfs is read only
++mount -t tmpfs none /mnt/dev
++
++#clean up
++umount /proc
++umount /sys
++echo " Switch root to squashFS"
++exec switch_root /mnt /sbin/init-overlay
+diff --git a/ramdisk/rootfs/overlay/64bit/init.sh.recoverysh b/ramdisk/rootfs/overlay/64bit/init.sh.recoverysh
+new file mode 100755
+index 000000000..4c4c6531d
+--- /dev/null
++++ b/ramdisk/rootfs/overlay/64bit/init.sh.recoverysh
+@@ -0,0 +1,73 @@
++#!/bin/sh
++${CVI_SHOPTS}
++
++# Copyright (c) 2015, ARM Limited and Contributors. All rights reserved.
++#
++# Redistribution and use in source and binary forms, with or without
++# modification, are permitted provided that the following conditions are met:
++#
++# Redistributions of source code must retain the above copyright notice, this
++# list of conditions and the following disclaimer.
++#
++# Redistributions in binary form must reproduce the above copyright notice,
++# this list of conditions and the following disclaimer in the documentation
++# and/or other materials provided with the distribution.
++#
++# Neither the name of ARM nor the names of its contributors may be used
++# to endorse or promote products derived from this software without specific
++# prior written permission.
++#
++# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++# ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
++# LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
++# POSSIBILITY OF SUCH DAMAGE.
++
++#Mount filesystems needed by mount and mdev
++UPDATE_SCRIPT=/mnt/data/.ota/utils/update-script.sh
++mount -t proc proc /proc
++mount -t sysfs sysfs /sys
++busybox ln -sf /proc/self/mounts /etc/mtab
++
++#Create all the symlinks to /bin/busybox
++busybox mkdir -p /sbin
++busybox mkdir -p /usr/sbin
++busybox mkdir -p /usr/bin
++/bin/busybox --install -s
++
++#Create things under /dev
++mdev -s
++
++echo "Enter Recovery Mode"
++
++echo "Mounting data partition"
++LAST_EMMC_DEV=`ls -r /dev/mmcblk0p* 2>/dev/null | head -n 1 `
++
++mkdir -p /mnt/data
++if [ ! -z $LAST_EMMC_DEV ] && [ -e $LAST_EMMC_DEV ];then
++  mount $LAST_EMMC_DEV /mnt/data
++elif [ -c /dev/ubi0_0 ];then
++  mount -t ubifs -o sync /dev/ubi0_0 /mnt/data
++fi
++
++if [ -f $UPDATE_SCRIPT ];then
++  # Create tmp folder
++  mkdir -p /tmp
++  LD_LIBRARY_PATH=/mnt/data/.ota/utils/
++  sh $UPDATE_SCRIPT
++  sync
++else
++  echo "No up $UPDATE_SCRIPT, enter shell"
++  sh
++fi
++
++# Clean recovery flags
++devmem 0x03005D00 32 0x50524F47
++# Reboot
++reboot -f
+diff --git a/ramdisk/rootfs/overlay/64bit/init.sh.sqsh b/ramdisk/rootfs/overlay/64bit/init.sh.sqsh
+new file mode 100755
+index 000000000..dbbb0ddb3
+--- /dev/null
++++ b/ramdisk/rootfs/overlay/64bit/init.sh.sqsh
+@@ -0,0 +1,69 @@
++#!/bin/sh
++${CVI_SHOPTS}
++
++# Copyright (c) 2015, ARM Limited and Contributors. All rights reserved.
++#
++# Redistribution and use in source and binary forms, with or without
++# modification, are permitted provided that the following conditions are met:
++#
++# Redistributions of source code must retain the above copyright notice, this
++# list of conditions and the following disclaimer.
++#
++# Redistributions in binary form must reproduce the above copyright notice,
++# this list of conditions and the following disclaimer in the documentation
++# and/or other materials provided with the distribution.
++#
++# Neither the name of ARM nor the names of its contributors may be used
++# to endorse or promote products derived from this software without specific
++# prior written permission.
++#
++# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++# ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
++# LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
++# POSSIBILITY OF SUCH DAMAGE.
++
++#Mount filesystems needed by mount and mdev
++mount -t proc proc /proc
++mount -t sysfs sysfs /sys
++
++#Create things under /dev
++busybox mdev -s
++
++if [ -e /dev/ubiblock0_0 ]; then
++  echo "Mounting spinand rootfs"
++  /bin/busybox mount -t squashfs -o ro /dev/ubiblock0_0 /mnt
++elif [ -e /dev/mmcblk0p2 ]; then
++  echo "Mounting SD ext4 partition"
++    /bin/busybox mount -t ext4 /dev/mmcblk0p2 /mnt
++else
++  DEV=`/root/cmdline.sh`
++  echo "Mounting emmc rootfs (${DEV})"
++  until [ -e "${DEV}"  ]; do
++    echo -ne "If the log shows more then 5 seconds, you may need to check your rootfs\r"
++    busybox mdev -s
++    DEV=`/root/cmdline.sh`
++  done
++  /bin/busybox mount -t squashfs -o ro "${DEV}" /mnt
++fi
++
++if [ $? != 0 ];then
++    echo -e "\033[0;31mMount rootfs failed!\033[0m"
++fi
++
++# Mount tmpfs to new root /dev since squashfs is read only
++if [ -e /dev/ubiblock0_0 ]; then
++mount -t tmpfs none /mnt/dev
++fi
++
++#clean up
++umount /proc
++umount /sys
++echo " Switch root to squashFS"
++exec switch_root /mnt /init
+diff --git a/ramdisk/rootfs/overlay/64bit/init_ramboot.sh.sqsh b/ramdisk/rootfs/overlay/64bit/init_ramboot.sh.sqsh
+new file mode 100755
+index 000000000..f74ef7e15
+--- /dev/null
++++ b/ramdisk/rootfs/overlay/64bit/init_ramboot.sh.sqsh
+@@ -0,0 +1,15 @@
++#!/bin/sh
++# devtmpfs does not get automounted for initramfs
++/bin/mount -t devtmpfs devtmpfs /dev
++
++# use the /dev/console device node from devtmpfs if possible to not
++# confuse glibc's ttyname_r().
++# This may fail (E.G. booted with console=), and errors from exec will
++# terminate the shell, so use a subshell for the test
++if (exec 0</dev/console) 2>/dev/null; then
++    exec 0</dev/console
++    exec 1>/dev/console
++    exec 2>/dev/console
++fi
++
++exec /sbin/init "$@"
+diff --git a/ramdisk/rootfs/overlay/64bit/system/auto.sh b/ramdisk/rootfs/overlay/64bit/system/auto.sh
+new file mode 100755
+index 000000000..4541a0800
+--- /dev/null
++++ b/ramdisk/rootfs/overlay/64bit/system/auto.sh
+@@ -0,0 +1,13 @@
++#!/bin/sh
++${CVI_SHOPTS}
++
++export LD_LIBRARY_PATH="/lib:/lib/3rd:/lib/arm-linux-gnueabihf:/usr/lib:/usr/local/lib:/mnt/system/lib:/mnt/system/usr/lib:/mnt/system/usr/lib/3rd:/mnt/data/lib"
++export PATH="/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin:/mnt/system/usr/bin:/mnt/system/usr/sbin:/mnt/data/bin:/mnt/data/sbin"
++
++
++if [ ! -f "/tmp/evb_init" ];then
++   echo 1 > /tmp/evb_init
++else
++   exit 1
++fi
++
+diff --git a/ramdisk/rootfs/overlay/64bit/system/ko/loadsystemko.sh b/ramdisk/rootfs/overlay/64bit/system/ko/loadsystemko.sh
+new file mode 100644
+index 000000000..b70f623a2
+--- /dev/null
++++ b/ramdisk/rootfs/overlay/64bit/system/ko/loadsystemko.sh
+@@ -0,0 +1,35 @@
++#!/bin/sh
++${CVI_SHOPTS}
++#
++# Start to insert kernel modules
++#
++insmod /mnt/system/ko/soph_sys.ko
++insmod /mnt/system/ko/soph_base.ko
++insmod /mnt/system/ko/soph_rtos_cmdqu.ko
++insmod /mnt/system/ko/soph_fast_image.ko
++insmod /mnt/system/ko/soph_mipi_rx.ko
++insmod /mnt/system/ko/soph_snsr_i2c.ko
++insmod /mnt/system/ko/soph_vi.ko
++insmod /mnt/system/ko/soph_vpss.ko
++insmod /mnt/system/ko/soph_dwa.ko
++insmod /mnt/system/ko/soph_vo.ko
++insmod /mnt/system/ko/soph_mipi_tx.ko
++insmod /mnt/system/ko/soph_rgn.ko
++
++#insmod /mnt/system/ko/soph_wdt.ko
++insmod /mnt/system/ko/soph_clock_cooling.ko
++
++insmod /mnt/system/ko/soph_tpu.ko
++insmod /mnt/system/ko/soph_vcodec.ko
++insmod /mnt/system/ko/soph_jpeg.ko
++insmod /mnt/system/ko/soph_vc_driver.ko MaxVencChnNum=9 MaxVdecChnNum=9
++#insmod /mnt/system/ko/soph_rtc.ko
++insmod /mnt/system/ko/soph_ive.ko
++
++echo 3 > /proc/sys/vm/drop_caches
++dmesg -n 4
++
++#usb hub control
++#/etc/uhubon.sh host
++
++exit $?
+diff --git a/ramdisk/rootfs/overlay/64bit/usr/local/bin/autologin b/ramdisk/rootfs/overlay/64bit/usr/local/bin/autologin
+new file mode 100755
+index 000000000..42284ac43
+--- /dev/null
++++ b/ramdisk/rootfs/overlay/64bit/usr/local/bin/autologin
+@@ -0,0 +1,2 @@
++#! /bin/sh 
++exec /bin/login -f root
+diff --git a/ramdisk/rootfs/overlay/64bit/usr/local/etc/sshd_config b/ramdisk/rootfs/overlay/64bit/usr/local/etc/sshd_config
+new file mode 100644
+index 000000000..bc1bcaafa
+--- /dev/null
++++ b/ramdisk/rootfs/overlay/64bit/usr/local/etc/sshd_config
+@@ -0,0 +1,119 @@
++#	$OpenBSD: sshd_config,v 1.101 2017/03/14 07:19:07 djm Exp $
++
++# This is the sshd server system-wide configuration file.  See
++# sshd_config(5) for more information.
++
++# This sshd was compiled with PATH=/usr/bin:/bin:/usr/sbin:/sbin
++
++# The strategy used for options in the default sshd_config shipped with
++# OpenSSH is to specify options with their default value where
++# possible, but leave them commented.  Uncommented options override the
++# default value.
++
++Port 22
++#AddressFamily any
++#ListenAddress 0.0.0.0
++#ListenAddress ::
++
++HostKey /usr/local/etc/ssh_host_rsa_key
++HostKey /usr/local/etc/ssh_host_dsa_key
++HostKey /usr/local/etc/ssh_host_ecdsa_key
++HostKey /usr/local/etc/ssh_host_ed25519_key
++
++# Ciphers and keying
++#RekeyLimit default none
++
++# Logging
++SyslogFacility AUTH
++LogLevel INFO
++
++# Authentication:
++
++#LoginGraceTime 2m
++#PermitRootLogin prohibit-password
++PermitRootLogin yes
++StrictModes no
++#MaxAuthTries 6
++#MaxSessions 10
++
++#PubkeyAuthentication yes
++
++# The default is to check both .ssh/authorized_keys and .ssh/authorized_keys2
++# but this is overridden so installations will only check .ssh/authorized_keys
++AuthorizedKeysFile	.ssh/authorized_keys
++
++#AuthorizedPrincipalsFile none
++
++#AuthorizedKeysCommand none
++#AuthorizedKeysCommandUser nobody
++
++# For this to work you will also need host keys in /etc/ssh/ssh_known_hosts
++#HostbasedAuthentication no
++# Change to yes if you don't trust ~/.ssh/known_hosts for
++# HostbasedAuthentication
++#IgnoreUserKnownHosts no
++# Don't read the user's ~/.rhosts and ~/.shosts files
++#IgnoreRhosts yes
++
++# To disable tunneled clear text passwords, change to no here!
++PasswordAuthentication yes
++PermitEmptyPasswords no
++
++# Change to no to disable s/key passwords
++#ChallengeResponseAuthentication yes
++
++# Kerberos options
++#KerberosAuthentication no
++#KerberosOrLocalPasswd yes
++#KerberosTicketCleanup yes
++#KerberosGetAFSToken no
++
++# GSSAPI options
++#GSSAPIAuthentication no
++#GSSAPICleanupCredentials yes
++
++# Set this to 'yes' to enable PAM authentication, account processing,
++# and session processing. If this is enabled, PAM authentication will
++# be allowed through the ChallengeResponseAuthentication and
++# PasswordAuthentication.  Depending on your PAM configuration,
++# PAM authentication via ChallengeResponseAuthentication may bypass
++# the setting of "PermitRootLogin without-password".
++# If you just want the PAM account and session checks to run without
++# PAM authentication, then enable this but set PasswordAuthentication
++# and ChallengeResponseAuthentication to 'no'.
++#UsePAM no
++
++#AllowAgentForwarding yes
++#AllowTcpForwarding yes
++#GatewayPorts no
++#X11Forwarding no
++#X11DisplayOffset 10
++#X11UseLocalhost yes
++#PermitTTY yes
++#PrintMotd yes
++#PrintLastLog yes
++#TCPKeepAlive yes
++#UseLogin no
++#PermitUserEnvironment no
++#Compression delayed
++#ClientAliveInterval 0
++#ClientAliveCountMax 3
++#UseDNS no
++#PidFile /var/run/sshd.pid
++#MaxStartups 10:30:100
++#PermitTunnel no
++#ChrootDirectory none
++#VersionAddendum none
++
++# no default banner path
++#Banner none
++
++# override default of no subsystems
++Subsystem	sftp	/usr/libexec/sftp-server
++
++# Example of overriding settings on a per-user basis
++#Match User anoncvs
++#	X11Forwarding no
++#	AllowTcpForwarding no
++#	PermitTTY no
++#	ForceCommand cvs server
+-- 
+2.43.0
+

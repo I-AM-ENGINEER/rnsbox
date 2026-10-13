@@ -1,0 +1,119 @@
+From 0c48d9ee329a8dd8247c3ee8b7cb6c7d5d1f037c Mon Sep 17 00:00:00 2001
+From: rnsbox <rnsbox@localhost>
+Date: Wed, 14 Oct 2026 01:32:22 +0300
+Subject: [PATCH 5/5] build-rnsbox-arm: lite/dvd packer for the duo01evb arm64
+ board
+
+Same flow as build-rnsbox.sh (pack_rootfs + pack_burn_image, variant
+sizing), pointed at the sg2000_duo01evb_arm64_sd board dir and the 64bit
+buildroot defconfig.
+---
+ build-rnsbox-arm.sh | 96 +++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 96 insertions(+)
+ create mode 100755 build-rnsbox-arm.sh
+
+diff --git a/build-rnsbox-arm.sh b/build-rnsbox-arm.sh
+new file mode 100755
+index 000000000..454930dc8
+--- /dev/null
++++ b/build-rnsbox-arm.sh
+@@ -0,0 +1,96 @@
++#!/bin/bash
++# Unified RNSBox build — DVD or LITE variant from one switch.
++#
++#   ./build-rnsbox.sh dvd     (default) — composite NCM + read-only clients
++#                                          DVD (ISO9660 in rootfs); ~2.8 GB img.
++#   ./build-rnsbox.sh lite              — NCM-only gadget, no clients drive;
++#                                          ~226 MB img (the lighter download).
++#
++# The variant touches four spots; this script sets them all, builds, then
++# restores the in-tree files so the tree is left clean for the next run:
++#   1. overlay ISO        /opt/rnsbox-clients/usbdisk.iso  (present | absent)
++#   2. defconfig ext4     BR2_TARGET_ROOTFS_EXT2_SIZE       (2800M | 200M)
++#   3. partition XML      ROOTFS size_in_kb                 (3072000 | 1638400)
++#   4. genimage boot.vfat usb.disk0 / usb.disk0.size lines  (kept | removed)
++#   + sd_gen honors RNSBOX_WITH_DVD to ship (or not) the usb.disk0 flag.
++set -o pipefail
++ROOT="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
++cd "$ROOT" || exit 90
++
++VARIANT="${1:-dvd}"
++case "$VARIANT" in dvd|lite) ;; *) echo "usage: $0 {dvd|lite}"; exit 1 ;; esac
++LOG=/tmp/rnsbox-build.log; : > "$LOG"; exec > >(tee -a "$LOG") 2>&1
++echo "=================== RNSBox build [$VARIANT] $(date) ==================="
++
++DEFCONFIG=buildroot/configs/cvitek_SG200X_64bit_defconfig
++PARTXML=build/boards/sg200x/sg2000_duo01evb_arm64_sd/partition/partition_sd.xml
++GENIMG=build/tools/common/sd_tools/genimage_rootless.cfg
++ISO_OVERLAY=buildroot/board/cvitek/SG200X/overlay/opt/rnsbox-clients/usbdisk.iso
++ISO_STASH=/tmp/rnsbox-usbdisk.iso.stash
++
++restore() {
++	# put the tree back to the committed DVD-shaped state
++	sed -i 's/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE="2800M"/' "$DEFCONFIG"
++	sed -i 's#\(<partition label="ROOTFS" size_in_kb=\)"[0-9]*"#\1"3072000"#' "$PARTXML"
++	# ensure the usb.disk0 lines are present in genimage (DVD shape)
++	grep -q '"usb.disk0"' "$GENIMG" || sed -i 's#\("usb.ncm.mac",\)#\1\n                        "usb.disk0",\n                        "usb.disk0.size",#' "$GENIMG"
++	# restore the ISO into the overlay if we stashed it
++	[ -f "$ISO_STASH" ] && [ ! -f "$ISO_OVERLAY" ] && { mkdir -p "$(dirname "$ISO_OVERLAY")"; mv "$ISO_STASH" "$ISO_OVERLAY"; }
++}
++trap restore EXIT
++
++if [ "$VARIANT" = dvd ]; then
++	export RNSBOX_WITH_DVD=1
++	echo "--- DVD: (re)build the clients ISO ---"
++	bash build/clients-stick/build-clients-img.sh || { echo "FATAL: ISO build"; exit 92; }
++	# auto-size rootfs to fit the (dynamic, latest) clients ISO: ISO + ~400M for
++	# the OS, partition = ext4 + 200 MiB headroom. S99resizefs still grows the
++	# rootfs to fill the card on first boot, so this only sets the shipped size.
++	ISO=buildroot/board/cvitek/SG200X/overlay/opt/rnsbox-clients/usbdisk.iso
++	ISO_MB=$(( ($(stat -c%s "$ISO") + 1048575) / 1048576 ))
++	EXT2_MB=$(( ISO_MB + 400 ))
++	PART_KB=$(( (EXT2_MB + 200) * 1024 ))
++	echo "--- DVD: ISO ${ISO_MB}M -> rootfs ${EXT2_MB}M, partition $(( PART_KB / 1024 ))MiB ---"
++	sed -i "s/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE=\"${EXT2_MB}M\"/" "$DEFCONFIG"
++	sed -i "s#\(<partition label=\"ROOTFS\" size_in_kb=\)\"[0-9]*\"#\1\"${PART_KB}\"#" "$PARTXML"
++	grep -q '"usb.disk0"' "$GENIMG" || sed -i 's#\("usb.ncm.mac",\)#\1\n                        "usb.disk0",\n                        "usb.disk0.size",#' "$GENIMG"
++	SUFFIX=dvd
++else
++	export RNSBOX_WITH_DVD=0
++	echo "--- LITE: NCM-only, strip ISO + shrink sizes ---"
++	# stash the big ISO out of the overlay so it doesn't bloat the lite rootfs
++	[ -f "$ISO_OVERLAY" ] && mv "$ISO_OVERLAY" "$ISO_STASH"
++	rm -f buildroot/output/target/opt/rnsbox-clients/usbdisk.iso 2>/dev/null
++	sed -i 's/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE="200M"/' "$DEFCONFIG"
++	sed -i 's#\(<partition label="ROOTFS" size_in_kb=\)"[0-9]*"#\1"1638400"#' "$PARTXML"
++	# drop the usb.disk0 lines from the genimage boot.vfat list (would error if absent)
++	sed -i '/"usb.disk0",/d; /"usb.disk0.size",/d' "$GENIMG"
++	SUFFIX=lite
++fi
++
++echo "--- ensure all overlay init scripts are executable ---"
++# The Write/Edit tooling doesn't preserve the +x bit, so a newly-authored
++# init script can ship as rw-r--r-- — which both the boot rc and the portal's
++# subprocess execve() reject (EACCES). Force +x on every S* init script so a
++# missing execute bit can never reach the image again.
++chmod 0755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/S* 2>/dev/null
++
++echo "--- source cvisetup + defconfig ---"
++source build/cvisetup.sh || { echo "FATAL: cvisetup"; exit 93; }
++defconfig sg2000_duo01evb_arm64_sd || { echo "FATAL: defconfig"; exit 94; }
++BRD="${BR_DIR:-$ROOT/buildroot}"
++rm -rf "$BRD"/output/build/rnsbox-portal-0.1.0
++export PATH=/usr/sbin:/sbin:$PATH
++
++echo "--- pack_rootfs ---"
++pack_rootfs || { echo "FATAL: pack_rootfs"; exit 95; }
++echo "--- pack_burn_image ---"
++pack_burn_image || { echo "FATAL: pack_burn_image"; exit 96; }
++
++# tag the produced image with the variant suffix
++NEW=$(ls -t install/soc_sg2000_duo01evb_arm64_sd/images/*.img | head -1)
++TAGGED="${NEW%.img}-${SUFFIX}.img"
++cp -f "$NEW" "$TAGGED"
++echo "=================== BUILD OK [$VARIANT] $(date) ==================="
++ls -lh "$TAGGED" | awk '{print "  "$5"  "$NF}'
++echo "DONE-SENTINEL-OK"
+-- 
+2.43.0
+
