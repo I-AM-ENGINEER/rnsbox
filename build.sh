@@ -178,7 +178,22 @@ rnsbox_build_milkv_duo_01() {
     chmod 0755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/S* 2>/dev/null || true
     export RNSBOX_WITH_DVD=0
     defconfig sg2000_duomodule01_sd
-    build_all
+
+    # Crash-resilient staging: each heavy phase is stamped in the BSP tree
+    # once it completes. A flaky build host (VM resets kill the build
+    # process but not the tree) then resumes instead of redoing the
+    # u-boot/kernel middleware passes every cycle; build-rnsbox.sh below
+    # re-runs the buildroot pack phase, the only one that can really
+    # change between runs. Delete .rnsbox-done-* to force a phase again
+    # (e.g. after changing this board's patches).
+    local stage
+    for stage in build_uboot build_kernel build_ramboot build_osdrv \
+                 build_3rd_party build_middleware pack_cfg; do
+        if [ ! -e ".rnsbox-done-$stage" ]; then
+            "$stage" || return 1
+            touch ".rnsbox-done-$stage"
+        fi
+    done
 
     if [ "$VARIANT" = dvd ]; then
         echo ">> fetching latest-stable client apps for the DVD"
