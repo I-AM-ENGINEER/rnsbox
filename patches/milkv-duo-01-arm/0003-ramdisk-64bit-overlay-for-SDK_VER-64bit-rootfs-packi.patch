@@ -1,4 +1,4 @@
-From 24bc1c2432a1d0bbd5bb17d3895b47f51c13d8cb Mon Sep 17 00:00:00 2001
+From b5129233436bee2ac79a73029a22d23232ac8e53 Mon Sep 17 00:00:00 2001
 From: rnsbox <rnsbox@localhost>
 Date: Wed, 14 Oct 2026 01:32:21 +0300
 Subject: [PATCH 3/5] ramdisk: 64bit overlay for SDK_VER=64bit rootfs packing

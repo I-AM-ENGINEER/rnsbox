@@ -1,4 +1,4 @@
-From 48ae948103f1a3bcf1ae64a1dca6e20fdf458bd8 Mon Sep 17 00:00:00 2001
+From bd817ab815b4e9a71fbe9f36bbcddfcaffee0afc Mon Sep 17 00:00:00 2001
 From: rnsbox <rnsbox@localhost>
 Date: Wed, 14 Oct 2026 01:32:22 +0300
 Subject: [PATCH 5/5] build-rnsbox-arm: lite/dvd packer for the duo01evb arm64

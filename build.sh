@@ -157,7 +157,13 @@ rnsbox_build_bsp_generic() {
     export RNSBOX_NPROC="${RNSBOX_NPROC:-4}"
     if [ -n "$RNSBOX_BR_TOOLCHAIN_SUBPATH" ]; then
         export RNSBOX_BR_TOOLCHAIN_PATH="$PWD/host-tools/$RNSBOX_BR_TOOLCHAIN_SUBPATH"
+        # buildroot resolves a custom preinstalled external toolchain via
+        # `which $(prefix)-gcc` — put the board's buildroot toolchain on PATH.
+        export PATH="$RNSBOX_BR_TOOLCHAIN_PATH/bin:$PATH"
     fi
+    # WSL note: Windows PATH interop appends /mnt/c entries (some with
+    # spaces) that buildroot's dependencies check rejects — strip them.
+    export PATH=$(echo "$PATH" | tr ':' '\n' | grep -v '^/mnt/[a-z]/' | paste -sd:)
     source build/cvisetup.sh
     defconfig "$RNSBOX_DEFCONFIG_BOARD"
     export PATH=/usr/sbin:/sbin:$PATH

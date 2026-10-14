@@ -1,4 +1,4 @@
-From e855fb7d3291f0d5f436d2fa071ff8cedb6fa6f7 Mon Sep 17 00:00:00 2001
+From c5e4e01f0b677b5f467eab0c7343e29812feca8b Mon Sep 17 00:00:00 2001
 From: rnsbox <rnsbox@localhost>
 Date: Wed, 14 Oct 2026 01:32:21 +0300
 Subject: [PATCH 2/5] buildroot: cvitek_SG200X_64bit_defconfig (aarch64 glibc
@@ -20,7 +20,7 @@ verbatim from the musl_riscv64 config.
 
 diff --git a/buildroot/configs/cvitek_SG200X_64bit_defconfig b/buildroot/configs/cvitek_SG200X_64bit_defconfig
 new file mode 100644
-index 000000000..95e322373
+index 000000000..ece8b0c66
 --- /dev/null
 +++ b/buildroot/configs/cvitek_SG200X_64bit_defconfig
 @@ -0,0 +1,4486 @@
@@ -257,10 +257,10 @@ index 000000000..95e322373
 +# BR2_TOOLCHAIN_EXTERNAL_CUSTOM_MUSL is not set
 +BR2_TOOLCHAIN_EXTERNAL_HAS_SSP=y
 +BR2_TOOLCHAIN_EXTERNAL_HAS_SSP_STRONG=y
-+BR2_TOOLCHAIN_EXTERNAL_INET_RPC=y
++# BR2_TOOLCHAIN_EXTERNAL_INET_RPC is not set
 +BR2_TOOLCHAIN_EXTERNAL_CXX=y
 +# BR2_TOOLCHAIN_EXTERNAL_DLANG is not set
-+# BR2_TOOLCHAIN_EXTERNAL_FORTRAN is not set
++BR2_TOOLCHAIN_EXTERNAL_FORTRAN=y
 +BR2_TOOLCHAIN_EXTERNAL_OPENMP=y
 +# BR2_TOOLCHAIN_EXTERNAL_GDB_SERVER_COPY is not set
 +BR2_PACKAGE_HOST_GDB_ARCH_SUPPORTS=y
