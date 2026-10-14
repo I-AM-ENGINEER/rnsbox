@@ -1,0 +1,41 @@
+From 8a7b4f5900834a2f767f1c75cdf4993aae5a6ad4 Mon Sep 17 00:00:00 2001
+From: rnsbox <rnsbox@localhost>
+Date: Thu, 15 Oct 2026 04:08:51 +0300
+Subject: [PATCH 2/2] buildroot: target ISA rv64gc - a rootfs every riscv64
+ runs
+
+The CVITEK musl cross-gcc defaults to rv64gc + T-Head extras (v0p7,
+zfh, xtheadc); every target binary was silently tagged for a C906-with-
+thead core, so the rootfs ran on CVITEK silicon only - qemu-system-
+riscv64 -M virt (plain RV64GC) took an illegal instruction in /init.
+The prebuilt musl libc itself is clean rv64gc and the toolchain ships
+the matching ld-musl-riscv64.so.1, so pinning the compile flags is all
+it takes:
+
+  BR2_TARGET_OPTIMIZATION="-march=rv64gc -mabi=lp64d"
+
+Same package set, same scripts; C906 boards lose nothing but unused
+T-Head ISA tags and gain an image that boots under QEMU and any future
+riscv64 board - which is the point of the universal family image.
+Kernel configs are untouched (per-board, and the C906 thead features
+there are selected by the vendor Kconfig, not by this flag).
+---
+ buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig b/buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig
+index 7634161a1..e59b1b6d9 100644
+--- a/buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig
++++ b/buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig
+@@ -215,7 +215,7 @@ BR2_TOOLCHAIN_HAS_UCONTEXT=y
+ BR2_TOOLCHAIN_HAS_OPENMP=y
+ BR2_TOOLCHAIN_SUPPORTS_PIE=y
+ BR2_TOOLCHAIN_EXTRA_LIBS=""
+-BR2_TARGET_OPTIMIZATION=""
++BR2_TARGET_OPTIMIZATION="-march=rv64gc -mabi=lp64d"
+ BR2_TARGET_LDFLAGS="-mcpu=c906fdv -march=rv64imafdcv0p7xthead -mcmodel=medany -mabi=lp64d"
+ BR2_TOOLCHAIN_HEADERS_AT_LEAST_3_0=y
+ BR2_TOOLCHAIN_HEADERS_AT_LEAST_3_1=y
+-- 
+2.43.0
+

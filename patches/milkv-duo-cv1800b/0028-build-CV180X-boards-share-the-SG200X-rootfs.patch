@@ -1,0 +1,43 @@
+From c3a22e487333c77c471cd96822e1bfadf8febf57 Mon Sep 17 00:00:00 2001
+From: rnsbox <rnsbox@localhost>
+Date: Thu, 15 Oct 2026 00:13:33 +0300
+Subject: [PATCH 2/4] build: CV180X boards share the SG200X buildroot rootfs
+
+cvisetup.sh (a symlink to envsetup_soc.sh, the one real file) derives the
+buildroot defconfig + overlay dir from the chip arch, so a cv1800b build
+would look for cvitek_CV180X_musl_riscv64_defconfig and
+board/cvitek/CV180X/overlay - which do not exist and must not be forked.
+Map CV180X onto the SG200X pair: one rootfs config, one overlay, one
+package set for the whole CVITEK RV64 family; only kernel + boot blobs
+are per-chip.
+---
+ build/envsetup_soc.sh | 12 ++++++++++--
+ 1 file changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/build/envsetup_soc.sh b/build/envsetup_soc.sh
+index e308f7733..0a04ca267 100644
+--- a/build/envsetup_soc.sh
++++ b/build/envsetup_soc.sh
+@@ -874,9 +874,17 @@ function cvi_setup_env()
+   export SYSTEM_OUT_DIR
+   export CROSS_COMPILE_PATH
+   # buildroot config
++  # RNSBox universal: the CV180X (cv1800b) boards share the SG200X rootfs
++  # verbatim - same musl riscv64 toolchain, same package set, same overlay,
++  # same defconfig file. Only the kernel + boot blobs are per-chip.
+   export BR_DIR="$TOP_DIR"/buildroot
+-  export BR_BOARD=cvitek_${CHIP_ARCH}_${SDK_VER}
+-  export BR_OVERLAY_DIR=${BR_DIR}/board/cvitek/${CHIP_ARCH}/overlay
++  if [ "${CHIP_ARCH}" = "CV180X" ]; then
++    BR_ROOTFS_ARCH=SG200X
++  else
++    BR_ROOTFS_ARCH=${CHIP_ARCH}
++  fi
++  export BR_BOARD=cvitek_${BR_ROOTFS_ARCH}_${SDK_VER}
++  export BR_OVERLAY_DIR=${BR_DIR}/board/cvitek/${BR_ROOTFS_ARCH}/overlay
+   export BR_DEFCONFIG=${BR_BOARD}_defconfig
+   echo "BR2_DEFCONFIG:  ${BRDEFCONFIG}"
+ }
+-- 
+2.43.0
+
