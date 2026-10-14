@@ -1,4 +1,4 @@
-From ce465cf2397dfc2d06a188c297772e334a89f606 Mon Sep 17 00:00:00 2001
+From 47c0225fb0b46e6cecc38065c0491fe8c63d6a5f Mon Sep 17 00:00:00 2001
 From: rnsbox <rnsbox@localhost>
 Date: Wed, 14 Oct 2026 01:32:21 +0300
 Subject: [PATCH 4/5] build: overridable -j and buildroot toolchain path

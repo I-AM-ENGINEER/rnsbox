@@ -1,4 +1,4 @@
-From d73c64c6b16e30f5ca5d302093db22c2b2103ba1 Mon Sep 17 00:00:00 2001
+From 92af1169a59cd6d7208c507d13d704904cb06947 Mon Sep 17 00:00:00 2001
 From: rnsbox <rnsbox@localhost>
 Date: Wed, 14 Oct 2026 01:32:13 +0300
 Subject: [PATCH 1/5] duo01evb-arm64: SG2000 ARM64 board dir for Milk-V Duo
@@ -13,14 +13,14 @@ from the licheerv-nano board (riscv-only symbols dropped, CHIP=cv181x).
 ---
  .../sg2000_duo01evb_arm64_sd/config.json      |    9 +
  .../dts_arm64/sg2000_duo01evb_arm64_sd.dts    |   11 +
- .../linux/sg2000_duo01evb_arm64_sd_defconfig  | 1038 +++++++++++++++++
+ .../linux/sg2000_duo01evb_arm64_sd_defconfig  | 1039 +++++++++++++++++
  .../sg200x/sg2000_duo01evb_arm64_sd/memmap.py |   85 ++
  .../partition/partition_sd.xml                |    8 +
- .../sg2000_duo01evb_arm64_sd_defconfig        |   16 +
+ .../sg2000_duo01evb_arm64_sd_defconfig        |   19 +
  .../u-boot/cvi_board_init.c                   |    8 +
  .../sg2000_duo01evb_arm64_sd/u-boot/cvitek.h  |   13 +
  .../u-boot/sg2000_duo01evb_arm64_sd_defconfig |   50 +
- 9 files changed, 1238 insertions(+)
+ 9 files changed, 1242 insertions(+)
  create mode 100644 build/boards/sg200x/sg2000_duo01evb_arm64_sd/config.json
  create mode 100644 build/boards/sg200x/sg2000_duo01evb_arm64_sd/dts_arm64/sg2000_duo01evb_arm64_sd.dts
  create mode 100644 build/boards/sg200x/sg2000_duo01evb_arm64_sd/linux/sg2000_duo01evb_arm64_sd_defconfig
@@ -65,10 +65,10 @@ index 000000000..b86e50fa6
 +
 diff --git a/build/boards/sg200x/sg2000_duo01evb_arm64_sd/linux/sg2000_duo01evb_arm64_sd_defconfig b/build/boards/sg200x/sg2000_duo01evb_arm64_sd/linux/sg2000_duo01evb_arm64_sd_defconfig
 new file mode 100644
-index 000000000..cc6764182
+index 000000000..b7fd1964f
 --- /dev/null
 +++ b/build/boards/sg200x/sg2000_duo01evb_arm64_sd/linux/sg2000_duo01evb_arm64_sd_defconfig
-@@ -0,0 +1,1038 @@
+@@ -0,0 +1,1039 @@
 +CONFIG_CC_OPTIMIZE_FOR_SIZE=y
 +# CONFIG_SWAP is not set
 +CONFIG_SYSVIPC=y
@@ -87,7 +87,8 @@ index 000000000..cc6764182
 +CONFIG_EMBEDDED=y
 +# CONFIG_SLUB_DEBUG is not set
 +CONFIG_ARCH_CVITEK=y
-+CONFIG_ARCH_CVITEK_CHIP="cv181x"
++CONFIG_ARCH_CV181X=y
++CONFIG_ARCH_CVITEK_CHIP="mars"
 +CONFIG_ARCH_CV181X_ASIC=y
 +CONFIG_POWER_RESET=y
 +CONFIG_COMPAT_32BIT_TIME=y
@@ -1214,10 +1215,10 @@ index 000000000..c2cb23042
 +</physical_partition>
 diff --git a/build/boards/sg200x/sg2000_duo01evb_arm64_sd/sg2000_duo01evb_arm64_sd_defconfig b/build/boards/sg200x/sg2000_duo01evb_arm64_sd/sg2000_duo01evb_arm64_sd_defconfig
 new file mode 100644
-index 000000000..b09318b68
+index 000000000..3fe0132c5
 --- /dev/null
 +++ b/build/boards/sg200x/sg2000_duo01evb_arm64_sd/sg2000_duo01evb_arm64_sd_defconfig
-@@ -0,0 +1,16 @@
+@@ -0,0 +1,19 @@
 +CONFIG_CHIP_sg2000=y
 +CONFIG_BOARD_duo01evb_arm64_sd=y
 +CONFIG_DDR_CFG_ddr3_1866_x16=y
@@ -1227,6 +1228,9 @@ index 000000000..b09318b68
 +CONFIG_KERNEL_ENTRY_HACK_ADDR="0x80108000"
 +CONFIG_TOOLCHAIN_GLIBC_ARM64=y
 +# CONFIG_FLASH_SIZE_SHRINK is not set
++# RNSBox boots the onekernel init (S-scripts in the real rootfs), not the
++# vendor overlayfs initrd — ROOTFS_OVERLAYFS defaults to y, disable it.
++# CONFIG_ROOTFS_OVERLAYFS is not set
 +CONFIG_BOOT_IMAGE_SINGLE_DTB=y
 +CONFIG_STORAGE_TYPE_sd=y
 +CONFIG_UBOOT_2021_10=y

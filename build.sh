@@ -277,6 +277,13 @@ if [ "${BUILD_STYLE:-patches}" = external ]; then
 fi
 
 # ---- patch-series flow (licheerv-nano, milkv-duo-01-arm) ----------------------
+# WORKDIR must be absolute: the flow cd's into it, and the shared-package
+# sync + build steps below keep referencing "$WORKDIR/..." afterwards.
+case "$WORKDIR" in
+    /*) ;;
+    *) WORKDIR="$PWD/$WORKDIR" ;;
+esac
+
 if [ ! -e "$WORKDIR/.git" ]; then
     echo ">> cloning upstream base: $UPSTREAM_URL @ $UPSTREAM_COMMIT"
     git clone "$UPSTREAM_URL" "$WORKDIR"

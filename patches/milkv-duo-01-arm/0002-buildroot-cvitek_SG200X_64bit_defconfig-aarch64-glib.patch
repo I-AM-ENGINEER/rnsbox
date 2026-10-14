@@ -1,4 +1,4 @@
-From cf3775ebd964ed567078d4424905dea077f423cd Mon Sep 17 00:00:00 2001
+From e855fb7d3291f0d5f436d2fa071ff8cedb6fa6f7 Mon Sep 17 00:00:00 2001
 From: rnsbox <rnsbox@localhost>
 Date: Wed, 14 Oct 2026 01:32:21 +0300
 Subject: [PATCH 2/5] buildroot: cvitek_SG200X_64bit_defconfig (aarch64 glibc
