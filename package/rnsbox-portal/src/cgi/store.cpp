@@ -397,8 +397,9 @@ bool write_slip(const SlipConfig& c, std::string& err) {
     std::string en = cron_truthy(c.enabled) ? "yes" : "no";
     std::string dev = c.device.empty() ? "/dev/serial0" : c.device;
     if (!valid_tty(dev)) { err = "bad device path"; return false; }
-    // Digits only (atoi would take "1500000<junk>"); ceiling = the UART's
-    // 25 MHz/16 base rate — anything above can't be generated.
+    // Digits only (atoi would take "2000000<junk>"); the cap is a sanity
+    // bound, the real ceiling is per board (see the board README: 2 Mbaud
+    // exact on the reclocked arm64 boards, 1562500 on 25 MHz-clocked ones).
     int baud = 0;
     if (all_digits(c.baud) && c.baud.size() <= 8) baud = atoi(c.baud.c_str());
     if (baud < 1 || baud > SLIP_MAX_BAUD) { err = "baud out of range (1-" + std::to_string(SLIP_MAX_BAUD) + ")"; return false; }

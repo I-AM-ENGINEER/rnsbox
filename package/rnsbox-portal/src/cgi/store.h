@@ -84,7 +84,9 @@ struct SlipConfig {
 SlipConfig read_slip();
 bool write_slip(const SlipConfig& c, std::string& err);   // baud 1..SLIP_MAX_BAUD
 // SG2002 UART: 25 MHz base clock / 16 = 1 562 500 baud is the ceiling.
-constexpr int SLIP_MAX_BAUD = 1562500;
+// 4 M: headroom for the reclocked arm64 boards (exact 2 Mbaud from
+// the 96 MHz uart clock); 25 MHz-clocked boards top out at 1562500.
+constexpr int SLIP_MAX_BAUD = 4000000;
 
 // Append a TCPClientInterface for the HaLow modem to the reticulum config.
 // Returns true + sets msg to the interface name; false + msg="already" if the

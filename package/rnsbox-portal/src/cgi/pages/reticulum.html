@@ -76,20 +76,23 @@
       <label style="margin:0">UART device
         <input type="text" name="device" value="__SLIP_DEVICE__"></label>
       <label style="margin:0">Baud
-        <input type="number" name="baud" value="__SLIP_BAUD__" min="1" max="1562500"
-          title="1 to 1562500 — the UART's 25 MHz/16 ceiling"></label>
+        <input type="number" name="baud" value="__SLIP_BAUD__" min="1" max="4000000"
+          title="1 to 4000000 — see the board README for the board's UART ceiling"></label>
       <label style="margin:0">This box (local IP)
         <input type="text" name="local_ip" value="__SLIP_LOCAL_IP__"></label>
       <label style="margin:0">Modem (peer IP)
         <input type="text" name="peer_ip" value="__SLIP_PEER_IP__"></label>
     </div>
     <button type="submit" class="btn-primary" style="margin-top:10px">Save &amp; apply</button>
-    <p class="muted">Wire the hardware UART (<code>GPIO14</code> TX = physical pin 8,
-    <code>GPIO15</code> RX = pin 10, 3.3&nbsp;V) to the modem, cross TX&harr;RX, common ground &mdash;
-    device <code>/dev/serial0</code>. Bluetooth is disabled and the serial console kept off the
-    UART so the port is free. <strong>Baud must match the modem</strong> &mdash; 2&nbsp;Mbaud (the
-    modem default; the PL011 handles it) is pre-filled. The IPs must match the modem's SLIP config
-    (defaults <code>192.168.7.2</code> modem / <code>192.168.7.1</code> box).</p>
+    <p class="muted">Wire a hardware UART to the modem, cross TX&harr;RX, common
+    ground, 3.3&nbsp;V TTL &mdash; pads and device are board-specific (Pi:
+    <code>/dev/serial0</code>; rnsbox CVITEK boards: UART1 = <code>ttyS1</code> on
+    <code>XGPIOA[28]</code>/<code>[29]</code>); see the board README.
+    <strong>Baud must match the modem</strong> &mdash; the factory 2&nbsp;Mbaud is
+    generated exactly on the rnsbox arm64 boards (96&nbsp;MHz UART clock); a
+    25&nbsp;MHz-clocked board (LicheeRV Nano-e, ceiling 1562500) needs
+    1500000. The IPs must match the modem's SLIP config (defaults
+    <code>192.168.7.2</code> modem / <code>192.168.7.1</code> box).</p>
   </form>
 </section>
 
