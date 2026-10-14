@@ -140,8 +140,7 @@ rnsbox_build_licheerv_nano() {
     # pack needs no clients ISO; the pack then produces the requested variant.
     # WSL note: Windows PATH interop appends /mnt/c entries (some with
     # spaces) that buildroot's dependency check rejects — strip them.
-    export PATH=$(echo "$PATH" | tr ':' '
-' | grep -v '^/mnt/[a-z]/' | paste -sd:)
+    export PATH=$(printf '%s' "$PATH" | tr ':' '\n' | grep -v '^/mnt/[a-z]/' | paste -sd:)
     echo ">> initial full build (first run compiles Rust from source; be patient)"
     source build/cvisetup.sh
     defconfig sg2002_licheervnano_sd
@@ -169,6 +168,9 @@ rnsbox_build_milkv_duo_01() {
     # Same shape as the licheerv-nano build; the board dir (and with it the
     # DRAM map, dts, defconfigs) differs, everything else — headless strip,
     # shared packages, gadget/router/portal/rnsd series — is identical.
+    # WSL note: Windows PATH interop appends /mnt/c entries (some with
+    # spaces) that buildroot rejects - strip them.
+    export PATH=$(printf '%s' "$PATH" | tr ':' '\n' | grep -v '^/mnt/[a-z]/' | paste -sd:)
     echo ">> initial full build (first run compiles Rust from source; be patient)"
     source build/cvisetup.sh
     defconfig sg2000_duomodule01_sd
