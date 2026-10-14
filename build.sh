@@ -138,6 +138,10 @@ rnsbox_build_licheerv_nano() {
     # Initial full compile. build-rnsbox.sh (inside the patched tree) only
     # (re)packs, so one build_all is needed first; lite-shaped so the first
     # pack needs no clients ISO; the pack then produces the requested variant.
+    # WSL note: Windows PATH interop appends /mnt/c entries (some with
+    # spaces) that buildroot's dependency check rejects — strip them.
+    export PATH=$(echo "$PATH" | tr ':' '
+' | grep -v '^/mnt/[a-z]/' | paste -sd:)
     echo ">> initial full build (first run compiles Rust from source; be patient)"
     source build/cvisetup.sh
     defconfig sg2002_licheervnano_sd
@@ -289,6 +293,13 @@ if [ "${BUILD_STYLE:-patches}" = external ]; then
 fi
 
 # ---- patch-series flow (licheerv-nano) ---------------------------------------
+# WORKDIR must be absolute: the flow cd's into it, and the shared-package
+# sync + build steps below keep referencing "$WORKDIR/..." afterwards.
+case "$WORKDIR" in
+    /*) ;;
+    *) WORKDIR="$PWD/$WORKDIR" ;;
+esac
+
 if [ ! -e "$WORKDIR/.git" ]; then
     echo ">> cloning upstream base: $UPSTREAM_URL @ $UPSTREAM_COMMIT"
     git clone "$UPSTREAM_URL" "$WORKDIR"
