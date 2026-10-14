@@ -68,7 +68,7 @@ case "$BOARD" in
         RNSBOX_IMAGES_DIR="install/soc_sg2002_licheervnano_sd/images"
         # series to git-am, in order (relative to patches/)
         RNSBOX_PATCH_SERIES="licheerv-nano"
-        RNSBOX_DEFCONFIG_BOARD=sg2002_licheervnano_sd
+        RNSBOX_DEFCONFIG_BOARDS="sg2002_licheervnano_sd"
         RNSBOX_BR_DEFCONFIG=cvitek_SG200X_musl_riscv64_defconfig
         RNSBOX_PACKER=build-rnsbox.sh
         ;;
@@ -78,10 +78,13 @@ case "$BOARD" in
         UPSTREAM_COMMIT="${UPSTREAM_COMMIT:-d4003f15b35d43ad4842f427050ab2bba0114fa5}"
         HOST_TOOLS_URL="${HOST_TOOLS_URL:-https://github.com/sophgo/host-tools}"
         WORKDIR="${WORKDIR:-milkv-duo-01-arm}"
-        RNSBOX_IMAGES_DIR="install/soc_sg2000_duo01evb_arm64_sd/images"
+        RNSBOX_IMAGES_DIR="install/soc_sg2000_duo01evb_arm64_sd/images install/soc_sg2002_duo_arm64_sd/images"
         # the shared BSP series, then the ARM64 board delta on top
         RNSBOX_PATCH_SERIES="licheerv-nano milkv-duo-01-arm"
-        RNSBOX_DEFCONFIG_BOARD=sg2000_duo01evb_arm64_sd
+        # the arm64 family: ONE arm64 kernel superset (identical defconfigs,
+        # per-board DTBs) + ONE aarch64 buildroot rootfs, consumed by every
+        # board in the list; partition shapes live in each board dir
+        RNSBOX_DEFCONFIG_BOARDS="sg2000_duo01evb_arm64_sd sg2002_duo_arm64_sd"
         RNSBOX_BR_DEFCONFIG=cvitek_SG200X_64bit_defconfig
         # buildroot userspace toolchain (Arm GNU 11.3, glibc) inside host-tools;
         # kernel/u-boot/fsbl keep the vendor-pinned linaro 6.3.1 via SDK env
@@ -165,18 +168,40 @@ rnsbox_build_bsp_generic() {
     # spaces) that buildroot's dependencies check rejects — strip them.
     export PATH=$(echo "$PATH" | tr ':' '\n' | grep -v '^/mnt/[a-z]/' | paste -sd:)
     source build/cvisetup.sh
-    defconfig "$RNSBOX_DEFCONFIG_BOARD"
     export PATH=/usr/sbin:/sbin:$PATH
     sed -i 's/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE="200M"/' \
         "buildroot/configs/$RNSBOX_BR_DEFCONFIG"
-    sed -i 's#\(<partition label="ROOTFS" size_in_kb=\)"[0-9]*"#\1"1638400"#' \
-        "build/boards/sg200x/$RNSBOX_DEFCONFIG_BOARD/partition/partition_sd.xml"
+    for b in $RNSBOX_DEFCONFIG_BOARDS; do
+        sed -i 's#\(<partition label="ROOTFS" size_in_kb=\)"[0-9]*"#\1"1638400"#' \
+            "build/boards/sg200x/$b/partition/partition_sd.xml"
+    done
     sed -i '/"usb.disk0",/d; /"usb.disk0.size",/d' \
         build/tools/common/sd_tools/genimage_rootless.cfg
     chmod 0755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/S* 2>/dev/null || true
     export RNSBOX_WITH_DVD=0
-    defconfig "$RNSBOX_DEFCONFIG_BOARD"
-    build_all
+    # one kernel superset: every arm64 family board uses a byte-identical
+    # kernel defconfig, so pre-seeding board N's O= dir from board 1's
+    # finished build makes its build_all a no-op rebuild (only its DTBs,
+    # fip and boot.sd get regenerated with its own memmap — the per-board
+    # kernel-dts pass re-links cvi_board_memmap.h and rebuilds all dtbs).
+    # On a fresh tree the first board builds honestly and seeds the rest.
+    first="${RNSBOX_DEFCONFIG_BOARDS%% *}"
+    rest="${RNSBOX_DEFCONFIG_BOARDS#* }"
+    if [ "$rest" != "$first" ]; then
+        for b in $rest; do
+            for pair in linux_5.10/build u-boot-2021.10/build; do
+                k0="$pair/$first"; k1="$pair/$b"
+                if [ -d "$k0" ] && [ ! -d "$k1" ]; then
+                    echo ">> pre-seeding $k1 from $k0 (identical arm64 config)"
+                    cp -a "$k0" "$k1"
+                fi
+            done
+        done
+    fi
+    for b in $RNSBOX_DEFCONFIG_BOARDS; do
+        defconfig "$b"
+        build_all
+    done
 
     if [ "$VARIANT" = dvd ]; then
         echo ">> fetching latest-stable client apps for the DVD"
@@ -325,4 +350,6 @@ rnsbox_track_latest_rns "$PWD"
 rnsbox_build
 
 echo ">> done — image(s) under $WORKDIR/$RNSBOX_IMAGES_DIR/"
-ls -lh "$WORKDIR/$RNSBOX_IMAGES_DIR"/*-"$VARIANT".img 2>/dev/null | tail -2 || true
+for d in $RNSBOX_IMAGES_DIR; do
+    ls -lh "$WORKDIR/$d"/*-"$VARIANT".img 2>/dev/null | tail -2 || true
+done
