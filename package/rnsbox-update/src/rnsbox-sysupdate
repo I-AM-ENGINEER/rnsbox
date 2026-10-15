@@ -47,11 +47,12 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-CONF_PATH = "/etc/rnsbox/update.conf"
-RUN_STATE = "/run/rnsbox-sysupdate.json"      # volatile, portal reads this
-LOCK_PATH = "/run/rnsbox-sysupdate.lock"
-BOOT_DIR = "/boot"
-IMAGE_VER_FILE = "/etc/rnsbox/image.ver"
+CONF_PATH = os.environ.get("RNSBOX_SYSUPDATE_CONF", "/etc/rnsbox/update.conf")
+RUN_STATE = os.environ.get("RNSBOX_SYSUPDATE_RUN", "/run/rnsbox-sysupdate.json")
+LOCK_PATH = os.environ.get("RNSBOX_SYSUPDATE_LOCK", "/run/rnsbox-sysupdate.lock")
+BOOT_DIR = os.environ.get("RNSBOX_SYSUPDATE_BOOT", "/boot")
+IMAGE_VER_FILE = os.environ.get("RNSBOX_SYSUPDATE_VER", "/etc/rnsbox/image.ver")
+STATEDIR_OVERRIDE = os.environ.get("RNSBOX_SYSUPDATE_STATEDIR", "")
 MAX_LOG_BYTES = 64 * 1024
 DOWNLOAD_TIMEOUT = 60          # per-connect/read socket timeout
 MAX_IMAGE_MB = 1600            # refuse to download absurd files
@@ -90,6 +91,9 @@ def truthy(v, default=False):
 
 def state_dir():
     """Persistent state: /data (A/B layout, survives slot swaps) or rootfs."""
+    if STATEDIR_OVERRIDE:
+        os.makedirs(STATEDIR_OVERRIDE, exist_ok=True)
+        return STATEDIR_OVERRIDE
     for cand in ("/data/rnsbox-update", "/var/lib/rnsbox-update"):
         try:
             os.makedirs(cand, exist_ok=True)
@@ -300,11 +304,16 @@ PROVIDERS_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)),
 
 
 def load_provider(name):
-    """Adding a provider = one module in update_providers/ + a registry row."""
-    if name not in sys.path:
+    """Adding a provider = one module in update_providers/ + a registry row.
+    Config names may use dashes ('github-releases'); module files use
+    underscores (github_releases.py)."""
+    modname = (name or "").strip().replace("-", "_")
+    if not re.match(r"^[a-z0-9_]{1,40}$", modname):
+        raise ValueError("invalid provider name %r" % name)
+    if PROVIDERS_DIR not in sys.path:
         sys.path.insert(0, PROVIDERS_DIR)
     try:
-        return __import__(name)
+        return __import__(modname)
     except ImportError as e:
         raise ValueError("unknown provider %r (%s)" % (name, e))
 
@@ -428,16 +437,19 @@ def slot_dev(layout, slot):
 
 
 def dev_size_bytes(dev):
-    with open("/sys/class/block/%s/size" % os.path.basename(dev)) as f:
-        return int(f.read().strip()) * 512
+    try:
+        with open("/sys/class/block/%s/size" % os.path.basename(dev)) as f:
+            return int(f.read().strip()) * 512
+    except OSError:
+        # not a block device (file-backed slot in tests/QEMU): file size
+        return os.path.getsize(dev)
 
 
 # -------------------------------------------------------------- MBR + FAT ---
 
-def parse_mbr(path):
-    """[(start_byte, size_bytes, ptype)] for the 4 MBR entries of a file."""
-    with open(path, "rb") as f:
-        sec = f.read(512)
+def parse_mbr_sector(sec):
+    """[(start_byte, size_bytes, ptype)] for the 4 MBR entries of a 512-byte
+    sector."""
     if len(sec) < 512 or sec[510:512] != b"\x55\xaa":
         raise ValueError("downloaded image has no MBR signature")
     parts = []
@@ -451,6 +463,21 @@ def parse_mbr(path):
         raise ValueError("downloaded image has fewer than 3 partitions — "
                          "not an A/B image")
     return parts
+
+
+def parse_mbr(path):
+    """Partition table of a downloaded .img.xz: the MBR comes from the
+    DECOMPRESSED stream (the file itself is compressed)."""
+    if not shutil.which("xz"):
+        raise RuntimeError("xz not found on the system")
+    xz = subprocess.Popen(["xz", "-dc", "--", path],
+                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    try:
+        sec = xz.stdout.read(512)
+    finally:
+        xz.kill()
+        xz.wait()
+    return parse_mbr_sector(sec)
 
 
 CIMG_MAGIC = b"CIMG"
@@ -481,7 +508,10 @@ class FatReader(object):
             raise FatError("boot partition too small")
         self.d = data
         (self.bps, self.spc, self.reserved, self.nfats, self.root_ent,
-         tot16, self.fatsz16) = struct.unpack_from("<HBHBHHH", data, 11)
+         tot16) = struct.unpack_from("<HBHBHH", data, 11)
+        # offset 21 is the media descriptor; FAT16 sector count is at 19,
+        # FAT size at 22 (FAT16) / 36 (FAT32)
+        self.fatsz16 = struct.unpack_from("<H", data, 22)[0]
         tot32 = struct.unpack_from("<I", data, 32)[0]
         self.fatsz = self.fatsz16 or struct.unpack_from("<I", data, 36)[0]
         self.root_cluster = struct.unpack_from("<I", data, 44)[0]
@@ -534,18 +564,18 @@ class FatReader(object):
                 lfn = []
                 continue
             if e[11] == self.ATTR_LONG_NAME:
-                part = struct.unpack_from("<26H", e, 1)
-                chars = "".join(struct.pack("<H", c).decode("utf-16-le",
-                                "ignore")[0]
-                                for c in part if c not in (0x0000, 0xFFFF))
-                lfn.append((e[0] & 0x1F, chars))
+                # LFN parts carry 26 UCS-2 chars in three scattered chunks
+                raw = e[1:11] + e[14:26] + e[28:32]
+                chars = raw.decode("utf-16-le", "ignore")
+                chars = chars.split("\x00")[0]
+                lfn.append((e[0] & 0x1F, chars.replace("\uffff", "")))
                 continue
             name = e[0:8].decode("ascii", "replace").strip()
             ext = e[8:11].decode("ascii", "replace").strip()
             short = name + ("." + ext if ext else "")
             if lfn:
-                lfn.sort(reverse=True)
-                longname = "".join(c for _, c in lfn).split("\x00")[0]
+                lfn.sort()                  # entries arrive last-part first
+                longname = "".join(c for _, c in lfn)
             else:
                 longname = short
             lfn = []
@@ -628,9 +658,10 @@ def sha256_file(path, progress=None):
 def write_idle_slot(img_path, idle_dev, part_off, part_size, st):
     """Stream one partition out of the .img.xz onto the idle slot device.
 
-    Two subprocess pipeline (xz | dd), exact byte accounting: a short stream
-    (corrupt archive, dead disk) aborts with the slot useless but the running
-    system untouched.
+    Two subprocess pipeline (xz | dd): the first part_off decompressed bytes
+    are read and discarded, then exactly part_size bytes are piped into dd.
+    Exact byte accounting: a short stream (corrupt archive, dead disk) aborts
+    with the slot useless but the running system untouched.
     """
     if not shutil.which("xz"):
         raise RuntimeError("xz not found on the system")
@@ -642,6 +673,16 @@ def write_idle_slot(img_path, idle_dev, part_off, part_size, st):
                               stdin=subprocess.PIPE, stderr=devnull)
         written = 0
         try:
+            # skip everything before the target partition
+            remaining = part_off
+            while remaining > 0:
+                chunk = xz.stdout.read(min(4 * 1024 * 1024, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+            if remaining:
+                raise RuntimeError("decompressed stream ended inside the "
+                                   "skip region — corrupt archive?")
             while written < part_size:
                 need = min(4 * 1024 * 1024, part_size - written)
                 chunk = xz.stdout.read(need)
@@ -656,11 +697,19 @@ def write_idle_slot(img_path, idle_dev, part_off, part_size, st):
         except BrokenPipeError:
             pass
         finally:
+            # close dd's stdin first so dd sees EOF and exits; then kill xz —
+            # its remaining output is not needed, and waiting for it without
+            # draining would deadlock (xz blocked on a full pipe, dd gone)
             try:
                 dd.stdin.close()
             except OSError:
                 pass
             ddr = dd.wait()
+            xz.kill()
+            try:
+                xz.stdout.close()
+            except OSError:
+                pass
             xz.wait()
     if written != part_size:
         raise RuntimeError("short write onto %s: %d of %d bytes — corrupt "
@@ -696,6 +745,32 @@ def fsync_dir(path):
         os.close(fd)
 
 
+def read_range_from_xz(path, off, size):
+    """Decompressed bytes [off, off+size) from an .img.xz (single pass)."""
+    xz = subprocess.Popen(["xz", "-dc", "--", path],
+                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    data = b""
+    try:
+        remaining = off
+        while remaining > 0:
+            chunk = xz.stdout.read(min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+        while len(data) < size:
+            chunk = xz.stdout.read(size - len(data))
+            if not chunk:
+                break
+            data += chunk
+    finally:
+        xz.kill()
+        xz.wait()
+    if len(data) != size:
+        raise RuntimeError("short read from %s: %d of %d bytes"
+                           % (path, len(data), size))
+    return data
+
+
 def write_boot_files(img_path, parts, board, layout, st):
     """Refresh the shared boot partition from the verified image.
 
@@ -704,9 +779,7 @@ def write_boot_files(img_path, parts, board, layout, st):
     old slot with the old boot chain either way.
     """
     p1_off, p1_size, _ = parts[0]
-    with open(img_path, "rb") as f:
-        f.seek(p1_off)
-        fat_data = f.read(p1_size)
+    fat_data = read_range_from_xz(img_path, p1_off, p1_size)
     fr = FatReader(fat_data)
 
     if board == "rpi0-2w":
@@ -724,10 +797,12 @@ def write_boot_files(img_path, parts, board, layout, st):
     else:
         whitelist = boot_refresh_set(board)
         plan = []
+        low = {w.lower() for w in whitelist}
         for e in fr.listdir("/"):
-            if not e["is_dir"] and e["name"] in whitelist:
+            if not e["is_dir"] and e["name"].lower() in low:
                 plan.append(e["name"])
-        missing = whitelist - set(plan)
+        missing = {w for w in whitelist
+                   if w.lower() not in {p.lower() for p in plan}}
         if missing:
             raise RuntimeError("boot artifacts missing from image: %s"
                                % ",".join(sorted(missing)))
@@ -756,6 +831,8 @@ def write_boot_files(img_path, parts, board, layout, st):
     try:
         for rel in plan:
             data = strip_cimg(fr.read(rel))
+            if whitelist is not None:
+                rel = rel.lower()   # canonical boot.sd/fip.bin naming
             dst = os.path.join(boot_dir, rel)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             if os.path.exists(dst):
@@ -924,6 +1001,8 @@ def atomic_write(path, text):
 
 
 def reboot_now():
+    if os.environ.get("RNSBOX_SYSUPDATE_NO_REBOOT") == "1":
+        return          # tests / dry runs: stay up, state says "flipping"
     for cmd in (["reboot", "-f"], ["busybox", "reboot", "-f"]):
         try:
             subprocess.Popen(cmd, stdout=subprocess.DEVNULL,

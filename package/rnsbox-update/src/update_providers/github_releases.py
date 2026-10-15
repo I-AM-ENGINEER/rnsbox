@@ -15,10 +15,13 @@ Notes:
 """
 
 import json
+import os
 import re
 import urllib.parse
 
-API = "https://api.github.com/repos/{repo}/releases?per_page=15"
+API = os.environ.get(
+    "RNSBOX_UPDATE_GHAPI",
+    "https://api.github.com") + "/repos/{repo}/releases?per_page=15"
 NOTES_ROW = re.compile(
     r"^\|\s*[^|]+\|\s*`?([^`|]+?)`?\s*\|\s*`?([0-9a-fA-F]{64})`?\s*\|",
     re.MULTILINE)
