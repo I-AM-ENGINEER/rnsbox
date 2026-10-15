@@ -3,8 +3,8 @@ config BR2_PACKAGE_PYTHON_BLE_RETICULUM
 	depends on BR2_PACKAGE_BLUEZ5_UTILS # D-Bus Bluetooth API (bluetoothd)
 	depends on BR2_PACKAGE_DBUS         # system bus for BlueZ
 	select BR2_PACKAGE_PYTHON_BLEAK     # central mode (scan + connect)
-	select BR2_PACKAGE_PYTHON_BLUEZERO  # peripheral mode (GATT server)
-	select BR2_PACKAGE_PYTHON_DBUS      # dbus-python: bluezero + pairing agent
+	select BR2_PACKAGE_RNSBOX_PYTHON_BLUEZERO # peripheral mode (GATT server)
+	select BR2_PACKAGE_DBUS_PYTHON      # bluezero + the pairing agent
 	help
 	  Bluetooth Low Energy (BLE) interface for Reticulum, based on
 	  https://github.com/torlando-tech/ble-reticulum (MIT).

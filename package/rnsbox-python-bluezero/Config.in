@@ -1,0 +1,19 @@
+config BR2_PACKAGE_RNSBOX_PYTHON_BLUEZERO
+	bool "rnsbox-python-bluezero"
+	select BR2_PACKAGE_DBUS_PYTHON # runtime (module-level `import dbus`)
+	help
+	  A Python library for Bluetooth Low Energy (BLE) peripheral mode
+	  on Linux: registers GATT applications and LE advertisements
+	  with BlueZ over D-Bus. Used by ble-reticulum's GATT server
+	  (BLE peripheral mode - other Reticulum nodes and phone clients
+	  connect INBOUND over it).
+
+	  This is buildroot's python-bluezero 0.9.1 (same sdist, same
+	  version) packaged under a separate symbol on purpose: the
+	  in-tree python-bluezero pulls python-gobject, whose
+	  gobject-introspection dependency needs a glibc toolchain - the
+	  RNSBox Raspberry Pi image is musl. bluezero itself is
+	  pure Python and only needs dbus-python (dbus.mainloop.glib
+	  comes from dbus-python, not PyGObject).
+
+	  https://ukBaz.github.io/bluezero/

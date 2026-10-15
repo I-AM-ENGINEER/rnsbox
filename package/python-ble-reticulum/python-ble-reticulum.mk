@@ -21,7 +21,7 @@ PYTHON_BLE_RETICULUM_DEPENDENCIES = python3
 # (peripheral mode, pairing agent) lazily and guarded - each degrades to a
 # feature flag in the code. Declare them all so a BLE-enabled image always
 # has the full feature set.
-PYTHON_BLE_RETICULUM_DEPENDENCIES += python-bleak python-bluezero python-dbus
+PYTHON_BLE_RETICULUM_DEPENDENCIES += python-bleak rnsbox-python-bluezero dbus-python
 
 # Install layout, matching how RNS loads third-party interfaces (RNS 1.x has
 # no built-in BLE type; Reticulum.py exec()s files from <configdir>/interfaces/
