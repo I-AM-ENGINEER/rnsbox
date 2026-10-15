@@ -1,0 +1,305 @@
+#!/bin/sh
+# S07usbmode — apply the configured USB role (device | host) from
+# /etc/rnsbox/usb.conf BEFORE the gadget scripts run (S08usbdev on the
+# CVITEK boards, S10usbdev on the Raspberry Pi; both sort after S07).
+#
+# Per-platform mechanism (researched in the vendor trees, see
+# local_docs/usb-mode-switch.md):
+#
+#   CVITEK (SG200x/CV180x: Duo Module 01 EVB, LicheeRV Nano, cv1800b):
+#     The USB controller is DWC2 with the CVITEK glue
+#     (linux_5.10/drivers/usb/dwc2/{platform.c,params.c}, CONFIG_ARCH_CVITEK,
+#     compatible "cvitek,cv182x-usb"). The glue emulates the OTG ID pin and
+#     exposes a procfs role switch:
+#         /proc/cviusb/otg_role      write "host" | "device", read = current
+#     Writing it flips the ID-pin override (0x03000048 bits 6..7), the
+#     ConIDStsChg interrupt fires and the dwc2 core swaps host <-> gadget at
+#     runtime. The vendor S08usbdev already consumes boot flags:
+#         /boot/usb.host  present -> role=host, no gadget
+#         /boot/usb.dev   present -> compose the configfs gadget, role=device
+#     So this script only keeps the two flag files in line with usb.conf and
+#     lets S08usbdev do the work (it already runs the right proc write).
+#
+#   Raspberry Pi (Zero 2 W — the only OTG-capable model in the family):
+#     dwc2 comes up via /boot/config.txt "dtoverlay=dwc2,dr_mode=peripheral"
+#     ([pi02] section) — dr_mode is read once by the driver at probe, so a
+#     host <-> device switch is a config.txt edit + REBOOT (dwc2 in this
+#     5.15/6.x-era kernel has no runtime role sysfs). Host mode also clears
+#     the /boot/usb.dev + /boot/usb.ncm flags so S10usbdev does not compose
+#     the gadget and S30gadget_nic does not wait for a usb0 that never comes.
+#
+# OTG capability (controls the portal switch too, via /run/usbmode.state):
+#   1. /etc/rnsbox/board.conf "usb_otg=yes|no" wins when set (future boards
+#      without OTG — e.g. Orange Pi R1 — pin usb_otg=no there);
+#   2. else: CVITEK boards -> yes (the vendor glue is always OTG);
+#      Raspberry Pi -> yes only for the Zero 2 W (Pi 3/4/5 have no OTG port).
+#
+# State for the portal (/run/usbmode.state, key=value):
+#   capable=yes|no   platform=cvi|rpi|other
+#   mode=device|host (configured)   active=device|host|unknown (running now)
+#
+# The portal Settings tab runs `S07usbmode live` after saving usb.conf: on
+# CVITEK the switch applies immediately (via S08usbdev stop/start), on the Pi
+# it reports "reboot". Without /etc/rnsbox/usb.conf (a fresh image) this
+# script does nothing to the boot flags, so the shipped defaults and any
+# manual /boot/usb.* flag edits keep working exactly as before.
+#
+# Commands: start (boot apply) | live (portal apply) | status | stop (no-op).
+#
+# Test hooks (all default to the real paths; used by the local smoke tests):
+#   RNSBOX_USB_BOOT, RNSBOX_USB_CONF, RNSBOX_USB_STATE, RNSBOX_USB_PROC_ROLE,
+#   RNSBOX_USB_MODEL, RNSBOX_USB_BOARD_CONF, RNSBOX_USB_INIT_DIR, RNSBOX_USB_LOG
+
+CONF=/etc/rnsbox/usb.conf
+BOARD_CONF=/etc/rnsbox/board.conf
+STATE=/run/usbmode.state
+BOOT_DIR=/boot
+PROC_ROLE=/proc/cviusb/otg_role
+MODEL=/proc/device-tree/model
+INIT_DIR=/etc/init.d
+LOG=/var/log/usbmode.log
+
+[ -n "$RNSBOX_USB_CONF" ]       && CONF=$RNSBOX_USB_CONF
+[ -n "$RNSBOX_USB_BOARD_CONF" ] && BOARD_CONF=$RNSBOX_USB_BOARD_CONF
+[ -n "$RNSBOX_USB_STATE" ]      && STATE=$RNSBOX_USB_STATE
+[ -n "$RNSBOX_USB_BOOT" ]       && BOOT_DIR=$RNSBOX_USB_BOOT
+[ -n "$RNSBOX_USB_PROC_ROLE" ]  && PROC_ROLE=$RNSBOX_USB_PROC_ROLE
+[ -n "$RNSBOX_USB_MODEL" ]      && MODEL=$RNSBOX_USB_MODEL
+[ -n "$RNSBOX_USB_INIT_DIR" ]   && INIT_DIR=$RNSBOX_USB_INIT_DIR
+[ -n "$RNSBOX_USB_LOG" ]        && LOG=$RNSBOX_USB_LOG
+
+say() { echo "S07usbmode: $*"; }
+log() {
+	say "$*"
+	mkdir -p "$(dirname "$LOG")" 2>/dev/null
+	{ echo "$(date '+%b %d %H:%M:%S') S07usbmode: $*" >>"$LOG"; } 2>/dev/null
+}
+# logf — file-only diagnostic: `live` prints a machine-parsed verdict on
+# stdout (applied|reboot|error ...), so its chatter must not leak there.
+logf() {
+	mkdir -p "$(dirname "$LOG")" 2>/dev/null
+	{ echo "$(date '+%b %d %H:%M:%S') S07usbmode: $*" >>"$LOG"; } 2>/dev/null
+}
+
+# conf_get <file> <key> — first `key=value` value, trimmed (also of a CR from
+# a hand-edited CRLF file). Empty when the file or key is absent.
+conf_get() {
+	sed -n "s/^[[:space:]]*$2[[:space:]]*=[[:space:]]*//p" "$1" 2>/dev/null \
+		| head -n 1 | sed 's/[[:space:]]*$//' | tr -d '\r'
+}
+
+# ---- platform + capability --------------------------------------------------
+
+platform() {
+	if [ -e "$PROC_ROLE" ]; then
+		echo cvi
+		return
+	fi
+	if [ -f "$BOOT_DIR/config.txt" ] && grep -q "Raspberry Pi" "$MODEL" 2>/dev/null; then
+		echo rpi
+		return
+	fi
+	# CVITEK with dwc2 still probing (module, not built-in yet): the boot
+	# flags are CVITEK-shaped, nothing rpi-shaped exists.
+	if [ -e "$BOOT_DIR/usb.dev" ] || [ -e "$BOOT_DIR/usb.host" ]; then
+		echo cvi
+		return
+	fi
+	echo other
+}
+
+otg_capable() {
+	v=$(conf_get "$BOARD_CONF" usb_otg)
+	if [ "$v" = yes ] || [ "$v" = no ]; then
+		echo "$v"
+		return
+	fi
+	case "$(platform)" in
+		cvi) echo yes ;;
+		rpi)
+			if grep -q "Zero 2" "$MODEL" 2>/dev/null; then echo yes; else echo no; fi
+			;;
+		*)   echo no ;;
+	esac
+}
+
+# active_role — what the controller is doing right now (best effort).
+active_role() {
+	case "$(platform)" in
+		cvi)
+			r=$(cat "$PROC_ROLE" 2>/dev/null | tr -d '\r\n')
+			if [ "$r" = host ] || [ "$r" = device ]; then echo "$r"; else echo unknown; fi
+			;;
+		rpi)
+			udc=$(ls /sys/class/udc 2>/dev/null | head -n 1)
+			if [ -d /sys/class/net/usb0 ] && [ -n "$udc" ]; then
+				echo device
+			elif grep -q "^dtoverlay=dwc2,dr_mode=host" "$BOOT_DIR/config.txt" 2>/dev/null; then
+				echo host
+			else
+				echo device
+			fi
+			;;
+		*) echo unknown ;;
+	esac
+}
+
+# ---- boot-flag sync ----------------------------------------------------------
+
+# boot_rw — refuse to touch flag files when /boot is not a mounted FAT (early
+# boot race): writing through a bare mountpoint would litter the rootfs.
+# (Test mode — RNSBOX_USB_BOOT overridden — accepts any existing directory.)
+boot_rw() {
+	if [ -n "$RNSBOX_USB_BOOT" ]; then
+		[ -d "$BOOT_DIR" ]
+		return
+	fi
+	mountpoint -q "$BOOT_DIR" 2>/dev/null || mount | grep -q " on $BOOT_DIR " 2>/dev/null
+}
+
+sync_cvi() { # <mode>
+	if ! boot_rw; then
+		logf "$BOOT_DIR not mounted; leaving the usb.* boot flags alone"
+		return 1
+	fi
+	if [ "$1" = host ]; then
+		rm -f "$BOOT_DIR/usb.dev"
+		: > "$BOOT_DIR/usb.host"
+	else
+		rm -f "$BOOT_DIR/usb.host"
+		: > "$BOOT_DIR/usb.dev"
+	fi
+	return 0
+}
+
+set_dwc2() { # <host|peripheral> — the one dtoverlay=dwc2 line in config.txt
+	# (ships under [pi02]; the firmware section filters apply it on the Zero
+	# 2 W only). Absent line = an image without the gadget: leave it be.
+	grep -q "^dtoverlay=dwc2,dr_mode=" "$BOOT_DIR/config.txt" 2>/dev/null || return 0
+	sed -i "s/^dtoverlay=dwc2,dr_mode=.*/dtoverlay=dwc2,dr_mode=$1/" "$BOOT_DIR/config.txt"
+}
+
+sync_rpi() { # <mode>
+	if ! boot_rw; then
+		logf "$BOOT_DIR not mounted; leaving config.txt and the usb.* flags alone"
+		return 1
+	fi
+	if [ "$1" = host ]; then
+		rm -f "$BOOT_DIR/usb.dev" "$BOOT_DIR/usb.ncm"
+		set_dwc2 host
+	else
+		[ -e "$BOOT_DIR/usb.dev" ] || : > "$BOOT_DIR/usb.dev"
+		[ -e "$BOOT_DIR/usb.ncm" ] || : > "$BOOT_DIR/usb.ncm"
+		set_dwc2 peripheral
+	fi
+	return 0
+}
+
+# apply_mode <mode> — persist the mode into the per-platform boot artifacts
+# (flag files and/or config.txt). Returns 0 when the artifacts are in place.
+# logf (not log): `live` parses stdout, so diagnostics stay file-only.
+apply_mode() {
+	case "$(platform)" in
+		cvi) sync_cvi "$1" ;;
+		rpi) sync_rpi "$1" ;;
+		*)   logf "unknown platform; nothing to sync"; return 1 ;;
+	esac
+}
+
+write_state() {
+	mkdir -p "$(dirname "$STATE")" 2>/dev/null
+	{
+		echo "# rnsbox usb role — written by S07usbmode; read by the portal"
+		echo "capable=$CAP"
+		echo "mode=$MODE"
+		echo "active=$(active_role)"
+		echo "platform=$(platform)"
+	} > "$STATE.tmp" 2>/dev/null && mv "$STATE.tmp" "$STATE" 2>/dev/null
+}
+
+# ---- commands ----------------------------------------------------------------
+
+# start — boot path. Reads usb.conf, syncs the boot artifacts; rcS then runs
+# the gadget scripts right after us and they enact the flags.
+case "${1:-start}" in
+	start)
+		CAP=$(otg_capable)
+		MODE=device
+		[ -f "$CONF" ] && MODE=$(conf_get "$CONF" mode)
+		[ "$MODE" = host ] || MODE=device
+		if [ "$CAP" != yes ]; then
+			[ "$MODE" = host ] && log "usb_otg not available on this board; forcing device"
+			MODE=device
+		fi
+		if [ -f "$CONF" ]; then
+			# usb.conf exists: the portal owns the role — enforce it. (No
+			# usb.conf = a fresh image: stay out of the way of the shipped
+			# defaults and any manual /boot/usb.* flag edits.)
+			apply_mode "$MODE"
+		fi
+		write_state
+		;;
+	live)
+		# Portal apply: sync the boot artifacts (so the mode also survives a
+		# reboot) and, on CVITEK, apply the role right now. Prints one of:
+		#   applied  <message>   |  reboot  <message>  |  error  <message>
+		CAP=$(otg_capable)
+		MODE=$(conf_get "$CONF" mode 2>/dev/null)
+		[ "$MODE" = host ] || MODE=device
+		if [ "$CAP" != yes ]; then
+			echo "error this board has no USB OTG port"
+			exit 1
+		fi
+		if ! apply_mode "$MODE"; then
+			echo "error could not write the boot flags"
+			exit 1
+		fi
+		case "$(platform)" in
+			cvi)
+				if [ "$MODE" = host ]; then
+					"$INIT_DIR/S08usbdev" stop >/dev/null 2>&1
+				else
+					"$INIT_DIR/S08usbdev" start >/dev/null 2>&1
+				fi
+				"$INIT_DIR/S30gadget_nic" restart >/dev/null 2>&1
+				r=$(cat "$PROC_ROLE" 2>/dev/null | tr -d '\r\n')
+				if [ "$r" = "$MODE" ]; then
+					write_state
+					if [ "$MODE" = host ]; then
+						echo "applied USB host mode is up; the gadget LAN (10.42.0.1 over the cable) is gone — reach the portal over WiFi/SSH"
+					else
+						echo "applied USB device mode is up; the gadget LAN is back on 10.42.0.1"
+					fi
+				else
+					logf "role did not flip to $MODE (saw '$r') — reboot to apply"
+					write_state
+					echo "reboot the role did not switch right away; it will apply at the next reboot"
+				fi
+				;;
+			rpi)
+				# Unbind the gadget now so the cable side sees the disconnect;
+				# the controller role itself flips only after a reboot (dwc2
+				# reads dr_mode at probe).
+				if [ "$MODE" = host ]; then
+					"$INIT_DIR/S10usbdev" stop >/dev/null 2>&1
+				fi
+				write_state
+				echo "reboot saved; reboot to switch the USB controller to $MODE mode"
+				;;
+			*)
+				echo "error unknown platform"
+				exit 1
+				;;
+		esac
+		;;
+	status)
+		CAP=$(otg_capable)
+		MODE=device
+		[ -f "$CONF" ] && MODE=$(conf_get "$CONF" mode)
+		[ "$MODE" = host ] || MODE=device
+		write_state
+		cat "$STATE" 2>/dev/null
+		;;
+	stop) ;;   # nothing to tear down at shutdown
+	*) echo "Usage: $0 {start|live|status|stop}" >&2; exit 1 ;;
+esac

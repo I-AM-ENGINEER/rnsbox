@@ -60,6 +60,7 @@ static const char* const POST_ONLY[] = {
     "/settings/ntp",
     "/settings/ntp/restart",
     "/settings/ssh",
+    "/settings/usb",
 };
 
 static bool is_post_only(const std::string& p) {
@@ -431,6 +432,7 @@ int main(int argc, char** argv) {
     else if (p == "/settings/ntp")               routes::ntp_set(req, res);
     else if (p == "/settings/ntp/restart")       routes::ntp_restart(req, res);
     else if (p == "/settings/ssh")               routes::ssh_set(req, res);
+    else if (p == "/settings/usb")               routes::usb_mode_set(req, res);
     else if (p == "/donate")                     routes::donate_page(req, res);
     else if (p == "/modem" || p == "/modem/")    routes::modem_ui(req, res);
     else if (p.rfind("/modem/api/", 0) == 0)     routes::modem_api(req, res);

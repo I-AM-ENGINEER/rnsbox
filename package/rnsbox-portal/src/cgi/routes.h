@@ -54,6 +54,7 @@ void time_browser(const http::Request&, http::Response&);          // POST PRG
 void ntp_set(const http::Request&, http::Response&);               // POST PRG
 void ntp_restart(const http::Request&, http::Response&);           // POST PRG
 void ssh_set(const http::Request&, http::Response&);               // POST PRG
+void usb_mode_set(const http::Request&, http::Response&);          // POST PRG (USB role device|host)
 
 // HaLow modem web-UI reverse proxy (SLIP)
 void modem_ui(const http::Request&, http::Response&);              // GET  proxy modem root
