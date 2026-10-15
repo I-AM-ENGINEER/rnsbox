@@ -1,0 +1,56 @@
+From 082abf85a1e0f5b12811a7e51649eafe129ee758 Mon Sep 17 00:00:00 2001
+From: rnsbox <rnsbox@localhost>
+Date: Thu, 15 Oct 2026 06:05:03 +0300
+Subject: [PATCH] buildroot: enable the RNSBox packages in the arm64 64bit
+ config
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The cvitek_SG200X_64bit_defconfig was seeded from the musl riscv64 one
+before the Reticulum-router package block landed at the musl file's EOF,
+so the arm64 rootfs was built without python-rns/python-lxmf/
+python-nomadnet/rnsbox-portal: no rnsd, no portal — the QEMU acceptance
+run of the universal rootfs failed its product checks ('rnsd: not
+found', portal 404) while the base system (init, S-scripts, uhttpd,
+overlay configs) was fine.
+
+Add the same block the musl defconfig carries. cryptography (43.0.3)
+and the source-built host-rustc it needs were already wired and are
+already built for aarch64; these four are pure-python packages and the
+C++ portal.
+---
+ buildroot/configs/cvitek_SG200X_64bit_defconfig | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/buildroot/configs/cvitek_SG200X_64bit_defconfig b/buildroot/configs/cvitek_SG200X_64bit_defconfig
+index b3f7a8116..20c09944e 100644
+--- a/buildroot/configs/cvitek_SG200X_64bit_defconfig
++++ b/buildroot/configs/cvitek_SG200X_64bit_defconfig
+@@ -3514,7 +3514,7 @@ BR2_TARGET_ROOTFS_EXT2_4=y
+ BR2_TARGET_ROOTFS_EXT2_GEN=4
+ BR2_TARGET_ROOTFS_EXT2_REV=1
+ BR2_TARGET_ROOTFS_EXT2_LABEL="rootfs"
+-BR2_TARGET_ROOTFS_EXT2_SIZE="200M"
++BR2_TARGET_ROOTFS_EXT2_SIZE="2800M"
+ BR2_TARGET_ROOTFS_EXT2_INODES=0
+ BR2_TARGET_ROOTFS_EXT2_INODE_SIZE=256
+ BR2_TARGET_ROOTFS_EXT2_RESBLKS=5
+@@ -4484,3 +4484,14 @@ BR2_TARGET_UBOOT_CUSTOM_PATCH_DIR=""
+ # BR2_BINUTILS_VERSION_2_22 is not set
+ # BR2_PACKAGE_GPU_VIV_BIN_MX6Q is not set
+ # BR2_TARGET_UBOOT_NETWORK is not set
++
++# === RNSBox Reticulum router: new packages ===
++# Same wiring as the musl riscv64 defconfig carries at its EOF. The 64bit
++# seed predates those four lines, which is why the arm64 rootfs shipped
++# without rnsd/rnsbox-portal (exposed by the QEMU rootfs acceptance run:
++# "rnsd: not found", portal 404). cryptography + host-rust were already
++# wired and built; these four are pure-python + one C++ CGI host.
++BR2_PACKAGE_PYTHON_RNS=y
++BR2_PACKAGE_PYTHON_LXMF=y
++BR2_PACKAGE_PYTHON_NOMADNET=y
++BR2_PACKAGE_RNSBOX_PORTAL=y
+-- 
+2.43.0
+

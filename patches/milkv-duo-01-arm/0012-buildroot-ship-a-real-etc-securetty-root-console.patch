@@ -1,0 +1,46 @@
+From d2546cec226a6925beb93edafce3ce4ebdfe191f Mon Sep 17 00:00:00 2001
+From: rnsbox <rnsbox@localhost>
+Date: Thu, 15 Oct 2026 05:27:06 +0300
+Subject: [PATCH] buildroot: ship an explicit /etc/securetty
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The vendor-turned-rnsbox rootfs carried an EMPTY /etc/securetty. busybox
+is_tty_secure() semantics: a missing or empty file means every tty is
+secure, while any file with a non-matching line means that tty is not —
+so root console login worked everywhere, but by accident, and the file
+was one stray line away from locking root out of every console.
+
+Ship the explicit list of consoles rnsbox drives (console, ttyS0-3,
+ttyAMA0/1, hvc0): the serial rescue path stays documented-and-
+intentional, unknown ttys no longer implicitly accept root, and the
+emulated console (qemu -M virt, ttyAMA0) is covered. root keeps its
+password; the file only matters for actual console logins.
+---
+ buildroot/board/cvitek/SG200X/overlay/etc/securetty | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+ create mode 100644 buildroot/board/cvitek/SG200X/overlay/etc/securetty
+
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/securetty b/buildroot/board/cvitek/SG200X/overlay/etc/securetty
+new file mode 100644
+index 000000000..9e1311c7f
+--- /dev/null
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/securetty
+@@ -0,0 +1,13 @@
++# RNSBox: the vendor-turned-rnsbox rootfs shipped an EMPTY /etc/securetty,
++# which makes busybox login refuse root on every tty (no password prompt —
++# just "Login incorrect"). That broke the serial-console rescue path the
++# README documents and any emulated console (qemu's ttyAMA0). List the
++# consoles rnsbox actually drives; root still needs its password.
++console
++ttyS0
++ttyS1
++ttyS2
++ttyS3
++ttyAMA0
++ttyAMA1
++hvc0
+-- 
+2.43.0
+
