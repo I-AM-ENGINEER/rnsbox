@@ -17,3 +17,13 @@ fi
 if [ -d "${TARGET_DIR}/etc/init.d" ]; then
 	chmod 0755 "${TARGET_DIR}"/etc/init.d/S* 2>/dev/null || true
 fi
+
+# sec: secrets in the overlay ship group/world-readable (buildroot copies the
+# overlay with the repo's 0644). The runtime services narrow these again
+# (S35wifi chmods wifi.conf go-rwx; S82rnsd walks /etc/reticulum), but the
+# image should already be right at first boot, before any S-script ran.
+for f in etc/rnsbox/wifi.conf etc/rnsbox/rnsh.conf etc/reticulum/config; do
+	if [ -f "${TARGET_DIR}/${f}" ]; then
+		chmod 0600 "${TARGET_DIR}/${f}"
+	fi
+done
