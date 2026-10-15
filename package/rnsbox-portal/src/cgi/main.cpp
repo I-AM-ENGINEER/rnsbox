@@ -50,6 +50,8 @@ static const char* const POST_ONLY[] = {
     "/reticulum/slip",
     "/reticulum/rnsh",
     "/reticulum/halow/add",
+    "/reticulum/rnode",
+    "/reticulum/rnode/pair",
     "/settings/password",
     "/settings/hostname",
     "/settings/time/browser",
@@ -404,6 +406,10 @@ int main(int argc, char** argv) {
     else if (p == "/reticulum/slip")             routes::reticulum_slip(req, res);
     else if (p == "/reticulum/rnsh")             routes::reticulum_rnsh_save(req, res);
     else if (p == "/reticulum/halow/add")        routes::reticulum_halow_add(req, res);
+    else if (p == "/reticulum/rnode")            routes::reticulum_rnode(req, res);
+    else if (p == "/reticulum/rnode/status")     routes::reticulum_rnode_status(req, res);
+    else if (p == "/reticulum/rnode/scan")       routes::reticulum_rnode_scan(req, res);
+    else if (p == "/reticulum/rnode/pair")       routes::reticulum_rnode_pair(req, res);
     else if (p == "/settings")                   routes::settings_page(req, res);
     else if (p == "/settings/password")          routes::settings_password(req, res);
     else if (p == "/settings/hostname")          routes::hostname_set(req, res);

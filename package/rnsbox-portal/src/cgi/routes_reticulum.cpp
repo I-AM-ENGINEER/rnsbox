@@ -79,6 +79,7 @@ static bool rnsh_running() {
     return comm == "rnsh";
 }
 
+static std::string rnode_fill(std::string h);
 static std::string rnsh_fill(std::string h) {
     RnshConf rc = rnsh_read_conf();
     bool running = rnsh_running();
@@ -404,6 +405,8 @@ void reticulum_page(const Request& req, Response& res) {
     h = R(std::move(h), "__SLIP_BAUD__",     E(sl.baud));
     h = R(std::move(h), "__SLIP_LOCAL_IP__", E(sl.local_ip));
     h = R(std::move(h), "__SLIP_PEER_IP__",  E(sl.peer_ip));
+
+    h = rnode_fill(std::move(h));
     h = rnsh_fill(std::move(h));
     h = rnsdmon_fill(std::move(h));
     h = R(std::move(h), "__CONFIG__",        E(cfg));
@@ -729,6 +732,205 @@ void reticulum_applyupdate(const Request& req, Response& res) {
         update_json(res, false, false, "Update failed (" + uerror + ") — reverted to " + from + ".");
     else
         update_json(res, false, false, "Update not applied: " + (uerror.empty() ? "unknown error" : uerror) + ".");
+}
+
+// ===================== RNode (USB serial / BLE) =====================
+// /etc/rnsbox/rnode.conf is the single source of truth (store::read_rnode /
+// write_rnode); S81rnode regenerates the managed [[RNode ...]] section of
+// /etc/reticulum/config from it and leaves the resolved device state in
+// /run/rnsbox-rnode.status. Save applies as `S81rnode reload` + an rnsd
+// restart (both synchronous web::run_init calls, in that order). There is no
+// daemon of our own to start: RNS >= 1.5.7 opens the serial port itself (and
+// retries it every 5 s until the modem is plugged in) and speaks RNode-over-
+// BLE natively (port = ble://..., bleak + BlueZ, bonded devices only).
+
+static std::string rnode_fill(std::string h) {
+    store::RnodeConfig rc = store::read_rnode();
+    store::RnodeStatus st = store::read_rnode_status();
+    bool usb = rc.transport == "usb";
+    bool ble = rc.transport == "ble";
+
+    std::string status;
+    if (rc.transport != "usb" && rc.transport != "ble") {
+        status = "<span class=\"badge\">off</span>";
+    } else if (st.state == "ok" && !st.port.empty()) {
+        status = "<span class=\"badge ok\">ready</span> <span class=\"mono\">" + E(st.port) + "</span>";
+    } else if (st.state == "waiting") {
+        status = "<span class=\"badge warn\">waiting for device</span> " + E(st.message);
+    } else if (st.state == "scanning") {
+        status = "<span class=\"badge warn\">scanning</span> " + E(st.message);
+    } else if (st.state == "no-pyserial") {
+        status = "<span class=\"badge err\">pyserial missing</span> the image lacks the serial module RNS needs for USB RNodes";
+    } else if (st.state == "no-ble-stack") {
+        status = "<span class=\"badge err\">BLE stack missing</span> " + E(st.message);
+    } else if (st.state == "invalid") {
+        status = "<span class=\"badge err\">invalid config</span> " + E(st.message);
+    } else if (st.state == "error") {
+        status = "<span class=\"badge err\">error</span> " + E(st.message);
+    } else {
+        status = "<span class=\"badge\">not applied yet</span> (runs at boot, or Save &amp; apply below)";
+    }
+    h = R(std::move(h), "__RNODE_STATUS__", status);
+
+    std::string sel_off = !usb && !ble ? " selected" : "";
+    std::string sel_usb = usb ? " selected" : "";
+    std::string sel_ble = ble ? " selected" : "";
+    h = R(std::move(h), "__RNODE_TRANSPORT_OPTIONS__",
+          "<option value=\"off\"" + sel_off + ">Off (default)</option>\n"
+          "      <option value=\"usb\"" + sel_usb + ">USB serial (/dev/ttyACM*, /dev/ttyUSB*)</option>\n"
+          "      <option value=\"ble\"" + sel_ble + ">BLE (nRF52 RNode: T-Echo, RAK4631)</option>");
+
+    // Device field: a datalist over the USB serial devices present right now,
+    // so "auto" and a pinned /dev/ttyACM0 are both one click away.
+    std::string devs = "<option value=\"auto\">auto (first found)</option>";
+    for (const auto& d : store::rnode_serial_devices())
+        devs += "\n      <option value=\"" + E(d) + "\">" + E(d) + "</option>";
+    h = R(std::move(h), "__RNODE_DEVICE_OPTIONS__", devs);
+
+    h = R(std::move(h), "__RNODE_DEVICE__",     E(usb ? rc.device : "auto"));
+    h = R(std::move(h), "__RNODE_BLE_ADDRESS__", E(ble ? rc.ble_address : ""));
+    h = R(std::move(h), "__RNODE_BLE_NAME__",   E(ble ? rc.ble_name : ""));
+    h = R(std::move(h), "__RNODE_NAME__",       E(rc.name));
+    h = R(std::move(h), "__RNODE_FREQUENCY__",  E(rc.frequency));
+    h = R(std::move(h), "__RNODE_BANDWIDTH__",  E(rc.bandwidth));
+    h = R(std::move(h), "__RNODE_TXPOWER__",    E(rc.txpower));
+    h = R(std::move(h), "__RNODE_SF__",         E(rc.spreadingfactor));
+    h = R(std::move(h), "__RNODE_CR__",         E(rc.codingrate));
+    h = R(std::move(h), "__RNODE_FLOW_CHECKED__", truthy(rc.flow_control) ? "checked" : "");
+
+    std::string stack;
+    if (!store::rnode_ble_stack_present())
+        stack = "<p class=\"muted\" style=\"margin:6px 0 0\">This image has no BLE stack (bluez/dbus + bleak) — "
+                "saving the BLE transport keeps the interface disabled until the stack is installed.</p>";
+    h = R(std::move(h), "__RNODE_BLE_STACK_NOTE__", stack);
+    return h;
+}
+
+void reticulum_rnode(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, false)) return;
+    store::RnodeConfig c;
+    c.transport       = util::trim(req.f("transport"));
+    c.device          = util::trim(req.f("device"));
+    c.ble_address     = util::trim(req.f("ble_address"));
+    c.ble_name        = util::trim(req.f("ble_name"));
+    c.name            = util::trim(req.f("name"));
+    c.frequency       = util::trim(req.f("frequency"));
+    c.bandwidth       = util::trim(req.f("bandwidth"));
+    c.txpower         = util::trim(req.f("txpower"));
+    c.spreadingfactor = util::trim(req.f("spreadingfactor"));
+    c.codingrate      = util::trim(req.f("codingrate"));
+    c.flow_control    = req.f("flow_control") == "on" ? "yes" : "no";
+    std::string err;
+    if (!store::write_rnode(c, err)) {
+        render::redirect_flash(res, ret_redirect(), "error", "RNode: " + err + ".");
+        return;
+    }
+    // Regenerate the [[RNode ...]] section, then bounce rnsd so it opens the
+    // (new) port. Both synchronous; S81rnode is fast, the restart is bounded
+    // by S82rnsd's own 25 s lock wait.
+    std::string apply = web::run_init("S81rnode", "reload") ? "" :
+        " (warning: the config rewrite failed — see /var/log/messages)";
+    web::run_init("S82rnsd");
+    if (c.transport == "off")
+        render::redirect_flash(res, ret_redirect(), "success", "RNode interface disabled." + apply);
+    else if (c.transport == "usb")
+        render::redirect_flash(res, ret_redirect(), "success",
+            "RNode over USB saved" + apply + ". The modem may be plugged in at any time — rnsd attaches it "
+            "within seconds (it retries the port every 5 s).");
+    else
+        render::redirect_flash(res, ret_redirect(), "success",
+            "RNode over BLE saved" + apply + ". The RNode must be PAIRED with this box first "
+            "(RNS attaches to bonded devices only) — use Scan + Pair above, then restart rnsd.");
+}
+
+// Short-TTL cache for rnode.py scan (BLE discovery costs ~6 s of CPU+radio
+// on the target); same pattern as the halow modem cache.
+constexpr const char* RNODE_SCAN_CACHE = "/run/rnsbox-rnode-scan.json";
+constexpr const char* RNODE_SCAN_LOCK  = "/run/rnsbox-rnode-scan.lock";
+constexpr int RNODE_SCAN_TTL = 15;   // seconds
+
+static bool rnode_scan_fresh(std::string& out) {
+    struct stat st;
+    if (::stat(RNODE_SCAN_CACHE, &st) != 0) return false;
+    time_t now = ::time(nullptr);
+    if (st.st_mtime > now || now - st.st_mtime >= RNODE_SCAN_TTL) return false;
+    out = util::read_file(RNODE_SCAN_CACHE, 256 * 1024);
+    std::string t = util::trim(out);
+    return !t.empty() && t[0] == '{';
+}
+
+// GET /reticulum/rnode/status — cheap: reads S81rnode's status file and /dev,
+// no python. The page polls this so a modem plugged in after load shows up.
+void reticulum_rnode_status(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, true)) return;
+    store::RnodeStatus st = store::read_rnode_status();
+    std::string o = std::string("{\"transport\":\"") + http::json_escape(st.transport) +
+        "\",\"port\":\"" + http::json_escape(st.port) +
+        "\",\"state\":\"" + http::json_escape(st.state) +
+        "\",\"message\":\"" + http::json_escape(st.message) +
+        "\",\"status_present\":" + (st.present ? "true" : "false") +
+        ",\"ble_stack\":" + (store::rnode_ble_stack_present() ? "true" : "false") +
+        ",\"devices\":[";
+    bool first = true;
+    for (const auto& d : store::rnode_serial_devices()) {
+        if (!first) o += ",";
+        first = false;
+        o += "\"" + http::json_escape(d) + "\"";
+    }
+    o += "]}";
+    res.content_type = "application/json";
+    res.body = o;
+}
+
+// GET /reticulum/rnode/scan — BLE discovery via the rnode.py helper (needs
+// the BLE stack; fails soft with a JSON error the page can render).
+void reticulum_rnode_scan(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, true)) return;
+    res.content_type = "application/json";
+    std::string cached;
+    if (rnode_scan_fresh(cached)) { res.body = cached; return; }
+
+    int lfd = ::open(RNODE_SCAN_LOCK, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (lfd >= 0) ::flock(lfd, LOCK_EX);
+    struct LockGuard { int fd; ~LockGuard() { if (fd >= 0) ::close(fd); } } guard{lfd};
+    if (rnode_scan_fresh(cached)) { res.body = cached; return; }
+
+    if (!store::rnode_ble_stack_present()) {
+        res.body = "{\"error\":\"no BLE stack in this image (bluez/dbus + bleak needed)\",\"devices\":[]}";
+        return;
+    }
+    util::RunResult rr = util::run({"/usr/bin/python3", "/usr/lib/rnsbox/rnode.py", "scan"}, "", 20);
+    std::string out = util::trim(rr.out);
+    if (rr.exit_code == 0 && !out.empty() && out[0] == '{') {
+        util::write_file_atomic(RNODE_SCAN_CACHE, rr.out, 0600);
+        res.body = rr.out;
+        return;
+    }
+    res.body = "{\"error\":\"scan failed\",\"devices\":[]}";
+}
+
+// POST /reticulum/rnode/pair — one-time bluetoothctl pair (+ trust) so RNS's
+// bonded-only filter lets the RNode attach. Best-effort: needs the BLE stack.
+void reticulum_rnode_pair(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, true)) return;
+    res.content_type = "application/json";
+    std::string addr = util::trim(req.f("address"));
+    if (!store::rnode_ble_stack_present()) {
+        update_json(res, false, false, "No BLE stack in this image (bluez/dbus + bleak needed).");
+        return;
+    }
+    // Strict address check: it goes into a bluetoothctl argv (no shell), so
+    // this is defense in depth, not the security boundary itself.
+    if (addr.size() != 17) { update_json(res, false, false, "Bad address."); return; }
+    for (size_t i = 0; i < addr.size(); ++i) {
+        char c = addr[i];
+        if (i % 3 == 2) { if (c != ':') { update_json(res, false, false, "Bad address."); return; } }
+        else if (!isxdigit((unsigned char)c)) { update_json(res, false, false, "Bad address."); return; }
+    }
+    util::RunResult rr = util::run({"/usr/bin/python3", "/usr/lib/rnsbox/rnode.py", "pair", addr}, "", 40);
+    std::string out = util::trim(rr.out);
+    if (rr.exit_code == 0 && !out.empty() && out[0] == '{') { res.body = rr.out; return; }
+    update_json(res, false, false, "Pairing failed (is bluetoothd running? is the RNode in pairing reach?)");
 }
 
 }  // namespace routes
