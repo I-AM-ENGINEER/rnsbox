@@ -123,7 +123,7 @@ class State:
     # What the portal's Echo bot tab shows. Written atomically; the CGI reads
     # it straight from disk on every page paint. RLock: announce bookkeeping
     # runs while holding the lock and calls bump().
-    FIELDS = ("status", "detail", "lxmf_addr", "suffix", "name_base",
+    FIELDS = ("status", "detail", "lxmf_addr", "dest_hash", "suffix", "name_base",
               "display_name", "interval", "started_at", "last_announce",
               "announce_count", "echo_ok", "echo_fail")
 
@@ -168,12 +168,42 @@ class State:
 
 # ------------------------------------------------- shared instance probe ----
 
+def config_shared_port():
+    # The shared instance's TCP port from /etc/reticulum/config (the shipped
+    # config uses the RNS default 37428; the portal's raw editor can change
+    # it, and the probe should follow).
+    port = 37428
+    try:
+        with open(os.path.join(RNS_CONFIGDIR, "config"), "r",
+                  encoding="utf-8", errors="replace") as f:
+            in_rns = False
+            for raw in f:
+                line = raw.split("#", 1)[0].strip()
+                if not line:
+                    continue
+                if line.startswith("["):
+                    in_rns = (line.lower().startswith("[reticulum]"))
+                    continue
+                if not in_rns or "=" not in line:
+                    continue
+                key, val = line.split("=", 1)
+                if key.strip().lower() == "shared_instance_port":
+                    try:
+                        port = int(val.strip())
+                    except ValueError:
+                        pass
+    except Exception:
+        pass
+    return port
+
+
 def shared_instance_up():
     # True once rnsd's shared instance accepts clients. RNS on Linux listens
     # on the abstract AF_UNIX socket @rns/<path> (flags 00010000 = listening,
     # in /proc/net/unix; @rns/<path>/rpc is its RPC socket, not this), or on
-    # 127.0.0.1:37428 (state 0A = LISTEN) with shared_instance_type = tcp.
-    # Same test as S85lxmd/S46wanwatch rns_shared_up(); builtins only.
+    # 127.0.0.1:<shared_instance_port> (state 0A = LISTEN) with
+    # shared_instance_type = tcp. Same test as S85lxmd/S46wanwatch
+    # rns_shared_up(); builtins only.
     try:
         with open("/proc/net/unix", "r") as f:
             for line in f:
@@ -184,11 +214,13 @@ def shared_instance_up():
                         return True
     except Exception:
         pass
+    hexport = "%04X" % config_shared_port()
+    want = "0100007F:" + hexport
     try:
         with open("/proc/net/tcp", "r") as f:
             for line in f:
                 parts = line.split()
-                if len(parts) >= 4 and parts[1] == "0100007F:9234" and parts[3] == "0A":
+                if len(parts) >= 4 and parts[1] == want and parts[3] == "0A":
                     return True
     except Exception:
         pass
@@ -244,7 +276,7 @@ def main():
     suffix = identity.hash[:3].hex()
     display_name = (conf["name"] + " " + suffix).strip()
     state.set(status="waiting", detail="attaching to the shared instance",
-              lxmf_addr=identity.hash.hex(), suffix=suffix,
+              lxmf_addr=identity.hash.hex(), dest_hash="", suffix=suffix,
               name_base=conf["name"], display_name=display_name,
               interval=conf["interval"], started_at=int(time.time()))
     log("LXMF address " + identity.hash.hex() + " (\"" + display_name + "\")")
@@ -372,8 +404,8 @@ def main():
         t.start()
 
     state.set(status="running", detail="announcing and echoing",
-              lxmf_addr=identity.hash.hex(), suffix=suffix,
-              name_base=conf["name"], display_name=display_name,
+              lxmf_addr=identity.hash.hex(), dest_hash=delivery.hash.hex(),
+              suffix=suffix, name_base=conf["name"], display_name=display_name,
               interval=conf["interval"], started_at=int(time.time()))
     log("echo bot running: address " + delivery.hash.hex() +
         ", announce interval " + str(conf["interval"]) + "s")
