@@ -1,4 +1,10 @@
-# RNSBox kernel additions on top of bcm2711_defconfig (Raspberry Pi Zero 2 W)
+# RNSBox kernel additions on top of bcm2711_defconfig — the universal
+# Raspberry Pi kernel (BCM2710 + BCM2711 + BCM2712 in ONE 4K-page Image).
+# Why no bcm2712_defconfig merge is needed: in the rpi 6.12 tree that file
+# differs from bcm2711_defconfig only in page size (16K vs 4K), VA bits and
+# localversion — every 2712 driver (RP1/PCIe/GENET/SDIO/dwc3) is already
+# enabled by bcm2711_defconfig. 4K pages stay: the shared Image boots
+# 2710/2711/2712 alike (RPi OS also reverted the Pi 5 to 4K pages).
 
 # --- USB gadget: CDC-NCM (+ optional read-only mass storage) on the
 #     micro-USB OTG port (DWC2, peripheral mode via dtoverlay=dwc2) ---

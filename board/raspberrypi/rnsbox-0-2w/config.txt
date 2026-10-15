@@ -1,17 +1,49 @@
-# RNSBox Pi Zero 2 W — headless: USB-C = NCM gadget LAN, PL011 = SLIP (bt off).
-# start_cd: cut-down firmware — the full start.elf silently enforces a
-# ~128 MB GPU floor (ARM sees only 384 MB); the HDMI console still works.
-start_file=start_cd.elf
-fixup_file=fixup_cd.dat
-
+# RNSBox — ONE image for every 64-bit Raspberry Pi: Zero 2 W, 3B/3B+/3A+/CM3,
+# 4B/400/CM4/CM4S, 5/500/CM5 (ARMv6 Pis are out of scope).
+# The firmware walks this file top-down and applies only the lines under the
+# matching [filter] ([pi02]=Zero 2 W, [pi3]=3B/3B+/3A+/CM3(+) 64-bit SoCs,
+# [pi4]=4B/400/CM4/CM4S, [pi5]=5/500/CM5). One shared Image; the bootloader
+# (start.elf on pi<=4, the SPI-EEPROM bootloader on Pi 5) picks the matching
+# bcm27xx DTB from the boot FAT by itself.
 kernel=Image
 arm_64bit=1
 disable_overscan=1
-gpu_mem=16
-# ACT LED: heartbeat = the "alive" pulse (default actpwr burns constantly)
-dtparam=act_led_trigger=heartbeat
+# GPIO-header UART available (mini-uart on pi3/4-class; ignored on Pi 5)
 enable_uart=1
+# ACT LED: heartbeat = the "alive" pulse (models with a GPIO ACT LED; the
+# Pi 5 has no act_led dtparam and just ignores this line)
+dtparam=act_led_trigger=heartbeat
+
+# Zero 2 W: headless — USB-C = NCM gadget LAN, PL011 = SLIP (BT off).
+# start_cd: cut-down firmware — the full start.elf silently enforces a
+# ~128 MB GPU floor (ARM sees only 384 MB); the HDMI console still works.
+[pi02]
+start_file=start_cd.elf
+fixup_file=fixup_cd.dat
+gpu_mem=16
 dtoverlay=disable-bt
 dtoverlay=dwc2,dr_mode=peripheral
 # Optional DS3231 RTC: SDA=GPIO2 (pin 3), SCL=GPIO3 (pin 5), 3.3 V
 dtoverlay=i2c-rtc,ds3231
+
+# Pi 3B/3B+/3A+/CM3: same cut-down firmware trick. The 3B/3B+ power port has
+# no data lines and the 3A+ port is host-only — there the LAN is WiFi AP /
+# Ethernet; only the Zero 2 W and Pi 4/CM4 give a USB gadget port.
+[pi3]
+start_file=start_cd.elf
+fixup_file=fixup_cd.dat
+gpu_mem=16
+
+# Pi 4B/400/CM4/CM4S: cut-down firmware of the 4th-gen flavour; USB-C is a
+# DWC2 OTG port — the NCM gadget enumerates whenever the box is plugged
+# into a PC (the base DTB leaves it in OTG mode; no overlay needed).
+[pi4]
+start_file=start4cd.elf
+fixup_file=fixup4cd.dat
+gpu_mem=16
+
+# Pi 5/500/CM5: the firmware lives in the bootloader EEPROM — no
+# start/fixup files are loaded from the card; this section only exists to
+# document that (kernel/DTB/overlays are picked automatically; graphics is
+# KMS/v3d by default, which the headless box does not configure).
+[pi5]
