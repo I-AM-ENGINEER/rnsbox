@@ -330,6 +330,16 @@ for p in rnsbox-portal python-rns python-lxmf python-nomadnet; do
     rm -rf "$WORKDIR/buildroot/package/$p"
     cp -a "$HERE/package/$p" "$WORKDIR/buildroot/package/$p"
 done
+# The un-vendoring BSP patch removed the matching `source` lines from
+# buildroot/package/Config.in together with the vendored copies; without
+# them kconfig silently drops BR2_PACKAGE_PYTHON_RNS / PYTHON_LXMF /
+# PYTHON_NOMADNET / RNSBOX_PORTAL and the rootfs ships without rnsd and
+# the portal. Restore the lines so the synced dirs are visible.
+BR_PKG_CONFIG="$WORKDIR/buildroot/package/Config.in"
+for p in rnsbox-portal python-rns python-lxmf python-nomadnet; do
+    grep -q "source \"package/$p/Config.in\"" "$BR_PKG_CONFIG" || \
+        printf 'source "package/%s/Config.in"\n' "$p" >> "$BR_PKG_CONFIG"
+done
 
 rnsbox_track_latest_rns "$PWD"
 rnsbox_build
