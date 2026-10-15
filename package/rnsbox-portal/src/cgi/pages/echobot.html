@@ -1,0 +1,48 @@
+<h2>Echo bot</h2>
+
+<section class="card">
+  <h3>Status</h3>
+  <table class="kv">
+    <tr><th>Service</th><td>__ECHOBOT_STATUS__</td></tr>
+    <tr><th>LXMF address</th><td>__ECHOBOT_ADDR__</td></tr>
+    <tr><th>Announced name</th><td>__ECHOBOT_NAME__</td></tr>
+    <tr><th>Name suffix</th><td><code>__ECHOBOT_SUFFIX__</code> <span class="muted">— first 3 bytes of the bot identity's hash; generated once, stable across reboots, not editable</span></td></tr>
+    <tr><th>Announces sent</th><td>__ECHOBOT_ANNOUNCES__</td></tr>
+    <tr><th>Last announce</th><td>__ECHOBOT_LAST_ANNOUNCE__</td></tr>
+    <tr><th>Messages echoed</th><td>__ECHOBOT_ECHO_OK__ ok / __ECHOBOT_ECHO_FAIL__ failed</td></tr>
+  </table>
+
+  <div class="time-actions">
+    <form method="post" action="__BASE__/echobot/announce" class="inline">
+      <button type="submit" class="btn-primary">Announce now</button>
+    </form>
+    <form method="post" action="__BASE__/echobot/restart" class="inline">
+      <button type="submit" class="btn">Restart bot</button>
+    </form>
+  </div>
+
+  <h4>Try it from any LXMF client</h4>
+  <p class="muted">NomadNet: <code>Conversations</code> → enter the LXMF address above → send any text — the bot echoes it right back. Sideband and every other LXMF client work the same. The announce carries the bot's name, so once heard, it also shows up in NomadNet's node list. Announce history: <code>logread&nbsp;|&nbsp;grep&nbsp;echobot</code>.</p>
+  <p class="muted">The bot shares rnsd's Reticulum instance and has its own persistent identity: its address and name suffix never change across reboots or updates. It coexists with lxmd and NomadNet — each holds its own LXMF destination.</p>
+</section>
+
+<section class="card">
+  <h3>Settings</h3>
+  <form method="post" action="__BASE__/echobot/save">
+    <label>Enable echo bot
+      <input type="checkbox" name="enabled" __ECHOBOT_CHECKED__>
+      <span class="muted">— announces on start, then every interval; echoes messages</span>
+    </label>
+    <label>Name (a 6-hex suffix is appended automatically)
+      <input type="text" name="name" value="__ECHOBOT_NAME_VALUE__" maxlength="48" required>
+    </label>
+    <label>Announce interval
+      <select name="interval">__ECHOBOT_INTERVAL_OPTS__
+      </select>
+    </label>
+    <button type="submit" class="btn-primary">Save</button>
+    <p class="muted">Saving restarts the bot (or stops it when disabled). A start is refused while free RAM is below
+    <code>min_free_mb</code> (40 MB) in <code>/etc/rnsbox/echobot.conf</code> — that floor protects rnsd from the OOM killer;
+    free RAM first (or lower the floor if you know your budget) and start again.</p>
+  </form>
+</section>

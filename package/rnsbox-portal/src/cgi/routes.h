@@ -46,6 +46,12 @@ void time_browser(const http::Request&, http::Response&);          // POST PRG
 void ntp_set(const http::Request&, http::Response&);               // POST PRG
 void ntp_restart(const http::Request&, http::Response&);           // POST PRG
 
+// echo bot tab
+void echobot_page(const http::Request&, http::Response&);        // GET  render
+void echobot_save(const http::Request&, http::Response&);        // POST PRG
+void echobot_announce(const http::Request&, http::Response&);    // POST PRG
+void echobot_restart(const http::Request&, http::Response&);     // POST PRG
+
 // HaLow modem web-UI reverse proxy (SLIP)
 void modem_ui(const http::Request&, http::Response&);              // GET  proxy modem root
 void modem_api(const http::Request&, http::Response&);             // GET/POST proxy /api/*
