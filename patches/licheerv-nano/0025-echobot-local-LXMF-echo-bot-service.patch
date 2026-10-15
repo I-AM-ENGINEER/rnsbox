@@ -7,7 +7,7 @@ Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
 
 The box's built-in LXMF presence, like lxmd's init script but simpler: the
-daemon (/usr/bin/rnsbox-echobot, shipped by the shared package/ tree) attaches
+daemon (/usr/bin/rnsbox-echobot, shipped by this overlay, like every board file) attaches
 to rnsd's shared instance, announces its LXMF destination once a day by
 default and echoes every message back — the fastest reachability check from
 any LXMF client (NomadNet: Conversations -> the address on the portal's Echo
