@@ -1,0 +1,12 @@
+config BR2_PACKAGE_RNSBOX_UPDATE
+	bool "rnsbox-update"
+	select BR2_PACKAGE_PYTHON3
+	select BR2_PACKAGE_XZ
+	select BR2_PACKAGE_CA_CERTIFICATES
+	help
+	  RNSBox A/B whole-OS update agent: checks a user-configured
+	  repository (GitHub Releases or any HTTP(S) manifest) on a random
+	  7-14 day schedule, verifies sha256, writes the idle rootfs slot
+	  and flips the A/B pointer with boot-count rollback.
+
+	  https://github.com/I-AM-ENGINEER/rnsbox

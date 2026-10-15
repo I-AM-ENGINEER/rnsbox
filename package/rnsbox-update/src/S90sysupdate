@@ -1,0 +1,24 @@
+#!/bin/sh
+# S90sysupdate — boot-time hook for the A/B system updater.
+#
+# start(): after the dust settles, kick the update worker once per boot
+# (rnsbox-sysupdate tick): it first reconciles a pending slot flip into
+# "applied" or "rolled back" for the portal, then honours the 7-14 day
+# jittered schedule (next_check in /etc/rnsbox/update.conf). Backgrounded:
+# boot is never blocked, and the worker is flock-guarded against the cron
+# tick and the portal buttons.
+#
+# Layout-detecting: without the A/B partitions the worker reports "reflash
+# needed" in the portal and does nothing harmful.
+
+[ "$1" = start ] || exit 0
+[ -x /usr/sbin/rnsbox-sysupdate ] || exit 0
+
+# The worker needs real time for the schedule (and TLS for the check);
+# run after the clock has a chance to sync, like S84cron's bootcheck.
+(
+	sleep 45
+	/usr/sbin/rnsbox-sysupdate tick >> /var/log/sysupdate.log 2>&1
+) </dev/null >/dev/null 2>&1 &
+
+exit 0

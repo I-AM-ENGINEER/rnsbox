@@ -1,0 +1,1130 @@
+#!/usr/bin/env python3
+"""rnsbox-sysupdate — RNSBox A/B whole-OS update agent.
+
+Checks a user-configured repository (github-releases or generic manifest) for
+a newer RNSBox image, and applies it by writing the IDLE rootfs slot of the
+A/B layout, then flipping the slot pointer. Never touches the running slot;
+the boot chain's boot-count rollback (initramfs + S98confirm) reverts a slot
+that fails to boot healthy 3 times.
+
+Design notes (see docs/AUTO-UPDATE.md):
+  * crash-safe by construction: download -> verify sha256 -> write idle slot
+    -> refresh boot files (old copies kept) -> flip -> reboot. A power cut
+    anywhere before the flip leaves the running system untouched.
+  * schedule: after every check the next check is drawn uniformly from
+    [interval_min_days, interval_max_days] (default 7..14) and stored as
+    next_check in /etc/rnsbox/update.conf — a fresh jitter each time, so a
+    fleet of routers never polls in sync.
+  * pure stdlib; no shell ever sees a URL; all writes are tmp-file + fsync +
+    rename. Signature verification (ed25519, generic provider) is optional.
+  * the physical topology (boot dir, slot devices) comes from probe_layout(),
+    which honours RNSBOX_UPDATE_DEVMAP for tests/QEMU.
+
+Commands:
+  tick [--bg]         cron/boot entry: reconcile, check if due, maybe auto-apply
+  check [--bg]        check now (refresh candidate + redraw next_check)
+  apply [--bg] [--allow-unknown-version]   apply the current candidate
+  reconcile           settle a pending flip into applied/rolled-back
+  status              print the volatile state JSON
+  enable|disable      write enabled=yes|no into update.conf
+"""
+
+import base64
+import errno
+import fcntl
+import hashlib
+import json
+import os
+import random
+import re
+import shutil
+import struct
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+CONF_PATH = "/etc/rnsbox/update.conf"
+RUN_STATE = "/run/rnsbox-sysupdate.json"      # volatile, portal reads this
+LOCK_PATH = "/run/rnsbox-sysupdate.lock"
+BOOT_DIR = "/boot"
+IMAGE_VER_FILE = "/etc/rnsbox/image.ver"
+MAX_LOG_BYTES = 64 * 1024
+DOWNLOAD_TIMEOUT = 60          # per-connect/read socket timeout
+MAX_IMAGE_MB = 1600            # refuse to download absurd files
+
+DEFAULTS = {
+    "enabled": "yes",
+    "provider": "github-releases",
+    "repo": "I-AM-ENGINEER/rnsbox",
+    "url": "",
+    "board": "auto",
+    "token": "",
+    "allow_prerelease": "yes",
+    "allow_insecure_http": "no",
+    "auto_apply": "no",
+    "interval_min_days": "7",
+    "interval_max_days": "14",
+    "next_check": "0",
+    "sig_require": "no",
+    "sig_key": "/etc/rnsbox/keys/update.pub",
+}
+
+CONF_HEADER = (
+    "# RNSBox system (OS image) update settings — edited by the portal\n"
+    "# Updates tab and by rnsbox-sysupdate (next_check is managed). Manual\n"
+    "# edits are fine; values are documented in docs/AUTO-UPDATE.md.\n"
+)
+
+
+def truthy(v, default=False):
+    if v is None or v == "":
+        return default
+    return str(v).strip().lower() in ("yes", "true", "1", "on")
+
+
+# ---------------------------------------------------------------- storage ---
+
+def state_dir():
+    """Persistent state: /data (A/B layout, survives slot swaps) or rootfs."""
+    for cand in ("/data/rnsbox-update", "/var/lib/rnsbox-update"):
+        try:
+            os.makedirs(cand, exist_ok=True)
+            return cand
+        except OSError:
+            continue
+    return "/tmp/rnsbox-update"
+
+
+def read_conf():
+    conf = dict(DEFAULTS)
+    try:
+        with open(CONF_PATH, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                k = k.strip().lower()
+                v = v.split("#", 1)[0].strip()
+                if k:
+                    conf[k] = v
+    except OSError:
+        pass
+    return conf
+
+
+def write_conf_kv(updates):
+    """Set keys, preserve unknown keys and the file layout, atomic rename."""
+    lines = []
+    try:
+        with open(CONF_PATH, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+    except OSError:
+        lines = [CONF_HEADER]
+    seen = set()
+    out = []
+    for line in lines:
+        stripped = line.strip()
+        key = stripped.partition("=")[0].strip().lower() \
+            if ("=" in stripped and not stripped.startswith("#")) else None
+        if key and key in updates:
+            if key not in seen:
+                out.append("%s=%s\n" % (key, updates[key]))
+                seen.add(key)
+            # dropped duplicate or managed key: next_check is rewritten
+        else:
+            out.append(line)
+    for k, v in updates.items():
+        if k not in seen:
+            if out and not out[-1].endswith("\n"):
+                out[-1] += "\n"
+            out.append("%s=%s\n" % (k, v))
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(CONF_PATH) or ".",
+                               prefix=".update.conf.")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.writelines(out)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, CONF_PATH)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+class State(object):
+    """Volatile status for the portal (/run) + persistent markers."""
+
+    def __init__(self):
+        self.d = {
+            "phase": "idle",            # idle|checking|downloading|verifying|
+                                        # writing_slot|writing_boot|flipping|
+                                        # available|uptodate|error|applied|
+                                        # rolled_back
+            "error": "",
+            "last_check": 0,
+            "last_result": "",
+            "candidate": None,
+            "progress": "",
+        }
+
+    def load(self):
+        for path in (RUN_STATE,):
+            try:
+                with open(path) as f:
+                    self.d.update(json.load(f))
+            except (OSError, ValueError):
+                pass
+        return self
+
+    def save(self):
+        d = os.path.dirname(RUN_STATE)
+        try:
+            fd, tmp = tempfile.mkstemp(dir=d, prefix=".sysupdate.")
+            with os.fdopen(fd, "w") as f:
+                json.dump(self.d, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, RUN_STATE)
+        except OSError:
+            pass
+
+    def log(self, msg):
+        line = time.strftime("%Y-%m-%d %H:%M:%S ") + str(msg) + "\n"
+        self.d["last_result"] = str(msg)[:400]
+        self.save()
+        path = os.path.join(state_dir(), "update.log")
+        try:
+            if os.path.getsize(path) > MAX_LOG_BYTES:
+                with open(path, "r") as f:
+                    keep = f.read()[-MAX_LOG_BYTES // 2:]
+                tmp = path + ".tmp"
+                with open(tmp, "w") as f:
+                    f.write(keep)
+                os.replace(tmp, path)
+            with open(path, "a") as f:
+                f.write(line)
+                f.flush()
+                os.fsync(f.fileno())
+        except OSError:
+            pass
+
+
+# ------------------------------------------------------------ networking ---
+
+class HttpsEnforced(urllib.request.HTTPRedirectHandler):
+    """Follow redirects but never into a scheme we did not allow."""
+
+    def __init__(self, allow_http):
+        self.allow_http = allow_http
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not scheme_allowed(newurl, self.allow_http):
+            raise urllib.error.URLError("redirect to disallowed scheme: %s"
+                                        % safe_url(newurl))
+        return urllib.request.HTTPRedirectHandler.redirect_request(
+            self, req, fp, code, msg, headers, newurl)
+
+
+def scheme_allowed(url, allow_http):
+    u = urllib.parse.urlparse(url)
+    return u.scheme == "https" or (allow_http and u.scheme == "http")
+
+
+def safe_url(url):
+    """URL string safe to put in logs / flash messages."""
+    u = urllib.parse.urlparse(url)
+    if u.query or len(url) > 300:
+        return u.scheme + "://" + (u.netloc or "") + u.path + "?..."
+    return url
+
+
+def http_open(allow_http):
+    return urllib.request.build_opener(HttpsEnforced(allow_http))
+
+
+def fetch_url(url, conf, timeout=DOWNLOAD_TIMEOUT, dest=None, max_bytes=None):
+    """GET a URL; returns bytes or writes to dest and returns byte count.
+
+    HTTPS is enforced unless allow_insecure_http=yes. No URL is ever passed
+    to a shell. Basic auth via token=<user:pass> is supported (github uses
+    the token as the password-less header, so this path is for generic).
+    """
+    if not scheme_allowed(url, truthy(conf.get("allow_insecure_http"))):
+        raise ValueError("refusing non-HTTPS URL (set allow_insecure_http=yes "
+                         "to override): %s" % safe_url(url))
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "rnsbox-sysupdate/1.0",
+        "Accept": "*/*",
+    })
+    tok = conf.get("token") or ""
+    if tok and "@" not in (urllib.parse.urlparse(url).netloc):
+        if conf.get("provider") == "github-releases":
+            req.add_header("Authorization", "Bearer " + tok)
+        else:
+            basic = base64.b64encode(tok.encode("utf-8")).decode("ascii")
+            req.add_header("Authorization", "Basic " + basic)
+    opener = http_open(truthy(conf.get("allow_insecure_http")))
+    with opener.open(req, timeout=timeout) as r:
+        if max_bytes is None:
+            data = r.read(MAX_IMAGE_MB * 1024 * 1024 + 1)
+            if len(data) > MAX_IMAGE_MB * 1024 * 1024:
+                raise ValueError("response larger than %d MB" % MAX_IMAGE_MB)
+            return data
+        total = 0
+        with open(dest, "wb") as f:
+            while True:
+                chunk = r.read(256 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    raise ValueError("download exceeds %d bytes" % max_bytes)
+                f.write(chunk)
+            f.flush()
+            os.fsync(f.fileno())
+        return total
+
+
+# ------------------------------------------------------------- providers ---
+
+PROVIDERS_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)),
+                             "update_providers")
+
+
+def load_provider(name):
+    """Adding a provider = one module in update_providers/ + a registry row."""
+    if name not in sys.path:
+        sys.path.insert(0, PROVIDERS_DIR)
+    try:
+        return __import__(name)
+    except ImportError as e:
+        raise ValueError("unknown provider %r (%s)" % (name, e))
+
+
+def fetch_candidate(conf):
+    """Ask the configured provider for the newest candidate image."""
+    name = (conf.get("provider") or "github-releases").strip()
+    mod = load_provider(name)
+    board = conf.get("board") or "auto"
+    if board in ("", "auto"):
+        board = detect_board()
+    return mod.fetch(conf, board, fetch_url, truthy)
+
+
+# --------------------------------------------------------------- version ---
+
+TAG_RE = re.compile(r"^r(\d{4})\.(\d{2})\.(\d{2})-([0-9a-f]{7,40})$")
+
+
+def parse_tag(tag):
+    """'r2026.10.15-abc1234' -> (date, sha) or None."""
+    m = TAG_RE.match((tag or "").strip())
+    if not m:
+        return None
+    y, mo, d, sha = m.groups()
+    return ((int(y), int(mo), int(d)), sha)
+
+
+def running_version():
+    try:
+        with open(IMAGE_VER_FILE) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def is_newer(cand_tag, cur_tag):
+    """True when cand should be applied over cur.
+
+    Primary key is the short sha (same image = same sha, whatever the dates);
+    a different sha with a >= build date counts as newer. Same date + same
+    sha = same build. Unknown running version is handled by the caller.
+    """
+    c, u = parse_tag(cand_tag), parse_tag(cur_tag)
+    if not c:
+        return False
+    if not u:
+        return True
+    if c[1] == u[1]:
+        return False
+    return c[0] >= u[0]
+
+
+# -------------------------------------------------------------- schedule ---
+
+def draw_next_check(conf):
+    lo = max(1, _int(conf.get("interval_min_days"), 7))
+    hi = max(lo, _int(conf.get("interval_max_days"), 14))
+    return int(time.time() + random.randint(lo * 86400, hi * 86400))
+
+
+def _int(v, dflt):
+    try:
+        return int(str(v).strip())
+    except (TypeError, ValueError):
+        return dflt
+
+
+# ---------------------------------------------------------------- layout ---
+
+def probe_layout():
+    """Find the A/B topology. Returns dict or raises LayoutError.
+
+    RNSBOX_UPDATE_DEVMAP (json file) overrides everything for tests/QEMU:
+      {"boot_dir": "...", "boot_dev": "...", "slot_a": "...", "slot_b": "..."}
+    """
+    devmap = os.environ.get("RNSBOX_UPDATE_DEVMAP")
+    if devmap:
+        with open(devmap) as f:
+            m = json.load(f)
+        m.setdefault("boot_dir", BOOT_DIR)
+        return m
+
+    boot_dev = ""
+    with open("/proc/mounts") as f:
+        for line in f:
+            parts = line.split()
+            if len(parts) >= 2 and parts[1] == BOOT_DIR:
+                boot_dev = parts[0]
+                break
+    if not boot_dev or not re.search(r"\d+$", boot_dev):
+        raise LayoutError("no %s mount — not an A/B image" % BOOT_DIR)
+    base = re.sub(r"p?\d+$", "", boot_dev)
+    slot_a, slot_b = base + "p2", base + "p3"
+    # whole-disk devices that don't use the 'p' separator (vda2)
+    if not os.path.exists(slot_a):
+        slot_a, slot_b = base + "2", base + "3"
+    for d in (slot_a, slot_b):
+        if not os.path.exists(d):
+            raise LayoutError("no A/B slot partition (%s missing) — reflash "
+                              "with a current A/B image once" % d)
+    return {"boot_dir": BOOT_DIR, "boot_dev": boot_dev,
+            "slot_a": slot_a, "slot_b": slot_b}
+
+
+class LayoutError(Exception):
+    pass
+
+
+def active_slot(layout):
+    try:
+        with open(os.path.join(layout["boot_dir"], "ab_slot")) as f:
+            s = f.read().strip()
+    except OSError:
+        s = ""
+    return s if s in ("a", "b") else "a"
+
+
+def slot_dev(layout, slot):
+    return layout["slot_a"] if slot == "a" else layout["slot_b"]
+
+
+def dev_size_bytes(dev):
+    with open("/sys/class/block/%s/size" % os.path.basename(dev)) as f:
+        return int(f.read().strip()) * 512
+
+
+# -------------------------------------------------------------- MBR + FAT ---
+
+def parse_mbr(path):
+    """[(start_byte, size_bytes, ptype)] for the 4 MBR entries of a file."""
+    with open(path, "rb") as f:
+        sec = f.read(512)
+    if len(sec) < 512 or sec[510:512] != b"\x55\xaa":
+        raise ValueError("downloaded image has no MBR signature")
+    parts = []
+    for i in range(4):
+        e = sec[446 + 16 * i: 446 + 16 * (i + 1)]
+        ptype = e[4]
+        lba, cnt = struct.unpack_from("<II", e, 8)
+        if ptype and lba and cnt:
+            parts.append((lba * 512, cnt * 512, ptype))
+    if len(parts) < 3:
+        raise ValueError("downloaded image has fewer than 3 partitions — "
+                         "not an A/B image")
+    return parts
+
+
+CIMG_MAGIC = b"CIMG"
+
+
+def strip_cimg(data):
+    """CI boot.sd assets may arrive wrapped in a 64-byte CIMG header; the
+    on-card FIT must be bare. Detect and strip, pass anything else through.
+    """
+    if data[:4] == CIMG_MAGIC:
+        return data[64:]
+    return data
+
+
+class FatError(Exception):
+    pass
+
+
+class FatReader(object):
+    """Minimal read-only FAT12/16/32 with long-filename support, enough to
+    pull boot artifacts out of a downloaded image's boot partition without
+    any kernel loop-device dependency."""
+
+    ATTR_LONG_NAME = 0x0F
+
+    def __init__(self, data):
+        if len(data) < 512:
+            raise FatError("boot partition too small")
+        self.d = data
+        (self.bps, self.spc, self.reserved, self.nfats, self.root_ent,
+         tot16, self.fatsz16) = struct.unpack_from("<HBHBHHH", data, 11)
+        tot32 = struct.unpack_from("<I", data, 32)[0]
+        self.fatsz = self.fatsz16 or struct.unpack_from("<I", data, 36)[0]
+        self.root_cluster = struct.unpack_from("<I", data, 44)[0]
+        totsec = tot16 or tot32
+        if self.bps == 0 or self.spc == 0 or totsec == 0:
+            raise FatError("not a FAT filesystem")
+        self.fat_off = self.reserved * self.bps
+        self.data_off = (self.reserved + self.nfats * self.fatsz) * self.bps
+        nclusters = (totsec - self.data_off // self.bps) // self.spc
+        self.fat12 = nclusters < 4085
+        self.fat16 = nclusters < 65525
+        self.root_dir_off = self.data_off
+        self.root_dir_size = self.root_ent * 32
+        if self.fat16:
+            self.data_off += self.root_dir_size
+
+    def _fat_entry(self, cl):
+        o = self.fat_off
+        if self.fat12:
+            b = struct.unpack_from("<H", self.d, o + cl * 3 // 2)[0]
+            return (b >> 4) if cl & 1 else (b & 0xFFF)
+        if self.fat16:
+            return struct.unpack_from("<H", self.d, o + cl * 2)[0]
+        return struct.unpack_from("<I", self.d, o + cl * 4)[0] & 0x0FFFFFFF
+
+    def _chain(self, first):
+        cl, out, guard = first, [], set()
+        end = 0xFFF if self.fat12 else (0xFFFF if self.fat16 else 0x0FFFFFF8)
+        while 2 <= cl < end:
+            if cl in guard:
+                raise FatError("cluster loop")
+            guard.add(cl)
+            out.append(cl)
+            cl = self._fat_entry(cl)
+        return out
+
+    def _clus_data(self, chain):
+        n = self.spc * self.bps
+        return b"".join(self.d[self.data_off + (c - 2) * n:
+                               self.data_off + (c - 1) * n] for c in chain)
+
+    def _dir_entries(self, dirdata):
+        lfn, out = [], []
+        for i in range(0, len(dirdata) - 31, 32):
+            e = dirdata[i:i + 32]
+            if e[0] == 0x00:
+                lfn = []
+                continue
+            if e[0] == 0xE5:
+                lfn = []
+                continue
+            if e[11] == self.ATTR_LONG_NAME:
+                part = struct.unpack_from("<26H", e, 1)
+                chars = "".join(struct.pack("<H", c).decode("utf-16-le",
+                                "ignore")[0]
+                                for c in part if c not in (0x0000, 0xFFFF))
+                lfn.append((e[0] & 0x1F, chars))
+                continue
+            name = e[0:8].decode("ascii", "replace").strip()
+            ext = e[8:11].decode("ascii", "replace").strip()
+            short = name + ("." + ext if ext else "")
+            if lfn:
+                lfn.sort(reverse=True)
+                longname = "".join(c for _, c in lfn).split("\x00")[0]
+            else:
+                longname = short
+            lfn = []
+            attr = e[11]
+            if attr & 0x08:            # volume label
+                continue
+            cl = struct.unpack_from("<H", e, 26)[0]
+            size = struct.unpack_from("<I", e, 28)[0]
+            first = struct.unpack_from("<H", e, 20)[0] << 16 | cl
+            out.append({"name": longname, "short": short, "attr": attr,
+                        "cluster": first, "size": size,
+                        "is_dir": bool(attr & 0x10)})
+        return out
+
+    def listdir(self, path="/"):
+        data = self._dir_data(path)
+        return self._dir_entries(data)
+
+    def _dir_data(self, path):
+        if path in ("/", ""):
+            if self.fat16:
+                return self.d[self.root_dir_off:
+                              self.root_dir_off + self.root_dir_size]
+            return self._clus_data(self._chain(self.root_cluster))
+        parts = [p for p in path.split("/") if p]
+        entries = self.listdir("/")
+        cur = None
+        for i, p in enumerate(parts):
+            for e in entries:
+                if e["name"].lower() == p.lower() and e["is_dir"]:
+                    cur = e
+                    break
+            if cur is None:
+                raise FatError("dir not found: %s" % p)
+            if i == len(parts) - 1:
+                return self._clus_data(self._chain(cur["cluster"]))
+            entries = self._dir_entries(
+                self._clus_data(self._chain(cur["cluster"])))
+        raise FatError("dir not found: %s" % path)
+
+    def read(self, path):
+        parts = [p for p in path.split("/") if p]
+        entries = self.listdir("/" + "/".join(parts[:-1]))
+        fname = parts[-1]
+        for e in entries:
+            if e["name"].lower() == fname.lower() and not e["is_dir"]:
+                data = self._clus_data(self._chain(e["cluster"]))
+                return data[:e["size"]]
+        raise FatError("file not found: %s" % path)
+
+
+def read_fat_file(img_path, part_off, part_size, inner_path):
+    """Extract one file from the FAT partition of a downloaded image."""
+    with open(img_path, "rb") as f:
+        f.seek(part_off)
+        data = f.read(part_size)
+    return FatReader(data).read(inner_path)
+
+
+# (FatReader itself is exercised heavily by tests/unit_test_sysupdate.py)
+
+
+# ------------------------------------------------------------------ apply ---
+
+def sha256_file(path, progress=None):
+    h = hashlib.sha256()
+    n = 0
+    with open(path, "rb") as f:
+        while True:
+            chunk = f.read(1024 * 1024)
+            if not chunk:
+                break
+            h.update(chunk)
+            n += len(chunk)
+            if progress and n % (32 * 1024 * 1024) < 1024 * 1024:
+                progress("hashed %d MB" % (n // (1024 * 1024)))
+    return h.hexdigest()
+
+
+def write_idle_slot(img_path, idle_dev, part_off, part_size, st):
+    """Stream one partition out of the .img.xz onto the idle slot device.
+
+    Two subprocess pipeline (xz | dd), exact byte accounting: a short stream
+    (corrupt archive, dead disk) aborts with the slot useless but the running
+    system untouched.
+    """
+    if not shutil.which("xz"):
+        raise RuntimeError("xz not found on the system")
+    with open("/dev/null", "w") as devnull:
+        xz = subprocess.Popen(["xz", "-dc", "--", img_path],
+                              stdout=subprocess.PIPE, stderr=devnull)
+        dd = subprocess.Popen(["dd", "of=%s" % idle_dev, "bs=4M",
+                               "conv=fsync"],
+                              stdin=subprocess.PIPE, stderr=devnull)
+        written = 0
+        try:
+            while written < part_size:
+                need = min(4 * 1024 * 1024, part_size - written)
+                chunk = xz.stdout.read(need)
+                if not chunk:
+                    break
+                dd.stdin.write(chunk)
+                written += len(chunk)
+                if written % (128 * 1024 * 1024) < 4 * 1024 * 1024:
+                    st.d["progress"] = "wrote %d/%d MB" % (
+                        written // (1024 * 1024), part_size // (1024 * 1024))
+                    st.save()
+        except BrokenPipeError:
+            pass
+        finally:
+            try:
+                dd.stdin.close()
+            except OSError:
+                pass
+            ddr = dd.wait()
+            xz.wait()
+    if written != part_size:
+        raise RuntimeError("short write onto %s: %d of %d bytes — corrupt "
+                           "archive?" % (idle_dev, written, part_size))
+    if ddr != 0:
+        raise RuntimeError("dd failed (rc=%d) writing %s" % (ddr, idle_dev))
+    st.log("idle slot written: %d MB -> %s" % (part_size // (1024 * 1024),
+                                               idle_dev))
+
+
+def boot_refresh_set(board):
+    """Which p1 files the transaction refreshes on the shared boot FAT."""
+    if board == "rpi0-2w":
+        # refresh everything the firmware/kernel consumes; keep per-device
+        # flags and the A/B state, which belong to THIS card, not the image
+        return None  # None = blacklist mode, keep_set below
+    return {"boot.sd", "fip.bin"}   # cvitek whitelist
+
+
+RPI_KEEP = {"config.txt", "cmdline.txt", "ab_slot", "ab_tries",
+            "rnsbox-abselect", "hostname", "ver"}
+
+
+def is_kept(name):
+    return name in RPI_KEEP or name.startswith("usb.")
+
+
+def fsync_dir(path):
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def write_boot_files(img_path, parts, board, layout, st):
+    """Refresh the shared boot partition from the verified image.
+
+    Old files are kept in STATE_DIR/boot-bak and restored on any mismatch —
+    and because the slot is NOT flipped on failure, the box reboots into the
+    old slot with the old boot chain either way.
+    """
+    p1_off, p1_size, _ = parts[0]
+    with open(img_path, "rb") as f:
+        f.seek(p1_off)
+        fat_data = f.read(p1_size)
+    fr = FatReader(fat_data)
+
+    if board == "rpi0-2w":
+        plan = []
+        stack = ["/"]
+        while stack:
+            d = stack.pop()
+            for e in fr.listdir(d):
+                rel = (d + "/" + e["name"]).lstrip("/")
+                if e["is_dir"]:
+                    stack.append("/" + rel)
+                elif not is_kept(e["name"]):
+                    plan.append(rel)
+        whitelist = None
+    else:
+        whitelist = boot_refresh_set(board)
+        plan = []
+        for e in fr.listdir("/"):
+            if not e["is_dir"] and e["name"] in whitelist:
+                plan.append(e["name"])
+        missing = whitelist - set(plan)
+        if missing:
+            raise RuntimeError("boot artifacts missing from image: %s"
+                               % ",".join(sorted(missing)))
+    if not plan:
+        st.log("no boot files to refresh")
+        return
+
+    # free space check BEFORE touching anything
+    boot_dir = layout["boot_dir"]
+    need = 0
+    for rel in plan:
+        need += len(fr.read(rel))
+    free = shutil.disk_usage(boot_dir).free
+    bak_free = shutil.disk_usage(state_dir()).free
+    if need > free - 4 * 1024 * 1024:
+        raise RuntimeError("boot partition lacks %d free bytes for "
+                           "refresh" % need)
+    if need > bak_free - 4 * 1024 * 1024:
+        raise RuntimeError("state partition lacks room for the boot backup")
+    bak = os.path.join(state_dir(), "boot-bak")
+    if os.path.isdir(bak):
+        shutil.rmtree(bak)
+    os.makedirs(bak)
+
+    replaced = []
+    try:
+        for rel in plan:
+            data = strip_cimg(fr.read(rel))
+            dst = os.path.join(boot_dir, rel)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            if os.path.exists(dst):
+                with open(dst, "rb") as src, \
+                        open(os.path.join(bak, rel + ".old"), "wb") as dstf:
+                    shutil.copyfileobj(src, dstf)
+            tmp = dst + ".new"
+            with open(tmp, "wb") as f:
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
+            with open(tmp, "rb") as f:
+                if hashlib.sha256(f.read()).hexdigest() != \
+                        hashlib.sha256(data).hexdigest():
+                    raise RuntimeError("boot file read-back mismatch: %s"
+                                       % rel)
+            os.replace(tmp, dst)
+            replaced.append(rel)
+        fsync_dir(boot_dir)
+    except Exception:
+        st.log("boot refresh failed — restoring old files")
+        for rel in replaced:
+            dst = os.path.join(boot_dir, rel)
+            old = os.path.join(bak, rel + ".old")
+            if os.path.exists(old):
+                shutil.copyfile(old, dst)
+                os.unlink(old)
+        fsync_dir(boot_dir)
+        raise
+    st.log("boot files refreshed: %s" % ", ".join(replaced[:8]) +
+           (" (+%d more)" % (len(replaced) - 8) if len(replaced) > 8 else ""))
+
+
+def acquire_lock(blocking=False):
+    fd = os.open(LOCK_PATH, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX if blocking else fcntl.LOCK_EX |
+                    fcntl.LOCK_NB)
+    except OSError as e:
+        os.close(fd)
+        if e.errno in (errno.EAGAIN, errno.EACCES, errno.EWOULDBLOCK):
+            return None
+        raise
+    return fd
+
+
+def do_apply(conf, allow_unknown_version=False):
+    st = State().load()
+    if st.d.get("phase") in ("downloading", "verifying", "writing_slot",
+                             "writing_boot", "flipping"):
+        st.log("apply already in progress")
+        return 1
+    try:
+        layout = probe_layout()
+    except LayoutError as e:
+        st.d["phase"] = "error"
+        st.d["error"] = str(e)
+        st.log(str(e))
+        st.save()
+        return 1
+
+    cand = st.d.get("candidate")
+    if not cand or not cand.get("sha256"):
+        st.log("no checked candidate — run check first")
+        return 1
+    cur = running_version()
+    if not cur and not allow_unknown_version:
+        st.log("running image version unknown (%s missing) — reflash this "
+               "card once with a current image, then updates work" %
+               IMAGE_VER_FILE)
+        st.d["phase"] = "error"
+        st.save()
+        return 1
+    if cur and not is_newer(cand["version"], cur):
+        st.log("candidate %s is not newer than running %s" %
+               (cand["version"], cur))
+        st.d["phase"] = "uptodate"
+        st.save()
+        return 0
+
+    board = conf.get("board") or "auto"
+    if board in ("", "auto"):
+        board = detect_board()
+
+    dl = os.path.join(state_dir(), "download.img.xz")
+    try:
+        # 1+2: download (or reuse) + verify
+        if not (os.path.exists(dl) and os.path.getsize(dl) > 1024 and
+                st.d.get("downloaded_sha") == cand["sha256"]):
+            st.d["phase"] = "downloading"
+            st.save()
+            st.log("downloading %s (%s)" % (cand["version"],
+                                            safe_url(cand["url"])))
+            size = fetch_url(cand["url"], conf, dest=dl, timeout=90,
+                             max_bytes=MAX_IMAGE_MB * 1024 * 1024)
+            st.d["downloaded_sha"] = ""
+            st.log("downloaded %d MB" % (size // (1024 * 1024)))
+        st.d["phase"] = "verifying"
+        st.save()
+        got = sha256_file(dl, progress=lambda m: (
+            st.d.__setitem__("progress", m), st.save()))
+        if got != cand["sha256"].lower():
+            os.unlink(dl)
+            raise RuntimeError("sha256 mismatch — expected %s, got %s"
+                               % (cand["sha256"], got))
+        st.d["downloaded_sha"] = got
+        st.log("checksum verified")
+
+        # 3: idle slot geometry
+        parts = parse_mbr(dl)
+        active = active_slot(layout)
+        idle = "b" if active == "a" else "a"
+        idle_index = 2 if idle == "b" else 1     # parts[1]=p2/a, parts[2]=p3/b
+        if len(parts) <= idle_index:
+            raise RuntimeError("image lacks the idle slot partition")
+        off, size, _ = parts[idle_index]
+        cap = dev_size_bytes(slot_dev(layout, idle))
+        if size > cap:
+            raise RuntimeError("image slot partition (%d MB) larger than %s "
+                               "(%d MB)" % (size // (1024 * 1024),
+                                            slot_dev(layout, idle),
+                                            cap // (1024 * 1024)))
+
+        # 4: write idle slot
+        st.d["phase"] = "writing_slot"
+        st.save()
+        write_idle_slot(dl, slot_dev(layout, idle), off, size, st)
+
+        # 5: refresh shared boot artifacts
+        st.d["phase"] = "writing_boot"
+        st.save()
+        write_boot_files(dl, parts, board, layout, st)
+
+        # 6: flip + arm the boot counter
+        st.d["phase"] = "flipping"
+        st.save()
+        boot_dir = layout["boot_dir"]
+        atomic_write(os.path.join(boot_dir, "ab_slot"), idle)
+        atomic_write(os.path.join(boot_dir, "ab_tries"), "0")
+        os.sync()
+        st.d["pending"] = {"slot": idle, "version": cand["version"],
+                           "started": int(time.time())}
+        st.d["phase"] = "flipping"
+        st.log("slot %s staged for %s — rebooting" % (idle, cand["version"]))
+        st.save()
+    except Exception as e:
+        st.d["phase"] = "error"
+        st.d["error"] = str(e)[:400]
+        st.d["progress"] = ""
+        st.log("FAILED: %s" % e)
+        st.save()
+        return 1
+
+    # 7: reboot into the new slot (only on the full success path)
+    reboot_now()
+    return 0
+
+
+def atomic_write(path, text):
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(text + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def reboot_now():
+    for cmd in (["reboot", "-f"], ["busybox", "reboot", "-f"]):
+        try:
+            subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+            return
+        except OSError:
+            continue
+    try:
+        os.kill(1, 2)   # last resort: SIGINT to init
+    except OSError:
+        pass
+
+
+def do_reconcile():
+    """Settle a pending flip after a reboot: applied, rolled back, or still
+    confirming (S98confirm has ~5 min to clear the boot counter)."""
+    st = State().load()
+    pending = st.d.get("pending")
+    if not pending:
+        return 0
+    try:
+        layout = probe_layout()
+    except LayoutError:
+        return 0
+    slot = active_slot(layout)
+    try:
+        with open(os.path.join(layout["boot_dir"], "ab_tries")) as f:
+            tries = int(f.read().strip() or "0")
+    except (OSError, ValueError):
+        tries = -1
+    if slot == pending["slot"] and tries == 0:
+        st.d["phase"] = "applied"
+        st.d["last_applied"] = {"version": pending["version"],
+                                "at": int(time.time())}
+        st.d["progress"] = ""
+        st.log("update to %s confirmed healthy (slot %s)" %
+               (pending["version"], slot))
+        st.d.pop("pending", None)
+        st.save()
+        return 0
+    if slot != pending["slot"]:
+        st.d["phase"] = "rolled_back"
+        st.d["error"] = ""
+        st.d["progress"] = ""
+        st.log("update to %s ROLLED BACK by boot-count (on slot %s)" %
+               (pending["version"], slot))
+        st.d.pop("pending", None)
+        st.save()
+        return 0
+    st.d["phase"] = "confirming"
+    st.save()
+    return 0
+
+
+# ------------------------------------------------------------------ check ---
+
+def do_check(conf):
+    st = State().load()
+    st.d["phase"] = "checking"
+    st.d["error"] = ""
+    st.save()
+    try:
+        cand = fetch_candidate(conf)
+        if not cand or not cand.get("url"):
+            raise ValueError("provider returned no candidate")
+        cur = running_version()
+        newer = is_newer(cand["version"], cur) if cur else True
+        st.d["candidate"] = {
+            "version": cand["version"], "url": cand["url"],
+            "sha256": (cand.get("sha256") or "").lower(),
+            "prerelease": bool(cand.get("prerelease")),
+        }
+        if not cur:
+            st.d["phase"] = "available"
+            st.log("checked %s: candidate %s; running version unknown "
+                   "(reflash once with a current image)" %
+                   (cand["version"], cand["version"]))
+        elif newer:
+            st.d["phase"] = "available"
+            st.log("checked: update available %s -> %s" %
+                   (cur, cand["version"]))
+        else:
+            st.d["phase"] = "uptodate"
+            st.log("checked: up to date (%s)" % cur)
+    except Exception as e:
+        st.d["phase"] = "error"
+        st.d["error"] = str(e)[:400]
+        st.log("check failed: %s" % e)
+    st.d["last_check"] = int(time.time())
+    st.d["next_check"] = draw_next_check(conf)
+    st.d["progress"] = ""
+    st.save()
+    write_conf_kv({"next_check": str(st.d["next_check"])})
+    return 0 if st.d["phase"] != "error" else 1
+
+
+def do_tick(conf):
+    do_reconcile()
+    st = State().load()
+    if st.d.get("pending"):
+        st.log("tick: an update is awaiting boot confirmation — not checking")
+        return 0
+    if not truthy(conf.get("enabled"), True):
+        return 0
+    due = time.time() >= _int(conf.get("next_check"), 0)
+    if due:
+        if do_check(conf) == 0 and truthy(conf.get("auto_apply")):
+            st2 = State().load()
+            if st2.d.get("phase") == "available":
+                return do_apply(conf)
+    return 0
+
+
+def detect_board():
+    """Best-effort board id for release-asset selection."""
+    try:
+        with open("/proc/device-tree/model") as f:
+            model = f.read().strip("\x00").lower()
+        if "raspberry pi" in model:
+            return "rpi0-2w"
+        if "lichee" in model or "sg2002" in model:
+            return "licheerv-nano"
+        if "duo" in model or "sg2000" in model or "cv1800" in model:
+            return "licheerv-nano"
+    except OSError:
+        pass
+    if os.path.exists("/boot/boot.sd"):
+        return "licheerv-nano"
+    return "rpi0-2w"
+
+
+# ------------------------------------------------------------------- main ---
+
+def run_bg(fn, *a, **kw):
+    """Double-fork so a CGI caller is never blocked."""
+    if os.environ.get("RNSBOX_SYSUPDATE_FOREGROUND") == "1":
+        return fn(*a, **kw)
+    if os.fork() > 0:
+        return 0
+    os.setsid()
+    if os.fork() > 0:
+        os._exit(0)
+    fd = os.open(os.devnull, os.O_RDWR)
+    os.dup2(fd, 0)
+    os.dup2(fd, 1)
+    os.dup2(fd, 2)
+    if fd > 2:
+        os.close(fd)
+    try:
+        rc = fn(*a, **kw)
+    except Exception as e:
+        State().load().log("unhandled: %s" % e)
+        rc = 1
+    os._exit(rc)
+
+
+def main(argv):
+    if len(argv) < 2:
+        print(__doc__)
+        return 2
+    cmd = argv[1]
+    conf = read_conf()
+
+    if cmd == "status":
+        st = State().load()
+        try:
+            layout = probe_layout()
+            st.d["layout"] = "ab"
+            st.d["active_slot"] = active_slot(layout)
+        except LayoutError as e:
+            st.d["layout"] = "none"
+            st.d["layout_error"] = str(e)
+        st.d["running_version"] = running_version()
+        print(json.dumps(st.d))
+        return 0
+
+    if cmd == "enable":
+        write_conf_kv({"enabled": "yes"})
+        return 0
+    if cmd == "disable":
+        write_conf_kv({"enabled": "no"})
+        return 0
+
+    if cmd == "reconcile":
+        return do_reconcile()
+
+    if cmd == "check":
+        return run_bg(do_check, conf)
+
+    if cmd == "apply":
+        return run_bg(do_apply, conf,
+                      allow_unknown_version="--allow-unknown-version"
+                      in argv)
+
+    if cmd == "tick":
+        return run_bg(do_tick, conf)
+
+    print("unknown command: %s" % cmd)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
