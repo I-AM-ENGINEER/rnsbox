@@ -60,7 +60,10 @@ def issue():
     if server is None:
         fail(SERVER_ID + " exists but is not a valid Reticulum identity")
 
-    dest = RNS.Destination(server, RNS.Destination.IN, RNS.Destination.SINGLE, APP_NAME)
+    # Destination.hash() is the pure name math that Destination.__init__
+    # computes; the constructor itself would additionally register the
+    # destination with a transport stack, which this helper does not run.
+    dest_hash = RNS.Destination.hash(server, APP_NAME)
     client = RNS.Identity()
     prv = client.get_private_key()
     if not prv or len(prv) != 64:
@@ -69,7 +72,7 @@ def issue():
     print(MARK)
     print("HASH=" + client.hash.hex())
     print("KEYB64=" + base64.b64encode(prv).decode("ascii"))
-    print("DEST=" + dest.hash.hex())
+    print("DEST=" + dest_hash.hex())
     print(END)
 
 
