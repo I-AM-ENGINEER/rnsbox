@@ -157,7 +157,14 @@ start() {
 		return 1
 	fi
 
-	if [ -z "$(pidof rnsd)" ]; then
+	# rnsd is a python console script: its comm is "python3", so a plain
+	# `pidof rnsd` never matches (the pre-C++ Flask portal carried a
+	# /proc-cmdline scan for the same reason). Trust the S82rnsd pidfile,
+	# fall back to pidof.
+	rnsd_alive() {
+		[ -s /var/run/rnsd.pid ] && kill -0 "$(cat /var/run/rnsd.pid 2>/dev/null)" 2>/dev/null
+	}
+	if ! rnsd_alive && ! pidof rnsd >/dev/null 2>&1; then
 		echo "S86rnsh: refusing to start - rnsd (S82rnsd) is not running"
 		return 1
 	fi
