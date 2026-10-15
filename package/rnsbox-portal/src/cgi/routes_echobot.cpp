@@ -228,6 +228,13 @@ void echobot_save(const Request& req, Response& res) {
     for (long v : ECHO_INTERVALS) if (v == interval) { known = true; break; }
     if (!known) interval = 86400;
 
+    // The portal owns enabled/interval/name; an operator's min_free_mb RAM
+    // floor (S87echobot reads it) is preserved, not clobbered.
+    long min_free_mb = 40;
+    std::string mfb = util::conf_get(ECHOBOT_CONF, "min_free_mb");
+    if (!mfb.empty() && mfb.find_first_not_of("0123456789") == std::string::npos)
+        min_free_mb = strtol(mfb.c_str(), nullptr, 10);
+
     std::string conf =
         "# Echo bot config — edited by the portal's Echo bot tab; applies on\n"
         "# restart (saving here restarts the bot). See the file's own comments\n"
@@ -236,7 +243,7 @@ void echobot_save(const Request& req, Response& res) {
         "interval=" + std::to_string(interval) + "\n" +
         "name=" + name + "\n" +
         "announce_at_start=yes\n" +
-        "min_free_mb=40\n";
+        "min_free_mb=" + std::to_string(min_free_mb) + "\n";
     if (!util::write_file_atomic(ECHOBOT_CONF, conf, 0644)) {
         render::redirect_flash(res, eb_redirect(), "error", "Echo bot: could not write the config.");
         return;
