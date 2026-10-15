@@ -33,6 +33,19 @@ set -e
 HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 BOARDS="licheerv-nano milkv-duo-01-rv milkv-duo-01-arm milkv-duo-cv1800b rpi0-2w"
 
+# ---- image version stamp (read by rnsbox-sysupdate for update decisions) ----
+# Same formula as the CI release job's tag: r<UTC date>-<short sha>. On CI,
+# GITHUB_SHA is set by Actions and the release tag is created from the same
+# value, so the stamped image matches its release tag (same-UTC-day builds,
+# the normal case). Local builds get dev-<date>; the updater treats an
+# unknown/unstamped running version as manual-apply-only.
+if [ -n "${GITHUB_SHA:-}" ]; then
+	export RNSBOX_BUILD_VER="r$(date -u +%Y.%m.%d)-${GITHUB_SHA:0:7}"
+else
+	export RNSBOX_BUILD_VER="dev-$(date -u +%Y.%m.%d)"
+fi
+export RNSBOX_BUILD_VER
+
 BOARD=""
 VARIANT=""
 for a in "$@"; do
@@ -549,8 +562,7 @@ export PATH="$WORKDIR/bin:$PATH"
 # them (its last patch deletes the copies the early series added); copy the
 # current shared versions into the BSP buildroot before configuring.
 echo ">> syncing shared packages from $HERE/package"
-for p in rnsbox-portal python-rns python-lxmf python-nomadnet python-ble-reticulum rnsbox-python-bluezero; do
-    rm -rf "$WORKDIR/buildroot/package/$p"
+for p in rnsbox-update rnsbox-portal python-rns python-lxmf python-nomadnet python-ble-reticulum rnsbox-python-bluezero; do    rm -rf "$WORKDIR/buildroot/package/$p"
     cp -a "$HERE/package/$p" "$WORKDIR/buildroot/package/$p"
 done
 # The un-vendoring BSP patch removed the matching `source` lines from
@@ -559,8 +571,7 @@ done
 # PYTHON_NOMADNET / RNSBOX_PORTAL and the rootfs ships without rnsd and
 # the portal. Restore the lines so the synced dirs are visible.
 BR_PKG_CONFIG="$WORKDIR/buildroot/package/Config.in"
-for p in rnsbox-portal python-rns python-lxmf python-nomadnet python-ble-reticulum rnsbox-python-bluezero; do
-    grep -q "source \"package/$p/Config.in\"" "$BR_PKG_CONFIG" || \
+for p in rnsbox-update rnsbox-portal python-rns python-lxmf python-nomadnet python-ble-reticulum rnsbox-python-bluezero; do    grep -q "source \"package/$p/Config.in\"" "$BR_PKG_CONFIG" || \
         printf 'source "package/%s/Config.in"\n' "$p" >> "$BR_PKG_CONFIG"
 done
 

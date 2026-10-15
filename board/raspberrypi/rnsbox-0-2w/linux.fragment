@@ -59,3 +59,8 @@ CONFIG_RTC_DRV_DS1307=y
 CONFIG_CFG80211=y
 CONFIG_BRCMFMAC=y
 CONFIG_BRCMFMAC_SDIO=y
+
+# --- A/B updater: mini-initramfs slot selector (config.txt initramfs line;
+#     gzip cpio built by post-image.sh from the target busybox) ---
+CONFIG_BLK_DEV_INITRD=y
+CONFIG_RD_GZIP=y

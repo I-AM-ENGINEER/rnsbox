@@ -46,6 +46,14 @@ void reticulum_rnode_scan(const http::Request&, http::Response&);   // GET  JSON
 void reticulum_rnode_pair(const http::Request&, http::Response&);   // POST JSON (bluetoothctl pair)
 
 
+// updates tab (A/B whole-OS updater)
+void updates_page(const http::Request&, http::Response&);         // GET  render
+void updates_data(const http::Request&, http::Response&);         // GET  JSON (AJAX)
+void updates_config(const http::Request&, http::Response&);       // POST PRG
+void updates_check(const http::Request&, http::Response&);        // POST PRG
+void updates_apply(const http::Request&, http::Response&);        // POST PRG
+void updates_auto(const http::Request&, http::Response&);         // POST PRG
+
 // settings tab
 void settings_page(const http::Request&, http::Response&);         // GET  render
 void settings_password(const http::Request&, http::Response&);     // POST PRG

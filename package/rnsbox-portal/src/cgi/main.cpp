@@ -61,6 +61,10 @@ static const char* const POST_ONLY[] = {
     "/settings/ntp/restart",
     "/settings/ssh",
     "/settings/usb",
+    "/updates/config",
+    "/updates/check",
+    "/updates/apply",
+    "/updates/auto",
 };
 
 static bool is_post_only(const std::string& p) {
@@ -425,6 +429,12 @@ int main(int argc, char** argv) {
     else if (p == "/reticulum/rnode/status")     routes::reticulum_rnode_status(req, res);
     else if (p == "/reticulum/rnode/scan")       routes::reticulum_rnode_scan(req, res);
     else if (p == "/reticulum/rnode/pair")       routes::reticulum_rnode_pair(req, res);
+    else if (p == "/updates")                    routes::updates_page(req, res);
+    else if (p == "/updates/data")               routes::updates_data(req, res);
+    else if (p == "/updates/config")             routes::updates_config(req, res);
+    else if (p == "/updates/check")              routes::updates_check(req, res);
+    else if (p == "/updates/apply")              routes::updates_apply(req, res);
+    else if (p == "/updates/auto")               routes::updates_auto(req, res);
     else if (p == "/settings")                   routes::settings_page(req, res);
     else if (p == "/settings/password")          routes::settings_password(req, res);
     else if (p == "/settings/hostname")          routes::hostname_set(req, res);

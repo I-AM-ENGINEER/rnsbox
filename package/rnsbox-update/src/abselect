@@ -1,0 +1,52 @@
+#!/bin/sh
+# rnsbox-abselect — A/B slot decision logic (POSIX sh, busybox-ash safe).
+#
+# ONE source of truth for the boot-count slot selector: the initramfs sources
+# this file from the boot FAT; the same file lives at /usr/lib/rnsbox/abselect
+# for unit tests and the QEMU harness. If this file is missing or broken on
+# the FAT, the initramfs falls back to the same decision inline (the upstream
+# HW-validated logic) — a corrupt file must never block a boot.
+#
+# Usage (sourced, not executed):
+#   . /boot/rnsbox-abselect "$boot_dir" "$slot_a_dev" "$slot_b_dev"
+#
+# Reads:   $1/ab_slot ("a"|"b", default a), $1/ab_tries (int, default 0)
+# Writes:  $1/ab_slot + $1/ab_tries when the choice changes state
+# Sets:    AB_ROOTDEV (device to mount as root) and AB_ACTIVE (a|b)
+#          AB_ROLLED_BACK=1 when the previous slot exhausted its tries
+#
+# The CALLER mounts/remounts the boot dir rw/ro around this (the initramfs
+# mounts the FAT read-only first); every write here is tiny + followed by a
+# caller-side sync. Empty/corrupt files parse as defaults; nothing here can
+# fail loudly enough to stop a boot — callers must treat AB_ROOTDEV="" as
+# "use your fallback".
+#
+# Upstream basis: patches 0023/0024 + 7fa2cfb (HW-validated) of
+# Smit1237/rnsbox auto-updater; logic kept identical.
+
+abselect() {
+	_boot="$1"; _a="$2"; _b="$3"
+	AB_ROOTDEV=""
+	AB_ACTIVE=""
+	AB_ROLLED_BACK=""
+	AB_MAX=3
+	[ -d "$_boot" ] || return 1
+	[ -n "$_a" ] && [ -n "$_b" ] || return 1
+
+	_slot="$(cat "$_boot/ab_slot" 2>/dev/null)"
+	[ "$_slot" = b ] || _slot=a
+	_tries="$(cat "$_boot/ab_tries" 2>/dev/null)"
+	case "$_tries" in ''|*[!0-9]*) _tries=0 ;; esac
+
+	if [ "$_tries" -ge "$AB_MAX" ]; then
+		if [ "$_slot" = a ]; then _slot=b; else _slot=a; fi
+		echo "$_slot" > "$_boot/ab_slot" 2>/dev/null || return 1
+		_tries=0
+		echo 0 > "$_boot/ab_tries" 2>/dev/null
+		AB_ROLLED_BACK=1
+	fi
+	echo $((_tries + 1)) > "$_boot/ab_tries" 2>/dev/null || return 1
+	AB_ACTIVE="$_slot"
+	if [ "$_slot" = b ]; then AB_ROOTDEV="$_b"; else AB_ROOTDEV="$_a"; fi
+	return 0
+}

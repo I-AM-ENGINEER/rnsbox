@@ -1,0 +1,89 @@
+#!/bin/busybox sh
+# RNSBox A/B mini-initramfs for the Raspberry Pi (busybox-only, ~1 MB).
+# The firmware loads it per config.txt's `initramfs` line; it picks the active
+# rootfs slot exactly like the cvitek initramfs does, then switch_roots.
+#
+# Slot state lives on the shared FAT boot partition (p1, mounted ro at /boot):
+#   /boot/ab_slot  = "a" | "b"   (a=mmcblk0p2, b=mmcblk0p3)
+#   /boot/ab_tries = boot-attempt counter; S98confirm resets it to 0 once the
+#                    system is healthy. AB_MAX unconfirmed boots roll back.
+# The decision logic is sourced from /boot/rnsbox-abselect (staged by
+# post-image.sh from the rnsbox-update package), else the copy baked into this
+# initramfs, else the inline fallback below (identical logic).
+
+export PATH=/bin
+
+B=/bin/busybox
+
+$B mkdir -p /proc /sys /dev /boot /realroot
+$B mount -t proc proc /proc
+$B mount -t sysfs sysfs /sys
+$B mount -t devtmpfs devtmpfs /dev || true
+
+# The mini-ramdisk has no udev; wait for the SD card (rootwait in cmdline
+# covers the kernel side, this covers the device node).
+i=0
+while [ ! -b /dev/mmcblk0p2 ] && [ $i -lt 100 ]; do
+	$B sleep 0.1
+	i=$((i + 1))
+done
+
+$B mount -o ro /dev/mmcblk0p1 /boot || $B echo "initramfs: no /boot mount"
+
+AB_MAX=3
+ab_slot=a
+if [ -b /dev/mmcblk0p3 ]; then
+	$B mount -o remount,rw /boot 2>/dev/null
+	ab_slot=""
+	AB_ACTIVE=""
+	AB_ROLLED_BACK=""
+	if [ -f /boot/rnsbox-abselect ]; then
+		. /boot/rnsbox-abselect && abselect /boot /dev/mmcblk0p2 /dev/mmcblk0p3
+		[ -n "$AB_ACTIVE" ] && ab_slot="$AB_ACTIVE"
+		[ "$AB_ROLLED_BACK" = 1 ] && $B echo "A/B: previous slot did not confirm — rolled back"
+	elif [ -f /rnsbox-abselect ]; then
+		. /rnsbox-abselect && abselect /boot /dev/mmcblk0p2 /dev/mmcblk0p3
+		[ -n "$AB_ACTIVE" ] && ab_slot="$AB_ACTIVE"
+		[ "$AB_ROLLED_BACK" = 1 ] && $B echo "A/B: previous slot did not confirm — rolled back"
+	fi
+	if [ -z "$ab_slot" ]; then
+		# inline fallback — keep in sync with rnsbox-abselect
+		ab_slot=$(cat /boot/ab_slot 2>/dev/null); [ "$ab_slot" = b ] || ab_slot=a
+		ab_tries=$(cat /boot/ab_tries 2>/dev/null)
+		case "$ab_tries" in ''|*[!0-9]*) ab_tries=0 ;; esac
+		if [ "$ab_tries" -ge "$AB_MAX" ]; then
+			if [ "$ab_slot" = a ]; then ab_slot=b; else ab_slot=a; fi
+			echo "$ab_slot" > /boot/ab_slot
+			echo 0 > /boot/ab_tries
+			echo "A/B: previous slot did not confirm — rolling back to slot $ab_slot"
+		fi
+		echo $((ab_tries + 1)) > /boot/ab_tries
+	fi
+	$B sync
+	$B echo "A/B: booting slot $ab_slot"
+fi
+if [ "$ab_slot" = b ]; then rootpart=/dev/mmcblk0p3; else rootpart=/dev/mmcblk0p2; fi
+
+$B umount /dev/mmcblk0p1 2>/dev/null
+
+$B mount -o rw "$rootpart" /realroot
+if [ $? -ne 0 ]; then
+	$B e2fsck -fvp "$rootpart"
+	$B mount -o rw "$rootpart" /realroot
+fi
+if [ $? -ne 0 ] && [ -b /dev/mmcblk0p3 ]; then
+	# chosen slot will not mount at all — hard-fall-back to the other slot
+	if [ "$ab_slot" = b ]; then rootpart=/dev/mmcblk0p2; else rootpart=/dev/mmcblk0p3; fi
+	$B echo "A/B: slot unmountable — trying $rootpart"
+	$B e2fsck -fvp "$rootpart"
+	$B mount -o rw "$rootpart" /realroot
+fi
+if [ ! -x /realroot/sbin/init ]; then
+	$B echo "initramfs: no bootable rootfs found — halting"
+	while true; do $B sleep 3600; done
+fi
+
+$B mount --move /proc /realroot/proc
+$B mount --move /sys /realroot/sys
+$B mount --move /dev /realroot/dev
+exec $B switch_root /realroot /sbin/init

@@ -76,6 +76,28 @@ bool write_reticulum_config(const std::string& text, std::string& err);
 std::vector<std::string> read_ntp_servers();
 std::vector<std::string> write_ntp_servers(const std::vector<std::string>& servers); // returns kept
 
+// --- system (OS image) update configuration, /etc/rnsbox/update.conf ---
+// Read/written by the portal Updates tab AND by rnsbox-sysupdate (which owns
+// next_check and appends managed keys). Flat key=value, one file.
+constexpr const char* UPDATE_FILE = "/etc/rnsbox/update.conf";
+
+struct UpdateConfig {
+    std::string enabled = "yes";          // auto-check master switch
+    std::string provider = "github-releases";  // github-releases | generic
+    std::string repo = "I-AM-ENGINEER/rnsbox"; // github-releases: owner/repo
+    std::string url;                      // generic: full manifest.json URL
+    std::string board = "auto";           // auto | rpi0-2w | licheerv-nano
+    std::string allow_prerelease = "yes"; // CI auto-builds are prereleases
+    std::string allow_insecure_http = "no";
+    std::string auto_apply = "no";        // apply without a human click
+    std::string interval_min_days = "7";
+    std::string interval_max_days = "14";
+    std::string next_check;               // managed by the worker (epoch)
+};
+
+UpdateConfig read_update_config();
+bool write_update_config(const UpdateConfig& c, std::string& err);
+
 // --- SLIP link to an external HaLow (RNode) modem ---
 struct SlipConfig {
     std::string enabled = "no";

@@ -45,6 +45,13 @@ read_uc() {
 	case "$uc" in no|No|NO|0|false|off) uc=no ;; *) uc=yes ;; esac
 }
 
+# read a key from a flat key=value conf file other than $CONF (cfg2 FILE KEY)
+cfg2() {
+	grep -E "^[[:space:]]*$2[[:space:]]*=" "$1" 2>/dev/null | tail -1 \
+	  | sed -E "s/^[^=]*=[[:space:]]*//" | sed -E 's/[[:space:]]*#.*$//' \
+	  | sed -E 's/[[:space:]]*$//'
+}
+
 gen_crontab() {
 	mkdir -p -m 700 "$CRONDIR" || return 1
 	days=$(cfg rnsd_restart_days)
@@ -70,6 +77,16 @@ gen_crontab() {
 		if [ "$uc" = yes ]; then
 			# daily at 05:00: notify-only check for a newer rnsd (offline-safe)
 			echo "0 5 * * * /usr/sbin/rnsbox-update-check >> $LOG 2>&1"
+		fi
+		# A/B system-update tick: rnsbox-sysupdate reconciles a pending slot
+		# flip, then honours the 7-14 day jittered schedule (next_check in
+		# update.conf, managed by the worker). enabled=no there (or the portal
+		# Updates tab master switch) removes the line.
+		sysupd=$(cfg2 /etc/rnsbox/update.conf enabled)
+		[ "$sysupd" = no ] || sysupd=yes
+		if [ "$sysupd" = yes ] && [ -x /usr/sbin/rnsbox-sysupdate ]; then
+			# hourly at :43, clear of the jobs above
+			echo "43 * * * * /usr/sbin/rnsbox-sysupdate tick >> $LOG 2>&1"
 		fi
 		# hourly at :17 (clear of the jobs above): clock checked against NTP
 		# and written to the RTC; logs to /var/log/ntp-step.log itself

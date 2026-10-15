@@ -38,6 +38,11 @@ trap restore EXIT
 MAKE="make -C $UP O=$O BR2_EXTERNAL=$EXT"
 
 if [ "$VARIANT" = dvd ]; then
+	# The A/B updater layout (fixed 512M rootfs slots) has no room for the
+	# clients-ISO rootfs; dvd is rejected until slot sizes are raised on
+	# purpose. See docs/AUTO-UPDATE.md.
+	echo "FATAL: dvd variant is incompatible with the A/B updater layout" >&2
+	exit 91
 	echo "--- DVD: (re)build the clients ISO ---"
 	( cd "$EXT" && scripts/clients-stick/build-clients-img.sh ) || { echo "FATAL: ISO build"; exit 92; }
 	# auto-size rootfs to the (dynamic, latest) clients ISO + ~400M OS.
