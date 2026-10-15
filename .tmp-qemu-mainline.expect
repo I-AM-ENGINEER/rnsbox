@@ -1,0 +1,43 @@
+# QEMU riscv64-virt smoke boot of the RNSBox MAINLINE CV1800B flow: the
+# shipping kernel Image + the shipping rootfs on a virtio disk. Console is
+# the ns16550a on ttyS0; log in, run the RNSBox acceptance markers, power off.
+# Env: QEMU_KERNEL, QEMU_ROOTFS, optional QEMU_MEM (default 256M; a 64M pass
+# documents the CV1800B budget directly).
+set timeout 900
+log_user 1
+kill_on_open 1
+
+if {[info exists env(QEMU_MEM)]} { set mem $env(QEMU_MEM) } else { set mem "256M" }
+set cmd "qemu-system-riscv64 -M virt -m $mem -nographic"
+append cmd " -kernel $env(QEMU_KERNEL)"
+append cmd " -append \"console=ttyS0 root=/dev/vda rootwait rw\""
+append cmd " -drive if=none,file=$env(QEMU_ROOTFS),format=raw,id=hd0"
+append cmd " -device virtio-blk-device,drive=hd0"
+
+eval spawn $cmd
+expect {
+    "login:" {}
+    timeout { puts "TIMEOUT-waiting-for-login"; exit 3 }
+}
+send "root\r"
+expect {
+    "Password:" { send "admin\r" }
+    timeout { puts "TIMEOUT-waiting-for-password"; exit 4 }
+}
+expect {
+    -re "# |\\$ " {}
+    timeout { puts "TIMEOUT-waiting-for-prompt"; exit 5 }
+}
+send "echo ===ACCEPTANCE-BEGIN===; echo MEM=$mem; free | head -2; uname -a; echo MARKERS-BEGIN\r"
+expect "MARKERS-BEGIN"
+send "for s in /etc/init.d/S0* /etc/init.d/S1* /etc/init.d/S2* /etc/init.d/S3* /etc/init.d/S6* /etc/init.d/S8*; do test -x \$s || echo NOT-EXEC \$s; done; echo EXEC-CHECK-DONE\r"
+expect "EXEC-CHECK-DONE"
+send "test -x /usr/sbin/rnsd && echo RNSD-BIN-OK; rnsd --version 2>&1 | head -2; echo RNSD-VERSION-DONE\r"
+expect "RNSD-VERSION-DONE"
+send "test -x /usr/sbin/rnsbox-portal && echo PORTAL-BIN-OK; REQUEST_METHOD=GET QUERY_STRING='page=overview' SCRIPT_NAME=/cgi-bin/portal /usr/sbin/rnsbox-portal 2>&1 | head -4; echo PORTAL-RUN-EXIT=\$?\r"
+expect "PORTAL-RUN-EXIT"
+send "uhttpd -h /www -p 0.0.0.0:8099 -x /cgi-bin & sleep 2; wget -q -O - 'http://127.0.0.1:8099/cgi-bin/portal?page=overview' 2>&1 | head -3; echo UHTTPD-DONE\r"
+expect "UHTTPD-DONE"
+send "ps | grep -E 'rnsd|python|uhttpd' | grep -v grep | head -4; echo PROC-DONE; dmesg | grep -iE 'dwc2|dwmac|dwcmc|sophgo' | head -6; echo DMESG-DONE; echo ===ACCEPTANCE-END===\r"
+expect "===ACCEPTANCE-END==="
+sleep 2
