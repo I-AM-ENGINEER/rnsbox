@@ -1,8 +1,11 @@
 # RNSBox sshd — explicit config (the rootfs overlay beats the upstream sample
-# installed by the openssh package). Root/admin password login over the USB
-# LAN (10.42.0.1). WAN :22 stays firewalled behind /etc/rnsbox/openports.conf
-# until the user opens it in the portal.
-PermitRootLogin yes
+# installed by the openssh package). sshd runs ONLY while the user enables it
+# in the portal (Settings -> SSH); /etc/init.d/S50sshd gates it on
+# /etc/rnsbox/ssh.conf. Login is the unprivileged `admin` user (password set
+# in the portal); root login is closed — PermitRootLogin no here and the root
+# password is locked at build time. WAN :22 stays firewalled behind
+# /etc/rnsbox/openports.conf until the user opens it in the portal.
+PermitRootLogin no
 PasswordAuthentication yes
 PermitEmptyPasswords no
 PrintMotd no
