@@ -1,10 +1,13 @@
 # RAM-футпринт RNSBox на 64М (Milk-V Duo / CV1800B) — измерения и оптимизации
 
-> СТАТУС: работа идёт (ветка ram-optimization). Файл дополняется по мере
-> измерений. Все userspace-измерения — QEMU riscv64 (mainline-ядро
-> валидации 6.18.7, -M virt) на корневой ФС таргета cvitek-universal;
-> kernel-часть — статический анализ + сборка vendor-ядра 5.10 (phobos),
-> т.к. вендорское ядро в mainline-QEMU не стартует (машина cvitek там нет).
+> СТАТУС: ЗАВЕРШЕНО (ветка ram-optimization, патчи 0034–0037 в серии
+> milkv-duo-cv1800b). Итог оптимизаций: −1.47 МБ резидентной RAM ядра +
+> −0.7 МБ пика rnsd + tmpfs-капы + opt-in zram. Все userspace-измерения —
+> QEMU riscv64 (ядро валидации 6.18.7, -M virt) на корневой ФС таргета
+> cvitek-universal; kernel-часть — сборка vendor-ядра 5.10 (phobos),
+> т.к. вендорское ядро в mainline-QEMU не стартует (машины cvitek там нет).
+> Тестовый образ не собирался: полная сборка потока ~3–4 ч на загруженной
+> машине; ветка готова к `./build.sh milkv-duo-cv1800b lite` (см. ниже).
 
 ## Контекст бюджета 64М
 
@@ -152,8 +155,9 @@ zram-ядре (6.18 + ZRAM=y + CRYPTO_LZ4/LZO/ZSTD=y, см. ветку — сб�
 - swapon/swapoff циклы на zram0 — чисто, re-initialization требует
   `swapoff` + `echo reset > /sys/block/zram0/reset` (иначе «Resource
   busy» — учтено в S20zram).
-- RAM-цена самого zram в ядре: Image trim-сборки с ZRAM+ZSMALLOC+LZ4 =
-  5 504 512 байт; без них — (цифра ниже, сборка kbuild-trim-nozram).
+- RAM-цена самого zram в ядре (измерено, Image vs Image): trim с
+  ZRAM+ZSMALLOC+CRYPTO_LZ4 = 5 504 512 B, без = 5 451 776 B → **+52 736 B
+  (~51 КБ)** — на порядок меньше выигрыша от самого трима.
 
 Оценка CPU-цены (не TCG): lz4 на одноядерном in-order ядре ~1 ГГц даёт
 порядка 100–300 МБ/с на сжатие и 300–800 МБ/с на распаковку. Пиковый
