@@ -75,6 +75,122 @@ static std::string rtc_temp_row(const sysinfo::Rtc& rtc) {
     return "<tr><th>RTC temperature</th><td>" + E(buf) + " &deg;C</td></tr>";
 }
 
+// ---- SSH card fragments ----
+
+// Status line: running (sshd alive) / disabled (the shipped default) /
+// stopped (enabled=yes but not running — e.g. sshd crashed or was killed).
+static std::string ssh_status_html() {
+    store::SshConfig c = store::read_ssh();
+    util::RunResult pid = util::run({"/bin/pidof", "sshd"}, "", 5, 4096);
+    bool running = pid.exit_code == 0 && !util::trim(pid.out).empty();
+    if (running)  return "<span class=\"badge ok\">running</span>";
+    if (!c.enabled) return "<span class=\"badge err\">disabled</span>";
+    return "<span class=\"badge warn\">stopped</span>";
+}
+
+// True once the `admin` unix user has a usable (non-locked, non-empty)
+// password hash in /etc/shadow. The account is shipped locked (the image's
+// users table sets the hash field to '!'); the SSH card sets the first
+// password. Field 2 of the shadow line: '!', '*' or empty all mean no login.
+static bool admin_unix_password_set() {
+    std::string data = util::read_file("/etc/shadow");
+    size_t i = 0;
+    while (i < data.size()) {
+        size_t nl = data.find('\n', i);
+        if (nl == std::string::npos) nl = data.size();
+        std::string ln = data.substr(i, nl - i);
+        i = nl + 1;
+        if (ln.compare(0, 6, "admin:") != 0) continue;
+        size_t c1 = ln.find(':');
+        size_t c2 = (c1 == std::string::npos) ? std::string::npos : ln.find(':', c1 + 1);
+        if (c1 == std::string::npos || c2 == std::string::npos) return false;
+        std::string hash = ln.substr(c1 + 1, c2 - c1 - 1);
+        return !(hash.empty() || hash == "!" || hash[0] == '!' || hash == "*");
+    }
+    return false;
+// ---- USB port role card ----
+// The switch exists only on OTG-capable boards. Capability and the live role
+// come from /run/usbmode.state, which S07usbmode writes at boot and after
+// every apply; when the file is missing we run the script's status once (it
+// (re)writes the file), and if even that fails, detect by hand the same way
+// the script does: CVITEK's /proc/cviusb/otg_role, else a Pi Zero 2 W model,
+// with an optional /etc/rnsbox/board.conf usb_otg=yes|no pin winning.
+struct UsbState {
+    bool capable = false;
+    std::string mode = "device";   // configured (usb.conf)
+    std::string active;            // what the controller does now
+    std::string platform;          // cvi | rpi | other
+};
+
+static std::string usb_pin() {
+    return util::trim(util::conf_get("/etc/rnsbox/board.conf", "usb_otg"));
+}
+
+static bool usb_capable_fallback() {
+    std::string pin = usb_pin();
+    if (pin == "yes") return true;
+    if (pin == "no") return false;
+    // The CVITEK dwc2 glue always provides the proc role switch.
+    if (!util::read_file("/proc/cviusb/otg_role", 16).empty()) return true;
+    std::string model = util::read_file("/proc/device-tree/model", 128);
+    return model.find("Zero 2") != std::string::npos;
+}
+
+static UsbState usb_state() {
+    UsbState s;
+    s.mode = store::read_usb().mode;
+    std::string cap = util::trim(util::conf_get(store::USB_STATE_FILE, "capable"));
+    if (cap.empty()) {
+        util::run({"/etc/init.d/S07usbmode", "status"}, "", 5);
+        cap = util::trim(util::conf_get(store::USB_STATE_FILE, "capable"));
+    }
+    s.capable = (cap == "yes") || (cap.empty() && usb_capable_fallback());
+    s.active = util::trim(util::conf_get(store::USB_STATE_FILE, "active"));
+    if (s.active.empty()) s.active = s.mode;
+    s.platform = util::trim(util::conf_get(store::USB_STATE_FILE, "platform"));
+    return s;
+}
+
+static std::string usb_mode_badge(const std::string& role) {
+    if (role == "host")
+        return "<span class=\"badge warn\">host</span> <span class=\"muted\">USB devices "
+               "(OTG adapter); no gadget LAN</span>";
+    if (role == "device")
+        return "<span class=\"badge ok\">device</span> <span class=\"muted\">CDC-NCM gadget "
+               "&mdash; the LAN: portal at 10.42.0.1</span>";
+    return "<span class=\"badge\">unknown</span>";
+}
+
+static std::string usb_section_html(const UsbState& s) {
+    if (!s.capable) return std::string();   // Pi 3/4/5, Orange Pi R1, ...: no switch at all
+    bool host = s.mode == "host";
+    std::string note;
+    if (s.platform == "rpi")
+        note = "Takes effect at the next reboot (the driver reads the role once at boot). "
+               "In host mode the USB network link is gone &mdash; make sure the WiFi hotspot "
+               "or another access path works first.";
+    else
+        note = "Applies as soon as you save (the controller switches roles at runtime). "
+               "Switching to host cuts the USB network link &mdash; keep the WiFi hotspot or "
+               "SSH reachable first.";
+    std::string h;
+    h += "<section class=\"card\">\n  <h3>USB port role</h3>\n";
+    h += "  <p>Running now: " + usb_mode_badge(s.active) +
+         "<br>Configured: <strong>" + std::string(host ? "host" : "device (gadget)") + "</strong>" +
+         std::string(s.active == s.mode ? "" : " <span class=\"badge warn\">pending</span>") +
+         "</p>\n";
+    h += "  <form method=\"post\" action=\"" + web::base() + "/settings/usb\">\n";
+    h += "    <label><input type=\"radio\" name=\"mode\" value=\"device\"" +
+         std::string(host ? "" : " checked") + "> Device (gadget) &mdash; the port is the box's "
+         "LAN: <code>10.42.0.1</code> over the cable</label>\n";
+    h += "    <label><input type=\"radio\" name=\"mode\" value=\"host\"" +
+         std::string(host ? " checked" : "") + "> Host &mdash; the port drives USB devices "
+         "(flash drives, Huawei modems, RNode) through an OTG adapter; the gadget LAN goes away</label>\n";
+    h += "    <button type=\"submit\" class=\"btn-primary\">Save USB mode</button>\n  </form>\n";
+    h += "  <p class=\"muted\">" + note + "</p>\n</section>\n";
+    return h;
+}
+
 // ---- GET render ----
 
 void settings_page(const Request& req, Response& res) {
@@ -118,6 +234,17 @@ void settings_page(const Request& req, Response& res) {
     h = R(std::move(h), "__NTP_SERVERS__", E(ntp_joined));
     h = R(std::move(h), "__HOSTNAME__", E(host));
     h = R(std::move(h), "__WAN__", E(wan));
+    // USB role card (empty unless the board is OTG-capable — see usb_state()).
+    h = R(std::move(h), "__USB_SECTION__", usb_section_html(usb_state()));
+
+    // SSH card
+    store::SshConfig ssh = store::read_ssh();
+    h = R(std::move(h), "__SSH_STATUS__", ssh_status_html());
+    h = R(std::move(h), "__SSH_ENABLED_ATTR__", ssh.enabled ? " checked" : "");
+    h = R(std::move(h), "__SSH_PASS_NOTE__", admin_unix_password_set()
+          ? "<span class=\"muted\">A password is set for SSH user <code>admin</code>; "
+            "leave the fields blank to keep it.</span>"
+          : "");
 
     res.body = render::layout(req, res, "Settings", "settings", h);
 }
@@ -139,8 +266,83 @@ void settings_password(const Request& req, Response& res) {
         render::redirect_flash(res, settings_redirect(), "error", "New password must be at least 6 characters");
     } else {
         session::set_password(s.user, neu);
-        render::redirect_flash(res, settings_redirect(), "success", "Password changed");
+        // sec: a session issued under the OLD password must not survive the
+        // change (whoever held one — e.g. signed in with the factory default
+        // just before the operator changed it — would stay logged in for up
+        // to the 24 h TTL). Drop every session; the next request re-auths.
+        session::revoke_all();
+        res.set_cookie(session::clear(req.cookie(session::COOKIE_NAME)));   // expire this browser's cookie too
+        render::redirect_flash(res, web::base() + "/login", "success",
+            "Password changed — sign in again with the new password.");
     }
+}
+
+void ssh_set(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, false)) return;
+    bool enable = req.f("enabled") == "on";
+
+    if (!enable) {
+        std::string err;
+        if (!store::write_ssh(false, err)) {
+            render::redirect_flash(res, settings_redirect(), "error", "Could not write /etc/rnsbox/ssh.conf; SSH not changed.");
+            return;
+        }
+        // The gate script stops a running sshd and (with enabled=no) does not
+        // start one; `restart` also covers the boot-time argument convention.
+        web::run_init("S50sshd", "restart");
+        render::redirect_flash(res, settings_redirect(), "success",
+            "SSH disabled: sshd stopped and stays off across reboots.");
+        return;
+    }
+
+    // Enabling (or re-saving while enabled): the SSH login is the unprivileged
+    // `admin` unix user, whose password the operator sets here. Both fields
+    // blank keeps the password set by an earlier save (if there is one).
+    std::string p1 = req.f("sshpass");
+    std::string p2 = req.f("sshpass2");
+    bool have_pw = !p1.empty() || !p2.empty();
+    if (!have_pw && !admin_unix_password_set()) {
+        render::redirect_flash(res, settings_redirect(), "error",
+            "SSH user admin has no password yet — enter one (twice) to enable SSH.");
+        return;
+    }
+    if (have_pw) {
+        if (p1 != p2) {
+            render::redirect_flash(res, settings_redirect(), "error", "SSH passwords do not match; nothing was saved.");
+            return;
+        }
+        if (p1.size() < 6) {
+            render::redirect_flash(res, settings_redirect(), "error", "SSH password must be at least 6 characters; nothing was saved.");
+            return;
+        }
+        // Control chars (CR/LF above all) must never reach passwd's stdin.
+        if (!util::is_single_line_clean(p1)) {
+            render::redirect_flash(res, settings_redirect(), "error", "SSH password contains control characters; nothing was saved.");
+            return;
+        }
+        // busybox passwd reads the new password twice from stdin; -a sha512
+        // pins the hash format regardless of the image's busybox default.
+        // (This image has no chpasswd applet; passwd is the same backend.)
+        util::RunResult r = util::run({"/usr/bin/passwd", "-a", "sha512", "admin"},
+                                      p1 + "\n" + p1 + "\n", 15);
+        p1.clear(); p2.clear();   // don't linger longer than needed
+        if (r.exit_code != 0 || !admin_unix_password_set()) {
+            render::redirect_flash(res, settings_redirect(), "error",
+                "Could not set the admin password (passwd failed); SSH not enabled.");
+            return;
+        }
+    }
+
+    std::string err;
+    if (!store::write_ssh(true, err)) {
+        render::redirect_flash(res, settings_redirect(), "error", "Could not write /etc/rnsbox/ssh.conf; SSH not enabled.");
+        return;
+    }
+    web::run_init("S50sshd", "restart");
+    render::redirect_flash(res, settings_redirect(), "success",
+        "SSH enabled: log in as user admin (not root — root login is closed). "
+        "SSH answers on the LAN side; the WAN stays closed unless tcp 22 is "
+        "opened under Network -> Open ports.");
 }
 
 void hostname_set(const Request& req, Response& res) {
@@ -329,6 +531,69 @@ void time_browser(const Request& req, Response& res) {
         msg += ". No hardware clock (RTC) fitted, so it is lost at the next reboot.";
     }
     render::redirect_flash(res, settings_redirect(), cat, msg);
+}
+
+void usb_mode_set(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, false)) return;
+    // Whitelist the value; anything else (or a missing field) refuses the save.
+    std::string mode = req.f("mode");
+    if (mode != "device" && mode != "host") {
+        render::redirect_flash(res, settings_redirect(), "error", "Invalid USB mode.");
+        return;
+    }
+    UsbState s = usb_state();
+    if (!s.capable) {
+        render::redirect_flash(res, settings_redirect(), "error",
+            "This board has no OTG USB port; the USB mode is fixed to device.");
+        return;
+    }
+    store::UsbConfig c;
+    c.mode = mode;
+    std::string err;
+    if (!store::write_usb(c, err)) {
+        render::redirect_flash(res, settings_redirect(), "error", "Could not save the USB mode (" + err + ").");
+        return;
+    }
+    // S07usbmode live: syncs the boot artifacts (cvi: /boot/usb.host|usb.dev,
+    // rpi: flags + config.txt dr_mode) and on CVITEK applies the role right
+    // away via S08usbdev. Stdout carries one verdict line — "applied <msg>" |
+    // "reboot <msg>" | "error <msg>"; scan past any other chatter to find it.
+    // 30 s: the device-mode path waits for the UDC.
+    util::RunResult r = util::run({"/etc/init.d/S07usbmode", "live"}, "", 30);
+    std::string verdict, vmsg;
+    if (!r.timed_out) {
+        std::string out = util::trim(r.out);
+        size_t i = 0;
+        while (i < out.size() && verdict.empty()) {
+            size_t e = out.find('\n', i);
+            if (e == std::string::npos) e = out.size();
+            std::string ln = util::trim(out.substr(i, e - i));
+            for (const char* v : {"applied", "reboot", "error"}) {
+                if (ln.rfind(v, 0) == 0) {
+                    verdict = v;
+                    vmsg = ln.size() > verdict.size() + 1 ? ln.substr(verdict.size() + 1) : std::string();
+                    break;
+                }
+            }
+            i = e + 1;
+        }
+    }
+    if (verdict == "applied") {
+        render::redirect_flash(res, settings_redirect(), "success",
+            "USB mode saved and applied:" + (vmsg.empty() ? std::string(" mode: ") : " " + vmsg + ";") +
+            " mode: " + mode + ".");
+    } else if (verdict == "reboot") {
+        render::redirect_flash(res, settings_redirect(), "warn",
+            "USB mode saved (" + mode + "). " +
+            (vmsg.empty() ? std::string("Reboot to apply.") : vmsg));
+    } else {
+        std::string why = r.timed_out ? std::string("the apply timed out")
+                                      : (verdict == "error" && !vmsg.empty() ? vmsg
+                                         : std::string("no verdict from S07usbmode"));
+        render::redirect_flash(res, settings_redirect(), "warn",
+            "USB mode saved (" + mode + "), but applying it now failed (" + why +
+            "); it will apply at the next reboot.");
+    }
 }
 
 }  // namespace routes

@@ -5,9 +5,24 @@ image boot.vfat {
 		}
 	}
 
-	size = 128M
+	# image-size: sized to the payload (Image ~24M + firmware blobs ~9M +
+	# dtbs/overlays ~4M + usb.* flags), not to the card — /boot is a fixed
+	# FAT that nothing grows at runtime, so keep ~8M of slack for a future
+	# kernel and the dvd-variant flag files. 48M (was 128M).
+	size = 48M
 }
 
+# A/B whole-OS layout (the rnsbox-sysupdate transactional updater):
+#   p1 boot (FAT, 128M)  : firmware + kernel + DTBs + initramfs + slot state
+#   p2 rootfs_A (512M)   : ships the ext4 (400M, padded); slot A
+#   p3 rootfs_B (512M)   : a copy at flash so both slots boot; the updater
+#                          overwrites the idle slot on each update
+#   p4 data (32M seed)   : persistent state (S03data mounts it, bind-mounts
+#                          /etc/rnsbox etc.); grown to fill the card by
+#                          S02resizefs on first boot
+# The boot FAT is SHARED by both slots; boot files are refreshed in place by
+# the updater transaction (old copies kept on /data, hash-verified, restored
+# on failure). Slot size = the `size = 512M` lines; the ext4 must stay below.
 image sdcard.img {
 	hdimage {
 	}
@@ -18,8 +33,20 @@ image sdcard.img {
 		image = "boot.vfat"
 	}
 
-	partition rootfs {
+	partition rootfs_a {
 		partition-type = 0x83
 		image = "rootfs.ext4"
+		size = 512M
+	}
+
+	partition rootfs_b {
+		partition-type = 0x83
+		image = "rootfs.ext4"
+		size = 512M
+	}
+
+	partition data {
+		partition-type = 0x83
+		size = 32M
 	}
 }

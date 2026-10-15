@@ -11,7 +11,7 @@ if [ -e /boot/resolv.conf ]
 then
 	RESOLV_CONF="/etc/resolv.conf.dhcp"
 fi
-[ -e $RESOLV_CONF ] || touch $RESOLV_CONF
+[ -e "$RESOLV_CONF" ] || touch "$RESOLV_CONF"
 # RNSBox: register DNS in openresolv's database (the same one dhcpcd's
 # wlan0 hook uses) instead of editing resolv.conf, so a dhcpcd event on
 # wlan0 can't regenerate eth0's servers away. /boot/resolv.conf keeps the
@@ -44,8 +44,8 @@ wait_for_ipv6_default_route() {
 
 case "$ACTION" in
 	deconfig)
-		/sbin/ifconfig $interface up
-		/sbin/ifconfig $interface 0.0.0.0
+		/sbin/ifconfig "$interface" up
+		/sbin/ifconfig "$interface" 0.0.0.0
 
 		# drop info from this interface
 		if $USE_RESOLVCONF; then
@@ -53,27 +53,27 @@ case "$ACTION" in
 		else
 			# resolv.conf may be a symlink to /tmp/, so take care
 			TMPFILE=$(mktemp)
-			grep -vE "# $interface\$" $RESOLV_CONF > $TMPFILE
-			cat $TMPFILE > $RESOLV_CONF
+			grep -vE "# $interface\$" "$RESOLV_CONF" > "$TMPFILE"
+			cat "$TMPFILE" > "$RESOLV_CONF"
 			rm -f $TMPFILE
 		fi
 
 		if [ -x /usr/sbin/avahi-autoipd ]; then
-			/usr/sbin/avahi-autoipd -c $interface && /usr/sbin/avahi-autoipd -k $interface
+			/usr/sbin/avahi-autoipd -c "$interface" && /usr/sbin/avahi-autoipd -k "$interface"
 		fi
 		;;
 
 	leasefail|nak)
 		if [ -x /usr/sbin/avahi-autoipd ]; then
-			/usr/sbin/avahi-autoipd -c $interface || /usr/sbin/avahi-autoipd -wD $interface --no-chroot
+			/usr/sbin/avahi-autoipd -c "$interface" || /usr/sbin/avahi-autoipd -wD "$interface" --no-chroot
 		fi
 		;;
 
 	renew|bound)
 		if [ -x /usr/sbin/avahi-autoipd ]; then
-			/usr/sbin/avahi-autoipd -c $interface && /usr/sbin/avahi-autoipd -k $interface
+			/usr/sbin/avahi-autoipd -c "$interface" && /usr/sbin/avahi-autoipd -k "$interface"
 		fi
-		/sbin/ifconfig $interface $ip $BROADCAST $NETMASK
+		/sbin/ifconfig "$interface" "$ip" ${BROADCAST:-} ${NETMASK:-}
 		if [ -n "$ipv6" ] ; then
 			wait_for_ipv6_default_route
 		fi
@@ -96,12 +96,12 @@ case "$ACTION" in
 			done
 		elif [ -n "$router" ] ; then
 			echo "deleting routers"
-			while route del default gw 0.0.0.0 dev $interface 2> /dev/null; do
+			while route del default gw 0.0.0.0 dev "$interface" 2> /dev/null; do
 				:
 			done
 
 			for i in $router ; do
-				route add default gw $i dev $interface
+				route add default gw "$i" dev "$interface"
 			done
 		fi
 
@@ -121,8 +121,8 @@ case "$ACTION" in
 			# drop info from this interface
 			# resolv.conf may be a symlink to /tmp/, so take care
 			TMPFILE=$(mktemp)
-			grep -vE "# $interface\$" $RESOLV_CONF > $TMPFILE
-			cat $TMPFILE > $RESOLV_CONF
+			grep -vE "# $interface\$" "$RESOLV_CONF" > "$TMPFILE"
+			cat "$TMPFILE" > "$RESOLV_CONF"
 			rm -f $TMPFILE
 
 			[ -n "$search_list" ] &&

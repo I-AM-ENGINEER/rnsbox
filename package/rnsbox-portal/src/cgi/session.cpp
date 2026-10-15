@@ -108,8 +108,11 @@ static bool verify_werkzeug(const std::string& hash, const std::string& password
 static std::string make_hash(const std::string& password) {
     std::string salt = util::random_hex(8);   // 16 hex chars
     if (salt.empty()) salt = "0000000000000000";
-    std::string hex = pbkdf2_hex(password, salt, 25000, 32);
-    return "pbkdf2:sha256:25000$" + salt + "$" + hex;
+    // 100k iterations: offline-cracking cost for auth.json (which lives on the
+    // SD card). Still instant enough on the Zero 2 W for a login (~50 ms).
+    // verify_werkzeug accepts any iter count, so old 25k hashes keep working.
+    std::string hex = pbkdf2_hex(password, salt, 100000, 32);
+    return "pbkdf2:sha256:100000$" + salt + "$" + hex;
 }
 
 bool valid_username(const std::string& u) {
@@ -134,11 +137,28 @@ void ensure_default_auth() {
     util::write_file_atomic(AUTH_FILE, serialize_auth(m), 0600);
 }
 
+bool default_password_active() {
+    auto m = parse_auth(util::read_file(AUTH_FILE));
+    auto it = m.find("admin");
+    if (it == m.end()) return false;
+    // The stored record is the werkzeug-format pbkdf2 hash; verify it against
+    // the factory password. Salted per install, so this is exact (never true
+    // for a user-chosen password except by a 1/16^16 chance coincidence).
+    return verify_werkzeug(it->second, "admin");
+}
+
 bool set_password(const std::string& user, const std::string& newpass) {
     if (!valid_username(user) || newpass.empty() || newpass.size() > 512) return false;
     auto m = parse_auth(util::read_file(AUTH_FILE));
     m[user] = make_hash(newpass);
     return util::write_file_atomic(AUTH_FILE, serialize_auth(m), 0600);
+}
+
+void revoke_all() {
+    // The session store is a single global token file, so unlinking it ends
+    // every live session. Called after a password change: a session issued
+    // under the old password must not outlive it.
+    ::unlink(SESSION_FILE);
 }
 
 // ---- session token file: "user\ntoken\nexpiry" ----

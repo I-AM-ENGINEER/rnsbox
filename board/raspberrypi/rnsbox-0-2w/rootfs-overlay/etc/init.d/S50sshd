@@ -1,0 +1,47 @@
+#!/bin/sh
+# RNSBox sshd gate — this overlay script REPLACES the stock OpenSSH S50sshd
+# (the rootfs overlay is copied over the target after packages install, so
+# package upgrades keep working without fighting us).
+#
+# SSH is OFF unless /etc/rnsbox/ssh.conf says enabled=yes. The portal
+# (Settings -> SSH) rewrites that file and calls this script with `restart`;
+# at boot rcS just calls `start`, which exits silently while disabled.
+#
+# Login is the unprivileged `admin` user (password set in the portal); root
+# login is closed: PermitRootLogin no in /etc/ssh/sshd_config and the root
+# password is locked at build time (BR2_TARGET_ENABLE_ROOT_LOGIN off).
+CONF=/etc/rnsbox/ssh.conf
+
+ssh_enabled() {
+	[ -f "$CONF" ] || return 1
+	sed -e 's/#.*$//' "$CONF" | grep -iE '^[[:space:]]*enabled[[:space:]]*=[[:space:]]*(yes|on|true|1)[[:space:]]*$' >/dev/null 2>&1
+}
+
+case "${1:-start}" in
+	start)
+		ssh_enabled || exit 0
+		[ -x /usr/bin/ssh-keygen ] || exit 0
+		umask 077
+		/usr/bin/ssh-keygen -A >/dev/null 2>&1
+		printf "Starting sshd: "
+		/usr/sbin/sshd
+		touch /var/lock/sshd
+		echo "OK"
+		;;
+	stop)
+		printf "Stopping sshd: "
+		killall sshd 2>/dev/null
+		rm -f /var/lock/sshd
+		echo "OK"
+		;;
+	restart|reload)
+		"$0" stop
+		"$0" start
+		;;
+	*)
+		echo "Usage: $0 {start|stop|restart}" >&2
+		exit 1
+		;;
+esac
+
+exit $?

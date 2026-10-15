@@ -33,7 +33,14 @@ struct Info {
 bool verify_password(const std::string& user, const std::string& password);
 void ensure_default_auth();                 // seed admin/admin if auth.json absent/empty
 bool set_password(const std::string& user, const std::string& newpass);
+// End every live session (single global token file): after a password change
+// so a session issued under the old password cannot outlive it.
+void revoke_all();
 bool valid_username(const std::string& u);  // ^[A-Za-z0-9_.-]{1,32}$
+// True while the web login is still the factory default admin/admin (the
+// stored admin hash verifies against "admin"). Drives the dashboard's
+// default-password warning banner; recomputed per render, nothing persisted.
+bool default_password_active();
 
 // --- session token file ---
 std::string start(const std::string& user); // writes token file; returns Set-Cookie value

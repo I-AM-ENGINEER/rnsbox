@@ -3,7 +3,12 @@
 #include "util.h"
 #include <cctype>
 #include <cstdlib>
+#include <cstdint>
 #include <cstring>
+#include <algorithm>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 namespace store {
 
@@ -417,6 +422,130 @@ bool write_slip(const SlipConfig& c, std::string& err) {
     return true;
 }
 
+// ---- USB role of the OTG port ----
+// mode=device (default, the CDC-NCM gadget LAN on 10.42.0.1) | host. The file
+// only exists once the portal has saved it; before that S07usbmode stays out
+// of the way of the shipped defaults. Applied by S07usbmode.
+UsbConfig read_usb() {
+    UsbConfig c;
+    std::string m = util::conf_get(USB_FILE, "mode");
+    if (m == "host") c.mode = "host";   // anything else (missing/empty/typo) = device
+    return c;
+}
+
+bool write_usb(const UsbConfig& c, std::string& err) {
+    if (c.mode != "device" && c.mode != "host") { err = "bad mode"; return false; }
+    std::string o =
+        "# RNSBox USB role of the OTG port.\n"
+        "#   mode=device — the port is a CDC-NCM gadget: the box's LAN\n"
+        "#                (portal at http://10.42.0.1, see S08usbdev/S10usbdev).\n"
+        "#   mode=host   — the port drives USB devices (sticks, modems, RNode)\n"
+        "#                through an OTG adapter; the gadget LAN disappears.\n"
+        "# Managed by the portal Settings tab; applied by S07usbmode (at boot,\n"
+        "# and live on the CVITEK boards).\n";
+    o += "mode=" + c.mode + "\n";
+    if (!util::write_file_atomic(USB_FILE, o, 0644)) { err = "write failed"; return false; }
+// ---- system (OS image) update config ----
+UpdateConfig read_update_config() {
+    UpdateConfig d;
+    for (const auto& ln : read_lines(UPDATE_FILE)) {
+        std::string s = util::trim(ln);
+        if (s.empty() || s[0] == '#' || s.find('=') == std::string::npos) continue;
+        size_t eq = s.find('=');
+        std::string k = util::trim(s.substr(0, eq));
+        std::string v = s.substr(eq + 1);
+        size_t h = v.find('#'); if (h != std::string::npos) v = v.substr(0, h);
+        v = util::trim(v);
+        if (k == "enabled") d.enabled = v;
+        else if (k == "provider") d.provider = v;
+        else if (k == "repo") d.repo = v;
+        else if (k == "url") d.url = v;
+        else if (k == "board") d.board = v;
+        else if (k == "allow_prerelease") d.allow_prerelease = v;
+        else if (k == "allow_insecure_http") d.allow_insecure_http = v;
+        else if (k == "auto_apply") d.auto_apply = v;
+        else if (k == "interval_min_days") d.interval_min_days = v;
+        else if (k == "interval_max_days") d.interval_max_days = v;
+        else if (k == "next_check") d.next_check = v;
+    }
+    return d;
+}
+
+bool write_update_config(const UpdateConfig& c, std::string& err) {
+    // every value is a single clean line (no config injection via CR/LF)
+    auto clean = [](const std::string& s) {
+        return util::is_single_line_clean(s);
+    };
+    std::string provider = c.provider.empty() ? "github-releases" : c.provider;
+    if (provider != "github-releases" && provider != "generic") {
+        err = "unknown provider"; return false;
+    }
+    std::string board = c.board.empty() ? "auto" : c.board;
+    if (board != "auto" && board != "rpi0-2w" && board != "licheerv-nano") {
+        err = "unknown board"; return false;
+    }
+    if (provider == "github-releases") {
+        // owner/repo — the repo name goes into an API URL path only, but
+        // keep it strict anyway: no '/', '\' or scheme tricks
+        const std::string& r = c.repo;
+        auto slash = r.find('/');
+        if (slash == std::string::npos || slash == 0 || slash + 1 >= r.size() ||
+            r.find('/', slash + 1) != std::string::npos ||
+            !clean(r) || r.find("..") != std::string::npos) {
+            err = "repo must look like owner/repo"; return false;
+        }
+    } else {
+        // generic: https-only unless explicitly allowed; the worker re-checks
+        const std::string& u = c.url;
+        bool http_ok = cron_truthy(c.allow_insecure_http);
+        if (u.empty() || !clean(u) || u.size() > 900 ||
+            (u.rfind("https://", 0) != 0 &&
+             !(http_ok && u.rfind("http://", 0) == 0))) {
+            err = "url must be an https:// manifest.json URL"; return false;
+        }
+    }
+    long lo = -1, hi = -1;
+    auto to_long = [](const std::string& s, long* out) {
+        if (!all_digits(s) || s.empty() || s.size() > 3) return false;
+        *out = atol(s.c_str()); return true;
+    };
+    to_long(c.interval_min_days, &lo);
+    to_long(c.interval_max_days, &hi);
+    if (lo < 1 || hi < 1 || lo > 180 || hi > 180 || lo > hi) {
+        err = "interval must be 1..180 days, min <= max"; return false;
+    }
+    std::string o =
+        "# RNSBox system (OS image) update settings - edited by the portal\n"
+        "# Updates tab and by rnsbox-sysupdate (next_check is managed). Manual\n"
+        "# edits are fine; values are documented in docs/AUTO-UPDATE.md.\n";
+    auto yn = [](const std::string& v) -> std::string {
+        return cron_truthy(v) ? "yes" : "no";
+    };
+    o += "enabled=" + yn(c.enabled) + "\n";
+    o += "provider=" + provider + "\n";
+    o += "repo=" + c.repo + "\n";
+    o += "url=" + c.url + "\n";
+    o += "board=" + board + "\n";
+    o += "allow_prerelease=" + yn(c.allow_prerelease) + "\n";
+    o += "allow_insecure_http=" + yn(c.allow_insecure_http) + "\n";
+    o += "auto_apply=" + yn(c.auto_apply) + "\n";
+    o += "interval_min_days=" + std::to_string(lo) + "\n";
+    o += "interval_max_days=" + std::to_string(hi) + "\n";
+    if (!c.next_check.empty() && all_digits(c.next_check))
+        o += "next_check=" + c.next_check + "\n";
+    // preserve keys we don't manage (token, sig_*) from the current file
+    for (const auto& ln : read_lines(UPDATE_FILE)) {
+        std::string s = util::trim(ln);
+        if (s.empty() || s[0] == '#' || s.find('=') == std::string::npos) continue;
+        std::string k = util::trim(s.substr(0, s.find('=')));
+        if (k == "token" || k == "sig_require" || k == "sig_key") o += s + "\n";
+    }
+    if (!util::write_file_atomic(UPDATE_FILE, o, 0644)) {
+        err = "write failed"; return false;
+    }
+    return true;
+}
+
 // ---- add HaLow modem as a TCPClientInterface in the reticulum config ----
 static std::string sanitize_iface_name(const std::string& in) {
     std::string n;
@@ -491,6 +620,298 @@ bool add_halow_interface(const std::string& name_in, const std::string& host, in
     if (!util::write_file_atomic(RETICULUM_CONFIG, o, 0600)) { msg = "write failed"; return false; }  // see write_reticulum_config
     msg = name;
     return true;
+}
+
+
+// ---- Bluetooth LE transport ([[BLE Interface]] stanza in reticulum config)
+// The stanza ships in /etc/reticulum/config (enabled by default). The portal
+// edits it IN PLACE - comments, key order and the rest of the file stay
+// byte-identical - so the raw-config editor keeps showing the whole truth.
+// rnsd has to restart (S82rnsd) for a change to apply.
+constexpr const char* BLE_SECTION = "ble interface";
+
+BleConfig read_ble() {
+    BleConfig c;
+    bool in = false;
+    for (const auto& ln : read_lines(RETICULUM_CONFIG)) {
+        std::string s = util::trim(ln);
+        if (!s.empty() && s[0] == '[') {
+            std::string low = s;
+            for (auto& ch : low) ch = (char)tolower((unsigned char)ch);
+            in = (low.find(BLE_SECTION) != std::string::npos);
+            continue;
+        }
+        if (!in || s.empty() || s[0] == '#' || s.find('=') == std::string::npos) continue;
+        size_t eq = s.find('=');
+        std::string k = util::trim(s.substr(0, eq)), v = s.substr(eq + 1);
+        size_t h = v.find('#'); if (h != std::string::npos) v = v.substr(0, h);
+        v = util::trim(v);
+        if (v.size() >= 2 && v.front() == '"' && v.back() == '"')
+            v = v.substr(1, v.size() - 2);
+        for (auto& ch : k) ch = (char)tolower((unsigned char)ch);
+        if (k == "enabled") c.enabled = v.empty() ? "no" : v;
+        else if (k == "device_name") c.device_name = v;
+// ---- RNode LoRa modem (USB serial / BLE), see store.h ----
+// Ranges mirror RNS/Interfaces/RNodeInterface.py __init__: an out-of-range
+// radio value raises inside rnsd's interface loop and ends in RNS.panic(),
+// so the portal and S81rnode both reject them before rnsd ever sees them.
+static bool rnode_num_in_range(const std::string& s, long lo, long hi) {
+    if (!all_digits(s) || s.size() > 10) return false;
+    long v = strtol(s.c_str(), nullptr, 10);
+    return v >= lo && v <= hi;
+}
+
+static bool rnode_valid_ble_address(const std::string& s) {
+    // AA:BB:CC:DD:EE:FF — what RNodeInterface's ble:// parser expects
+    // (6 colon groups, 17 chars); it uppercases internally.
+    if (s.size() != 17) return false;
+    for (size_t i = 0; i < s.size(); ++i) {
+        char c = s[i];
+        if (i % 3 == 2) { if (c != ':') return false; }
+        else if (!isxdigit((unsigned char)c)) return false;
+    }
+    return true;
+}
+
+RnodeConfig read_rnode() {
+    RnodeConfig c;
+    for (const auto& ln : read_lines(RNODE_FILE)) {
+        std::string s = util::trim(ln);
+        if (s.empty() || s[0] == '#' || s.find('=') == std::string::npos) continue;
+        size_t eq = s.find('=');
+        std::string k = util::trim(s.substr(0, eq));
+        std::string v = s.substr(eq + 1);
+        size_t h = v.find('#'); if (h != std::string::npos) v = v.substr(0, h);
+        v = util::trim(v);
+        if (k == "transport") c.transport = v;
+        else if (k == "device") c.device = v;
+        else if (k == "ble_address") c.ble_address = v;
+        else if (k == "ble_name") c.ble_name = v;
+        else if (k == "name") c.name = v;
+        else if (k == "frequency") c.frequency = v;
+        else if (k == "bandwidth") c.bandwidth = v;
+        else if (k == "txpower") c.txpower = v;
+        else if (k == "spreadingfactor") c.spreadingfactor = v;
+        else if (k == "codingrate") c.codingrate = v;
+        else if (k == "flow_control") c.flow_control = v;
+    }
+    return c;
+}
+
+bool write_ble(const BleConfig& cfg, std::string& err) {
+    std::string en = cron_truthy(cfg.enabled) ? "yes" : "no";
+    // The name lands inside a config value and is advertised over the air:
+    // no line breaks/control chars (conf_value_ok), none of the config
+    // syntax chars, bounded length (BLE ad payloads are tiny anyway).
+    std::string name = util::trim(cfg.device_name);
+    if (!name.empty()) {
+        if (!conf_value_ok(name)) { err = "device name must not contain line breaks or control characters"; return false; }
+        if (name.find_first_of("[]#=\"'") != std::string::npos) { err = "device name must not contain []#= or quote characters"; return false; }
+        if (name.size() > 16) { err = "device name too long (max 16 characters)"; return false; }
+    }
+    auto lines = read_lines(RETICULUM_CONFIG);
+    if (lines.empty()) { err = "no reticulum config"; return false; }
+
+    bool in = false, saw_section = false, saw_enabled = false, saw_name = false;
+    size_t insert_after = std::string::npos;   // line index a missing key goes under
+    for (size_t i = 0; i < lines.size(); ++i) {
+        std::string& ln = lines[i];
+        std::string s = util::trim(ln);
+        if (!s.empty() && s[0] == '[') {
+            std::string low = s;
+            for (auto& ch : low) ch = (char)tolower((unsigned char)ch);
+            in = (low.find(BLE_SECTION) != std::string::npos);
+            if (in) saw_section = true;
+            continue;
+        }
+        if (!in) continue;
+        // Remember the stanza's first key line: a key the config lacks (a
+        // hand-trimmed file) is inserted under it rather than dropping the
+        // save or appending outside the stanza.
+        if (!s.empty() && s[0] != '#' && insert_after == std::string::npos) insert_after = i;
+        if (s.empty() || s[0] == '#') continue;
+        size_t eq = s.find('=');
+        if (eq == std::string::npos) continue;
+        std::string k = util::trim(s.substr(0, eq));
+        for (auto& ch : k) ch = (char)tolower((unsigned char)ch);
+        if (k != "enabled" && k != "device_name") continue;
+        std::string indent;
+        for (char ch : ln) { if (ch == ' ' || ch == '\t') indent += ch; else break; }
+        if (k == "enabled") {
+            ln = indent + "enabled = " + en;
+            saw_enabled = true;
+        } else {
+            // Blank = advertise the service UUID only, the driver default:
+            // drop the key entirely (the form reads back blank).
+            if (!name.empty()) ln = indent + "device_name = " + name;
+            else ln.clear();
+            saw_name = true;
+        }
+    }
+    if (!saw_section) { err = "no [[BLE Interface]] stanza in the reticulum config"; return false; }
+    if (!saw_enabled) { err = "[[BLE Interface]] stanza is missing the enabled key"; return false; }
+    if (!saw_name && !name.empty()) {
+        if (insert_after == std::string::npos) { err = "[[BLE Interface]] stanza has no keys to anchor device_name under"; return false; }
+        lines.insert(lines.begin() + insert_after + 1, "    device_name = " + name);
+    }
+    // A cleared device_name left an empty line behind: drop it so a
+    // save-toggle-save cycle never grows the file.
+    lines.erase(std::remove(lines.begin(), lines.end(), std::string()), lines.end());
+
+    std::string o;
+    for (const auto& l : lines) o += l + "\n";
+    if (!util::write_file_atomic(RETICULUM_CONFIG, o, 0600)) { err = "write failed"; return false; }  // see write_reticulum_config
+    return true;
+}
+bool write_rnode(const RnodeConfig& c, std::string& err) {
+    std::string transport = util::trim(c.transport);
+    for (auto& ch : transport) ch = (char)tolower((unsigned char)ch);
+    if (transport != "off" && transport != "usb" && transport != "ble") {
+        err = "transport must be off, usb or ble"; return false;
+    }
+
+    // [[section]] name: no [ ] (header line), no control chars (config line
+    // injection), collapsed whitespace, bounded — mirrors S81rnode's tr.
+    std::string name;
+    {
+        std::string n;
+        for (unsigned char ch : c.name)
+            if (ch != '[' && ch != ']' && !(ch < 0x20 && ch != '\t') && ch != 0x7f) n += (char)ch;
+        for (const auto& p : split_ws(n)) { if (!name.empty()) name += " "; name += p; }
+        if (name.size() > 48) name = name.substr(0, 48);
+    }
+    if (name.empty()) name = "RNode";
+
+    std::string dev = util::trim(c.device);
+    bool usb = (transport == "usb");
+    if (usb && dev.empty()) dev = "auto";
+    if (usb && dev != "auto" && !valid_tty(dev)) { err = "bad device path"; return false; }
+
+    std::string ble_addr = util::trim(c.ble_address);
+    bool ble = (transport == "ble");
+    if (ble && !ble_addr.empty() && !rnode_valid_ble_address(ble_addr)) {
+        err = "BLE address must look like AA:BB:CC:DD:EE:FF"; return false;
+    }
+    // ble://<name> is matched verbatim by RNS's scanner; keep it one line
+    // and short (conf_value_ok rejects control chars incl. CR/LF).
+    std::string ble_name = util::trim(c.ble_name);
+    if (ble && ble_name.size() > 48) { err = "BLE name too long (max 48)"; return false; }
+    if (ble && !ble_name.empty() && !conf_value_ok(ble_name)) {
+        err = "BLE name must not contain control characters"; return false;
+    }
+
+    std::string freq = util::trim(c.frequency);
+    if (!rnode_num_in_range(freq, 137000000, 3000000000)) { err = "frequency must be 137000000..3000000000 Hz"; return false; }
+    std::string bw = util::trim(c.bandwidth);
+    if (!rnode_num_in_range(bw, 7800, 1625000)) { err = "bandwidth must be 7800..1625000 Hz"; return false; }
+    std::string tx = util::trim(c.txpower);
+    if (!rnode_num_in_range(tx, 0, 37)) { err = "txpower must be 0..37 dBm"; return false; }
+    std::string sf = util::trim(c.spreadingfactor);
+    if (!rnode_num_in_range(sf, 5, 12)) { err = "spreading factor must be 5..12"; return false; }
+    std::string cr = util::trim(c.codingrate);
+    if (!rnode_num_in_range(cr, 5, 8)) { err = "coding rate must be 5..8"; return false; }
+
+    std::string flow = cron_truthy(c.flow_control) ? "yes" : "no";
+
+    std::string o =
+        "# RNode LoRa modem over USB (CDC-ACM / USB-serial) or BLE.\n"
+        "# Managed by the rnsbox-portal Reticulum tab; applied by S81rnode,\n"
+        "# which generates the [[RNode ...]] section in /etc/reticulum/config\n"
+        "# between its BEGIN/END RNODE markers. BLE needs the BLE stack in the\n"
+        "# image (bluez/dbus + bleak) and a one-time pairing (RNS attaches to\n"
+        "# bonded devices only).\n";
+    o += "transport=" + transport + "\n";
+    o += "device=" + (usb ? dev : std::string("auto")) + "\n";
+    o += "ble_address=" + (ble ? ble_addr : std::string("")) + "\n";
+    o += "ble_name=" + (ble ? ble_name : std::string("")) + "\n";
+    o += "name=" + name + "\n";
+    o += "frequency=" + freq + "\n";
+    o += "bandwidth=" + bw + "\n";
+    o += "txpower=" + tx + "\n";
+    o += "spreadingfactor=" + sf + "\n";
+    o += "codingrate=" + cr + "\n";
+    o += "flow_control=" + flow + "\n";
+    if (!util::write_file_atomic(RNODE_FILE, o, 0644)) { err = "write failed"; return false; }
+    return true;
+}
+
+RnodeStatus read_rnode_status() {
+    RnodeStatus st;
+    std::string data = util::read_file(RNODE_STATUS, 4096);
+    st.present = !data.empty();
+    size_t i = 0;
+    while (i <= data.size()) {
+        size_t nl = data.find('\n', i);
+        std::string ln = util::trim(data.substr(i, nl == std::string::npos ? std::string::npos : nl - i));
+        i = (nl == std::string::npos) ? data.size() + 1 : nl + 1;
+        size_t eq = ln.find('=');
+        if (eq == std::string::npos) continue;
+        std::string k = util::trim(ln.substr(0, eq)), v = util::trim(ln.substr(eq + 1));
+        if (k == "transport") st.transport = v;
+        else if (k == "port") st.port = v;
+        else if (k == "state") st.state = v;
+        else if (k == "message") st.message = v;
+    }
+    return st;
+}
+
+std::vector<std::string> rnode_serial_devices() {
+    std::vector<std::string> out;
+    DIR* d = opendir("/dev");
+    if (!d) return out;
+    struct dirent* e;
+    while ((e = readdir(d)) != nullptr) {
+        std::string n = e->d_name;
+        bool acm = n.rfind("ttyACM", 0) == 0;
+        bool usbs = n.rfind("ttyUSB", 0) == 0;
+        if (!acm && !usbs) continue;
+        std::string rest = n.substr(acm ? 6 : 6);
+        if (rest.empty() || rest.find_first_not_of("0123456789") != std::string::npos) continue;
+        out.push_back("/dev/" + n);
+    }
+    closedir(d);
+    // native CDC-ACM first (nRF52 boards), then USB-UART bridges, numeric order
+    for (size_t i = 0; i + 1 < out.size(); ++i)
+        for (size_t j = 0; j + 1 < out.size() - i; ++j)
+            if (out[j].compare(out[j + 1]) > 0) std::swap(out[j], out[j + 1]);
+    return out;
+}
+
+bool rnode_ble_stack_present() {
+    // bleak (RNS imports it in BLEConnection and panics without it)
+    bool bleak = false;
+    for (size_t ver = 8; ver <= 14; ++ver) {
+        struct stat st;
+        std::string p = "/usr/lib/python3." + std::to_string(ver) + "/site-packages/bleak/__init__.py";
+        if (::stat(p.c_str(), &st) == 0 && S_ISREG(st.st_mode)) { bleak = true; break; }
+    }
+    if (!bleak) return false;
+    // bluetoothd (buildroot bluez: /usr/libexec/bluetooth/bluetoothd) plus a
+    // system bus socket for it (packaged by the ble branch)
+    bool daemon = ::access("/usr/libexec/bluetooth/bluetoothd", F_OK) == 0 ||
+                  ::access("/usr/bin/bluetoothd", F_OK) == 0 ||
+                  ::access("/usr/sbin/bluetoothd", F_OK) == 0;
+    if (!daemon) return false;
+    return ::access("/run/dbus/system_bus_socket", F_OK) == 0 ||
+           ::access("/var/run/dbus/system_bus_socket", F_OK) == 0;
+// ---- SSH server gate ----
+SshConfig read_ssh() {
+    SshConfig c;
+    std::string v = util::conf_get(SSH_FILE, "enabled");
+    for (auto& ch : v) ch = (char)tolower((unsigned char)ch);
+    c.enabled = !(v == "no" || v == "0" || v == "false" || v == "off" || v.empty());
+    return c;
+}
+
+bool write_ssh(bool enabled, std::string& err) {
+    (void)err;
+    std::string o =
+        "# SSH server (sshd) gate — read by /etc/init.d/S50sshd at boot and\n"
+        "# rewritten by the rnsbox-portal Settings -> SSH card. SSH is OFF\n"
+        "# unless enabled=yes. The WAN side additionally stays closed unless\n"
+        "# tcp 22 is opened under Network -> Open ports.\n";
+    o += std::string("enabled=") + (enabled ? "yes" : "no") + "\n";
+    return util::write_file_atomic(SSH_FILE, o, 0644);
 }
 
 }  // namespace store

@@ -8,6 +8,7 @@
 #include "routes.h"
 #include "render.h"
 #include "web.h"
+#include "session.h"
 #include "store.h"
 #include "sysinfo.h"
 #include "updatecheck.h"
@@ -187,6 +188,26 @@ static std::string halow_script_html(const std::string& base) {
     return web::replace_all(std::move(s), "__BASE__", base);
 }
 
+// Red default-password banner for the top of the dashboard. Shown on every
+// dashboard render while the web login is still factory admin/admin (checked
+// server-side per render against the stored pbkdf2 record); the little ×
+// hides it for the current page only — nothing is persisted, so the next
+// login sees it again until the password is changed.
+static std::string default_pass_banner(const std::string& base) {
+    if (!session::default_password_active()) return std::string();
+    std::string s =
+        "<div class=\"banner-danger\" id=\"defpass-banner\" role=\"alert\">"
+        "<span><strong>Security warning:</strong> the web admin password is still the factory default "
+        "(<strong>admin / admin</strong>), so anyone on the network can open this portal. "
+        "Change it now on the <a href=\"" + base + "/settings\">Settings</a> tab "
+        "(Settings &rarr; Change admin password).</span>"
+        "<button type=\"button\" class=\"banner-x\" title=\"Hide for this page "
+        "(it reappears until the password is changed)\" "
+        "onclick=\"this.parentElement.remove()\">&times;</button>"
+        "</div>";
+    return s;
+}
+
 // ---- GET / : server-rendered dashboard ----
 void dashboard_page(const Request& req, Response& res) {
     if (!web::require_auth(req, res, false)) return;
@@ -287,6 +308,11 @@ void dashboard_page(const Request& req, Response& res) {
     // HaLow card + script — present only when SLIP is enabled
     h = R(std::move(h), "__HALOW_CARD__",   slip_on ? halow_card_html(base)  : std::string());
     h = R(std::move(h), "__HALOW_SCRIPT__", slip_on ? halow_script_html(base) : std::string());
+
+    // Red banner at the very top while the web password is still the factory
+    // default. Filled last: the banner HTML carries no tokens of its own (its
+    // Settings link already has `base` baked in).
+    h = R(std::move(h), "__DEFAULT_PASS_WARN__", default_pass_banner(base));
 
     res.body = render::layout(req, res, "Dashboard", "dashboard", h);
 }

@@ -15,5 +15,18 @@ tty1::respawn:/sbin/getty -L  tty1 0 vt100 # HDMI console' "${TARGET_DIR}/etc/in
 fi
 
 if [ -d "${TARGET_DIR}/etc/init.d" ]; then
-	chmod 0755 "${TARGET_DIR}"/etc/init.d/S* 2>/dev/null || true
+	# image-size: rcS/rcK too — the overlay ships them non-executable (the
+	# git 644 mode overrides the skeleton's +x), and busybox init execve()s
+	# rcS directly: without this the box hangs at "can't run rcS".
+	chmod 0755 "${TARGET_DIR}"/etc/init.d/S* 	           "${TARGET_DIR}"/etc/init.d/rcS "${TARGET_DIR}"/etc/init.d/rcK 2>/dev/null || true
 fi
+
+# sec: secrets in the overlay ship group/world-readable (buildroot copies the
+# overlay with the repo's 0644). The runtime services narrow these again
+# (S35wifi chmods wifi.conf go-rwx; S82rnsd walks /etc/reticulum), but the
+# image should already be right at first boot, before any S-script ran.
+for f in etc/rnsbox/wifi.conf etc/rnsbox/rnsh.conf etc/reticulum/config; do
+	if [ -f "${TARGET_DIR}/${f}" ]; then
+		chmod 0600 "${TARGET_DIR}/${f}"
+	fi
+done

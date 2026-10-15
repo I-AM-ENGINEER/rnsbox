@@ -16,8 +16,15 @@ BR2_JLEVEL=4
 BR2_ROOTFS_DEVICE_TABLE="system/device_table_dev.txt system/device_table.txt"
 BR2_TARGET_GENERIC_HOSTNAME="rnsbox"
 BR2_TARGET_GENERIC_ISSUE="RNSBox - Reticulum router (Raspberry Pi, 64-bit universal)"
-BR2_TARGET_GENERIC_ROOT_PASSWD="admin"
-BR2_ROOTFS_POST_BUILD_SCRIPT="$(BR2_EXTERNAL_RNSBOX_PATH)/board/raspberrypi/rnsbox-0-2w/post-build.sh"
+# root login closed: the root password is locked ('*') at build time; the
+# operator account is `admin` (locked too, until the user sets a password in
+# the portal — see board/raspberrypi/rnsbox-0-2w/users.txt and
+# docs/SSH-HARDENING.md).
+# BR2_TARGET_ENABLE_ROOT_LOGIN is not set
+BR2_ROOTFS_USERS_TABLES="$(BR2_EXTERNAL_RNSBOX_PATH)/board/raspberrypi/rnsbox-0-2w/users.txt"
+# image-size: the stock post-build plus the shared dead-weight slimmer
+# (buildroot runs each entry with $(TARGET_DIR) as $1)
+BR2_ROOTFS_POST_BUILD_SCRIPT="$(BR2_EXTERNAL_RNSBOX_PATH)/board/raspberrypi/rnsbox-0-2w/post-build.sh $(BR2_EXTERNAL_RNSBOX_PATH)/board/rnsbox/slim-target.sh"
 BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_RNSBOX_PATH)/board/raspberrypi/rnsbox-0-2w/post-image.sh"
 BR2_LINUX_KERNEL=y
 BR2_LINUX_KERNEL_CUSTOM_TARBALL=y
@@ -52,7 +59,13 @@ BR2_PACKAGE_KMOD=y
 BR2_PACKAGE_KMOD_TOOLS=y
 BR2_TARGET_ROOTFS_EXT2=y
 BR2_TARGET_ROOTFS_EXT2_4=y
-BR2_TARGET_ROOTFS_EXT2_SIZE="400M"
+# image-size: rootfs sized to content + margin, not to the SD card —
+# S02resizefs grows the partition + ext4 to fill the card on first boot, so
+# the factory size only sets the download size. 160M = slimmed content
+# (~100M incl. modules/firmware for 4 Pi generations) + journal/metadata
+# slack; the root reservation drops 5% -> 1% for the same reason.
+BR2_TARGET_ROOTFS_EXT2_SIZE="160M"
+BR2_TARGET_ROOTFS_EXT2_RESBLKS=1
 # BR2_TARGET_ROOTFS_TAR is not set
 BR2_PACKAGE_HOST_DOSFSTOOLS=y
 BR2_PACKAGE_HOST_GENIMAGE=y
@@ -68,6 +81,8 @@ BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_RNSBOX_PATH)/board/raspberrypi/rnsbox-0-2w/ro
 BR2_PACKAGE_BUSYBOX_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_RNSBOX_PATH)/board/raspberrypi/rnsbox-0-2w/busybox.fragment"
 BR2_PACKAGE_ZLIB=y
 BR2_PACKAGE_RNSBOX_PORTAL=y
+BR2_PACKAGE_RNSBOX_UPDATE=y
+BR2_PACKAGE_CA_CERTIFICATES=y
 # router data plane
 BR2_PACKAGE_DNSMASQ=y
 BR2_PACKAGE_OPENSSH=y
@@ -91,9 +106,16 @@ BR2_PACKAGE_PYTHON_PSUTIL=y
 BR2_PACKAGE_NTP=y
 BR2_PACKAGE_NTP_NTPD=y
 BR2_PACKAGE_NTP_NTPDATE=y
-BR2_PACKAGE_PYTHON3_PY_PYC=y
+# image-size: py-only — the .pyc tree duplicates the .py sources (~as many
+# bytes again), so ship sources only; S51pycompile (rootfs-overlay) rebuilds
+# the bytecode for whatever is imported, in the background, on first boot.
+# pip re-adds .pyc for anything it installs or upgrades.
+BR2_PACKAGE_PYTHON3_PY_ONLY=y
 BR2_PACKAGE_PYTHON3_PIP=y
 BR2_PACKAGE_PYTHON_RNS=y
+# RNodeInterface (USB serial RNode modems) imports pyserial in its constructor;
+# without it rnsd panics at interface creation.
+BR2_PACKAGE_PYTHON_SERIAL=y
 # WiFi STA/AP/APSTA (onboard brcmfmac) + firmware — covers the 43430s
 # (Zero 2 W), 43455 (3B+/3A+/4/400/CM4/5) and the per-model firmware names
 # the kernel requests on each board.
@@ -113,5 +135,19 @@ BR2_PACKAGE_IW=y
 # opt-in extras: LXMF propagation node, NomadNet node, rnsd auto-restart
 BR2_PACKAGE_PYTHON_LXMF=y
 BR2_PACKAGE_PYTHON_NOMADNET=y
+# Bluetooth LE transport (Reticulum [[BLE Interface]]): BlueZ + D-Bus +
+# bleak/dbus-fast (bleak selects dbus-fast), the vendored ble-reticulum
+# classes (they select bluezero + dbus-python) and the Broadcom BT firmware
+# the onboard controllers need. Onboard BT on the Zero 2 W hangs off the
+# mini-uart (config.txt miniuart-bt); every other BT source is a USB dongle.
+# Without any adapter the interface degrades into a logged no-op.
+BR2_PACKAGE_BLUEZ5_UTILS=y
+BR2_PACKAGE_BLUEZ5_UTILS_CLIENT=y
+BR2_PACKAGE_BLUEZ5_UTILS_TOOLS=y
+BR2_PACKAGE_BLUEZ5_UTILS_DEPRECATED=y
+BR2_PACKAGE_BLUEZ5_UTILS_MONITOR=y
+BR2_PACKAGE_PYTHON_BLEAK=y
+BR2_PACKAGE_PYTHON_BLE_RETICULUM=y
+BR2_PACKAGE_RNSBOX_BT_FIRMWARE=y
 # kernel release suffix (uname -r -> 6.x.y-rnsbox)
 BR2_LINUX_KERNEL_LOCALVERSION="-rnsbox"

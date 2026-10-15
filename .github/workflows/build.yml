@@ -44,7 +44,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # external tree: images at $ODIR/images/rnsbox-<board>-<variant>.img
+          # external tree: internal image filename at
+          # $ODIR/images/rnsbox-<board>-<variant>.img (variant suffix is
+          # internal; release assets drop it)
           - board: rpi0-2w
             imgdir: /mnt/rnsbox/out/rpi0-2w/images
           # patch series over the vendor BSP: build.sh clones the BSP into
@@ -102,7 +104,7 @@ jobs:
             br-dl-${{ matrix.board }}-
             br-dl-
 
-      - name: Build ${{ matrix.board }} ${{ env.VARIANT }}
+      - name: Build ${{ matrix.board }} ${{ env.VARIANT }} (up to 2 attempts)
         env:
           UPSTREAM_BASE: /mnt/rnsbox/upstream
           BR2_DL_DIR: /mnt/dl
@@ -120,15 +122,39 @@ jobs:
           # markers (GITHUB_ACTIONS / TF_BUILD) and demands a full stage-2
           # bootstrap. Scrub those markers for the build only (relevant the
           # day a board pulls host-rust).
-          ( unset GITHUB_ACTIONS TF_BUILD CI
-            /usr/bin/time -v ./build.sh "$BOARD" "$VARIANT" ) \
-            2>&1 | tee /mnt/tmp/build.log
+          # Cold builds die on flaky source downloads (fresh dl cache, no
+          # retry). Both flows are incremental, so a second attempt resumes
+          # in place instead of restarting: buildroot's make just continues,
+          # the BSP flow is .rnsbox-done-* stamped / incremental make. The
+          # build.sh wget shim (--tries=5 --timeout=60) catches most of this
+          # already; this loop is the backstop for git clones & curl fetches.
+          status=1
+          for attempt in 1 2; do
+            if [ "$attempt" -gt 1 ]; then
+              echo "::warning::attempt 1 failed (exit $status) — retrying; buildroot/BSP flows are incremental, the retry resumes"
+              cp /mnt/tmp/build.log /mnt/tmp/build.log.try1
+            fi
+            ( unset GITHUB_ACTIONS TF_BUILD CI
+              /usr/bin/time -v ./build.sh "$BOARD" "$VARIANT" ) \
+              2>&1 | tee /mnt/tmp/build.log
+            status=$?
+            echo ">> attempt $attempt exit: $status"
+            [ "$status" -eq 0 ] && break
+          done
           echo "BUILD_SECONDS=$(( $(date +%s) - START ))" | tee -a "$GITHUB_ENV"
+          exit $status
 
       - name: Build-log tail on failure (step summary is anonymously readable)
         if: failure()
         run: |
-          { echo "### build.log tail"; echo '```'; tail -n 150 /mnt/tmp/build.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          {
+            if [ -f /mnt/tmp/build.log.try1 ]; then
+              echo "### build.log tail — attempt 1 (of 2)"
+              echo '```'; tail -n 60 /mnt/tmp/build.log.try1; echo '```'
+            fi
+            echo "### build.log tail — last attempt"
+            echo '```'; tail -n 150 /mnt/tmp/build.log; echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Disk after + image + timing
         if: always()
@@ -145,9 +171,11 @@ jobs:
           IMGDIR="${{ matrix.imgdir }}"
           df -h / /mnt
           ls -la "$IMGDIR" || echo "::error::images dir missing: $IMGDIR"
-          # rpi names the image deterministically; the lichee packer copies its
-          # genimage output to <vendor-name>-<variant>.img — glob for it, then
-          # normalize: every board ships as rnsbox-<board>-<variant>.img so the
+          # rpi names the image deterministically (the internal filename keeps
+          # the -<variant> suffix); the lichee packer copies its genimage
+          # output to <vendor-name>-<variant>.img — glob for it, then
+          # normalize: every board's release asset is rnsbox-<board>.img.xz
+          # (no variant suffix; the lite/dvd machinery is internal) so the
           # single multi-board release holds consistently named assets.
           IMG="$(ls -t "$IMGDIR"/*-"$VARIANT".img 2>/dev/null | head -1)"
           [ -n "$IMG" ] || IMG="$(ls -t "$IMGDIR"/*.img 2>/dev/null | head -1)"
@@ -157,7 +185,7 @@ jobs:
           fi
           IMG="$(basename "$IMG")"
           echo "Packaging $IMG"
-          BASE="rnsbox-$BOARD-$VARIANT"
+          BASE="rnsbox-$BOARD"
           STAGE="$RUNNER_TEMP/pkg"; rm -rf "$STAGE"; mkdir -p "$STAGE"
           cp -v "$IMGDIR/$IMG" "$STAGE/$BASE.img" || echo "::error::cp failed; df=$(df -h / /mnt | tr -s ' ' | tr '\n' ';')"
           cd "$STAGE"
@@ -175,7 +203,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: rnsbox-${{ matrix.board }}-${{ env.VARIANT }}-image
+          name: rnsbox-${{ matrix.board }}-image
           path: |
             ${{ env.IMGDIR }}/${{ env.IMG }}.xz
             ${{ env.IMGDIR }}/SHA256SUMS
@@ -187,7 +215,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: build-log-${{ matrix.board }}
-          path: /mnt/tmp/build.log
+          path: /mnt/tmp/build.log*
           if-no-files-found: warn
           retention-days: 7
 
@@ -206,7 +234,7 @@ jobs:
       - name: Collect images from all boards
         uses: actions/download-artifact@v4
         with:
-          pattern: rnsbox-*-${{ env.VARIANT }}-image
+          pattern: rnsbox-*-image
           path: dist
 
       - name: Publish
@@ -216,14 +244,24 @@ jobs:
           set -x
           VER="${{ github.event.inputs.version }}"
           [ -z "$VER" ] && VER="r$(date -u +%Y.%m.%d)-${GITHUB_SHA:0:7}"
+          # Push-triggered runs are auto-builds -> PRERELEASE. Manual
+          # workflow_dispatch runs are the owner's "this one is real" signal
+          # -> FULL release. The edit keeps the state in sync even when a
+          # re-run hits the already-exists path (e.g. a manual run on the
+          # same commit/date after a push run created the tag).
+          if [ "$GITHUB_EVENT_NAME" = push ]; then IS_PRE=true; else IS_PRE=false; fi
           mkdir -p rel
           {
-            echo "Automated RNSBox **$VARIANT** build from \`${GITHUB_SHA:0:7}\` (branch \`${GITHUB_REF_NAME}\`)."
+            echo "Automated RNSBox build from \`${GITHUB_SHA:0:7}\` (branch \`${GITHUB_REF_NAME}\`, internal variant: \`$VARIANT\`)."
             echo
+            if [ "$IS_PRE" = true ]; then
+              echo "> Auto-build: marked as a **pre-release**. Full releases are cut by running this workflow manually."
+              echo
+            fi
             echo "| Board | Image | sha256 |"
             echo "|---|---|---|"
             for d in dist/*/; do
-              board=$(basename "$d" | sed "s/^rnsbox-//; s/-$VARIANT-image\$//")
+              board=$(basename "$d" | sed "s/^rnsbox-//; s/-image\$//")
               xz=$(ls "$d"/*.img.xz 2>/dev/null | head -1)
               [ -n "$xz" ] || { echo "::error::no .img.xz in $d"; exit 1; }
               cp "$xz" rel/
@@ -233,8 +271,8 @@ jobs:
             echo
             echo "Flash the image for your board to a microSD:"
             echo '```'
-            echo "xz -d rnsbox-<board>-$VARIANT.img.xz"
-            echo "sudo dd if=rnsbox-<board>-$VARIANT.img of=/dev/sdX bs=4M conv=fsync status=progress"
+            echo "xz -d rnsbox-<board>.img.xz"
+            echo "sudo dd if=rnsbox-<board>.img of=/dev/sdX bs=4M conv=fsync status=progress"
             echo '```'
             echo
             echo "Default web admin: http://10.42.0.1 (admin/admin); ssh root@10.42.0.1 (root/admin)."
@@ -242,9 +280,10 @@ jobs:
           cd rel
           if gh release view "$VER" --repo "${{ github.repository }}" >/dev/null 2>&1; then
             gh release upload "$VER" --repo "${{ github.repository }}" --clobber *.img.xz
+            gh release edit "$VER" --repo "${{ github.repository }}" "--prerelease=$IS_PRE"
           else
             gh release create "$VER" --repo "${{ github.repository }}" --target "${{ github.sha }}" \
-              --title "RNSBox $VER" --notes-file /tmp/notes.md *.img.xz
+              --title "RNSBox $VER" --notes-file /tmp/notes.md "--prerelease=$IS_PRE" *.img.xz
           fi
           cat /tmp/notes.md
 

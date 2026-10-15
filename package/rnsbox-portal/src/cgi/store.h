@@ -15,6 +15,9 @@ constexpr const char* CRON_FILE = "/etc/rnsbox/cron.conf";
 constexpr const char* RETICULUM_CONFIG = "/etc/reticulum/config";
 constexpr const char* NTP_FILE  = "/etc/ntp.conf";
 constexpr const char* SLIP_FILE = "/etc/rnsbox/slip.conf";
+constexpr const char* SSH_FILE  = "/etc/rnsbox/ssh.conf";
+constexpr const char* USB_FILE  = "/etc/rnsbox/usb.conf";
+constexpr const char* USB_STATE_FILE = "/run/usbmode.state";   // written by S07usbmode
 
 struct PortForward {
     std::string proto;      // "tcp" | "udp"
@@ -73,6 +76,28 @@ bool write_reticulum_config(const std::string& text, std::string& err);
 std::vector<std::string> read_ntp_servers();
 std::vector<std::string> write_ntp_servers(const std::vector<std::string>& servers); // returns kept
 
+// --- system (OS image) update configuration, /etc/rnsbox/update.conf ---
+// Read/written by the portal Updates tab AND by rnsbox-sysupdate (which owns
+// next_check and appends managed keys). Flat key=value, one file.
+constexpr const char* UPDATE_FILE = "/etc/rnsbox/update.conf";
+
+struct UpdateConfig {
+    std::string enabled = "yes";          // auto-check master switch
+    std::string provider = "github-releases";  // github-releases | generic
+    std::string repo = "I-AM-ENGINEER/rnsbox"; // github-releases: owner/repo
+    std::string url;                      // generic: full manifest.json URL
+    std::string board = "auto";           // auto | rpi0-2w | licheerv-nano
+    std::string allow_prerelease = "yes"; // CI auto-builds are prereleases
+    std::string allow_insecure_http = "no";
+    std::string auto_apply = "no";        // apply without a human click
+    std::string interval_min_days = "7";
+    std::string interval_max_days = "14";
+    std::string next_check;               // managed by the worker (epoch)
+};
+
+UpdateConfig read_update_config();
+bool write_update_config(const UpdateConfig& c, std::string& err);
+
 // --- SLIP link to an external HaLow (RNode) modem ---
 struct SlipConfig {
     std::string enabled = "no";
@@ -88,11 +113,82 @@ bool write_slip(const SlipConfig& c, std::string& err);   // baud 1..SLIP_MAX_BA
 // the 96 MHz uart clock); 25 MHz-clocked boards top out at 1562500.
 constexpr int SLIP_MAX_BAUD = 4000000;
 
+// --- SSH server gate (/etc/rnsbox/ssh.conf, read by init.d/S50sshd) ---
+// SSH is OFF unless enabled=yes: shipped off, turned on from the portal
+// (Settings -> SSH), which also sets the `admin` user's password and
+// restarts the gated S50sshd.
+struct SshConfig {
+    bool enabled = false;
+};
+SshConfig read_ssh();
+bool write_ssh(bool enabled, std::string& err);
+// --- USB role of the OTG port (device = CDC-NCM gadget | host) ---
+// Stored in /etc/rnsbox/usb.conf, applied by /etc/init.d/S07usbmode (at
+// boot; live too on the CVITEK boards). The portal shows the switch only
+// when the board is OTG-capable: S07usbmode records that in
+// /run/usbmode.state ("capable=yes|no"), honoring an optional
+// /etc/rnsbox/board.conf "usb_otg=yes|no" pin.
+struct UsbConfig {
+    std::string mode = "device";
+};
+UsbConfig read_usb();
+bool write_usb(const UsbConfig& c, std::string& err);
+
 // Append a TCPClientInterface for the HaLow modem to the reticulum config.
 // Returns true + sets msg to the interface name; false + msg="already" if the
 // target is already present, else msg=error (incl. a name with control chars —
 // it is written into a [[section]] header line).
 bool add_halow_interface(const std::string& name, const std::string& host, int port, std::string& msg);
+
+// --- Bluetooth LE transport (the [[BLE Interface]] stanza) ---
+// Edits the stanza IN PLACE inside /etc/reticulum/config (comments and the
+// rest of the file untouched), so the raw editor keeps showing the truth.
+// rnsd restart applies. The stanza itself ships with the image; a config
+// without it (deleted by hand) makes write_ble fail with a message.
+struct BleConfig {
+    std::string enabled = "yes";
+    std::string device_name;   // blank = advertise the service UUID only
+};
+BleConfig read_ble();
+bool write_ble(const BleConfig& c, std::string& err);   // name <= 16 chars, no []#= or quotes
+// --- RNode LoRa modem over USB serial or BLE ---
+// /etc/rnsbox/rnode.conf is the single source of truth; S81rnode turns it
+// into the managed [[RNode ...]] section of /etc/reticulum/config on every
+// boot / `S81rnode reload`. Ranges below mirror RNodeInterface itself —
+// an out-of-range value makes rnsd panic at interface creation, so both
+// this writer and S81rnode reject them.
+constexpr const char* RNODE_FILE   = "/etc/rnsbox/rnode.conf";
+constexpr const char* RNODE_STATUS = "/run/rnsbox-rnode.status";
+
+struct RnodeConfig {
+    std::string transport = "off";        // off | usb | ble
+    std::string device = "auto";          // usb: auto (first ttyACM*, else ttyUSB*) | /dev/ttyACM0 ...
+    std::string ble_address = "";         // ble: AA:BB:CC:DD:EE:FF, or blank
+    std::string ble_name = "";            // ble: exact advert name, or blank
+    std::string name = "RNode";           // [[section]] name in the rns config
+    std::string frequency = "867500000";  // Hz (137000000..3000000000)
+    std::string bandwidth = "125000";     // Hz (7800..1625000)
+    std::string txpower = "7";            // dBm (0..37)
+    std::string spreadingfactor = "7";    // 5..12
+    std::string codingrate = "5";         // 5..8
+    std::string flow_control = "no";      // yes|no
+};
+RnodeConfig read_rnode();
+bool write_rnode(const RnodeConfig& c, std::string& err);
+
+// The live state S81rnode left behind (absent file: transport "off").
+struct RnodeStatus {
+    std::string transport, port, state, message;
+    bool present = false;
+};
+RnodeStatus read_rnode_status();
+
+// USB serial candidates for the device dropdown (/dev/ttyACM*, /dev/ttyUSB*).
+std::vector<std::string> rnode_serial_devices();
+
+// True when the BLE stack RNS needs for port = ble:// is in the image
+// (bleak + bluetoothd). Cheap globs/binary checks, no python startup.
+bool rnode_ble_stack_present();
 
 }  // namespace store
 #endif

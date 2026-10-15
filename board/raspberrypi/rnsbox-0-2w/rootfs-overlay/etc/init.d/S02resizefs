@@ -1,15 +1,24 @@
 #!/bin/sh
-# S02resizefs — grow the rootfs partition + ext4 to fill the whole SD card
-# on first boot (the shipped image is sized for the lite build; a DVD-class
-# card has more space). No-op when there is already <32 MiB of unallocated
-# space after the partition.
+# S02resizefs — grow the LAST (growable) partition to fill the SD card on
+# first boot. A/B layout (p2 rootfs_A + p3 rootfs_B + p4 data): the rootfs
+# slots are FIXED-size (the updater overwrites the idle one), so the growable
+# partition is p4 (persistent /data). Pre-A/B single-rootfs layout: grow p2
+# as before. No-op when there is <32 MiB of unallocated space after it.
 DISK=/dev/mmcblk0
-PART=${DISK}p2
 
 [ -e "/sys/block/mmcblk0/mmcblk0p2/size" ] || exit 0
 disk_sec=$(cat /sys/block/mmcblk0/size 2>/dev/null)
-part_sec=$(cat /sys/block/mmcblk0/mmcblk0p2/size 2>/dev/null)
-part_start=$(cat /sys/block/mmcblk0/mmcblk0p2/start 2>/dev/null)
+
+# A/B when p3+p4 exist: grow p4. Else: grow p2 (the old shape).
+if [ -e "/sys/block/mmcblk0/mmcblk0p4/size" ]; then
+	PART=${DISK}p4
+	pn=4
+else
+	PART=${DISK}p2
+	pn=2
+fi
+part_sec=$(cat "/sys/block/mmcblk0/mmcblk0p$pn/size" 2>/dev/null)
+part_start=$(cat "/sys/block/mmcblk0/mmcblk0p$pn/start" 2>/dev/null)
 [ -n "$disk_sec" ] && [ -n "$part_sec" ] && [ -n "$part_start" ] || exit 0
 
 free_sec=$(( disk_sec - part_start - part_sec ))
@@ -18,20 +27,20 @@ if [ "$free_sec" -lt 65536 ]; then
 	exit 0
 fi
 
-printf "S02resizefs: growing rootfs by %s MiB: " "$(( free_sec / 2048 ))"
-# Delete + recreate partition 2 with the same start, spanning to the end of
+printf "S02resizefs: growing partition %s by %s MiB: " "$pn" "$(( free_sec / 2048 ))"
+# Delete + recreate the partition with the same start, spanning to the end of
 # the card (leave the last 4 MiB untouched for alignment safety). busybox
 # fdisk accepts the same scripted stdin sequence as util-linux fdisk.
 {
 	echo d          # delete a partition
-	echo 2          #   -> partition 2
+	echo "$pn"      #   -> the growable one
 	echo n          # new partition
 	echo p          #   -> primary
-	echo 2          #   -> number 2
+	echo "$pn"      #   -> same number
 	echo "$part_start"  #   -> same first sector
 	echo            #   -> last sector = default (end of disk)
 	echo t          # change type
-	echo 2
+	echo "$pn"
 	echo 83         #   -> Linux
 	echo w          # write
 } | fdisk "$DISK" >/dev/null 2>&1 || { echo "fdisk failed"; exit 0; }

@@ -37,6 +37,28 @@ void reticulum_applyupdate(const http::Request&, http::Response&); // POST PRG (
 void reticulum_slip(const http::Request&, http::Response&);        // POST PRG
 void reticulum_rnsh_save(const http::Request&, http::Response&);   // POST PRG
 void reticulum_halow_add(const http::Request&, http::Response&);   // POST PRG
+void reticulum_bluetooth(const http::Request&, http::Response&);        // POST PRG
+void reticulum_bluetooth_raise(const http::Request&, http::Response&);  // POST PRG
+// RNode modem over USB serial or BLE
+void reticulum_rnode(const http::Request&, http::Response&);        // POST PRG (save + apply)
+void reticulum_rnode_status(const http::Request&, http::Response&); // GET  JSON (S81rnode state)
+void reticulum_rnode_scan(const http::Request&, http::Response&);   // GET  JSON (BLE discovery, rnode.py)
+void reticulum_rnode_pair(const http::Request&, http::Response&);   // POST JSON (bluetoothctl pair)
+
+
+// updates tab (A/B whole-OS updater)
+void updates_page(const http::Request&, http::Response&);         // GET  render
+void updates_data(const http::Request&, http::Response&);         // GET  JSON (AJAX)
+void updates_config(const http::Request&, http::Response&);       // POST PRG
+void updates_check(const http::Request&, http::Response&);        // POST PRG
+void updates_apply(const http::Request&, http::Response&);        // POST PRG
+void updates_auto(const http::Request&, http::Response&);         // POST PRG
+
+// access tab (rnsh remote access — issued key files)
+void access_page(const http::Request&, http::Response&);           // GET  render
+void access_issue(const http::Request&, http::Response&);          // POST -> text/plain download
+void access_revoke(const http::Request&, http::Response&);         // POST PRG
+void access_reissue(const http::Request&, http::Response&);        // POST -> text/plain download
 
 // settings tab
 void settings_page(const http::Request&, http::Response&);         // GET  render
@@ -45,6 +67,14 @@ void hostname_set(const http::Request&, http::Response&);          // POST PRG
 void time_browser(const http::Request&, http::Response&);          // POST PRG
 void ntp_set(const http::Request&, http::Response&);               // POST PRG
 void ntp_restart(const http::Request&, http::Response&);           // POST PRG
+void ssh_set(const http::Request&, http::Response&);               // POST PRG
+void usb_mode_set(const http::Request&, http::Response&);          // POST PRG (USB role device|host)
+
+// echo bot tab
+void echobot_page(const http::Request&, http::Response&);        // GET  render
+void echobot_save(const http::Request&, http::Response&);        // POST PRG
+void echobot_announce(const http::Request&, http::Response&);    // POST PRG
+void echobot_restart(const http::Request&, http::Response&);     // POST PRG
 
 // HaLow modem web-UI reverse proxy (SLIP)
 void modem_ui(const http::Request&, http::Response&);              // GET  proxy modem root

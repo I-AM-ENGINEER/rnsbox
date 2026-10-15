@@ -1,0 +1,13 @@
+config BR2_PACKAGE_RNSBOX_BT_FIRMWARE
+	bool "rnsbox-bt-firmware"
+	help
+	  Broadcom Bluetooth firmware patches (BCM43430A1/BCM4345C0/
+	  BCM4345C5 .hcd) for the Raspberry Pi onboard BT controllers,
+	  from RPi-Distro/bluez-firmware at a pinned commit. Needed by
+	  every Pi the universal image boots: Zero 2 W / Zero W / 3B /
+	  3B+ / 3A+ / CM3 / 4B / 400 / CM4 / CM4S / 5. Proprietary blobs.
+
+	  USB BLE dongles whose chip self-hosts its firmware (CSR8510)
+	  need nothing; chipsets with host-side firmware (Realtek,
+	  MediaTek, Intel) would need the matching linux-firmware files -
+	  not shipped here yet.

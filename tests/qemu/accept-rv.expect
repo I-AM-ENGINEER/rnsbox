@@ -1,0 +1,122 @@
+#!/usr/bin/expect -f
+# accept-rv.expect — QEMU acceptance for rnsbox-sysupdate on the real RNSBox
+# rootfs (riscv64 virt kernel, method of ~/rnsbox-work/duo01-rv-validate).
+#
+# Env: QEMU_KERNEL, QEMU_ROOTFS, ACC_SHA (sha256 of the served .img.xz),
+#      ACC_TAG (the fake release tag), ACC_PORT (fake server port).
+# The guest talks to the fake server via QEMU user-net (10.0.2.2).
+set timeout 240
+log_user 1
+
+set cmd "qemu-system-riscv64 -M virt -cpu thead-c906 -m 512M -nographic"
+append cmd " -kernel $env(QEMU_KERNEL)"
+append cmd " -append \"console=ttyS0 root=/dev/vda rootwait rw\""
+append cmd " -drive if=none,file=$env(QEMU_ROOTFS),format=raw,id=hd0"
+append cmd " -device virtio-blk-device,drive=hd0"
+
+eval spawn $cmd
+# init + rcS take a while on the emulated C906
+after 30000
+
+set n 0
+proc run {c} {
+    global n
+    incr n
+    set m "===DONE$n=="
+    send "$c; echo \"$m\"\r"
+    expect {
+        "\n$m" {}
+        timeout { puts "TIMEOUT-mark$n"; exit 4 }
+        eof { puts "EOF-mark$n"; exit 6 }
+    }
+}
+
+run {echo ===ACC-BEGIN===}
+# worker present + python can import it
+run {test -x /usr/sbin/rnsbox-sysupdate && echo WORKER-OK}
+run {python3 -c "import py_compile; py_compile.compile('/usr/sbin/rnsbox-sysupdate', doraise=True); print('PYC-OK')"}
+
+# fixture: file-backed A/B slots + state dirs
+run {mkdir -p /tmp/acc/boot /tmp/acc/state; : > /tmp/acc/slot_a.dev; dd if=/dev/zero of=/tmp/acc/slot_b.dev bs=1k count=512 2>/dev/null; echo FIXTURE-OK}
+run {printf 'a\n' > /tmp/acc/boot/ab_slot; printf '0\n' > /tmp/acc/boot/ab_tries}
+run {printf 'r2026.09.01-0123456\n' > /tmp/acc/image.ver}
+run {cat > /tmp/acc/devmap.json <<EOF
+{"boot_dir": "/tmp/acc/boot", "boot_dev": "/dev/mmcblk0p1", "slot_a": "/tmp/acc/slot_a.dev", "slot_b": "/tmp/acc/slot_b.dev"}
+EOF
+echo DEVMAP-OK}
+run {cat > /tmp/acc/update.conf <<EOF
+enabled=yes
+provider=github-releases
+repo=example/rnsbox
+board=licheerv-nano
+allow_prerelease=yes
+allow_insecure_http=no
+auto_apply=no
+interval_min_days=7
+interval_max_days=14
+next_check=0
+EOF
+echo CONF-OK}
+
+# env for every worker call
+run {cat > /tmp/acc/env.sh <<EOF
+export RNSBOX_SYSUPDATE_CONF=/tmp/acc/update.conf
+export RNSBOX_SYSUPDATE_RUN=/tmp/acc/run.json
+export RNSBOX_SYSUPDATE_STATEDIR=/tmp/acc/state
+export RNSBOX_SYSUPDATE_VER=/tmp/acc/image.ver
+export RNSBOX_SYSUPDATE_LOCK=/tmp/acc/lock
+export RNSBOX_UPDATE_DEVMAP=/tmp/acc/devmap.json
+export RNSBOX_SYSUPDATE_FOREGROUND=1
+export RNSBOX_SYSUPDATE_NO_REBOOT=1
+export RNSBOX_UPDATE_GHAPI=http://10.0.2.2:$env(ACC_PORT)/api
+EOF
+echo ENV-OK}
+
+run {. /tmp/acc/env.sh; /usr/sbin/rnsbox-sysupdate status | grep -o '"layout": "ab"'}
+run {. /tmp/acc/env.sh; /usr/sbin/rnsbox-sysupdate check; cat /tmp/acc/run.json | grep -o "\"phase\": \"available\""}
+run {. /tmp/acc/env.sh; cat /tmp/acc/run.json | grep -o "$env(ACC_TAG)"}
+
+# the transaction: download -> verify -> write idle slot -> boot refresh -> flip
+run {. /tmp/acc/env.sh; /usr/sbin/rnsbox-sysupdate apply; cat /tmp/acc/run.json | grep -o '"phase": "flipping"'}
+run {printf 'b\n' | cmp - /tmp/acc/boot/ab_slot && echo FLIPPED-TO-B}
+run {printf '0\n' | cmp - /tmp/acc/boot/ab_tries && echo TRIES-RESET}
+run {test "$(dd if=/tmp/acc/slot_b.dev bs=1 count=307200 2>/dev/null | sha256sum | cut -d" " -f1)" = "650e55e5c1d0e3d4d700ecfa1e3b9dd9e435fbf127b25161ca40e432a85d687c" && echo SLOTB-CONTENT-OK}
+run {test -f /tmp/acc/boot/boot.sd && echo BOOTSD-STAGED}
+run {test -f /tmp/acc/state/boot-bak/boot.sd.old && echo BOOTSD-BACKUP}
+run {head -c 4 /tmp/acc/boot/boot.sd | grep -q CIMG && echo CIMG-NOT-STRIPPED || echo CIMG-STRIPPED}
+
+# reconcile: healthy boot on the new slot (tries cleared) -> applied
+run {. /tmp/acc/env.sh; printf 'b\n' > /tmp/acc/boot/ab_slot; printf '0\n' > /tmp/acc/boot/ab_tries; python3 - <<'PYEOF'
+import json
+st = json.load(open('/tmp/acc/run.json'))
+st['pending'] = {'slot': 'b', 'version': 'r2026.10.15-deadbe7', 'started': 1}
+json.dump(st, open('/tmp/acc/run.json', 'w'))
+print('PENDING-SET')
+PYEOF
+}
+run {. /tmp/acc/env.sh; /usr/sbin/rnsbox-sysupdate reconcile; cat /tmp/acc/run.json | grep -o '"phase": "applied"'}
+
+# reconcile: boot-count rollback (slot back to a) -> rolled_back
+run {. /tmp/acc/env.sh; printf 'a\n' > /tmp/acc/boot/ab_slot; printf '0\n' > /tmp/acc/boot/ab_tries; python3 - <<'PYEOF'
+import json
+st = json.load(open('/tmp/acc/run.json'))
+st['pending'] = {'slot': 'b', 'version': 'r2026.10.15-deadbe7', 'started': 1}
+json.dump(st, open('/tmp/acc/run.json', 'w'))
+print('PENDING-SET2')
+PYEOF
+}
+run {. /tmp/acc/env.sh; /usr/sbin/rnsbox-sysupdate reconcile; cat /tmp/acc/run.json | grep -o '"phase": "rolled_back"'}
+
+# abselect: 3 unconfirmed boots of slot b roll back to a
+run {printf 'b\n' > /tmp/acc/boot/ab_slot; printf '3\n' > /tmp/acc/boot/ab_tries; sh -c '. /usr/lib/rnsbox/abselect; abselect /tmp/acc/boot /dev/vda2 /dev/vda3; echo "$AB_ACTIVE $AB_ROLLED_BACK"' | grep -q "^a 1$" && echo ABSELECT-ROLLBACK-OK}
+
+# https enforcement: http + allow_insecure_http=no must refuse
+run {. /tmp/acc/env.sh; sed -i 's|^provider=github-releases|provider=generic|; s|^repo=.*|repo=x|; s|^board=.*|board=licheerv-nano|; s|^url=.*|url=http://10.0.2.2:9999/dl/manifest.json|' /tmp/acc/update.conf; /usr/sbin/rnsbox-sysupdate check; cat /tmp/acc/run.json | grep -o 'refusing non-HTTPS' }
+
+# slot_a untouched the whole time (running slot never written)
+run {test "$(dd if=/tmp/acc/slot_a.dev bs=4096 count=1 2>/dev/null | sha256sum | cut -d" " -f1)" = "ad7facb2586fc6e966c004d7d1d16b024f5805ff7cb47c7a85dabd8b48892ca7" && echo SLOT-A-CLEAN}
+
+run {echo ===ACC-END===}
+sleep 2
+send "poweroff -f\r"
+expect eof

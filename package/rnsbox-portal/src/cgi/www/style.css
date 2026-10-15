@@ -258,6 +258,38 @@ form.inline { display: inline; }
 .flash.error   { background: #fee2e2; color: #991b1b; border: 1px solid #f87171; }
 .flash.warn    { background: #fef3c7; color: #92400e; border: 1px solid #fbbf24; }
 
+/* ---- Default-password warning banner (dashboard, red) ---- */
+/* Same red family as .flash.error; hangs at the top of the dashboard until
+   the web password stops being admin/admin. The × hides it for the current
+   page only — the portal never records the dismissal. */
+.banner-danger {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  background: #fee2e2;
+  color: #991b1b;
+  border: 1px solid #f87171;
+  border-left: 4px solid var(--err);
+  border-radius: 3px;
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  font-size: 13.5px;
+}
+.banner-danger a { color: #991b1b; font-weight: 600; text-decoration: underline; }
+.banner-danger .banner-x {
+  margin-left: auto;
+  flex: none;
+  background: none;
+  border: 0;
+  color: #991b1b;
+  font: inherit;
+  font-size: 17px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+}
+.banner-danger .banner-x:hover { color: #7f1d1d; }
+
 /* ---- Misc ---- */
 .muted { color: var(--muted); font-size: 13px; }
 pre.log {

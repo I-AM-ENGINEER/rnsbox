@@ -1,0 +1,72 @@
+#!/bin/sh
+#
+# Starts Network Time Protocol daemon
+#
+# RNSBox: buildroot's package/ntp/S49ntp.in (NTPD_EXTRA_ARGS empty) with one
+# change in start(): it defers while S45ntpsync's NTP one-shot holds the step
+# lock. ntpdate -b steps RELATIVE to the current clock, so an ntpd -g step
+# inside its ~8 s sampling window would be applied twice (the clock lands
+# decades ahead). The one-shot stops ntpd for its step and starts it again
+# afterwards, success or not; S46wanwatch restarts ntpd if it is ever found
+# not running.
+#
+
+DAEMON="ntpd"
+PIDFILE="/var/run/$DAEMON.pid"
+STEP_LOCK=/run/ntpsync.step.lock   # held by S45ntpsync while it steps
+
+NTPD_ARGS=" -g"
+
+# shellcheck source=/dev/null
+[ -r "/etc/default/$DAEMON" ] && . "/etc/default/$DAEMON"
+
+start() {
+	printf 'Starting %s: ' "$DAEMON"
+	exec 8>"$STEP_LOCK"
+	if command -v flock >/dev/null 2>&1 && ! flock -n 8; then
+		exec 8>&-
+		echo "deferred (NTP one-shot running; it starts ntpd when done)"
+		return 0
+	fi
+	# shellcheck disable=SC2086 # we need the word splitting
+	start-stop-daemon -S -q -p "$PIDFILE" -x "/usr/sbin/$DAEMON" \
+		-- $NTPD_ARGS -p "$PIDFILE" 8>&-
+	status=$?
+	exec 8>&-
+	if [ "$status" -eq 0 ]; then
+		echo "OK"
+	else
+		echo "FAIL"
+	fi
+	return "$status"
+}
+
+stop() {
+	printf 'Stopping %s: ' "$DAEMON"
+	start-stop-daemon -K -q -p "$PIDFILE"
+	status=$?
+	if [ "$status" -eq 0 ]; then
+		rm -f "$PIDFILE"
+		echo "OK"
+	else
+		echo "FAIL"
+	fi
+	return "$status"
+}
+
+restart() {
+	stop
+	sleep 1
+	start
+}
+
+case "$1" in
+	start|stop|restart)
+		"$1";;
+	reload)
+		# Restart, since there is no true "reload" feature.
+		restart;;
+	*)
+		echo "Usage: $0 {start|stop|restart|reload}"
+		exit 1
+esac

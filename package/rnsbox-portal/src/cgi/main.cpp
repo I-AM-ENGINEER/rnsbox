@@ -49,12 +49,26 @@ static const char* const POST_ONLY[] = {
     "/reticulum/applyupdate",
     "/reticulum/slip",
     "/reticulum/rnsh",
+    "/access/issue", "/access/revoke", "/access/reissue",
     "/reticulum/halow/add",
+    "/reticulum/bluetooth",
+    "/reticulum/bluetooth/raise",
+    "/reticulum/rnode",
+    "/reticulum/rnode/pair",
     "/settings/password",
     "/settings/hostname",
     "/settings/time/browser",
     "/settings/ntp",
     "/settings/ntp/restart",
+    "/settings/ssh",
+    "/settings/usb",
+    "/updates/config",
+    "/updates/check",
+    "/updates/apply",
+    "/updates/auto",
+    "/echobot/save",
+    "/echobot/announce",
+    "/echobot/restart",
 };
 
 static bool is_post_only(const std::string& p) {
@@ -211,6 +225,15 @@ static void r_login(const http::Request& req, http::Response& res) {
         std::string next = req.f("next");
         bool next_ok = web::is_local_next(next);   // local portal path only (no open redirect)
         if (session::verify_password(user, pass)) {
+            // LAN-only while the factory password is still active: the WAN
+            // must not be able to log in with admin/admin.
+            if (!from_lan(req) && session::default_password_active()) {
+                ::sleep(1);
+                render::redirect_flash(res, web::base() + "/login", "error",
+                    "The factory password may only be used from the LAN (10.42.0.x / USB). "
+                    "Change it in Settings, then WAN access works.");
+                return;
+            }
             res.set_cookie(session::start(user));
             // default: the dashboard. base() and base()+"/" both reach it (an empty
             // PATH_INFO is read as "/"; the nav's Dashboard link uses the slash form)
@@ -336,7 +359,7 @@ int main(int argc, char** argv) {
                 std::string url = http::html_escape(origin_on_port(req, MODEM_PORT) + web::base() + "/modem/");
                 res.body = "<!doctype html><title>HaLow modem page</title><p>The HaLow modem page is served on "
                            "port 8081 of the box, which this address (an SSH tunnel or port mapping) doesn't reach. "
-                           "Through SSH, also forward it: <code>ssh -L 8081:127.0.0.1:8081 root@&lt;box&gt;</code>, "
+                           "Through SSH, also forward it: <code>ssh -L 8081:127.0.0.1:8081 admin@&lt;box&gt;</code>, "
                            "then open <a href=\"" + url + "\">" + url + "</a> (adjust the port if you mapped it elsewhere). "
                            "From the WAN, open tcp 8081 (Network -&gt; Open ports) on the address that reaches the box's port 8081.</p>\n";
             } else {
@@ -404,12 +427,35 @@ int main(int argc, char** argv) {
     else if (p == "/reticulum/slip")             routes::reticulum_slip(req, res);
     else if (p == "/reticulum/rnsh")             routes::reticulum_rnsh_save(req, res);
     else if (p == "/reticulum/halow/add")        routes::reticulum_halow_add(req, res);
+    else if (p == "/reticulum/bluetooth")        routes::reticulum_bluetooth(req, res);
+    else if (p == "/reticulum/bluetooth/raise")  routes::reticulum_bluetooth_raise(req, res);
+    else if (p == "/reticulum/rnode")            routes::reticulum_rnode(req, res);
+    else if (p == "/reticulum/rnode/status")     routes::reticulum_rnode_status(req, res);
+    else if (p == "/reticulum/rnode/scan")       routes::reticulum_rnode_scan(req, res);
+    else if (p == "/reticulum/rnode/pair")       routes::reticulum_rnode_pair(req, res);
+    else if (p == "/updates")                    routes::updates_page(req, res);
+    else if (p == "/updates/data")               routes::updates_data(req, res);
+    else if (p == "/updates/config")             routes::updates_config(req, res);
+    else if (p == "/updates/check")              routes::updates_check(req, res);
+    else if (p == "/updates/apply")              routes::updates_apply(req, res);
+    else if (p == "/updates/auto")               routes::updates_auto(req, res);
+    else if (p == "/reticulum/halow/add")       routes::reticulum_halow_add(req, res);
+    else if (p == "/access")                     routes::access_page(req, res);
+    else if (p == "/access/issue")               routes::access_issue(req, res);
+    else if (p == "/access/revoke")              routes::access_revoke(req, res);
+    else if (p == "/access/reissue")             routes::access_reissue(req, res);
     else if (p == "/settings")                   routes::settings_page(req, res);
     else if (p == "/settings/password")          routes::settings_password(req, res);
     else if (p == "/settings/hostname")          routes::hostname_set(req, res);
     else if (p == "/settings/time/browser")      routes::time_browser(req, res);
     else if (p == "/settings/ntp")               routes::ntp_set(req, res);
     else if (p == "/settings/ntp/restart")       routes::ntp_restart(req, res);
+    else if (p == "/settings/ssh")               routes::ssh_set(req, res);
+    else if (p == "/settings/usb")               routes::usb_mode_set(req, res);
+    else if (p == "/echobot")                    routes::echobot_page(req, res);
+    else if (p == "/echobot/save")               routes::echobot_save(req, res);
+    else if (p == "/echobot/announce")           routes::echobot_announce(req, res);
+    else if (p == "/echobot/restart")            routes::echobot_restart(req, res);
     else if (p == "/donate")                     routes::donate_page(req, res);
     else if (p == "/modem" || p == "/modem/")    routes::modem_ui(req, res);
     else if (p.rfind("/modem/api/", 0) == 0)     routes::modem_api(req, res);
