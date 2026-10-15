@@ -1,0 +1,89 @@
+From fbbbb0a774bf50b8fc8937bd56cd7e5e28d5bad6 Mon Sep 17 00:00:00 2001
+From: rnsbox <rnsbox@localhost>
+Date: Thu, 15 Oct 2026 22:43:36 +0300
+Subject: [PATCH] ble: BlueZ + Reticulum BLE transport on the arm64 boards
+ (dongle no-op)
+
+---
+ .../linux/sg2000_duo01evb_arm64_sd_defconfig       |  9 +++++++--
+ .../linux/sg2002_duo_arm64_sd_defconfig            |  9 +++++++--
+ buildroot/configs/cvitek_SG200X_64bit_defconfig    | 14 ++++++++++++++
+ 3 files changed, 28 insertions(+), 4 deletions(-)
+
+diff --git a/build/boards/sg200x/sg2000_duo01evb_arm64_sd/linux/sg2000_duo01evb_arm64_sd_defconfig b/build/boards/sg200x/sg2000_duo01evb_arm64_sd/linux/sg2000_duo01evb_arm64_sd_defconfig
+index b7fd1964f..5f1a7820f 100644
+--- a/build/boards/sg200x/sg2000_duo01evb_arm64_sd/linux/sg2000_duo01evb_arm64_sd_defconfig
++++ b/build/boards/sg200x/sg2000_duo01evb_arm64_sd/linux/sg2000_duo01evb_arm64_sd_defconfig
+@@ -506,14 +506,19 @@ CONFIG_TIMERFD=y
+ # CONFIG_FB_SIMPLE is not set
+ CONFIG_IP_MULTICAST=y
+ # CONFIG_SND_PROC_FS is not set
+-# CONFIG_BT is not set
+ # CONFIG_BT_RFCOMM is not set
+ # CONFIG_BT_RFCOMM_TTY is not set
+ # CONFIG_BT_BREDR is not set
+ # CONFIG_BT_BNEP is not set
+ # CONFIG_BT_HIDP is not set
+ # CONFIG_BT_HS is not set
+-# CONFIG_BT_LE is not set
++# RNSBox: Bluetooth LE for the [[BLE Interface]] transport. LE-only, no
++# classic profiles; the adapter is a USB dongle (btusb) - this board has no
++# onboard BT controller. ble_reticulum probes /sys/class/bluetooth and runs
++# as a logged no-op until one appears.
++CONFIG_BT=y
++CONFIG_BT_LE=y
++CONFIG_BT_HCIBTUSB=y
+ # CONFIG_BT_HCIUART is not set
+ # CONFIG_BT_HCIUART_BCSP is not set
+ # CONFIG_BT_HCIUART_H4 is not set
+diff --git a/build/boards/sg200x/sg2002_duo_arm64_sd/linux/sg2002_duo_arm64_sd_defconfig b/build/boards/sg200x/sg2002_duo_arm64_sd/linux/sg2002_duo_arm64_sd_defconfig
+index b7fd1964f..5f1a7820f 100644
+--- a/build/boards/sg200x/sg2002_duo_arm64_sd/linux/sg2002_duo_arm64_sd_defconfig
++++ b/build/boards/sg200x/sg2002_duo_arm64_sd/linux/sg2002_duo_arm64_sd_defconfig
+@@ -506,14 +506,19 @@ CONFIG_TIMERFD=y
+ # CONFIG_FB_SIMPLE is not set
+ CONFIG_IP_MULTICAST=y
+ # CONFIG_SND_PROC_FS is not set
+-# CONFIG_BT is not set
+ # CONFIG_BT_RFCOMM is not set
+ # CONFIG_BT_RFCOMM_TTY is not set
+ # CONFIG_BT_BREDR is not set
+ # CONFIG_BT_BNEP is not set
+ # CONFIG_BT_HIDP is not set
+ # CONFIG_BT_HS is not set
+-# CONFIG_BT_LE is not set
++# RNSBox: Bluetooth LE for the [[BLE Interface]] transport. LE-only, no
++# classic profiles; the adapter is a USB dongle (btusb) - this board has no
++# onboard BT controller. ble_reticulum probes /sys/class/bluetooth and runs
++# as a logged no-op until one appears.
++CONFIG_BT=y
++CONFIG_BT_LE=y
++CONFIG_BT_HCIBTUSB=y
+ # CONFIG_BT_HCIUART is not set
+ # CONFIG_BT_HCIUART_BCSP is not set
+ # CONFIG_BT_HCIUART_H4 is not set
+diff --git a/buildroot/configs/cvitek_SG200X_64bit_defconfig b/buildroot/configs/cvitek_SG200X_64bit_defconfig
+index 20c09944e..429cb9b51 100644
+--- a/buildroot/configs/cvitek_SG200X_64bit_defconfig
++++ b/buildroot/configs/cvitek_SG200X_64bit_defconfig
+@@ -4495,3 +4495,17 @@ BR2_PACKAGE_PYTHON_RNS=y
+ BR2_PACKAGE_PYTHON_LXMF=y
+ BR2_PACKAGE_PYTHON_NOMADNET=y
+ BR2_PACKAGE_RNSBOX_PORTAL=y
++# RNSBox Bluetooth LE transport ([[BLE Interface]]): BlueZ + D-Bus
++# (bluetoothd runs from S40bluetoothd with -E, see /etc/default/bluetoothd)
++# and the BLE python stack - python-bleak/dbus-fast for central mode,
++# python-ble-reticulum (vendored torlando-tech classes; selects bluezero +
++# dbus-python) for peripheral mode. No onboard BT controller on this board:
++# with no USB dongle the interface degrades into a logged no-op and picks a
++# dongle up within 30 s of it appearing.
++BR2_PACKAGE_BLUEZ5_UTILS=y
++BR2_PACKAGE_BLUEZ5_UTILS_CLIENT=y
++BR2_PACKAGE_BLUEZ5_UTILS_TOOLS=y
++BR2_PACKAGE_BLUEZ5_UTILS_DEPRECATED=y
++BR2_PACKAGE_BLUEZ5_UTILS_MONITOR=y
++BR2_PACKAGE_PYTHON_BLEAK=y
++BR2_PACKAGE_PYTHON_BLE_RETICULUM=y
+-- 
+2.43.0
+
