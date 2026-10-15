@@ -722,7 +722,7 @@ def write_idle_slot(img_path, idle_dev, part_off, part_size, st):
 
 def boot_refresh_set(board):
     """Which p1 files the transaction refreshes on the shared boot FAT."""
-    if board == "rpi0-2w":
+    if board == "rpi-universal":
         # refresh everything the firmware/kernel consumes; keep per-device
         # flags and the A/B state, which belong to THIS card, not the image
         return None  # None = blacklist mode, keep_set below
@@ -782,7 +782,7 @@ def write_boot_files(img_path, parts, board, layout, st):
     fat_data = read_range_from_xz(img_path, p1_off, p1_size)
     fr = FatReader(fat_data)
 
-    if board == "rpi0-2w":
+    if board == "rpi-universal":
         plan = []
         stack = ["/"]
         while stack:
@@ -1123,7 +1123,7 @@ def detect_board():
         with open("/proc/device-tree/model") as f:
             model = f.read().strip("\x00").lower()
         if "raspberry pi" in model:
-            return "rpi0-2w"
+            return "rpi-universal"
         if "lichee" in model or "sg2002" in model:
             return "licheerv-nano"
         if "duo" in model or "sg2000" in model or "cv1800" in model:
@@ -1132,7 +1132,7 @@ def detect_board():
         pass
     if os.path.exists("/boot/boot.sd"):
         return "licheerv-nano"
-    return "rpi0-2w"
+    return "rpi-universal"
 
 
 # ------------------------------------------------------------------- main ---

@@ -26,8 +26,8 @@ the worker refuses to apply without one.
       "files": [
         {"board": "licheerv-nano", "url": "rnsbox-licheerv-nano.img.xz",
          "sha256": "…64 hex…"},
-        {"board": "rpi0-2w", "url":
-         "https://mirror.example.net/rnsbox/rnsbox-rpi0-2w.img.xz",
+        {"board": "rpi-universal", "url":
+         "https://mirror.example.net/rnsbox/rnsbox-rpi-universal.img.xz",
          "sha256": "…"}
       ]
     }

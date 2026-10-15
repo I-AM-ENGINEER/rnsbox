@@ -213,7 +213,7 @@ void updates_page(const Request& req, Response& res) {
     h = R(std::move(h), "__CFG_REPO__", E(c.repo));
     h = R(std::move(h), "__CFG_URL__", E(c.url));
     std::string board_opts;
-    for (const char* b : {"auto", "rpi0-2w", "licheerv-nano"})
+    for (const char* b : {"auto", "rpi-universal", "licheerv-nano"})
         board_opts += std::string("<option value=\"") + b + "\"" +
                       (c.board == b ? " selected" : "") + ">" + b + "</option>";
     h = R(std::move(h), "__CFG_BOARD__", board_opts);

@@ -4,8 +4,8 @@ RNSBox turns a small, USB-powered single-board computer into a
 [Reticulum](https://reticulum.network/) router and transport node with an
 OpenWrt-style web admin UI. One repository serves every supported board —
 currently the **Sipeed LicheeRV Nano-e** (SG2002, RISC-V) and the
-**Raspberry Pi Zero 2 W** — with the router software shared and only the
-board files differing.
+**Raspberry Pi** (one universal image for Zero 2 W / 3 / 4 / 5) — with the
+router software shared and only the board files differing.
 
 The repository is a Buildroot **external tree** plus, for boards whose
 vendor only ships a BSP fork, a git-am patch series — so it contains only
@@ -13,7 +13,7 @@ the RNSBox delta; the kernel, Buildroot and vendor sources come from
 upstream and are fetched at build time.
 
 - **LicheeRV Nano-e:** [`sipeed/LicheeRV-Nano-Build`](https://github.com/sipeed/LicheeRV-Nano-Build) at `d4003f15b` via the 23 patches in [`patches/licheerv-nano/`](patches/licheerv-nano)
-- **Raspberry Pi Zero 2 W:** [`buildroot/buildroot`](https://github.com/buildroot/buildroot) 2026.02.3 LTS at `679b9ead` (no patches — the board builds straight from this repo as an external tree)
+- **Raspberry Pi (universal):** [`buildroot/buildroot`](https://github.com/buildroot/buildroot) 2026.02.3 LTS at `679b9ead` (no patches — the board builds straight from this repo as an external tree)
 
 ## Quick start
 
@@ -23,13 +23,13 @@ One command clones the pinned upstream base and builds:
 git clone https://github.com/Smit1237/rnsbox
 cd rnsbox
 ./build.sh licheerv-nano lite   # Sipeed LicheeRV Nano-e image (~217 MB)
-./build.sh rpi0-2w lite         # Raspberry Pi Zero 2 W image (~433 MB)
+./build.sh rpi-universal lite    # Raspberry Pi — Zero 2 W / 3 / 4 / 5 (~433 MB)
 ./build.sh all lite             # every board, sequentially
 # dvd instead of lite adds a read-only disc of the latest Reticulum clients
 ```
 
 The finished image lands under `LicheeRV-Nano-Build/install/soc_sg2002_licheervnano_sd/images/`
-(LicheeRV) or `~/rnsbox-work/upstream/out/rpi0-2w/images/` (Pi). Flash it with
+(LicheeRV) or `~/rnsbox-work/upstream/out/rpi-universal/images/` (Pi). Flash it with
 `dd` (or a tool like balenaEtcher) to a microSD and boot the board.
 
 > **First build is long.** The LicheeRV build compiles a Rust host toolchain from
@@ -126,9 +126,10 @@ available to every board.
 
 - Sipeed LicheeRV Nano-e (no radio) or Nano-e **W** (AIC8800 WiFi). One image
   serves both; WiFi bring-up is a clean no-op where there is no radio.
-- Raspberry Pi Zero 2 W (512 MB, aarch64; onboard WiFi/BT — STA / AP /
-  concurrent AP+STA; WAN uplink is the WiFi station). Optional DS3231 RTC on
-  i2c1: SDA GPIO2 (pin 3), SCL GPIO3 (pin 5).
+- Raspberry Pi — one universal image for Zero 2 W, 3, 4 and 5 (aarch64;
+  onboard WiFi/BT on the Zero 2 W — STA / AP / concurrent AP+STA; WAN uplink
+  is the WiFi station). Optional DS3231 RTC on i2c1: SDA GPIO2 (pin 3),
+  SCL GPIO3 (pin 5).
 - microSD: the DVD build's size tracks the current client releases (~3.3 GB
   now; use a card comfortably larger, e.g. 8 GB); the lite builds are ~217 MB
   (Nano-e) and ~433 MB (Pi). The rootfs auto-grows to fill the card on first
@@ -159,7 +160,7 @@ source build/cvisetup.sh && defconfig sg2002_licheervnano_sd && build_all
 ./build-rnsbox.sh lite      # or: ./fetch-clients.sh && ./build-rnsbox.sh dvd
 ```
 
-The Raspberry Pi Zero 2 W needs none of this — `build.sh rpi0-2w` drives
+The Raspberry Pi needs none of this — `build.sh rpi-universal` drives
 pinned Buildroot + this repo directly.
 
 ## Licensing

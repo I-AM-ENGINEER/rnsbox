@@ -18,7 +18,7 @@
 #
 # Prints one [ ok  ] / [ FAIL ] line per check and a final summary; exits 0
 # only if every check passed. This is the prototype of the CI acceptance
-# run: the same harness gates real-board releases later (rpi0-2w first).
+# run: the same harness gates real-board releases later (rpi-universal first).
 #
 # Options:
 #   -i, --image PATH   image to test (default: $RNSBOX_PC_IMAGE, then the

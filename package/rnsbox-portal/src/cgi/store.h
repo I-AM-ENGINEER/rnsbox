@@ -86,7 +86,7 @@ struct UpdateConfig {
     std::string provider = "github-releases";  // github-releases | generic
     std::string repo = "I-AM-ENGINEER/rnsbox"; // github-releases: owner/repo
     std::string url;                      // generic: full manifest.json URL
-    std::string board = "auto";           // auto | rpi0-2w | licheerv-nano
+    std::string board = "auto";           // auto | rpi-universal | licheerv-nano
     std::string allow_prerelease = "yes"; // CI auto-builds are prereleases
     std::string allow_insecure_http = "no";
     std::string auto_apply = "no";        // apply without a human click
