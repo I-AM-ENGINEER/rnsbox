@@ -28,6 +28,13 @@ RNSBOX_BT_FIRMWARE_FILES = BCM43430A1.hcd BCM4345C0.hcd BCM4345C5.hcd
 RNSBOX_BT_FIRMWARE_SOURCE = BCM43430A1.hcd
 RNSBOX_BT_FIRMWARE_EXTRA_DOWNLOADS = BCM4345C0.hcd BCM4345C5.hcd
 
+# Raw firmware blobs, not archives: neutralize buildroot's extract step (its
+# default would pipe the .hcd through tar) - install reads the blobs
+# straight from the dl cache.
+define RNSBOX_BT_FIRMWARE_EXTRACT_CMDS
+	$(Q)mkdir -p $(@D)
+endef
+
 define RNSBOX_BT_FIRMWARE_INSTALL_TARGET_CMDS
 	$(foreach f,$(RNSBOX_BT_FIRMWARE_FILES),\
 		$(INSTALL) -D -m 0644 $(DL_DIR)/$(f) \
