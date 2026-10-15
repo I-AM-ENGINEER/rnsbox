@@ -77,7 +77,7 @@ fi
 # firmware boots the old single-slot way; the updater's layout probe then
 # reports "reflash needed" instead of silently half-working.
 INITRAMFS_SRC="${BOARD_DIR}/initramfs/init"
-ABSEL_SRC="${BR2_EXTERNAL_RNSBOX_PATH}/package/rnsbox-update/src/abselect"
+ABSEL_SRC="$(cd "$(dirname "$BOARD_DIR")/../.." && pwd)/package/rnsbox-update/src/abselect"
 GEN_CPIO=$(ls "${BUILD_DIR}"/linux-*/usr/gen_init_cpio 2>/dev/null | head -1)
 if [ -x "${GEN_CPIO}" ] && [ -f "${TARGET_DIR}/bin/busybox" ] && \
    [ -f "${INITRAMFS_SRC}" ]; then
