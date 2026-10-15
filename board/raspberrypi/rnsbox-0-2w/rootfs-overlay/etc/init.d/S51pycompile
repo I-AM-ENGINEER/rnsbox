@@ -1,0 +1,18 @@
+#!/bin/sh
+# S51pycompile — rebuild the python bytecode cache in the background.
+#
+# The rootfs ships .py-only python (image-size: the .pyc tree duplicates the
+# .py sources byte-for-byte-ish, ~60 MB of dead weight in the factory image).
+# Without this script python would compile each module on first import,
+# stalling the first rnsd start by tens of seconds. Instead: one niced
+# background pass at boot compiles everything ahead of demand; later boots
+# find a warm cache and python's own mtime check keeps it coherent. Never
+# blocks rcS; concurrent compiles (rnsd importing while this runs) are safe
+# — CPython writes .pyc atomically via tmp file + rename.
+[ "$1" = start ] || exit 0
+
+(
+	find /usr/lib/python3.*/site-packages /usr/lib/python3.*/[a-z]*.py \
+	     /usr/lib/python3.*/[a-z]* -name '*.py' -print0 2>/dev/null |
+		nice -n 19 xargs -0 -r python3 -m py_compile
+) >/dev/null 2>&1 &

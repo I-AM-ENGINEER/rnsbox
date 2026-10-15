@@ -99,10 +99,11 @@ BR2_PACKAGE_PYTHON_PSUTIL=y
 BR2_PACKAGE_NTP=y
 BR2_PACKAGE_NTP_NTPD=y
 BR2_PACKAGE_NTP_NTPDATE=y
-# image-size: pyc-only — the .py sources are ~half the python payload; the
-# bytecode keeps rnsd/portal startup fast, and pip re-adds .py for anything
-# it installs or upgrades (nothing in RNS/LXMF/NomadNet reads stdlib source)
-BR2_PACKAGE_PYTHON3_PYC_ONLY=y
+# image-size: py-only — the .pyc tree duplicates the .py sources (~as many
+# bytes again), so ship sources only; S51pycompile (rootfs-overlay) rebuilds
+# the bytecode for whatever is imported, in the background, on first boot.
+# pip re-adds .pyc for anything it installs or upgrades.
+BR2_PACKAGE_PYTHON3_PY_ONLY=y
 BR2_PACKAGE_PYTHON3_PIP=y
 BR2_PACKAGE_PYTHON_RNS=y
 # WiFi STA/AP/APSTA (onboard brcmfmac) + firmware — covers the 43430s
