@@ -37,7 +37,7 @@ endef
 
 define RNSBOX_BT_FIRMWARE_INSTALL_TARGET_CMDS
 	$(foreach f,$(RNSBOX_BT_FIRMWARE_FILES),\
-		$(INSTALL) -D -m 0644 $(DL_DIR)/$(f) \
+		$(INSTALL) -D -m 0644 $(RNSBOX_BT_FIRMWARE_DL_DIR)/$(f) \
 			$(TARGET_DIR)/lib/firmware/brcm/$(f)$(sep))
 endef
 
