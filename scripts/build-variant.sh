@@ -21,7 +21,7 @@ UP="${2:?upstream dir required}"; O="${3:?output dir required}"; EXT="${4:?exter
 case "$VARIANT" in dvd|lite) ;; *) echo "usage: $0 {lite|dvd} <upstream> <O> <ext>"; exit 1 ;; esac
 UP="$(cd "$UP" && pwd)"; O="$(cd "$O" && pwd)"; EXT="$(cd "$EXT" && pwd)"
 
-BOARD_DIR="$EXT/board/raspberrypi/rnsbox-0-2w"
+BOARD_DIR="$EXT/board/raspberrypi/rnsbox-universal"
 ISO_OVERLAY="$BOARD_DIR/rootfs-overlay/opt/rnsbox-clients/usbdisk.iso"
 ISO_STASH=/tmp/rnsbox-usbdisk.iso.stash
 FW="$O/images/rpi-firmware"

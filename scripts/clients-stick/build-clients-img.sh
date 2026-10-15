@@ -13,7 +13,7 @@ ROOT="$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)"
 cd "$ROOT" || exit 90
 SRC="$ROOT/dl/clients"
 EXTRA="$ROOT/scripts/clients-stick/extra"
-OUTDIR="$ROOT/board/raspberrypi/rnsbox-0-2w/rootfs-overlay/opt/rnsbox-clients"
+OUTDIR="$ROOT/board/raspberrypi/rnsbox-universal/rootfs-overlay/opt/rnsbox-clients"
 OUTISO="$OUTDIR/usbdisk.iso"
 LABEL="RNSBOX"
 APPS="MeshChat MeshChatX Ratspeak Columba Sideband"
