@@ -23,7 +23,7 @@ BR2_TARGET_GENERIC_ISSUE="RNSBox - Reticulum router (Raspberry Pi, 64-bit univer
 BR2_ROOTFS_USERS_TABLES="$(BR2_EXTERNAL_RNSBOX_PATH)/board/raspberrypi/rnsbox-universal/users.txt"
 # image-size: the stock post-build plus the shared dead-weight slimmer
 # (buildroot runs each entry with $(TARGET_DIR) as $1)
-BR2_ROOTFS_POST_BUILD_SCRIPT="$(BR2_EXTERNAL_RNSBOX_PATH)/board/raspberrypi/rnsbox-universal/post-build.sh $(BR2_EXTERNAL_RNSBOX_PATH)/board/rnsbox/slim-target.sh"
+BR2_ROOTFS_POST_BUILD_SCRIPT="$(BR2_EXTERNAL_RNSBOX_PATH)/board/raspberrypi/rnsbox-universal/post-build.sh $(BR2_EXTERNAL_RNSBOX_PATH)/board/common/slim-target.sh"
 BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_RNSBOX_PATH)/board/raspberrypi/rnsbox-universal/post-image.sh"
 BR2_LINUX_KERNEL=y
 BR2_LINUX_KERNEL_CUSTOM_TARBALL=y

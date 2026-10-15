@@ -221,11 +221,11 @@ rnsbox_track_latest_rns() {
 # configs/rnsbox_rpi0_2w_64_defconfig + board/raspberrypi.
 rnsbox_slim_bsp() {
     # 1. the shared post-build slimmer (idempotent, deletes only provably
-    #    unused content — see board/rnsbox/slim-target.sh for the keep-list
+    #    unused content — see board/common/slim-target.sh for the keep-list
     #    reasoning: pip/setuptools stay, the portal Update button stays).
-    mkdir -p buildroot/board/rnsbox
-    cp -f "$HERE/board/rnsbox/slim-target.sh" buildroot/board/rnsbox/slim-target.sh
-    chmod 0755 buildroot/board/rnsbox/slim-target.sh
+    mkdir -p buildroot/board/common
+    cp -f "$HERE/board/common/slim-target.sh" buildroot/board/common/slim-target.sh
+    chmod 0755 buildroot/board/common/slim-target.sh
     # 2. every cvitek defconfig in the tree:
     #    - python3 py-only: the .pyc payload is as big as the .py sources it
     #      duplicates (measured: 61 MB of pyc next to ~55 MB of sources) —
@@ -238,12 +238,12 @@ rnsbox_slim_bsp() {
         sed -i 's/^BR2_PACKAGE_PYTHON3_PY_PYC=y/# BR2_PACKAGE_PYTHON3_PY_PYC is not set\nBR2_PACKAGE_PYTHON3_PY_ONLY=y/' "$dc"
         sed -i 's/^BR2_PACKAGE_PYTHON3_PYC_ONLY=y/# BR2_PACKAGE_PYTHON3_PYC_ONLY is not set\nBR2_PACKAGE_PYTHON3_PY_ONLY=y/' "$dc"
         sed -i 's/^BR2_TARGET_ROOTFS_EXT2_RESBLKS=.*/BR2_TARGET_ROOTFS_EXT2_RESBLKS=1/' "$dc"
-        sed -i 's#^BR2_ROOTFS_POST_BUILD_SCRIPT=.*#BR2_ROOTFS_POST_BUILD_SCRIPT="board/rnsbox/slim-target.sh"#' "$dc"
+        sed -i 's#^BR2_ROOTFS_POST_BUILD_SCRIPT=.*#BR2_ROOTFS_POST_BUILD_SCRIPT="board/common/slim-target.sh"#' "$dc"
     done
     # first-boot bytecode warm-up (see the script): backgrounded, never
     # blocks rcS, so the py-only rootfs keeps its fast first rnsd start
     if [ -d buildroot/board/cvitek/SG200X/overlay/etc/init.d ]; then
-        cp -f "$HERE/board/rnsbox/S51pycompile" buildroot/board/cvitek/SG200X/overlay/etc/init.d/S51pycompile
+        cp -f "$HERE/board/common/S51pycompile" buildroot/board/cvitek/SG200X/overlay/etc/init.d/S51pycompile
         chmod 0755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/S51pycompile
     fi
     # 3. lite rootfs fixed size: the pack scripts re-stamp this literal at
