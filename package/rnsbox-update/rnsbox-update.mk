@@ -21,6 +21,10 @@ define RNSBOX_UPDATE_INSTALL_TARGET_CMDS
 	# factory default config; on-device /etc/rnsbox/update.conf is never
 	# overwritten at runtime (no on-device package manager touches it)
 	$(INSTALL) -D -m 0644 $(@D)/update.conf $(TARGET_DIR)/etc/rnsbox/update.conf
+	# build version stamp (RNSBOX_BUILD_VER comes from build.sh; matches the
+	# CI release tag formula) — rnsbox-sysupdate compares it to candidates
+	printf '%s\n' "$(if $(RNSBOX_BUILD_VER),$(RNSBOX_BUILD_VER),dev-unknown)" \
+		> $(TARGET_DIR)/etc/rnsbox/image.ver
 endef
 
 $(eval $(generic-package))
