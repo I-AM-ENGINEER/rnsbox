@@ -1,0 +1,860 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: echobot-agent <echobot@rnsbox.local>
+Date: Fri, 16 Oct 2026 00:43:18 +0300
+Subject: [PATCH] echobot: local LXMF echo bot service (opt-out, on by default)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The box's built-in LXMF presence, like lxmd's init script but simpler: the
+daemon (/usr/bin/rnsbox-echobot, shipped by this overlay, like every board
+file) attaches to rnsd's shared instance, announces its LXMF destination once
+a day by default and echoes every message back — the fastest reachability
+check from any LXMF client (NomadNet: Conversations -> the address on the
+portal's Echo bot tab). Unlike lxmd/nomadnet it ships enabled: one announce a
+day, a small python process, no message store; the min_free_mb floor turns
+'tight box' into 'bot off', never 'rnsd OOM-killed'. The daemon polls /proc
+for rnsd's shared socket itself, so nothing needs to change in S46wanwatch.
+---
+ .../SG200X/overlay/etc/init.d/S87echobot      | 355 +++++++++++++++
+ .../SG200X/overlay/etc/rnsbox/echobot.conf    |  33 ++
+ .../SG200X/overlay/usr/bin/rnsbox-echobot     | 425 ++++++++++++++++++
+ 3 files changed, 813 insertions(+)
+ create mode 100755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/S87echobot
+ create mode 100644 buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/echobot.conf
+ create mode 100755 buildroot/board/cvitek/SG200X/overlay/usr/bin/rnsbox-echobot
+
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S87echobot b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S87echobot
+new file mode 100755
+index 0000000..5989eae
+--- /dev/null
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S87echobot
+@@ -0,0 +1,355 @@
++#!/bin/sh
++# S87echobot — the RNSBox local LXMF echo bot (/usr/bin/rnsbox-echobot).
++#
++# The box's built-in LXMF presence: announces its LXMF destination (once a day
++# by default, /etc/rnsbox/echobot.conf `interval=`) and echoes every message
++# back — the fastest "is this box reachable?" check from any LXMF client
++# (NomadNet: Conversations -> the address on the portal's Echo bot tab).
++# Unlike lxmd/nomadnet this ships ENABLED: it is the headline out-of-the-box
++# feature, its cost is one announce a day plus a small python process, and the
++# RAM floor below turns "tight box" into "bot off" — never "rnsd OOM-killed".
++# Disable with the portal's Echo bot tab (or enabled=no here) + restart.
++#
++# Runs AFTER S82rnsd so it attaches to rnsd's *shared* Reticulum instance
++# (--rnsconfig is baked into the script: /etc/reticulum) instead of starting a
++# second transport stack. rnsd's shared instance may open a little after rcS
++# starts us; the daemon polls /proc for it itself (rns_shared_up, the
++# S85lxmd test) and only then attaches — so unlike S85lxmd there is no
++# wanwatch deferral here, and start() just requires rnsd to be running.
++#
++# Identity: the daemon keeps /var/lib/rnsbox-echobot/identity.pem on the
++# persistent rootfs (umask 077 while it runs, so the file lands 0600) — the
++# LXMF address and the 6-hex name suffix survive reboots and updates. The
++# rest of /var/lib/rnsbox-echobot (LXMF caches, state.json) is small and
++# rarely written: rootfs-safe.
++#
++# Like S82rnsd/S85lxmd: unbuffered output fed to syslog (/var/log/messages,
++# tag "echobot[<pid>]") through a FIFO, so $! / the pidfile is the daemon
++# itself. It leads a session and process group of its own (setsid), and stop
++# ends that whole group: LXMF can fork stamp-generation workers, which would
++# otherwise outlive a SIGTERM to the daemon alone (see stop_bot). Nothing
++# started here keeps the caller's stdin/stdout/stderr.
++#
++# `announce` — forced announce for the portal's "Announce now" button: sends
++# SIGUSR1 to a running daemon (exit 1 if it is not running). `enabled` —
++# exit 0 iff enabled=yes in the conf (wanwatch's svc_enabled convention, kept
++# for operators and future wiring).
++
++NAME=echobot
++DAEMON=/usr/bin/rnsbox-echobot
++CONF=/etc/rnsbox/echobot.conf
++STATEDIR=/var/lib/rnsbox-echobot
++PIDFILE=/var/run/$NAME.pid
++LOGPIPE=/var/run/$NAME.logpipe
++LOGGER_PIDFILE=/var/run/$NAME.logger.pid   # the logger reading $LOGPIPE
++STOP_WAIT=10   # s the daemon gets to persist LXMF state and exit after TERM
++
++[ -x "$DAEMON" ] || exit 0
++
++# --- read the enable flag + RAM floor (flat key=value, no shell sourcing) ---
++read_conf() {
++	enabled="yes"
++	min_free_mb=40
++	if [ -r "$CONF" ]; then
++		v=$(grep -E '^[[:space:]]*enabled[[:space:]]*=' "$CONF" 2>/dev/null \
++		      | tail -1 | sed -E 's/^[[:space:]]*enabled[[:space:]]*=[[:space:]]*//' \
++		      | tr -d '"' | tr -d "'" | tr '[:upper:]' '[:lower:]' | awk '{print $1}')
++		case "$v" in no|false|0|off) enabled="no" ;; esac
++		m=$(grep -E '^[[:space:]]*min_free_mb[[:space:]]*=' "$CONF" 2>/dev/null \
++		      | tail -1 | sed -E 's/^[[:space:]]*min_free_mb[[:space:]]*=[[:space:]]*//' \
++		      | tr -d '"' | tr -d "'" | awk '{print $1}')
++		case "$m" in ''|*[!0-9]*) ;; *) min_free_mb="$m" ;; esac
++	fi
++}
++
++mem_available_mb() {
++	awk '/^MemAvailable:/{print int($2/1024); found=1} END{if(!found) print 0}' /proc/meminfo 2>/dev/null
++}
++
++# rnsd_running — true while an rnsd process exists. A /proc cmdline scan, not
++# `pidof rnsd`: rnsd is a python console-script (argv "/usr/bin/python
++# /usr/bin/rnsd ..."), and pidof is not present on every buildroot image this
++# script ships on; the scan matches what S82rnsd's own is_rnsd() matches.
++rnsd_running() {
++	for _d in /proc/[0-9]*/cmdline; do
++		tr '\0' '\n' <"$_d" 2>/dev/null | head -n 2 | grep -qE '(^|/)rnsd$' && return 0
++	done
++	return 1
++}
++
++# pidfile_pid FILE — print the pid FILE holds; false if none (or not a pid).
++pidfile_pid() {
++	_p=
++	{ read -r _p <"$1"; } 2>/dev/null
++	case "$_p" in ''|*[!0-9]*) return 1 ;; esac
++	echo "$_p"
++}
++
++# pstat PID — PSTATE and PPGRP = PID's state and process group (fields 3 and
++# 5 of /proc/PID/stat, counted after comm's last ")": comm may hold spaces);
++# false once PID is gone. Builtins only. Same as S82rnsd/S85lxmd.
++pstat() {
++	PSTATE=; PPGRP=
++	case "$1" in ''|*[!0-9]*) return 1 ;; esac
++	_s=
++	{ read -r _s <"/proc/$1/stat"; } 2>/dev/null || return 1
++	set -- ${_s##*) }
++	PSTATE=$1; PPGRP=$3
++}
++
++# is_echobot PID — true if PID is a live echobot daemon, or a fork of one
++# (LXMF's stamp workers are forks without exec, so they keep its comm). The
++# daemon is a shebang script, and the kernel names a script process after the
++# script file, so its comm is "rnsbox-echobot"; started through the
++# interpreter instead (comm python*) it is confirmed on argv[0]/argv[1]. A
++# zombie, a recycled pid or logger's "echobot[<pid>]" tag never match.
++is_echobot() {
++	pstat "$1" && [ "$PSTATE" != Z ] || return 1
++	comm=
++	{ read -r comm <"/proc/$1/comm"; } 2>/dev/null
++	case "$comm" in
++		rnsbox-echobot) return 0 ;;
++		python*) tr '\0' '\n' <"/proc/$1/cmdline" 2>/dev/null | head -n 2 \
++		           | grep -qE '(^|/)rnsbox-echobot$' ;;
++		*)       return 1 ;;
++	esac
++}
++
++# group_alive PGID — true while process group PGID has a member that has not
++# exited (a zombie holds nothing open). Builtins only.
++group_alive() {
++	for _d in /proc/[0-9]*; do
++		pstat "${_d#/proc/}" && [ "$PPGRP" = "$1" ] && [ "$PSTATE" != Z ] && return 0
++	done
++	return 1
++}
++
++# group_has_echobot PGID — true if the daemon, or a fork of it, is alive in
++# process group PGID: the daemon's group, even once the daemon itself is gone
++# and only its forks are left.
++group_has_echobot() {
++	for _d in /proc/[0-9]*; do
++		pstat "${_d#/proc/}" && [ "$PPGRP" = "$1" ] && is_echobot "${_d#/proc/}" && return 0
++	done
++	return 1
++}
++
++# is_our_logger PID — true if PID is the logger start ran for the daemon's
++# output: comm "logger" and an "echobot[<pid>]" tag in its argv (a zombie's
++# argv reads empty), so a stale $LOGGER_PIDFILE naming a recycled pid never
++# matches.
++is_our_logger() {
++	_c=
++	{ read -r _c <"/proc/$1/comm"; } 2>/dev/null
++	[ "$_c" = logger ] || return 1
++	tr '\0' '\n' <"/proc/$1/cmdline" 2>/dev/null | grep -q "^$NAME\[[0-9]*\]\$"
++}
++
++# stop_bot — stop the daemon and everything it started; false if nothing was
++# running. start made it the leader of a session and process group of its own
++# (setsid), numbered by the pid in $PIDFILE, and all it forks stays in that
++# group. On the box, LXMF's stamp workers would survive a SIGTERM to the
++# daemon alone: reparented to init, spinning at ~100% CPU, holding the FIFO
++# open so that logger never exited either. So (as S85lxmd):
++#   1. SIGSTOP the group (so CPU-bound forks don't starve the exit on the one
++#      core), SIGTERM the daemon and SIGCONT it alone: it persists its LXMF
++#      state and exits. Wait up to STOP_WAIT s for it.
++#   2. SIGKILL whatever is left of the group: the forks, and the daemon itself
++#      if it overran. Not SIGTERM: a fork inherits the daemon's Python signal
++#      handlers, and a stamp worker given SIGTERM would run its own exit
++#      handler and write state from its stale fork-time copy.
++#   3. Wait up to 1 s for the group and logger to be gone; logger reads EOF
++#      once the last writer of the FIFO has exited.
++# A daemon found gone with forks still running (it crashed, or was killed on
++# its own) skips to 2 — start runs this for that case too. A stale pidfile is
++# harmless: a recycled pid is no daemon (is_echobot), and while any member of
++# the group lives the kernel never hands out its number again. A daemon that
++# is not its own group leader (setsid missing) is signalled alone, never its
++# group.
++stop_bot() {
++	p=$(pidfile_pid "$PIDFILE")
++	lp=$(pidfile_pid "$LOGGER_PIDFILE") && ! is_our_logger "$lp" && lp=
++	lead=; grp=
++	if [ -n "$p" ] && is_echobot "$p"; then
++		lead=$p
++		[ "$PPGRP" = "$p" ] && grp=$p
++	elif [ -n "$p" ] && group_has_echobot "$p"; then
++		grp=$p
++	fi
++	if [ -z "$lead$grp" ]; then
++		# nothing left to log for
++		[ -n "$lp" ] && kill "$lp" 2>/dev/null
++		rm -f "$LOGGER_PIDFILE"
++		return 1
++	fi
++	if [ -n "$lead" ]; then
++		[ -n "$grp" ] && kill -STOP "-$grp" 2>/dev/null
++		kill "$lead" 2>/dev/null
++		kill -CONT "$lead" 2>/dev/null
++		i=0
++		while [ "$i" -lt "$STOP_WAIT" ] && is_echobot "$lead"; do
++			sleep 1; i=$((i + 1))
++		done
++	fi
++	if [ -n "$grp" ]; then
++		group_alive "$grp" && kill -KILL "-$grp" 2>/dev/null
++	elif is_echobot "$lead"; then
++		kill -KILL "$lead" 2>/dev/null
++	fi
++	i=0
++	while [ "$i" -lt 5 ]; do
++		{ [ -n "$grp" ] && group_alive "$grp"; } || is_echobot "$lead" \
++			|| { [ -n "$lp" ] && is_our_logger "$lp"; } || break
++		sleep 0.2; i=$((i + 1))
++	done
++	[ -n "$lp" ] && is_our_logger "$lp" && kill "$lp" 2>/dev/null
++	rm -f "$LOGGER_PIDFILE"
++	return 0
++}
++
++# disabled — true, with a note, unless $CONF says enabled=yes (also loads
++# min_free_mb). Every start path runs this first.
++disabled() {
++	read_conf
++	[ "$enabled" = "yes" ] && return 1
++	echo "S87echobot: disabled in $CONF (enabled=$enabled); skipping"
++	echo "           set 'enabled=yes' to run the LXMF echo bot"
++	return 0
++}
++
++start() {
++	disabled && return 0
++
++	if p=$(pidfile_pid "$PIDFILE") && is_echobot "$p"; then
++		echo "S87echobot: already running (pid $p)"
++		return 0
++	fi
++	# What a daemon that died left behind: its forks and its logger.
++	stop_bot && echo "S87echobot: ended the forks of a daemon that had exited (pid ${p:-?})"
++
++	# The daemon attaches to rnsd's shared instance — no rnsd, nothing to
++	# attach to. (It waits for the shared socket itself; this only catches
++	# rnsd being disabled/stopped entirely.)
++	if ! rnsd_running; then
++		echo "S87echobot: refusing to start - rnsd (S82rnsd) is not running"
++		echo "           the echo bot shares rnsd's Reticulum instance; start rnsd first"
++		return 1
++	fi
++
++	# RAM floor: protect rnsd (the core service) from an OOM kill. The daemon
++	# has no message store, so it needs less than lxmd's 60.
++	avail=$(mem_available_mb)
++	if [ "$avail" -lt "$min_free_mb" ]; then
++		echo "S87echobot: refusing to start - only ${avail} MB free (< min_free_mb=${min_free_mb})"
++		echo "           free RAM first (e.g. 'S81router stop' to stop the web UI)"
++		echo "           or lower min_free_mb in $CONF if you know your budget"
++		return 1
++	fi
++
++	mkdir -p /var/run "$STATEDIR"
++	# The daemon runs with umask 077 (identity.pem + state.json are
++	# root-private); tighten anything an older build left readable.
++	find "$STATEDIR" ! -type l -perm /077 -exec chmod go-rwx {} + 2>/dev/null
++
++	printf "Starting %s: " "$NAME"
++	# setsid: the daemon leads a session and process group of its own (stop
++	# ends that group), with no controlling terminal. busybox setsid forks
++	# only when its caller leads a process group, and the backgrounded
++	# subshell never does (no job control in a script): it exec's setsid,
++	# which exec's the daemon, so $! is the daemon's pid and its process
++	# group. Without setsid it still runs, and stop signals it alone. stdin
++	# is /dev/null, the daemon writes only to the FIFO and logger only to
++	# syslog: nothing keeps the caller's stdin/stdout/stderr open. logger
++	# gets a session of its own too, and its pid is kept for stop.
++	SETSID=
++	command -v setsid >/dev/null 2>&1 && SETSID=setsid
++	rm -f "$LOGPIPE" "$LOGGER_PIDFILE"
++	if command -v logger >/dev/null 2>&1 && mkfifo -m 600 "$LOGPIPE" 2>/dev/null; then
++		(
++			umask 077
++			export PYTHONUNBUFFERED=1
++			exec $SETSID "$DAEMON"
++		) 9>&- </dev/null >"$LOGPIPE" 2>&1 &
++		PID=$!
++		$SETSID logger -t "$NAME[$PID]" -p daemon.notice 9>&- <"$LOGPIPE" >/dev/null 2>&1 &
++		echo $! > "$LOGGER_PIDFILE"
++	else
++		( umask 077; exec $SETSID "$DAEMON" ) 9>&- </dev/null >/dev/null 2>&1 &
++		PID=$!
++	fi
++	echo "$PID" > "$PIDFILE"
++	sleep 0.5
++	if kill -0 "$PID" 2>/dev/null; then
++		echo "OK (pid $PID, ${avail} MB free, shared instance)"
++	else
++		echo "FAIL (see /var/log/messages)"
++		rm -f "$PIDFILE"
++		return 1
++	fi
++}
++
++stop() {
++	printf "Stopping %s: " "$NAME"
++	if stop_bot; then
++		rm -f "$PIDFILE"
++		echo "OK"
++	else
++		rm -f "$PIDFILE"
++		echo "(not running)"
++	fi
++}
++
++# Forced announce for the portal's Echo bot tab: SIGUSR1 to a running daemon.
++# The announce loop picks it up within its 1 s tick; the announce lands in
++# syslog ("LXMF announced ...") and state.json (last_announce).
++announce() {
++	p=$(pidfile_pid "$PIDFILE")
++	if [ -n "$p" ] && is_echobot "$p"; then
++		if kill -USR1 "$p" 2>/dev/null; then
++			echo "S87echobot: announce requested (pid $p)"
++			return 0
++		fi
++		echo "S87echobot: could not signal pid $p" >&2
++		return 1
++	fi
++	echo "S87echobot: not running - no announce sent (start it first)" >&2
++	return 1
++}
++
++status() {
++	read_conf
++	echo "enabled in conf: $enabled  (min_free_mb=$min_free_mb, free now $(mem_available_mb) MB)"
++	if p=$(pidfile_pid "$PIDFILE") && is_echobot "$p"; then
++		echo "running:         pid $p"
++	else
++		echo "running:         no"
++	fi
++	[ -r "$STATEDIR/state.json" ] && cat "$STATEDIR/state.json"
++}
++
++# start/stop/restart serialize on one lock (rcS, the portal and an operator
++# can overlap); announce needs it too (it reads the pidfile). flock -n in a
++# loop (busybox flock has no -w), bounded like S82rnsd.
++LOCK_WAIT=20
++[ "$1" = announce ] && LOCK_WAIT=5
++exec 9>/run/echobot.lock
++if command -v flock >/dev/null 2>&1; then
++	i=0
++	until flock -n 9 2>/dev/null; do
++		if [ "$i" -ge "$LOCK_WAIT" ]; then
++			echo "S87echobot: ${1:-start}: /run/echobot.lock still held after ${LOCK_WAIT}s - not done" >&2
++			exit 1
++		fi
++		sleep 1; i=$((i + 1))
++	done
++fi
++
++case "${1:-start}" in
++	start)   start ;;
++	stop)    stop ;;
++	restart) stop; sleep 1; start ;;
++	announce) announce ;;
++	enabled) disabled && exit 1 || exit 0 ;;
++	status)  status ;;
++	*) echo "Usage: $0 {start|stop|restart|announce|enabled|status}" >&2; exit 1 ;;
++esac
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/echobot.conf b/buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/echobot.conf
+new file mode 100644
+index 0000000..3825720
+--- /dev/null
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/echobot.conf
+@@ -0,0 +1,33 @@
++# Echo bot daemon config — read at boot by /etc/init.d/S87echobot and on every
++# start by /usr/bin/rnsbox-echobot. Edited by the portal's "Echo bot" tab;
++# changes apply on `S87echobot restart`.
++#
++# The echo bot is the box's built-in LXMF presence: it announces its LXMF
++# address (once a day by default) and echoes every message back to its sender,
++# so any LXMF client (NomadNet, Sideband, ...) can check the box is reachable
++# with zero setup. It attaches to rnsd's shared Reticulum instance and has its
++# own identity (persisted at /var/lib/rnsbox-echobot/identity.pem), so its
++# address and announced name never change across reboots or updates.
++#
++# Shipped ENABLED — unlike lxmd/nomadnet this is the out-of-the-box feature:
++# one announce a day, a small python process, no message store. The RAM floor
++# below turns "tight box" into "bot off", never "rnsd killed by OOM".
++
++enabled=yes
++
++# Seconds between announces. 86400 = once a day. The portal offers 1 h .. 7 d.
++interval=86400
++
++# Announced name. A 6-hex-character suffix (the first 3 bytes of the bot
++# identity's hash, stable for this box) is appended automatically and shown,
++# not editable: "rnsbox echo bot a1b2c3".
++name=rnsbox echo bot
++
++# Announce right after start (so the box is visible again quickly after a
++# reboot, not a day later).
++announce_at_start=yes
++
++# Minimum free memory (MB, from /proc/meminfo MemAvailable) required before
++# S87echobot will start the daemon. Guards rnsd against OOM. The bot needs
++# less than lxmd (no message store), so its floor is lower.
++min_free_mb=40
+diff --git a/buildroot/board/cvitek/SG200X/overlay/usr/bin/rnsbox-echobot b/buildroot/board/cvitek/SG200X/overlay/usr/bin/rnsbox-echobot
+new file mode 100755
+index 0000000..c2aba52
+--- /dev/null
++++ b/buildroot/board/cvitek/SG200X/overlay/usr/bin/rnsbox-echobot
+@@ -0,0 +1,425 @@
++#!/usr/bin/python3
++# rnsbox-echobot — the RNSBox local LXMF echo bot.
++#
++# Announces one LXMF delivery destination on rnsd's shared Reticulum instance
++# and echoes every message it receives back to its sender — the box's
++# "reachable?" presence for any LXMF client (NomadNet, Sideband, ...),
++# testable out of the box. Started by /etc/init.d/S87echobot; configured by
++# /etc/rnsbox/echobot.conf (enabled, interval, name, announce_at_start).
++#
++# Own LXMRouter + own identity, like lxmd and nomadnet: every process on the
++# box holds its own LXMF delivery destination and they coexist over the ONE
++# shared Reticulum instance (rnsd, S82rnsd). The identity lives at
++# /var/lib/rnsbox-echobot/identity.pem on the persistent rootfs (created on
++# first start, never regenerated), so the bot's LXMF address — and the 6-hex
++# suffix of its announced name (the first 3 bytes of the identity hash) — are
++# stable across reboots and updates.
++#
++# Shared-instance race: at boot this script may run before rnsd has opened the
++# shared instance. Constructing RNS.Reticulum() then would silently start a
++# SECOND instance (no interfaces), and it could not be retried — RNS pins its
++# singleton before failing. So wait for the shared instance first, by polling
++# /proc/net/unix (@rns/<path> LISTEN) and /proc/net/tcp (127.0.0.1:37428
++# LISTEN) — the same test S85lxmd's rns_shared_up() makes — and build the one
++# RNS.Reticulum() only once the socket is there. If rnsd restarts later, the
++# client interface RNS gave us reconnects on its own.
++#
++# Forced announce: the portal runs `S87echobot announce`, which sends SIGUSR1;
++# the announce loop picks it up within its 1 s tick.
++#
++# Status for the portal: /var/lib/rnsbox-echobot/state.json (atomic rewrites),
++# read directly by the CGI. Announces are logged to stdout -> syslog via the
++# init script's FIFO ("LXMF announced <hash> as <name>"), so `logread |
++# grep echobot` shows the announce history.
++#
++# No propagation node: replies go DIRECT (or OPPORTUNISTIC when a ratchet is
++# known and no link exists — one packet instead of a link setup). Received
++# LXMF fields are NOT echoed (they can carry multi-megabyte file attachments;
++# an echo bot proves reachability, it must not amplify traffic). No inbound
++# stamp cost is set: requiring proof-of-work would make this box's CPU a
++# public work target.
++
++import json
++import os
++import queue
++import signal
++import sys
++import threading
++import time
++
++CONF_PATH = "/etc/rnsbox/echobot.conf"
++STATE_DIR = "/var/lib/rnsbox-echobot"
++IDENTITY_PATH = os.path.join(STATE_DIR, "identity.pem")
++STATE_PATH = os.path.join(STATE_DIR, "state.json")
++RNS_CONFIGDIR = "/etc/reticulum"
++
++DEFAULT_NAME = "rnsbox echo bot"
++DEFAULT_INTERVAL = 86400        # one announce per day
++MIN_INTERVAL = 600              # 10 min: an announce flood helps nobody
++MAX_INTERVAL = 30 * 86400       # 30 days
++PATH_WAIT_SECONDS = 15          # how long a reply waits for the sender's path
++
++APP_NAME = "lxmf"               # LXMF's APP_NAME; delivery = "lxmf.delivery"
++
++# Counters that survive restarts (the identity — and so the bot — does too);
++# everything identity/config-derived is rewritten on every start.
++PERSISTED_FIELDS = ("last_announce", "announce_count", "echo_ok", "echo_fail")
++
++
++def log(msg):
++    # stdout is a FIFO to logger (syslog, tag echobot[pid]) — unbuffered via
++    # PYTHONUNBUFFERED=1 from the init script.
++    try:
++        sys.stdout.write(time.strftime("%Y-%m-%d %H:%M:%S ") + msg + "\n")
++        sys.stdout.flush()
++    except Exception:
++        pass
++
++
++# ---------------------------------------------------------------- config ----
++
++def read_conf(path):
++    conf = {
++        "enabled": True,
++        "interval": DEFAULT_INTERVAL,
++        "name": DEFAULT_NAME,
++        "announce_at_start": True,
++    }
++    try:
++        with open(path, "r", encoding="utf-8", errors="replace") as f:
++            for raw in f:
++                line = raw.strip()
++                if not line or line.startswith("#") or "=" not in line:
++                    continue
++                key, val = line.split("=", 1)
++                key = key.strip().lower()
++                val = val.strip().strip('"').strip("'")
++                low = val.lower()
++                if key == "enabled":
++                    conf["enabled"] = low not in ("no", "0", "false", "off", "")
++                elif key == "interval":
++                    try:
++                        conf["interval"] = int(val)
++                    except ValueError:
++                        pass
++                elif key == "name" and val:
++                    conf["name"] = val[:64]
++                elif key == "announce_at_start":
++                    conf["announce_at_start"] = low not in ("no", "0", "false", "off", "")
++    except FileNotFoundError:
++        pass
++    except Exception as e:
++        log("could not read " + path + ": " + repr(e))
++    if conf["interval"] < MIN_INTERVAL:
++        conf["interval"] = MIN_INTERVAL
++    if conf["interval"] > MAX_INTERVAL:
++        conf["interval"] = MAX_INTERVAL
++    return conf
++
++
++# ----------------------------------------------------------------- state ----
++
++class State:
++    # What the portal's Echo bot tab shows. Written atomically; the CGI reads
++    # it straight from disk on every page paint. RLock: announce bookkeeping
++    # runs while holding the lock and calls bump().
++    FIELDS = ("status", "detail", "lxmf_addr", "dest_hash", "suffix", "name_base",
++              "display_name", "interval", "started_at", "last_announce",
++              "announce_count", "echo_ok", "echo_fail")
++
++    def __init__(self):
++        self.lock = threading.RLock()
++        self.data = {k: (0 if k in PERSISTED_FIELDS or k in
++                         ("interval", "started_at") else
++                         ("starting" if k == "status" else ""))
++                     for k in self.FIELDS}
++        # Keep counters (and the last announce time) across restarts.
++        try:
++            with open(STATE_PATH, "r", encoding="utf-8") as f:
++                old = json.load(f)
++            for k in PERSISTED_FIELDS:
++                if isinstance(old.get(k), int) and old[k] >= 0:
++                    self.data[k] = old[k]
++        except Exception:
++            pass
++
++    def set(self, **kw):
++        with self.lock:
++            self.data.update(kw)
++            self.write()
++
++    def bump(self, key, **extra):
++        with self.lock:
++            self.data[key] = int(self.data.get(key, 0)) + 1
++            self.data.update(extra)
++            self.write()
++
++    def write(self):
++        tmp = STATE_PATH + ".tmp"
++        try:
++            with open(tmp, "w", encoding="utf-8") as f:
++                json.dump(self.data, f, indent=1)
++                f.write("\n")
++            os.replace(tmp, STATE_PATH)
++            os.chmod(STATE_PATH, 0o600)
++        except Exception as e:
++            log("could not write state.json: " + repr(e))
++
++
++# ------------------------------------------------- shared instance probe ----
++
++def config_shared_port():
++    # The shared instance's TCP port from /etc/reticulum/config (the shipped
++    # config uses the RNS default 37428; the portal's raw editor can change
++    # it, and the probe should follow).
++    port = 37428
++    try:
++        with open(os.path.join(RNS_CONFIGDIR, "config"), "r",
++                  encoding="utf-8", errors="replace") as f:
++            in_rns = False
++            for raw in f:
++                line = raw.split("#", 1)[0].strip()
++                if not line:
++                    continue
++                if line.startswith("["):
++                    in_rns = (line.lower().startswith("[reticulum]"))
++                    continue
++                if not in_rns or "=" not in line:
++                    continue
++                key, val = line.split("=", 1)
++                if key.strip().lower() == "shared_instance_port":
++                    try:
++                        port = int(val.strip())
++                    except ValueError:
++                        pass
++    except Exception:
++        pass
++    return port
++
++
++def shared_instance_up():
++    # True once rnsd's shared instance accepts clients. RNS on Linux listens
++    # on the abstract AF_UNIX socket @rns/<path> (flags 00010000 = listening,
++    # in /proc/net/unix; @rns/<path>/rpc is its RPC socket, not this), or on
++    # 127.0.0.1:<shared_instance_port> (state 0A = LISTEN) with
++    # shared_instance_type = tcp. Same test as S85lxmd/S46wanwatch
++    # rns_shared_up(); builtins only.
++    try:
++        with open("/proc/net/unix", "r") as f:
++            for line in f:
++                parts = line.split()
++                if len(parts) >= 7 and parts[3] == "00010000":
++                    path = parts[-1]
++                    if path.startswith("@rns/") and path.count("/") == 1:
++                        return True
++    except Exception:
++        pass
++    hexport = "%04X" % config_shared_port()
++    want = "0100007F:" + hexport
++    try:
++        with open("/proc/net/tcp", "r") as f:
++            for line in f:
++                parts = line.split()
++                if len(parts) >= 4 and parts[1] == want and parts[3] == "0A":
++                    return True
++    except Exception:
++        pass
++    return False
++
++
++# ------------------------------------------------------------------ bot -----
++
++def main():
++    conf = read_conf(CONF_PATH)
++    if not conf["enabled"]:
++        log("disabled in " + CONF_PATH + " (enabled=no); exiting")
++        return 0
++
++    os.makedirs(STATE_DIR, exist_ok=True)
++    state = State()
++    state.set(status="waiting", detail="waiting for rnsd's shared instance",
++              name_base=conf["name"], interval=conf["interval"],
++              started_at=int(time.time()))
++
++    # ---- wait for rnsd's shared instance (S82rnsd may still be starting) ----
++    waited = 0
++    while not shared_instance_up():
++        if waited % 60 == 0:
++            log("waiting for rnsd's shared instance (" + str(waited) + "s)")
++        time.sleep(1)
++        waited += 1
++    log("rnsd's shared instance is up (waited " + str(waited) + "s)")
++
++    import RNS
++    import LXMF
++
++    # Syslog should hold more than our own lines: paths, interface connects.
++    RNS.loglevel = RNS.LOG_INFO
++
++    # Attach to rnsd's shared instance — never a second transport stack.
++    RNS.Reticulum(configdir=RNS_CONFIGDIR)
++
++    # ---- identity: persistent, so address + name suffix never change -------
++    if os.path.isfile(IDENTITY_PATH) and os.path.getsize(IDENTITY_PATH) > 0:
++        identity = RNS.Identity(create_keys=False)
++        identity.load(IDENTITY_PATH)
++        log("identity loaded from " + IDENTITY_PATH)
++    else:
++        identity = RNS.Identity(create_keys=True)
++        tmp = IDENTITY_PATH + ".tmp"
++        with open(tmp, "wb") as f:
++            f.write(identity.get_private_key())
++        os.chmod(tmp, 0o600)
++        os.replace(tmp, IDENTITY_PATH)
++        log("new identity created at " + IDENTITY_PATH)
++
++    suffix = identity.hash[:3].hex()
++    display_name = (conf["name"] + " " + suffix).strip()
++    state.set(status="waiting", detail="attaching to the shared instance",
++              lxmf_addr=identity.hash.hex(), dest_hash="", suffix=suffix,
++              name_base=conf["name"], display_name=display_name,
++              interval=conf["interval"], started_at=int(time.time()))
++    log("LXMF address " + identity.hash.hex() + " (\"" + display_name + "\")")
++
++    # ---- LXMF router + delivery destination --------------------------------
++    router = LXMF.LXMRouter(identity=identity, storagepath=STATE_DIR)
++    delivery = router.register_delivery_identity(identity, display_name=display_name)
++    if delivery is None:
++        state.set(status="error", detail="could not register the delivery destination")
++        log("FATAL: could not register the LXMF delivery destination")
++        return 1
++
++    announce_wanted = threading.Event()
++    stop_wanted = threading.Event()
++    replies = queue.Queue()
++
++    def on_message(lxmessage):
++        # Runs on LXMF's receive path: enqueue and return immediately.
++        replies.put(lxmessage)
++
++    router.register_delivery_callback(on_message)
++
++    def do_announce():
++        try:
++            router.announce(delivery.hash)
++        except Exception as e:
++            log("announce failed: " + repr(e))
++            return
++        with state.lock:
++            state.data["last_announce"] = int(time.time())
++            state.bump("announce_count")
++        log("LXMF announced " + delivery.hash.hex() + " as \"" + display_name + "\"")
++
++    def announce_loop():
++        # Announce at start, then every `interval` seconds (monotonic clock:
++        # a wall-clock step must not skip or double an announce), plus on
++        # SIGUSR1 (the portal's "Announce now").
++        if conf["announce_at_start"]:
++            time.sleep(1)   # let RNS finish bringing interfaces up
++            do_announce()
++        next_at = time.monotonic() + conf["interval"]
++        while not stop_wanted.is_set():
++            if announce_wanted.is_set():
++                announce_wanted.clear()
++                do_announce()
++                next_at = time.monotonic() + conf["interval"]
++            elif time.monotonic() >= next_at:
++                do_announce()
++                next_at = time.monotonic() + conf["interval"]
++            time.sleep(1)
++
++    def echo_worker():
++        # Replies from a worker thread: waiting for the sender's path must
++        # never stall LXMF's delivery pipeline.
++        while not stop_wanted.is_set():
++            try:
++                msg = replies.get(timeout=1)
++            except queue.Empty:
++                continue
++            src = getattr(msg, "source_hash", None)
++            content = getattr(msg, "content", b"")
++            title = getattr(msg, "title", "") or ""
++            try:
++                content = content.decode("utf-8", errors="replace") if isinstance(content, bytes) else content
++            except Exception:
++                content = str(content)
++            if src is None:
++                state.bump("echo_fail")
++                continue
++            srchex = src.hex()
++            log("received a message from " + srchex + " (" + str(len(content)) + " bytes); echoing back")
++            try:
++                dest_identity = RNS.Identity.recall(src)
++                if dest_identity is None:
++                    RNS.Transport.request_path(src)
++                    deadline = time.time() + PATH_WAIT_SECONDS
++                    while dest_identity is None and time.time() < deadline:
++                        time.sleep(0.2)
++                        dest_identity = RNS.Identity.recall(src)
++                if dest_identity is None:
++                    log("no path/identity for " + srchex + " — reply dropped")
++                    state.bump("echo_fail")
++                    continue
++
++                dest = RNS.Destination(dest_identity, RNS.Destination.OUT,
++                                       RNS.Destination.SINGLE, APP_NAME, "delivery")
++                # DIRECT by default; OPPORTUNISTIC when there is no link yet
++                # but a ratchet is known — one packet instead of a link setup.
++                method = LXMF.LXMessage.DIRECT
++                if (not router.delivery_link_available(src)
++                        and RNS.Identity.current_ratchet_id(src) is not None):
++                    method = LXMF.LXMessage.OPPORTUNISTIC
++
++                reply = LXMF.LXMessage(destination=dest, source=delivery,
++                                       content=content, title=title,
++                                       desired_method=method)
++
++                def on_delivered(lxm, s=src):
++                    log("echo delivered to " + s.hex())
++                    state.bump("echo_ok")
++
++                def on_failed(lxm, s=src):
++                    log("echo to " + s.hex() + " failed")
++                    state.bump("echo_fail")
++
++                reply.register_delivery_callback(on_delivered)
++                reply.register_failed_callback(on_failed)
++                router.handle_outbound(reply)
++            except Exception as e:
++                log("echo to " + srchex + " failed: " + repr(e))
++                state.bump("echo_fail")
++
++    def on_usr1(signum, frame):
++        announce_wanted.set()
++
++    def on_term(signum, frame):
++        stop_wanted.set()
++
++    signal.signal(signal.SIGUSR1, on_usr1)
++    signal.signal(signal.SIGTERM, on_term)
++    signal.signal(signal.SIGINT, on_term)
++
++    for t in (threading.Thread(target=announce_loop, daemon=True),
++              threading.Thread(target=echo_worker, daemon=True)):
++        t.start()
++
++    state.set(status="running", detail="announcing and echoing",
++              lxmf_addr=identity.hash.hex(), dest_hash=delivery.hash.hex(),
++              suffix=suffix, name_base=conf["name"], display_name=display_name,
++              interval=conf["interval"], started_at=int(time.time()))
++    log("echo bot running: address " + delivery.hash.hex() +
++        ", announce interval " + str(conf["interval"]) + "s")
++
++    # Main thread just waits; RNS's own threads carry the traffic.
++    try:
++        while not stop_wanted.is_set():
++            time.sleep(0.5)
++    finally:
++        state.set(status="stopped", detail="stopped")
++        log("stopping")
++
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+-- 
+2.43.0
+
