@@ -6,6 +6,9 @@
 #include <cstdint>
 #include <cstring>
 #include <algorithm>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 namespace store {
 
@@ -524,6 +527,49 @@ BleConfig read_ble() {
         for (auto& ch : k) ch = (char)tolower((unsigned char)ch);
         if (k == "enabled") c.enabled = v.empty() ? "no" : v;
         else if (k == "device_name") c.device_name = v;
+// ---- RNode LoRa modem (USB serial / BLE), see store.h ----
+// Ranges mirror RNS/Interfaces/RNodeInterface.py __init__: an out-of-range
+// radio value raises inside rnsd's interface loop and ends in RNS.panic(),
+// so the portal and S81rnode both reject them before rnsd ever sees them.
+static bool rnode_num_in_range(const std::string& s, long lo, long hi) {
+    if (!all_digits(s) || s.size() > 10) return false;
+    long v = strtol(s.c_str(), nullptr, 10);
+    return v >= lo && v <= hi;
+}
+
+static bool rnode_valid_ble_address(const std::string& s) {
+    // AA:BB:CC:DD:EE:FF — what RNodeInterface's ble:// parser expects
+    // (6 colon groups, 17 chars); it uppercases internally.
+    if (s.size() != 17) return false;
+    for (size_t i = 0; i < s.size(); ++i) {
+        char c = s[i];
+        if (i % 3 == 2) { if (c != ':') return false; }
+        else if (!isxdigit((unsigned char)c)) return false;
+    }
+    return true;
+}
+
+RnodeConfig read_rnode() {
+    RnodeConfig c;
+    for (const auto& ln : read_lines(RNODE_FILE)) {
+        std::string s = util::trim(ln);
+        if (s.empty() || s[0] == '#' || s.find('=') == std::string::npos) continue;
+        size_t eq = s.find('=');
+        std::string k = util::trim(s.substr(0, eq));
+        std::string v = s.substr(eq + 1);
+        size_t h = v.find('#'); if (h != std::string::npos) v = v.substr(0, h);
+        v = util::trim(v);
+        if (k == "transport") c.transport = v;
+        else if (k == "device") c.device = v;
+        else if (k == "ble_address") c.ble_address = v;
+        else if (k == "ble_name") c.ble_name = v;
+        else if (k == "name") c.name = v;
+        else if (k == "frequency") c.frequency = v;
+        else if (k == "bandwidth") c.bandwidth = v;
+        else if (k == "txpower") c.txpower = v;
+        else if (k == "spreadingfactor") c.spreadingfactor = v;
+        else if (k == "codingrate") c.codingrate = v;
+        else if (k == "flow_control") c.flow_control = v;
     }
     return c;
 }
@@ -593,4 +639,137 @@ bool write_ble(const BleConfig& cfg, std::string& err) {
     if (!util::write_file_atomic(RETICULUM_CONFIG, o, 0600)) { err = "write failed"; return false; }  // see write_reticulum_config
     return true;
 }
+bool write_rnode(const RnodeConfig& c, std::string& err) {
+    std::string transport = util::trim(c.transport);
+    for (auto& ch : transport) ch = (char)tolower((unsigned char)ch);
+    if (transport != "off" && transport != "usb" && transport != "ble") {
+        err = "transport must be off, usb or ble"; return false;
+    }
+
+    // [[section]] name: no [ ] (header line), no control chars (config line
+    // injection), collapsed whitespace, bounded — mirrors S81rnode's tr.
+    std::string name;
+    {
+        std::string n;
+        for (unsigned char ch : c.name)
+            if (ch != '[' && ch != ']' && !(ch < 0x20 && ch != '\t') && ch != 0x7f) n += (char)ch;
+        for (const auto& p : split_ws(n)) { if (!name.empty()) name += " "; name += p; }
+        if (name.size() > 48) name = name.substr(0, 48);
+    }
+    if (name.empty()) name = "RNode";
+
+    std::string dev = util::trim(c.device);
+    bool usb = (transport == "usb");
+    if (usb && dev.empty()) dev = "auto";
+    if (usb && dev != "auto" && !valid_tty(dev)) { err = "bad device path"; return false; }
+
+    std::string ble_addr = util::trim(c.ble_address);
+    bool ble = (transport == "ble");
+    if (ble && !ble_addr.empty() && !rnode_valid_ble_address(ble_addr)) {
+        err = "BLE address must look like AA:BB:CC:DD:EE:FF"; return false;
+    }
+    // ble://<name> is matched verbatim by RNS's scanner; keep it one line
+    // and short (conf_value_ok rejects control chars incl. CR/LF).
+    std::string ble_name = util::trim(c.ble_name);
+    if (ble && ble_name.size() > 48) { err = "BLE name too long (max 48)"; return false; }
+    if (ble && !ble_name.empty() && !conf_value_ok(ble_name)) {
+        err = "BLE name must not contain control characters"; return false;
+    }
+
+    std::string freq = util::trim(c.frequency);
+    if (!rnode_num_in_range(freq, 137000000, 3000000000)) { err = "frequency must be 137000000..3000000000 Hz"; return false; }
+    std::string bw = util::trim(c.bandwidth);
+    if (!rnode_num_in_range(bw, 7800, 1625000)) { err = "bandwidth must be 7800..1625000 Hz"; return false; }
+    std::string tx = util::trim(c.txpower);
+    if (!rnode_num_in_range(tx, 0, 37)) { err = "txpower must be 0..37 dBm"; return false; }
+    std::string sf = util::trim(c.spreadingfactor);
+    if (!rnode_num_in_range(sf, 5, 12)) { err = "spreading factor must be 5..12"; return false; }
+    std::string cr = util::trim(c.codingrate);
+    if (!rnode_num_in_range(cr, 5, 8)) { err = "coding rate must be 5..8"; return false; }
+
+    std::string flow = cron_truthy(c.flow_control) ? "yes" : "no";
+
+    std::string o =
+        "# RNode LoRa modem over USB (CDC-ACM / USB-serial) or BLE.\n"
+        "# Managed by the rnsbox-portal Reticulum tab; applied by S81rnode,\n"
+        "# which generates the [[RNode ...]] section in /etc/reticulum/config\n"
+        "# between its BEGIN/END RNODE markers. BLE needs the BLE stack in the\n"
+        "# image (bluez/dbus + bleak) and a one-time pairing (RNS attaches to\n"
+        "# bonded devices only).\n";
+    o += "transport=" + transport + "\n";
+    o += "device=" + (usb ? dev : std::string("auto")) + "\n";
+    o += "ble_address=" + (ble ? ble_addr : std::string("")) + "\n";
+    o += "ble_name=" + (ble ? ble_name : std::string("")) + "\n";
+    o += "name=" + name + "\n";
+    o += "frequency=" + freq + "\n";
+    o += "bandwidth=" + bw + "\n";
+    o += "txpower=" + tx + "\n";
+    o += "spreadingfactor=" + sf + "\n";
+    o += "codingrate=" + cr + "\n";
+    o += "flow_control=" + flow + "\n";
+    if (!util::write_file_atomic(RNODE_FILE, o, 0644)) { err = "write failed"; return false; }
+    return true;
+}
+
+RnodeStatus read_rnode_status() {
+    RnodeStatus st;
+    std::string data = util::read_file(RNODE_STATUS, 4096);
+    st.present = !data.empty();
+    size_t i = 0;
+    while (i <= data.size()) {
+        size_t nl = data.find('\n', i);
+        std::string ln = util::trim(data.substr(i, nl == std::string::npos ? std::string::npos : nl - i));
+        i = (nl == std::string::npos) ? data.size() + 1 : nl + 1;
+        size_t eq = ln.find('=');
+        if (eq == std::string::npos) continue;
+        std::string k = util::trim(ln.substr(0, eq)), v = util::trim(ln.substr(eq + 1));
+        if (k == "transport") st.transport = v;
+        else if (k == "port") st.port = v;
+        else if (k == "state") st.state = v;
+        else if (k == "message") st.message = v;
+    }
+    return st;
+}
+
+std::vector<std::string> rnode_serial_devices() {
+    std::vector<std::string> out;
+    DIR* d = opendir("/dev");
+    if (!d) return out;
+    struct dirent* e;
+    while ((e = readdir(d)) != nullptr) {
+        std::string n = e->d_name;
+        bool acm = n.rfind("ttyACM", 0) == 0;
+        bool usbs = n.rfind("ttyUSB", 0) == 0;
+        if (!acm && !usbs) continue;
+        std::string rest = n.substr(acm ? 6 : 6);
+        if (rest.empty() || rest.find_first_not_of("0123456789") != std::string::npos) continue;
+        out.push_back("/dev/" + n);
+    }
+    closedir(d);
+    // native CDC-ACM first (nRF52 boards), then USB-UART bridges, numeric order
+    for (size_t i = 0; i + 1 < out.size(); ++i)
+        for (size_t j = 0; j + 1 < out.size() - i; ++j)
+            if (out[j].compare(out[j + 1]) > 0) std::swap(out[j], out[j + 1]);
+    return out;
+}
+
+bool rnode_ble_stack_present() {
+    // bleak (RNS imports it in BLEConnection and panics without it)
+    bool bleak = false;
+    for (size_t ver = 8; ver <= 14; ++ver) {
+        struct stat st;
+        std::string p = "/usr/lib/python3." + std::to_string(ver) + "/site-packages/bleak/__init__.py";
+        if (::stat(p.c_str(), &st) == 0 && S_ISREG(st.st_mode)) { bleak = true; break; }
+    }
+    if (!bleak) return false;
+    // bluetoothd (buildroot bluez: /usr/libexec/bluetooth/bluetoothd) plus a
+    // system bus socket for it (packaged by the ble branch)
+    bool daemon = ::access("/usr/libexec/bluetooth/bluetoothd", F_OK) == 0 ||
+                  ::access("/usr/bin/bluetoothd", F_OK) == 0 ||
+                  ::access("/usr/sbin/bluetoothd", F_OK) == 0;
+    if (!daemon) return false;
+    return ::access("/run/dbus/system_bus_socket", F_OK) == 0 ||
+           ::access("/var/run/dbus/system_bus_socket", F_OK) == 0;
+}
+
 }  // namespace store

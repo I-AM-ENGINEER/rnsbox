@@ -105,6 +105,44 @@ struct BleConfig {
 };
 BleConfig read_ble();
 bool write_ble(const BleConfig& c, std::string& err);   // name <= 16 chars, no []#= or quotes
+// --- RNode LoRa modem over USB serial or BLE ---
+// /etc/rnsbox/rnode.conf is the single source of truth; S81rnode turns it
+// into the managed [[RNode ...]] section of /etc/reticulum/config on every
+// boot / `S81rnode reload`. Ranges below mirror RNodeInterface itself —
+// an out-of-range value makes rnsd panic at interface creation, so both
+// this writer and S81rnode reject them.
+constexpr const char* RNODE_FILE   = "/etc/rnsbox/rnode.conf";
+constexpr const char* RNODE_STATUS = "/run/rnsbox-rnode.status";
+
+struct RnodeConfig {
+    std::string transport = "off";        // off | usb | ble
+    std::string device = "auto";          // usb: auto (first ttyACM*, else ttyUSB*) | /dev/ttyACM0 ...
+    std::string ble_address = "";         // ble: AA:BB:CC:DD:EE:FF, or blank
+    std::string ble_name = "";            // ble: exact advert name, or blank
+    std::string name = "RNode";           // [[section]] name in the rns config
+    std::string frequency = "867500000";  // Hz (137000000..3000000000)
+    std::string bandwidth = "125000";     // Hz (7800..1625000)
+    std::string txpower = "7";            // dBm (0..37)
+    std::string spreadingfactor = "7";    // 5..12
+    std::string codingrate = "5";         // 5..8
+    std::string flow_control = "no";      // yes|no
+};
+RnodeConfig read_rnode();
+bool write_rnode(const RnodeConfig& c, std::string& err);
+
+// The live state S81rnode left behind (absent file: transport "off").
+struct RnodeStatus {
+    std::string transport, port, state, message;
+    bool present = false;
+};
+RnodeStatus read_rnode_status();
+
+// USB serial candidates for the device dropdown (/dev/ttyACM*, /dev/ttyUSB*).
+std::vector<std::string> rnode_serial_devices();
+
+// True when the BLE stack RNS needs for port = ble:// is in the image
+// (bleak + bluetoothd). Cheap globs/binary checks, no python startup.
+bool rnode_ble_stack_present();
 
 }  // namespace store
 #endif

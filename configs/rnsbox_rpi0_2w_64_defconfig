@@ -94,6 +94,9 @@ BR2_PACKAGE_NTP_NTPDATE=y
 BR2_PACKAGE_PYTHON3_PY_PYC=y
 BR2_PACKAGE_PYTHON3_PIP=y
 BR2_PACKAGE_PYTHON_RNS=y
+# RNodeInterface (USB serial RNode modems) imports pyserial in its constructor;
+# without it rnsd panics at interface creation.
+BR2_PACKAGE_PYTHON_SERIAL=y
 # WiFi STA/AP/APSTA (onboard brcmfmac) + firmware — covers the 43430s
 # (Zero 2 W), 43455 (3B+/3A+/4/400/CM4/5) and the per-model firmware names
 # the kernel requests on each board.

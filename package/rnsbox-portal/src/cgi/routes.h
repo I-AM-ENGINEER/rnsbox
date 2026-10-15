@@ -39,6 +39,12 @@ void reticulum_rnsh_save(const http::Request&, http::Response&);   // POST PRG
 void reticulum_halow_add(const http::Request&, http::Response&);   // POST PRG
 void reticulum_bluetooth(const http::Request&, http::Response&);        // POST PRG
 void reticulum_bluetooth_raise(const http::Request&, http::Response&);  // POST PRG
+// RNode modem over USB serial or BLE
+void reticulum_rnode(const http::Request&, http::Response&);        // POST PRG (save + apply)
+void reticulum_rnode_status(const http::Request&, http::Response&); // GET  JSON (S81rnode state)
+void reticulum_rnode_scan(const http::Request&, http::Response&);   // GET  JSON (BLE discovery, rnode.py)
+void reticulum_rnode_pair(const http::Request&, http::Response&);   // POST JSON (bluetoothctl pair)
+
 
 // settings tab
 void settings_page(const http::Request&, http::Response&);         // GET  render
