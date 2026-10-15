@@ -26,12 +26,19 @@ cfg() {
 
 start() {
 	# A plain Buildroot rootfs runs devtmpfs only: the /dev/serial0 alias
-	# that Raspberry Pi OS creates with udev rules does not exist here, and
-	# this kernel generation numbers the PL011 ttyAMA1 (the mini-uart owns
-	# ttyAMA0). Create the alias ourselves - rnsd, the portal halow helper
-	# and the $device default below all expect it.
+	# that Raspberry Pi OS creates with udev rules does not exist here.
+	# Create it ourselves - rnsd, the portal halow helper and the $device
+	# default below all expect it. Which tty is the header UART depends on
+	# where BT went (config.txt dtoverlay=):
+	#   disable-bt   PL011 on the header (ttyAMA1 here; mini-uart ttyAMA0)
+	#   miniuart-bt  (the BLE-image default) PL011 on the header again
+	#                (ttyAMA0/1 - the mini-uart is BT's serdev, no tty),
+	#   BT default   (Pi 3/4) mini-uart on the header = ttyS0; the PL011 is
+	#                the BT controller's serdev and has no tty.
+	# So: prefer the PL011 names, fall back to the mini-uart - the first
+	# char device that exists IS the header UART either way.
 	if [ ! -e /dev/serial0 ]; then
-		for c in /dev/ttyAMA1 /dev/ttyAMA0; do
+		for c in /dev/ttyAMA1 /dev/ttyAMA0 /dev/ttyS0; do
 			[ -c "$c" ] && { ln -s "${c#/dev/}" /dev/serial0; break; }
 		done
 	fi
