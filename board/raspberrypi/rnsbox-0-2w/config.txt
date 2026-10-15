@@ -1,5 +1,6 @@
 # RNSBox — ONE image for every 64-bit Raspberry Pi: Zero 2 W, 3B/3B+/3A+/CM3,
-# 4B/400/CM4/CM4S, 5/500/CM5 (ARMv6 Pis are out of scope).
+# 4B/400/CM4/CM4S, 5/500/CM5. ARMv6 Pis (Pi 1/Zero/Zero W) are out of scope:
+# this is an aarch64 (ARMv8) build and their BCM2835 cannot execute it.
 # The firmware walks this file top-down and applies only the lines under the
 # matching [filter] ([pi02]=Zero 2 W, [pi3]=3B/3B+/3A+/CM3(+) 64-bit SoCs,
 # [pi4]=4B/400/CM4/CM4S, [pi5]=5/500/CM5). One shared Image; the bootloader
@@ -26,17 +27,18 @@ dtoverlay=dwc2,dr_mode=peripheral
 # Optional DS3231 RTC: SDA=GPIO2 (pin 3), SCL=GPIO3 (pin 5), 3.3 V
 dtoverlay=i2c-rtc,ds3231
 
-# Pi 3B/3B+/3A+/CM3: same cut-down firmware trick. The 3B/3B+ power port has
-# no data lines and the 3A+ port is host-only — there the LAN is WiFi AP /
-# Ethernet; only the Zero 2 W and Pi 4/CM4 give a USB gadget port.
+# Pi 3B/3B+/3A+/CM3: same cut-down firmware trick. NO gadget on any of them:
+# the 3B/3B+ power port has no data lines and the 3A+ single USB port is
+# host-only — LAN there is WiFi AP / Ethernet. The USB-C NCM gadget (see
+# [pi02]) works on the Zero 2 W only.
 [pi3]
 start_file=start_cd.elf
 fixup_file=fixup_cd.dat
 gpu_mem=16
 
-# Pi 4B/400/CM4/CM4S: cut-down firmware of the 4th-gen flavour; USB-C is a
-# DWC2 OTG port — the NCM gadget enumerates whenever the box is plugged
-# into a PC (the base DTB leaves it in OTG mode; no overlay needed).
+# Pi 4B/400/CM4/CM4S: cut-down firmware of the 4th-gen flavour. USB-C is
+# POWER-ONLY here — no gadget lines in this section, the image never raises
+# a gadget on the Pi 4; LAN is Ethernet / WiFi AP. (USB-A ports are host.)
 [pi4]
 start_file=start4cd.elf
 fixup_file=fixup4cd.dat

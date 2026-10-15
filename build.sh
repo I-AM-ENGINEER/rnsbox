@@ -452,10 +452,13 @@ if [ "${BUILD_STYLE:-patches}" = external ]; then
     UPSTREAM="$UPSTREAM_BASE/buildroot-$SHORT"
     mkdir -p "$UPSTREAM_BASE"
 
-    # wget shim: buildroot's dl-wrapper passes no read-timeout, so a stalled
-    # mirror hangs wget forever instead of failing over to the next mirror.
+    # wget shim: buildroot's dl-wrapper passes no read-timeout and the
+    # BR2_WGET default only retries 3 times, so a stalled mirror hangs
+    # forever and one flaky mirror can fail a cold build. Flags come AFTER
+    # "$@" on purpose — wget is last-wins, so these override the dl-wrapper
+    # defaults instead of being overridden by them.
     mkdir -p "$UPSTREAM_BASE/bin"
-    printf '#!/bin/bash\nexec /usr/bin/wget --read-timeout=30 --continue "$@"\n' > "$UPSTREAM_BASE/bin/wget"
+    printf '#!/bin/bash\nexec /usr/bin/wget "$@" --tries=5 --timeout=60 --read-timeout=30 --continue\n' > "$UPSTREAM_BASE/bin/wget"
     chmod +x "$UPSTREAM_BASE/bin/wget"
     export PATH="$UPSTREAM_BASE/bin:$PATH"
 
@@ -530,6 +533,16 @@ else
         [ -e host-tools ] || git clone --depth=1 "$HOST_TOOLS_URL" host-tools
     fi
 fi
+
+# Same wget shim as the external flow above: the BSP's inner buildroot also
+# downloads through buildroot's dl-wrapper, which has no read-timeout and
+# only 3 tries by default — a flaky mirror killed a cold lichee build once.
+# (After the clone block: git clone refuses a non-empty destination dir.)
+# Flags after "$@" so they override the dl-wrapper defaults (last-wins).
+mkdir -p "$WORKDIR/bin"
+printf '#!/bin/bash\nexec /usr/bin/wget "$@" --tries=5 --timeout=60 --read-timeout=30 --continue\n' > "$WORKDIR/bin/wget"
+chmod +x "$WORKDIR/bin/wget"
+export PATH="$WORKDIR/bin:$PATH"
 
 # Shared packages live in ONE place — <repo>/package/ — no matter how many
 # boards this repo grows to. The patch series deliberately does not vendor
