@@ -185,6 +185,41 @@ rnsbox_track_latest_rns() {
     echo ">> rns (Reticulum) version: $want (latest from PyPI, sha256-verified)"
 }
 
+# ---- rootfs slimming (image-size) -------------------------------------------
+# The lite images ship a rootfs sized to content + margin, NOT to the SD
+# card: S99resizefs (CVITEK) / S02resizefs (rpi) grow the partition and the
+# filesystem to fill the card on first boot, so the factory size only sets
+# the download size. rnsbox_slim_bsp wires the shared target-slimmer and the
+# size/format knobs into every BSP (patches-style) tree; the external
+# rpi0-2w flow gets the same treatment straight in
+# configs/rnsbox_rpi0_2w_64_defconfig + board/raspberrypi.
+rnsbox_slim_bsp() {
+    # 1. the shared post-build slimmer (idempotent, deletes only provably
+    #    unused content — see board/rnsbox/slim-target.sh for the keep-list
+    #    reasoning: pip/setuptools stay, the portal Update button stays).
+    mkdir -p buildroot/board/rnsbox
+    cp -f "$HERE/board/rnsbox/slim-target.sh" buildroot/board/rnsbox/slim-target.sh
+    chmod 0755 buildroot/board/rnsbox/slim-target.sh
+    # 2. every cvitek defconfig in the tree:
+    #    - python3 pyc-only (the .py sources are ~half the python payload;
+    #      bytecode keeps rnsd/portal startup fast, and pip re-adds .py for
+    #      anything it installs or upgrades);
+    #    - ext4 root reservation 5% -> 1% (first-boot resize makes it moot);
+    #    - hook the slimmer as the buildroot post-build script.
+    for dc in buildroot/configs/cvitek_*.defconfig; do
+        [ -f "$dc" ] || continue
+        sed -i 's/^BR2_PACKAGE_PYTHON3_PY_PYC=y/# BR2_PACKAGE_PYTHON3_PY_PYC is not set\nBR2_PACKAGE_PYTHON3_PYC_ONLY=y/' "$dc"
+        sed -i 's/^BR2_TARGET_ROOTFS_EXT2_RESBLKS=.*/BR2_TARGET_ROOTFS_EXT2_RESBLKS=1/' "$dc"
+        sed -i 's#^BR2_ROOTFS_POST_BUILD_SCRIPT=.*#BR2_ROOTFS_POST_BUILD_SCRIPT="board/rnsbox/slim-target.sh"#' "$dc"
+    done
+    # 3. lite rootfs fixed size: build-rnsbox.sh re-stamps this literal at
+    #    pack time (its restore() resets the DVD shape), so the pack script
+    #    itself carries the slim value. 112M = slimmed content (~80M) +
+    #    ext4 metadata/journal + growth slack; S99resizefs grows it on the
+    #    card anyway. buildroot fails the fs step only if content outgrows.
+    sed -i 's/BR2_TARGET_ROOTFS_EXT2_SIZE="200M"/BR2_TARGET_ROOTFS_EXT2_SIZE="112M"/' build-rnsbox.sh
+}
+
 # ---- board build steps ------------------------------------------------------
 rnsbox_build_bsp_generic() {
     # Shared by every patches-style board: the BSP workdir is already in place
@@ -204,7 +239,7 @@ rnsbox_build_bsp_generic() {
     export PATH=$(echo "$PATH" | tr ':' '\n' | grep -v '^/mnt/[a-z]/' | paste -sd:)
     source build/cvisetup.sh
     export PATH=/usr/sbin:/sbin:$PATH
-    sed -i 's/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE="200M"/' \
+    sed -i 's/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE="112M"/' \
         "buildroot/configs/$RNSBOX_BR_DEFCONFIG"
     for b in $RNSBOX_DEFCONFIG_BOARDS; do
         sed -i 's#\(<partition label="ROOTFS" size_in_kb=\)"[0-9]*"#\1"1638400"#' \
@@ -268,7 +303,7 @@ rnsbox_build_milkv_duo_01() {
     source build/cvisetup.sh
     defconfig sg2000_duomodule01_sd
     export PATH=/usr/sbin:/sbin:$PATH
-    sed -i 's/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE="200M"/' \
+    sed -i 's/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE="112M"/' \
         buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig
     sed -i 's#\(<partition label="ROOTFS" size_in_kb=\)"[0-9]*"#\1"1638400"#' \
         build/boards/sg200x/sg2000_duomodule01_sd/partition/partition_sd.xml
@@ -318,9 +353,9 @@ rnsbox_univ_stage() {
     source build/cvisetup.sh
     defconfig "$board"
     export PATH=/usr/sbin:/sbin:$PATH
-    # lite shape, same as every RNSBox lite image: 200M rootfs ext4 in a
+    # lite shape, same as every RNSBox lite image: 112M rootfs ext4 in a
     # 1.6G partition (S99resizefs grows it on first boot), NCM-only gadget.
-    sed -i 's/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE="200M"/' \
+    sed -i 's/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE="112M"/' \
         buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig
     sed -i 's#\(<partition label="ROOTFS" size_in_kb=\)"[0-9]*"#\1"1638400"#' \
         "build/boards/$(rnsbox_univ_chip_dir "$board")/$board/partition/partition_sd.xml"
@@ -563,6 +598,11 @@ for p in rnsbox-portal python-rns python-lxmf python-nomadnet; do
     grep -q "source \"package/$p/Config.in\"" "$BR_PKG_CONFIG" || \
         printf 'source "package/%s/Config.in"\n' "$p" >> "$BR_PKG_CONFIG"
 done
+
+# rootfs slimming: sync the slimmer + flip the size/format knobs (see the
+# rnsbox_slim_bsp comment block above for what and why)
+echo ">> slimming knobs: pyc-only python, 1% ext4 reservation, 112M lite rootfs, slim-target hook"
+rnsbox_slim_bsp
 
 rnsbox_track_latest_rns "$PWD"
 rnsbox_build

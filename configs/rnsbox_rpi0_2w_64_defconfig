@@ -17,7 +17,9 @@ BR2_ROOTFS_DEVICE_TABLE="system/device_table_dev.txt system/device_table.txt"
 BR2_TARGET_GENERIC_HOSTNAME="rnsbox"
 BR2_TARGET_GENERIC_ISSUE="RNSBox - Reticulum router (Raspberry Pi, 64-bit universal)"
 BR2_TARGET_GENERIC_ROOT_PASSWD="admin"
-BR2_ROOTFS_POST_BUILD_SCRIPT="$(BR2_EXTERNAL_RNSBOX_PATH)/board/raspberrypi/rnsbox-0-2w/post-build.sh"
+# image-size: the stock post-build plus the shared dead-weight slimmer
+# (buildroot runs each entry with $(TARGET_DIR) as $1)
+BR2_ROOTFS_POST_BUILD_SCRIPT="$(BR2_EXTERNAL_RNSBOX_PATH)/board/raspberrypi/rnsbox-0-2w/post-build.sh $(BR2_EXTERNAL_RNSBOX_PATH)/board/rnsbox/slim-target.sh"
 BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_RNSBOX_PATH)/board/raspberrypi/rnsbox-0-2w/post-image.sh"
 BR2_LINUX_KERNEL=y
 BR2_LINUX_KERNEL_CUSTOM_TARBALL=y
@@ -52,7 +54,13 @@ BR2_PACKAGE_KMOD=y
 BR2_PACKAGE_KMOD_TOOLS=y
 BR2_TARGET_ROOTFS_EXT2=y
 BR2_TARGET_ROOTFS_EXT2_4=y
-BR2_TARGET_ROOTFS_EXT2_SIZE="400M"
+# image-size: rootfs sized to content + margin, not to the SD card —
+# S02resizefs grows the partition + ext4 to fill the card on first boot, so
+# the factory size only sets the download size. 160M = slimmed content
+# (~100M incl. modules/firmware for 4 Pi generations) + journal/metadata
+# slack; the root reservation drops 5% -> 1% for the same reason.
+BR2_TARGET_ROOTFS_EXT2_SIZE="160M"
+BR2_TARGET_ROOTFS_EXT2_RESBLKS=1
 # BR2_TARGET_ROOTFS_TAR is not set
 BR2_PACKAGE_HOST_DOSFSTOOLS=y
 BR2_PACKAGE_HOST_GENIMAGE=y
@@ -91,7 +99,10 @@ BR2_PACKAGE_PYTHON_PSUTIL=y
 BR2_PACKAGE_NTP=y
 BR2_PACKAGE_NTP_NTPD=y
 BR2_PACKAGE_NTP_NTPDATE=y
-BR2_PACKAGE_PYTHON3_PY_PYC=y
+# image-size: pyc-only — the .py sources are ~half the python payload; the
+# bytecode keeps rnsd/portal startup fast, and pip re-adds .py for anything
+# it installs or upgrades (nothing in RNS/LXMF/NomadNet reads stdlib source)
+BR2_PACKAGE_PYTHON3_PYC_ONLY=y
 BR2_PACKAGE_PYTHON3_PIP=y
 BR2_PACKAGE_PYTHON_RNS=y
 # WiFi STA/AP/APSTA (onboard brcmfmac) + firmware — covers the 43430s
