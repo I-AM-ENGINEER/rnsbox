@@ -38,6 +38,14 @@ void reticulum_slip(const http::Request&, http::Response&);        // POST PRG
 void reticulum_rnsh_save(const http::Request&, http::Response&);   // POST PRG
 void reticulum_halow_add(const http::Request&, http::Response&);   // POST PRG
 
+// updates tab (A/B whole-OS updater)
+void updates_page(const http::Request&, http::Response&);         // GET  render
+void updates_data(const http::Request&, http::Response&);         // GET  JSON (AJAX)
+void updates_config(const http::Request&, http::Response&);       // POST PRG
+void updates_check(const http::Request&, http::Response&);        // POST PRG
+void updates_apply(const http::Request&, http::Response&);        // POST PRG
+void updates_auto(const http::Request&, http::Response&);         // POST PRG
+
 // settings tab
 void settings_page(const http::Request&, http::Response&);         // GET  render
 void settings_password(const http::Request&, http::Response&);     // POST PRG

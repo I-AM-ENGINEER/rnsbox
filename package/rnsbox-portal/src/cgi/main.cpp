@@ -55,6 +55,10 @@ static const char* const POST_ONLY[] = {
     "/settings/time/browser",
     "/settings/ntp",
     "/settings/ntp/restart",
+    "/updates/config",
+    "/updates/check",
+    "/updates/apply",
+    "/updates/auto",
 };
 
 static bool is_post_only(const std::string& p) {
@@ -404,6 +408,12 @@ int main(int argc, char** argv) {
     else if (p == "/reticulum/slip")             routes::reticulum_slip(req, res);
     else if (p == "/reticulum/rnsh")             routes::reticulum_rnsh_save(req, res);
     else if (p == "/reticulum/halow/add")        routes::reticulum_halow_add(req, res);
+    else if (p == "/updates")                    routes::updates_page(req, res);
+    else if (p == "/updates/data")               routes::updates_data(req, res);
+    else if (p == "/updates/config")             routes::updates_config(req, res);
+    else if (p == "/updates/check")              routes::updates_check(req, res);
+    else if (p == "/updates/apply")              routes::updates_apply(req, res);
+    else if (p == "/updates/auto")               routes::updates_auto(req, res);
     else if (p == "/settings")                   routes::settings_page(req, res);
     else if (p == "/settings/password")          routes::settings_password(req, res);
     else if (p == "/settings/hostname")          routes::hostname_set(req, res);

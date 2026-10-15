@@ -417,6 +417,107 @@ bool write_slip(const SlipConfig& c, std::string& err) {
     return true;
 }
 
+// ---- system (OS image) update config ----
+UpdateConfig read_update_config() {
+    UpdateConfig d;
+    for (const auto& ln : read_lines(UPDATE_FILE)) {
+        std::string s = util::trim(ln);
+        if (s.empty() || s[0] == '#' || s.find('=') == std::string::npos) continue;
+        size_t eq = s.find('=');
+        std::string k = util::trim(s.substr(0, eq));
+        std::string v = s.substr(eq + 1);
+        size_t h = v.find('#'); if (h != std::string::npos) v = v.substr(0, h);
+        v = util::trim(v);
+        if (k == "enabled") d.enabled = v;
+        else if (k == "provider") d.provider = v;
+        else if (k == "repo") d.repo = v;
+        else if (k == "url") d.url = v;
+        else if (k == "board") d.board = v;
+        else if (k == "allow_prerelease") d.allow_prerelease = v;
+        else if (k == "allow_insecure_http") d.allow_insecure_http = v;
+        else if (k == "auto_apply") d.auto_apply = v;
+        else if (k == "interval_min_days") d.interval_min_days = v;
+        else if (k == "interval_max_days") d.interval_max_days = v;
+        else if (k == "next_check") d.next_check = v;
+    }
+    return d;
+}
+
+bool write_update_config(const UpdateConfig& c, std::string& err) {
+    // every value is a single clean line (no config injection via CR/LF)
+    auto clean = [](const std::string& s) {
+        return util::is_single_line_clean(s);
+    };
+    std::string provider = c.provider.empty() ? "github-releases" : c.provider;
+    if (provider != "github-releases" && provider != "generic") {
+        err = "unknown provider"; return false;
+    }
+    std::string board = c.board.empty() ? "auto" : c.board;
+    if (board != "auto" && board != "rpi0-2w" && board != "licheerv-nano") {
+        err = "unknown board"; return false;
+    }
+    if (provider == "github-releases") {
+        // owner/repo — the repo name goes into an API URL path only, but
+        // keep it strict anyway: no '/', '\' or scheme tricks
+        const std::string& r = c.repo;
+        auto slash = r.find('/');
+        if (slash == std::string::npos || slash == 0 || slash + 1 >= r.size() ||
+            r.find('/', slash + 1) != std::string::npos ||
+            !clean(r) || r.find("..") != std::string::npos) {
+            err = "repo must look like owner/repo"; return false;
+        }
+    } else {
+        // generic: https-only unless explicitly allowed; the worker re-checks
+        const std::string& u = c.url;
+        bool http_ok = cron_truthy(c.allow_insecure_http);
+        if (u.empty() || !clean(u) || u.size() > 900 ||
+            (u.rfind("https://", 0) != 0 &&
+             !(http_ok && u.rfind("http://", 0) == 0))) {
+            err = "url must be an https:// manifest.json URL"; return false;
+        }
+    }
+    long lo = -1, hi = -1;
+    auto to_long = [](const std::string& s, long* out) {
+        if (!all_digits(s) || s.empty() || s.size() > 3) return false;
+        *out = atol(s.c_str()); return true;
+    };
+    to_long(c.interval_min_days, &lo);
+    to_long(c.interval_max_days, &hi);
+    if (lo < 1 || hi < 1 || lo > 180 || hi > 180 || lo > hi) {
+        err = "interval must be 1..180 days, min <= max"; return false;
+    }
+    std::string o =
+        "# RNSBox system (OS image) update settings - edited by the portal\n"
+        "# Updates tab and by rnsbox-sysupdate (next_check is managed). Manual\n"
+        "# edits are fine; values are documented in docs/AUTO-UPDATE.md.\n";
+    auto yn = [](const std::string& v) -> std::string {
+        return cron_truthy(v) ? "yes" : "no";
+    };
+    o += "enabled=" + yn(c.enabled) + "\n";
+    o += "provider=" + provider + "\n";
+    o += "repo=" + c.repo + "\n";
+    o += "url=" + c.url + "\n";
+    o += "board=" + board + "\n";
+    o += "allow_prerelease=" + yn(c.allow_prerelease) + "\n";
+    o += "allow_insecure_http=" + yn(c.allow_insecure_http) + "\n";
+    o += "auto_apply=" + yn(c.auto_apply) + "\n";
+    o += "interval_min_days=" + std::to_string(lo) + "\n";
+    o += "interval_max_days=" + std::to_string(hi) + "\n";
+    if (!c.next_check.empty() && all_digits(c.next_check))
+        o += "next_check=" + c.next_check + "\n";
+    // preserve keys we don't manage (token, sig_*) from the current file
+    for (const auto& ln : read_lines(UPDATE_FILE)) {
+        std::string s = util::trim(ln);
+        if (s.empty() || s[0] == '#' || s.find('=') == std::string::npos) continue;
+        std::string k = util::trim(s.substr(0, s.find('=')));
+        if (k == "token" || k == "sig_require" || k == "sig_key") o += s + "\n";
+    }
+    if (!util::write_file_atomic(UPDATE_FILE, o, 0644)) {
+        err = "write failed"; return false;
+    }
+    return true;
+}
+
 // ---- add HaLow modem as a TCPClientInterface in the reticulum config ----
 static std::string sanitize_iface_name(const std::string& in) {
     std::string n;

@@ -1,0 +1,80 @@
+<h2>Updates</h2>
+
+<section class="card">
+  <h3>Status</h3>
+  __STATUS_CARD__
+  <p class="muted">Whole-OS (A/B slot) updates from a repository you choose.
+  The box checks on a random 7&#8211;14&nbsp;day schedule, so a fleet of
+  routers never phones home in sync. Applying writes the <em>idle</em> rootfs
+  slot and flips to it on reboot — the old slot is kept, and the box rolls
+  back by itself if the new one fails to boot healthy within three tries.
+  Layout not A/B? Flash any current image once — updates work over the air
+  after that.</p>
+</section>
+
+<section class="card">
+  <h3>Repository</h3>
+  <form method="post" action="__BASE__/updates/config">
+    <table class="kv">
+      <tr><th>Auto-check</th>
+          <td><label><input type="checkbox" name="enabled" value="yes"__CFG_ENABLED__>
+              check automatically on the jittered schedule __AUTO_BADGE__</label></td></tr>
+      <tr><th>Provider</th>
+          <td><select name="provider">__CFG_PROVIDER__</select>
+              <span class="muted">github-releases: a GitHub repo's Releases
+              &middot; generic: any site serving a manifest.json</span></td></tr>
+      <tr><th>GitHub repo</th>
+          <td><input type="text" name="repo" size="40" value="__CFG_REPO__"
+                     placeholder="owner/repo"></td></tr>
+      <tr><th>Manifest URL</th>
+          <td><input type="text" name="url" size="52" value="__CFG_URL__"
+                     placeholder="https://example.net/rnsbox/manifest.json (generic only)"></td></tr>
+      <tr><th>Board image</th>
+          <td><select name="board">__CFG_BOARD__</select>
+              <span class="muted">picks the rnsbox-&lt;board&gt;.img.xz asset</span></td></tr>
+      <tr><th>Prereleases</th>
+          <td><label><input type="checkbox" name="allow_prerelease" value="yes"__CFG_PRE__>
+              install auto-builds (marked pre-release on GitHub) — recommended:
+              that is the main channel, and the A/B rollback catches a bad one</label></td></tr>
+      <tr><th>Auto-apply</th>
+          <td><label><input type="checkbox" name="auto_apply" value="yes"__CFG_AUTOAPPLY__>
+              download and apply without a confirmation click when a check
+              finds an update</label></td></tr>
+      <tr><th>Check interval</th>
+          <td><input type="number" name="interval_min_days" min="1" max="180"
+                     size="3" value="__CFG_MINDAYS__"> &#8211;
+              <input type="number" name="interval_max_days" min="1" max="180"
+                     size="3" value="__CFG_MAXDAYS__"> days
+              <span class="muted">(the real delay is drawn at random in this
+              range, anew after every check)</span></td></tr>
+      <tr><th>Allow http://</th>
+          <td><label><input type="checkbox" name="allow_insecure_http" value="yes"__CFG_INSECURE__>
+              allow plain-HTTP repositories (downloads are still sha256-verified;
+              HTTPS is strongly recommended)</label></td></tr>
+    </table>
+    <p><button type="submit" class="btn-primary">Save settings</button></p>
+  </form>
+</section>
+
+<section class="card">
+  <h3>Activity log</h3>
+  __LOG_TAIL__
+</section>
+
+<script>
+// While a phase is in flight, reload every few seconds so the status card
+// tracks the worker (button POSTs return immediately; nothing blocks).
+(function () {
+  var busy = ["checking", "downloading", "verifying", "writing_slot",
+              "writing_boot", "flipping", "confirming"];
+  function tick() {
+    fetch('__BASE__/updates/data', {credentials: 'same-origin'})
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d && busy.indexOf(d.phase) >= 0) setTimeout(location.reload, 4000);
+      })
+      .catch(function () {});
+  }
+  setTimeout(tick, 4000);
+})();
+</script>
