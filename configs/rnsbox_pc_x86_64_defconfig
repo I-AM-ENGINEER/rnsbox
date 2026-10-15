@@ -4,7 +4,7 @@
 # ext4 root partition carrying /boot/bzImage + /boot/grub/grub.cfg. The
 # router software stack is byte-for-byte the boards' stack (S-chain, portal,
 # rnsd, dnsmasq, nftables, dropbear-less OpenSSH) from the shared external
-# packages; the board delta lives in board/pc/rnsbox-pc/ (overlay + kernel
+# packages; the board delta lives in board/pc/rnsbox-x86_64/ (overlay + kernel
 # config + grub/genimage). Roles: eth0 = WAN (DHCP — the boards' eth0), eth1
 # = LAN port of br-lan 10.42.0.1/24 (the boards' usb0 gadget; see S30lan).
 # Feature parity is honest-degrading: no BLE, no WiFi, no USB gadget in a
@@ -23,14 +23,14 @@ BR2_JLEVEL=2
 BR2_TARGET_GENERIC_HOSTNAME="rnsbox"
 BR2_TARGET_GENERIC_ISSUE="RNSBox - Reticulum router (PC/VM, x86_64)"
 BR2_TARGET_GENERIC_ROOT_PASSWD="admin"
-BR2_ROOTFS_POST_BUILD_SCRIPT="$(BR2_EXTERNAL_RNSBOX_PATH)/board/pc/rnsbox-pc/post-build.sh"
-BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_RNSBOX_PATH)/board/pc/rnsbox-pc/post-image.sh"
+BR2_ROOTFS_POST_BUILD_SCRIPT="$(BR2_EXTERNAL_RNSBOX_PATH)/board/pc/rnsbox-x86_64/post-build.sh"
+BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_RNSBOX_PATH)/board/pc/rnsbox-x86_64/post-image.sh"
 # kernel 6.12 LTS (same base the buildroot pc board uses), built-in config
 BR2_LINUX_KERNEL=y
 BR2_LINUX_KERNEL_CUSTOM_VERSION=y
 BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="6.12.47"
 BR2_LINUX_KERNEL_USE_CUSTOM_CONFIG=y
-BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE="$(BR2_EXTERNAL_RNSBOX_PATH)/board/pc/rnsbox-pc/linux.config"
+BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE="$(BR2_EXTERNAL_RNSBOX_PATH)/board/pc/rnsbox-x86_64/linux.config"
 BR2_LINUX_KERNEL_INSTALL_TARGET=y
 BR2_LINUX_KERNEL_NEEDS_HOST_OPENSSL=y
 # objtool compiles against host libelf (WIP: sole known build break, fixed here)
@@ -38,7 +38,7 @@ BR2_LINUX_KERNEL_NEEDS_HOST_LIBELF=y
 # kernel release suffix (uname -r -> 6.12.47-rnsbox), as on the boards
 BR2_LINUX_KERNEL_LOCALVERSION="-rnsbox"
 BR2_PACKAGE_BUSYBOX_SHOW_OTHERS=y
-BR2_PACKAGE_BUSYBOX_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_RNSBOX_PATH)/board/pc/rnsbox-pc/busybox.fragment"
+BR2_PACKAGE_BUSYBOX_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_RNSBOX_PATH)/board/pc/rnsbox-x86_64/busybox.fragment"
 BR2_PACKAGE_KMOD=y
 BR2_PACKAGE_KMOD_TOOLS=y
 # HTTP tier (uhttpd serves the rnsbox-portal CGI binary)
@@ -47,7 +47,7 @@ BR2_PACKAGE_JSON_C=y
 BR2_PACKAGE_LIBUBOX=y
 BR2_PACKAGE_UHTTPD=y
 # rnsbox-portal (C++/CGI admin UI) + per-board overlay
-BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_RNSBOX_PATH)/board/pc/rnsbox-pc/rootfs-overlay"
+BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_RNSBOX_PATH)/board/pc/rnsbox-x86_64/rootfs-overlay"
 BR2_PACKAGE_ZLIB=y
 BR2_PACKAGE_RNSBOX_PORTAL=y
 # router data plane

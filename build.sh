@@ -517,7 +517,7 @@ rnsbox_build_rpi_universal() {
 rnsbox_build_pc_x86_64() {
     # Same external flow as the rpi-universal (set up by the block below: $UPSTREAM
     # pristine clone, $EXT tree, $ODIR, pinned dl cache). No variant staging:
-    # the image is tagged lite by board/pc/rnsbox-pc/post-image.sh; a dvd
+    # the image is tagged lite by board/pc/rnsbox-x86_64/post-image.sh; a dvd
     # request degrades to lite (no gadget, no clients LUN in a VM).
     export PATH=$(echo "$PATH" | tr ':' '\n' | grep -v '^/mnt/[a-z]/' | paste -sd:)
     export PATH=/usr/sbin:/sbin:$PATH
