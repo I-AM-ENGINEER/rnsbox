@@ -4,7 +4,7 @@
 # The repo is a Buildroot external tree; board files live under board/,
 # defconfigs under configs/, shared packages under package/. Two board kinds:
 #
-#   rpi0-2w (external)  — official Buildroot at a pinned commit, cloned once
+#   rpi-universal (external)  — official Buildroot at a pinned commit, cloned once
 #                         and shared; no patch series; builds with
 #                         BR2_EXTERNAL=<repo> into its own O= directory.
 #   pc-x86_64 (external)— same external flow, a different defconfig: a plain
@@ -25,7 +25,7 @@
 #   ./build.sh all lite               — every board sequentially
 #
 # Env overrides: UPSTREAM_URL, UPSTREAM_COMMIT, HOST_TOOLS_URL, WORKDIR
-# (lichee); UPSTREAM_BASE, ODIR, BR2_DL_DIR (rpi0-2w); RNSBOX_NPROC caps
+# (lichee); UPSTREAM_BASE, ODIR, BR2_DL_DIR (rpi-universal); RNSBOX_NPROC caps
 # BSP-build parallelism (build/Makefile honors it).
 #
 # RNS version policy: the shipped `rns` (Reticulum) is the LATEST release at
@@ -35,7 +35,7 @@
 set -e
 
 HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
-BOARDS="licheerv-nano milkv-duo-01-rv milkv-duo-01-arm milkv-duo-cv1800b rpi0-2w pc-x86_64"
+BOARDS="licheerv-nano milkv-duo-01-rv milkv-duo-01-arm milkv-duo-cv1800b rpi-universal pc-x86_64"
 
 # ---- image version stamp (read by rnsbox-sysupdate for update decisions) ----
 # Same formula as the CI release job's tag: r<UTC date>-<short sha>. On CI,
@@ -143,14 +143,14 @@ case "$BOARD" in
         # install/soc_<board>/images next to it
         RNSBOX_IMAGES_DIR="install/soc_cv1800b_sophpi_duo_sd/images"
         ;;
-    rpi0-2w)
+    rpi-universal)
         BUILD_STYLE=external
         UPSTREAM_URL="${UPSTREAM_URL:-https://github.com/buildroot/buildroot.git}"
         UPSTREAM_COMMIT="${UPSTREAM_COMMIT:-679b9ead7620bbf193620d1ebf56f53c1764d37a}"  # 2026.02.3
-        DEFCONFIG=rnsbox_rpi0_2w_64_defconfig
+        DEFCONFIG=rnsbox_rpi_universal_defconfig
         ;;
     pc-x86_64)
-        # PC / virtual machine target: same upstream buildroot as the rpi0-2w
+        # PC / virtual machine target: same upstream buildroot as the rpi-universal
         # (one shared clone), its own defconfig. lite shape only — there is
         # no USB gadget in a VM to expose the clients DVD on.
         BUILD_STYLE=external
@@ -217,15 +217,15 @@ rnsbox_track_latest_rns() {
 # filesystem to fill the card on first boot, so the factory size only sets
 # the download size. rnsbox_slim_bsp wires the shared target-slimmer and the
 # size/format knobs into every BSP (patches-style) tree; the external
-# rpi0-2w flow gets the same treatment straight in
-# configs/rnsbox_rpi0_2w_64_defconfig + board/raspberrypi.
+# rpi-universal flow gets the same treatment straight in
+# configs/rnsbox_rpi_universal_defconfig + board/raspberrypi.
 rnsbox_slim_bsp() {
     # 1. the shared post-build slimmer (idempotent, deletes only provably
-    #    unused content — see board/rnsbox/slim-target.sh for the keep-list
+    #    unused content — see board/common/slim-target.sh for the keep-list
     #    reasoning: pip/setuptools stay, the portal Update button stays).
-    mkdir -p buildroot/board/rnsbox
-    cp -f "$HERE/board/rnsbox/slim-target.sh" buildroot/board/rnsbox/slim-target.sh
-    chmod 0755 buildroot/board/rnsbox/slim-target.sh
+    mkdir -p buildroot/board/common
+    cp -f "$HERE/board/common/slim-target.sh" buildroot/board/common/slim-target.sh
+    chmod 0755 buildroot/board/common/slim-target.sh
     # 2. every cvitek defconfig in the tree:
     #    - python3 py-only: the .pyc payload is as big as the .py sources it
     #      duplicates (measured: 61 MB of pyc next to ~55 MB of sources) —
@@ -238,12 +238,12 @@ rnsbox_slim_bsp() {
         sed -i 's/^BR2_PACKAGE_PYTHON3_PY_PYC=y/# BR2_PACKAGE_PYTHON3_PY_PYC is not set\nBR2_PACKAGE_PYTHON3_PY_ONLY=y/' "$dc"
         sed -i 's/^BR2_PACKAGE_PYTHON3_PYC_ONLY=y/# BR2_PACKAGE_PYTHON3_PYC_ONLY is not set\nBR2_PACKAGE_PYTHON3_PY_ONLY=y/' "$dc"
         sed -i 's/^BR2_TARGET_ROOTFS_EXT2_RESBLKS=.*/BR2_TARGET_ROOTFS_EXT2_RESBLKS=1/' "$dc"
-        sed -i 's#^BR2_ROOTFS_POST_BUILD_SCRIPT=.*#BR2_ROOTFS_POST_BUILD_SCRIPT="board/rnsbox/slim-target.sh"#' "$dc"
+        sed -i 's#^BR2_ROOTFS_POST_BUILD_SCRIPT=.*#BR2_ROOTFS_POST_BUILD_SCRIPT="board/common/slim-target.sh"#' "$dc"
     done
     # first-boot bytecode warm-up (see the script): backgrounded, never
     # blocks rcS, so the py-only rootfs keeps its fast first rnsd start
     if [ -d buildroot/board/cvitek/SG200X/overlay/etc/init.d ]; then
-        cp -f "$HERE/board/rnsbox/S51pycompile" buildroot/board/cvitek/SG200X/overlay/etc/init.d/S51pycompile
+        cp -f "$HERE/board/common/S51pycompile" buildroot/board/cvitek/SG200X/overlay/etc/init.d/S51pycompile
         chmod 0755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/S51pycompile
     fi
     # 3. lite rootfs fixed size: the pack scripts re-stamp this literal at
@@ -510,7 +510,7 @@ rnsbox_build_milkv_duo_cv1800b() {
 }
 
 
-rnsbox_build_rpi0_2w() {
+rnsbox_build_rpi_universal() {
     # Set up by the external flow below: $UPSTREAM (pristine clone at the
     # pin), $EXT (this repo, WSL-local copy when run from /mnt), $ODIR.
     # WSL note: Windows PATH interop appends /mnt/c entries (some with
@@ -531,9 +531,9 @@ rnsbox_build_rpi0_2w() {
 }
 
 rnsbox_build_pc_x86_64() {
-    # Same external flow as the rpi0-2w (set up by the block below: $UPSTREAM
+    # Same external flow as the rpi-universal (set up by the block below: $UPSTREAM
     # pristine clone, $EXT tree, $ODIR, pinned dl cache). No variant staging:
-    # the image is tagged lite by board/pc/rnsbox-pc/post-image.sh; a dvd
+    # the image is tagged lite by board/pc/rnsbox-x86_64/post-image.sh; a dvd
     # request degrades to lite (no gadget, no clients LUN in a VM).
     export PATH=$(echo "$PATH" | tr ':' '\n' | grep -v '^/mnt/[a-z]/' | paste -sd:)
     export PATH=/usr/sbin:/sbin:$PATH
@@ -555,12 +555,12 @@ rnsbox_build() {
         milkv-duo-01-arm) rnsbox_build_milkv_duo_01_arm ;;
         milkv-duo-01-rv)  rnsbox_build_milkv_duo_01 ;;
         milkv-duo-cv1800b)     rnsbox_build_milkv_duo_cv1800b ;;
-        rpi0-2w)          rnsbox_build_rpi0_2w ;;
+        rpi-universal)    rnsbox_build_rpi_universal ;;
         pc-x86_64)        rnsbox_build_pc_x86_64 ;;
     esac
 }
 
-# ---- external-tree flow (rpi0-2w) -------------------------------------------
+# ---- external-tree flow (rpi-universal) -------------------------------------------
 if [ "${BUILD_STYLE:-patches}" = external ]; then
     SHORT=$(echo "$UPSTREAM_COMMIT" | cut -c1-8)
     UPSTREAM_BASE="${UPSTREAM_BASE:-$HOME/rnsbox-work/upstream}"

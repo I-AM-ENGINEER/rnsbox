@@ -481,7 +481,7 @@ bool write_update_config(const UpdateConfig& c, std::string& err) {
         err = "unknown provider"; return false;
     }
     std::string board = c.board.empty() ? "auto" : c.board;
-    if (board != "auto" && board != "rpi0-2w" && board != "licheerv-nano") {
+    if (board != "auto" && board != "rpi-universal" && board != "licheerv-nano") {
         err = "unknown board"; return false;
     }
     if (provider == "github-releases") {

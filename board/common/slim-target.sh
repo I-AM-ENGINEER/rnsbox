@@ -1,8 +1,9 @@
 #!/bin/sh
 # slim-target.sh — delete dead weight from the buildroot TARGET_DIR before
 # the rootfs image is made. Runs as a BR2_ROOTFS_POST_BUILD_SCRIPT on every
-# RNSBox board flow (CVITEK BSP flow wires it up in build.sh, the rpi0-2w
-# external flow appends it to BR2_ROOTFS_POST_BUILD_SCRIPT in the defconfig).
+# RNSBox board flow (CVITEK BSP flow wires it up in build.sh, the
+# rpi-universal external flow appends it to BR2_ROOTFS_POST_BUILD_SCRIPT in
+# the defconfig).
 # buildroot calls each post-build script with the target dir as $1.
 #
 # Only deletion of things that are PROVABLY unused happens here; everything

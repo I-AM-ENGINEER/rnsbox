@@ -1,6 +1,6 @@
 # RNSBox universal Raspberry Pi image — ONE aarch64 image for every 64-bit
 # Pi: Zero 2 W, 3B/3B+/3A+/CM3, 4B/400/CM4/CM4S, 5/500/CM5 (ARMv6 Pis are
-# out of scope; see docs/BOARD-universal-rpi.md). The kernel is a 4K-page
+# out of scope). The kernel is a 4K-page
 # superset: bcm2711_defconfig already carries every BCM2712 driver (rpi
 # 6.12 keeps the two defconfigs identical apart from page size), our
 # linux.fragment adds the router bits on top. config.txt selects the right
@@ -18,19 +18,18 @@ BR2_TARGET_GENERIC_HOSTNAME="rnsbox"
 BR2_TARGET_GENERIC_ISSUE="RNSBox - Reticulum router (Raspberry Pi, 64-bit universal)"
 # root login closed: the root password is locked ('*') at build time; the
 # operator account is `admin` (locked too, until the user sets a password in
-# the portal — see board/raspberrypi/rnsbox-0-2w/users.txt and
-# docs/SSH-HARDENING.md).
+# the portal — see board/raspberrypi/rnsbox-universal/users.txt).
 # BR2_TARGET_ENABLE_ROOT_LOGIN is not set
-BR2_ROOTFS_USERS_TABLES="$(BR2_EXTERNAL_RNSBOX_PATH)/board/raspberrypi/rnsbox-0-2w/users.txt"
+BR2_ROOTFS_USERS_TABLES="$(BR2_EXTERNAL_RNSBOX_PATH)/board/raspberrypi/rnsbox-universal/users.txt"
 # image-size: the stock post-build plus the shared dead-weight slimmer
 # (buildroot runs each entry with $(TARGET_DIR) as $1)
-BR2_ROOTFS_POST_BUILD_SCRIPT="$(BR2_EXTERNAL_RNSBOX_PATH)/board/raspberrypi/rnsbox-0-2w/post-build.sh $(BR2_EXTERNAL_RNSBOX_PATH)/board/rnsbox/slim-target.sh"
-BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_RNSBOX_PATH)/board/raspberrypi/rnsbox-0-2w/post-image.sh"
+BR2_ROOTFS_POST_BUILD_SCRIPT="$(BR2_EXTERNAL_RNSBOX_PATH)/board/raspberrypi/rnsbox-universal/post-build.sh $(BR2_EXTERNAL_RNSBOX_PATH)/board/common/slim-target.sh"
+BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_RNSBOX_PATH)/board/raspberrypi/rnsbox-universal/post-image.sh"
 BR2_LINUX_KERNEL=y
 BR2_LINUX_KERNEL_CUSTOM_TARBALL=y
 BR2_LINUX_KERNEL_CUSTOM_TARBALL_LOCATION="$(call github,raspberrypi,linux,21b410140c47ffab5668399f6f143c7d7b935c8b)/linux-21b410140c47ffab5668399f6f143c7d7b935c8b.tar.gz"
 BR2_LINUX_KERNEL_DEFCONFIG="bcm2711"
-BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_RNSBOX_PATH)/board/raspberrypi/rnsbox-0-2w/linux.fragment"
+BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_RNSBOX_PATH)/board/raspberrypi/rnsbox-universal/linux.fragment"
 BR2_LINUX_KERNEL_DTS_SUPPORT=y
 # Every board the firmware can pick at boot: Zero 2 W (and its non-W twin),
 # Pi 3B/3B+/CM3-class (bcm2710 prefix; 3A+ builds as bcm2837-* and the
@@ -54,7 +53,7 @@ BR2_PACKAGE_RPI_FIRMWARE_VARIANT_PI4=y
 BR2_PACKAGE_RPI_FIRMWARE_VARIANT_PI4_CD=y
 # The Pi 5 family needs neither: its bootloader (SPI EEPROM) reads
 # config.txt and loads kernel + DTB + overlays directly from the FAT.
-BR2_PACKAGE_RPI_FIRMWARE_CONFIG_FILE="$(BR2_EXTERNAL_RNSBOX_PATH)/board/raspberrypi/rnsbox-0-2w/config.txt"
+BR2_PACKAGE_RPI_FIRMWARE_CONFIG_FILE="$(BR2_EXTERNAL_RNSBOX_PATH)/board/raspberrypi/rnsbox-universal/config.txt"
 BR2_PACKAGE_KMOD=y
 BR2_PACKAGE_KMOD_TOOLS=y
 BR2_TARGET_ROOTFS_EXT2=y
@@ -77,8 +76,8 @@ BR2_PACKAGE_JSON_C=y
 BR2_PACKAGE_LIBUBOX=y
 BR2_PACKAGE_UHTTPD=y
 # rnsbox-portal (C++/CGI admin UI) + per-board overlay
-BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_RNSBOX_PATH)/board/raspberrypi/rnsbox-0-2w/rootfs-overlay"
-BR2_PACKAGE_BUSYBOX_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_RNSBOX_PATH)/board/raspberrypi/rnsbox-0-2w/busybox.fragment"
+BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_RNSBOX_PATH)/board/raspberrypi/rnsbox-universal/rootfs-overlay"
+BR2_PACKAGE_BUSYBOX_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_RNSBOX_PATH)/board/raspberrypi/rnsbox-universal/busybox.fragment"
 BR2_PACKAGE_ZLIB=y
 BR2_PACKAGE_RNSBOX_PORTAL=y
 BR2_PACKAGE_RNSBOX_UPDATE=y
