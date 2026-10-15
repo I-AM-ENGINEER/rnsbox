@@ -1,0 +1,151 @@
+#!/bin/sh
+# S30lan — bring up the LAN on the PC/VM target: the bridge br-lan as
+# 10.42.0.1/24, with the second NIC eth1 as a port.
+#
+# PC/VM counterpart of the boards' S30gadget_nic (usb0 = CDC-NCM gadget): a
+# VM has no USB gadget, so the LAN role is played by a second virtio NIC.
+# scripts/run-pc-vm.sh wires eth1 to a dedicated QEMU user-net (subnet
+# 10.42.0.0/24) whose hostfwd rules target 10.42.0.1 — the host reaches the
+# portal/SSH/rnsd exactly as a tethered PC reaches the board over USB-C.
+# eth0 stays the WAN (S30eth: interface=auto, DHCP) — same roles as the
+# board, different device names, zero changes downstream:
+#
+# One LAN, one subnet: br-lan is the LAN iface; /run/lan-iface records it
+# and S60routing, S82rnsd, S46wanwatch, S09ipv6 and the portal read it
+# instead of assuming a name. Bridge settings (as on the boards):
+#   - STP off, forward_delay 0: a port forwards as soon as it has carrier —
+#     no 15 s listening/learning phase swallowing the first DHCP DISCOVERs.
+#   - multicast_snooping 0: every multicast frame is flooded to every port.
+#     Reticulum's AutoInterface finds peers over ff12:: multicast.
+#   - MAC: eth1's address is set on the bridge explicitly so the LAN MAC —
+#     and the EUI-64 fe80:: address RNS AutoInterface uses to tell boxes
+#     apart — never changes as ports come and go. (run-pc-vm.sh pins eth1's
+#     QEMU MAC, so the identity is stable across reboots.)
+#
+# The LAN iface is also the ONLY non-loopback iface with IPv6 (S09ipv6 turns
+# it off by default everywhere): Reticulum's AutoInterface needs the fe80::.
+# With the bridge that is br-lan; eth1, a port, gets none.
+#
+# Fallback: if the bridge can't be made (a kernel without CONFIG_BRIDGE —
+# not the shipped config), eth1 is addressed directly and /run/lan-iface
+# records it; S60routing/S82rnsd only validate br-lan|usb0 and would fall
+# back to naming br-lan, so the firewall treats the box as LAN-less (closed,
+# but the UI unreachable) — that fallback is theoretical on this target.
+
+LAN_IPV4=10.42.0.1/24
+PORT=eth1
+BR=br-lan
+LAN_FILE=/run/lan-iface
+
+# ipv6_lan <iface> — opt the LAN iface back in to IPv6 (S09ipv6 set
+# default/disable_ipv6=1, which it inherits when created after S09) — before
+# `up`, so the kernel forms the fe80:: link-local once the link has carrier.
+# Link-local ONLY: accept_ra/autoconf=0 so a LAN client sharing its own IPv6
+# can't push a global address or a default route into the box; forwarding=0.
+ipv6_lan() {
+	d=/proc/sys/net/ipv6/conf/$1
+	[ -d "$d" ] || return 0
+	echo 0 > "$d/accept_ra"
+	echo 0 > "$d/autoconf"
+	echo 0 > "$d/forwarding"
+	echo 0 > "$d/disable_ipv6"
+}
+
+# make_bridge [mac] — create br-lan, or reuse it (restart), and apply the
+# settings in the header. False if the kernel can't make a bridge.
+make_bridge() {
+	b=/sys/class/net/$BR/bridge
+	[ -d "$b" ] || ip link add "$BR" type bridge 2>/dev/null
+	[ -d "$b" ] || return 1
+	echo 0 > "$b/stp_state" 2>/dev/null
+	echo 0 > "$b/forward_delay" 2>/dev/null
+	# (absent without CONFIG_BRIDGE_IGMP_SNOOPING: then nothing snoops anyway)
+	[ -e "$b/multicast_snooping" ] && echo 0 > "$b/multicast_snooping" 2>/dev/null
+	for k in stp_state forward_delay multicast_snooping; do
+		v=
+		{ read -r v < "$b/$k"; } 2>/dev/null
+		[ -z "$v" ] || [ "$v" = 0 ] \
+		  || echo "S30lan: $BR $k is $v, not 0" >&2
+	done
+	[ -n "$1" ] && ip link set "$BR" address "$1" 2>/dev/null
+	ipv6_lan "$BR"
+	return 0
+}
+
+start() {
+	mkdir -p /var/log
+
+	# No USB gadget exists on this target, so there is no flag file to wait
+	# for: the port is optional the same way the gadget was (br-lan is made
+	# even with no port up, so the LAN iface and its address never depend on
+	# which ports are there — run-pc-vm.sh --nolan boots a WAN-only VM).
+	port=
+	if [ -d /sys/class/net/$PORT ]; then
+		port=$PORT
+	else
+		echo "S30lan: $PORT not present; LAN without a port" >&2
+	fi
+
+	mac=
+	[ -n "$port" ] && mac=$(cat /sys/class/net/$port/address 2>/dev/null)
+
+	lan=
+	if make_bridge "$mac"; then
+		lan=$BR
+		if [ -n "$port" ]; then
+			# A port: no IPv6 and no address of its own (a fallback-mode
+			# start may have left one); br-lan carries both.
+			[ -d /proc/sys/net/ipv6/conf/$port ] \
+			  && echo 1 > /proc/sys/net/ipv6/conf/$port/disable_ipv6
+			ip addr flush dev $port 2>/dev/null
+			if ip link set $port master "$BR" 2>/dev/null; then
+				ip link set $port up
+			else
+				# The host must keep its LAN: drop the bridge and
+				# address the port alone (fallback below).
+				echo "S30lan: $port could not join $BR; falling back to $port alone" >&2
+				ip link del "$BR" 2>/dev/null \
+				  || { ip addr flush dev "$BR"; ip link set "$BR" down; }
+				lan=
+			fi
+		fi
+	fi
+
+	if [ "$lan" = "$BR" ]; then
+		ip link set "$BR" up
+		ip -4 addr flush dev "$BR"
+		ip addr add "$LAN_IPV4" dev "$BR"
+		echo "$BR" > "$LAN_FILE"
+		echo "S30lan: $BR up, $LAN_IPV4${port:+, port $port}"
+	else
+		# Fallback: the port alone, no bridge.
+		[ -n "$port" ] && { echo $port > "$LAN_FILE"; } || echo "$BR" > "$LAN_FILE"
+		if [ -n "$port" ]; then
+			ipv6_lan $port
+			ip link set $port up
+			ip addr add "$LAN_IPV4" dev $port
+			echo "S30lan: no $BR bridge; $port up, $LAN_IPV4"
+		else
+			echo "S30lan: no $BR bridge and no $PORT; no LAN" >&2
+		fi
+	fi
+	# status 1 if there should be a LAN port but none appeared
+	[ -d /sys/class/net/$PORT ] && [ -z "$port" ]
+}
+
+# Addresses off, links down. br-lan and its ports stay as they are, so start
+# brings the same LAN back; /run/lan-iface still names it.
+stop() {
+	for i in "$BR" "$PORT"; do
+		[ -d "/sys/class/net/$i" ] || continue
+		ip addr flush dev "$i"
+		ip link set "$i" down
+	done
+}
+
+case "$1" in
+	start)   start ;;
+	stop)    stop ;;
+	restart) stop; start ;;
+	*)       echo "Usage: $0 {start|stop|restart}" >&2; exit 1 ;;
+esac

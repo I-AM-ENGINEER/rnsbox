@@ -7,6 +7,10 @@
 #   rpi0-2w (external)  — official Buildroot at a pinned commit, cloned once
 #                         and shared; no patch series; builds with
 #                         BR2_EXTERNAL=<repo> into its own O= directory.
+#   pc-x86_64 (external)— same external flow, a different defconfig: a plain
+#                         x86_64 BIOS disk (grub in the MBR + one ext4 root)
+#                         for QEMU/VirtualBox/VMware — the full router stack
+#                         with no hardware attached.
 #   licheerv-nano       — vendor BSP; the git-am series under
 #                         patches/licheerv-nano/ is applied onto the pinned
 #                         upstream clone.
@@ -31,7 +35,7 @@
 set -e
 
 HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
-BOARDS="licheerv-nano milkv-duo-01-rv milkv-duo-01-arm milkv-duo-cv1800b rpi0-2w"
+BOARDS="licheerv-nano milkv-duo-01-rv milkv-duo-01-arm milkv-duo-cv1800b rpi0-2w pc-x86_64"
 
 BOARD=""
 VARIANT=""
@@ -131,6 +135,15 @@ case "$BOARD" in
         UPSTREAM_URL="${UPSTREAM_URL:-https://github.com/buildroot/buildroot.git}"
         UPSTREAM_COMMIT="${UPSTREAM_COMMIT:-679b9ead7620bbf193620d1ebf56f53c1764d37a}"  # 2026.02.3
         DEFCONFIG=rnsbox_rpi0_2w_64_defconfig
+        ;;
+    pc-x86_64)
+        # PC / virtual machine target: same upstream buildroot as the rpi0-2w
+        # (one shared clone), its own defconfig. lite shape only — there is
+        # no USB gadget in a VM to expose the clients DVD on.
+        BUILD_STYLE=external
+        UPSTREAM_URL="${UPSTREAM_URL:-https://github.com/buildroot/buildroot.git}"
+        UPSTREAM_COMMIT="${UPSTREAM_COMMIT:-679b9ead7620bbf193620d1ebf56f53c1764d37a}"  # 2026.02.3
+        DEFCONFIG=rnsbox_pc_x86_64_defconfig
         ;;
 esac
 
@@ -435,6 +448,25 @@ rnsbox_build_rpi0_2w() {
     "$EXT/scripts/build-variant.sh" "$VARIANT" "$UPSTREAM" "$ODIR" "$EXT"
 }
 
+rnsbox_build_pc_x86_64() {
+    # Same external flow as the rpi0-2w (set up by the block below: $UPSTREAM
+    # pristine clone, $EXT tree, $ODIR, pinned dl cache). No variant staging:
+    # the image is tagged lite by board/pc/rnsbox-pc/post-image.sh; a dvd
+    # request degrades to lite (no gadget, no clients LUN in a VM).
+    export PATH=$(echo "$PATH" | tr ':' '\n' | grep -v '^/mnt/[a-z]/' | paste -sd:)
+    export PATH=/usr/sbin:/sbin:$PATH
+    if [ "$VARIANT" != lite ]; then
+        echo ">> pc-x86_64: the '$VARIANT' variant needs the USB gadget — building lite"
+        VARIANT=lite
+    fi
+    export RNSBOX_VARIANT="$VARIANT"
+
+    echo ">> configuring ($DEFCONFIG) + building (first run compiles everything; be patient)"
+    make -C "$UPSTREAM" O="$ODIR" BR2_EXTERNAL="$EXT" "$DEFCONFIG"
+    rnsbox_pin_dl
+    make -C "$UPSTREAM" O="$ODIR" BR2_EXTERNAL="$EXT"
+}
+
 rnsbox_build() {
     case "$BOARD" in
         licheerv-nano)    rnsbox_build_licheerv_nano ;;
@@ -442,6 +474,7 @@ rnsbox_build() {
         milkv-duo-01-rv)  rnsbox_build_milkv_duo_01 ;;
         milkv-duo-cv1800b)     rnsbox_build_milkv_duo_cv1800b ;;
         rpi0-2w)          rnsbox_build_rpi0_2w ;;
+        pc-x86_64)        rnsbox_build_pc_x86_64 ;;
     esac
 }
 

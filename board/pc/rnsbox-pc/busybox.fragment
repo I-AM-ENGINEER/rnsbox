@@ -1,0 +1,16 @@
+# RNSBox busybox tweaks on top of the Buildroot default busybox.config
+
+# uhttpd (OpenWrt) serves the C++ CGI admin portal — busybox httpd is
+# disabled to avoid confusion (uhttpd follows the /www/cgi-bin/portal
+# symlink and serves the docroot index at bare "/").
+# CONFIG_HTTPD is not set
+# CONFIG_FEATURE_HTTPD_CGI is not set
+
+# used by the RNSBox init scripts (make explicit)
+CONFIG_UDHCPC=y
+CONFIG_NTPD=y
+CONFIG_FLOCK=y
+CONFIG_STTY=y
+CONFIG_IP=y
+CONFIG_KILLALL=y
+CONFIG_MODPROBE_SMALL=n
