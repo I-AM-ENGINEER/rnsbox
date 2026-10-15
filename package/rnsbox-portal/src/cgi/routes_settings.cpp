@@ -439,22 +439,40 @@ void usb_mode_set(const Request& req, Response& res) {
     }
     // S07usbmode live: syncs the boot artifacts (cvi: /boot/usb.host|usb.dev,
     // rpi: flags + config.txt dr_mode) and on CVITEK applies the role right
-    // away via S08usbdev. First output word is the verdict:
-    // applied | reboot | error. 30 s: the device-mode path waits for the UDC.
+    // away via S08usbdev. Stdout carries one verdict line — "applied <msg>" |
+    // "reboot <msg>" | "error <msg>"; scan past any other chatter to find it.
+    // 30 s: the device-mode path waits for the UDC.
     util::RunResult r = util::run({"/etc/init.d/S07usbmode", "live"}, "", 30);
-    std::string out = util::trim(r.out);
-    size_t nl = out.find('\n');
-    std::string line = util::trim(out.substr(0, nl == std::string::npos ? out.size() : nl));
-    std::string msg = line.substr(0, 200);
-    if (msg.rfind("applied", 0) == 0) {
+    std::string verdict, vmsg;
+    if (!r.timed_out) {
+        std::string out = util::trim(r.out);
+        size_t i = 0;
+        while (i < out.size() && verdict.empty()) {
+            size_t e = out.find('\n', i);
+            if (e == std::string::npos) e = out.size();
+            std::string ln = util::trim(out.substr(i, e - i));
+            for (const char* v : {"applied", "reboot", "error"}) {
+                if (ln.rfind(v, 0) == 0) {
+                    verdict = v;
+                    vmsg = ln.size() > verdict.size() + 1 ? ln.substr(verdict.size() + 1) : std::string();
+                    break;
+                }
+            }
+            i = e + 1;
+        }
+    }
+    if (verdict == "applied") {
         render::redirect_flash(res, settings_redirect(), "success",
-            "USB mode saved and applied: " + msg.substr(7) + " Mode: " + mode + ".");
-    } else if (msg.rfind("reboot", 0) == 0) {
+            "USB mode saved and applied:" + (vmsg.empty() ? std::string(" mode: ") : " " + vmsg + ";") +
+            " mode: " + mode + ".");
+    } else if (verdict == "reboot") {
         render::redirect_flash(res, settings_redirect(), "warn",
-            "USB mode saved (" + mode + "). " + (msg.size() > 6 ? msg.substr(7) : "Reboot to apply."));
+            "USB mode saved (" + mode + "). " +
+            (vmsg.empty() ? std::string("Reboot to apply.") : vmsg));
     } else {
         std::string why = r.timed_out ? std::string("the apply timed out")
-                                      : (msg.empty() ? std::string("no response from S07usbmode") : msg);
+                                      : (verdict == "error" && !vmsg.empty() ? vmsg
+                                         : std::string("no verdict from S07usbmode"));
         render::redirect_flash(res, settings_redirect(), "warn",
             "USB mode saved (" + mode + "), but applying it now failed (" + why +
             "); it will apply at the next reboot.");

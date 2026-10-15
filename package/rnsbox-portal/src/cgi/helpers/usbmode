@@ -74,6 +74,12 @@ log() {
 	mkdir -p "$(dirname "$LOG")" 2>/dev/null
 	{ echo "$(date '+%b %d %H:%M:%S') S07usbmode: $*" >>"$LOG"; } 2>/dev/null
 }
+# logf — file-only diagnostic: `live` prints a machine-parsed verdict on
+# stdout (applied|reboot|error ...), so its chatter must not leak there.
+logf() {
+	mkdir -p "$(dirname "$LOG")" 2>/dev/null
+	{ echo "$(date '+%b %d %H:%M:%S') S07usbmode: $*" >>"$LOG"; } 2>/dev/null
+}
 
 # conf_get <file> <key> — first `key=value` value, trimmed (also of a CR from
 # a hand-edited CRLF file). Empty when the file or key is absent.
@@ -153,7 +159,7 @@ boot_rw() {
 
 sync_cvi() { # <mode>
 	if ! boot_rw; then
-		log "$BOOT_DIR not mounted; leaving the usb.* boot flags alone"
+		logf "$BOOT_DIR not mounted; leaving the usb.* boot flags alone"
 		return 1
 	fi
 	if [ "$1" = host ]; then
@@ -175,7 +181,7 @@ set_dwc2() { # <host|peripheral> — the one dtoverlay=dwc2 line in config.txt
 
 sync_rpi() { # <mode>
 	if ! boot_rw; then
-		log "$BOOT_DIR not mounted; leaving config.txt and the usb.* flags alone"
+		logf "$BOOT_DIR not mounted; leaving config.txt and the usb.* flags alone"
 		return 1
 	fi
 	if [ "$1" = host ]; then
@@ -191,11 +197,12 @@ sync_rpi() { # <mode>
 
 # apply_mode <mode> — persist the mode into the per-platform boot artifacts
 # (flag files and/or config.txt). Returns 0 when the artifacts are in place.
+# logf (not log): `live` parses stdout, so diagnostics stay file-only.
 apply_mode() {
 	case "$(platform)" in
 		cvi) sync_cvi "$1" ;;
 		rpi) sync_rpi "$1" ;;
-		*)   log "unknown platform; nothing to sync"; return 1 ;;
+		*)   logf "unknown platform; nothing to sync"; return 1 ;;
 	esac
 }
 
@@ -264,7 +271,7 @@ case "${1:-start}" in
 						echo "applied USB device mode is up; the gadget LAN is back on 10.42.0.1"
 					fi
 				else
-					log "role did not flip to $MODE (saw '$r') — reboot to apply"
+					logf "role did not flip to $MODE (saw '$r') — reboot to apply"
 					write_state
 					echo "reboot the role did not switch right away; it will apply at the next reboot"
 				fi
