@@ -3,4 +3,7 @@ source "$BR2_EXTERNAL_RNSBOX_PATH/package/python-lxmf/Config.in"
 source "$BR2_EXTERNAL_RNSBOX_PATH/package/python-nomadnet/Config.in"
 source "$BR2_EXTERNAL_RNSBOX_PATH/package/python-rns/Config.in"
 source "$BR2_EXTERNAL_RNSBOX_PATH/package/rnsbox-portal/Config.in"
+source "$BR2_EXTERNAL_RNSBOX_PATH/package/python-ble-reticulum/Config.in"
+source "$BR2_EXTERNAL_RNSBOX_PATH/package/python-bluezero/Config.in"
+source "$BR2_EXTERNAL_RNSBOX_PATH/package/python-dbus/Config.in"
 endmenu

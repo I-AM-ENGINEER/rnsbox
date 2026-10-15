@@ -1,0 +1,12 @@
+config BR2_PACKAGE_PYTHON_BLUEZERO
+	bool "python-bluezero"
+	select BR2_PACKAGE_PYTHON_DBUS # runtime (module-level `import dbus`)
+	help
+	  A Python library for Bluetooth Low Energy (BLE) peripheral mode
+	  on Linux: registers GATT applications and LE advertisements
+	  with BlueZ over D-Bus.
+
+	  Used by ble-reticulum's GATT server (BLE peripheral mode - other
+	  Reticulum nodes and phone clients connect INBOUND over it).
+
+	  https://ukBaz.github.io/bluezero/
