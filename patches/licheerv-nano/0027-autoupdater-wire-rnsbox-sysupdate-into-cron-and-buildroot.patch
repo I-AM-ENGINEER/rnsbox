@@ -56,14 +56,12 @@ diff --git a/buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig b/buildroot/
 index 7634161..1b28736 100644
 --- a/buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig
 +++ b/buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig
-@@ -4724,6 +4724,7 @@ BR2_PACKAGE_PYTHON_RNS=y
- BR2_PACKAGE_PYTHON_LXMF=y
+@@ -4726,4 +4726,5 @@ BR2_PACKAGE_PYTHON_RNS=y
  BR2_PACKAGE_PYTHON_NOMADNET=y
  BR2_PACKAGE_RNSBOX_PORTAL=y
 +BR2_PACKAGE_RNSBOX_UPDATE=y
- 
- # === RNSBox W variant: AIC8800 WiFi userspace stack ===
- # Firmware blobs (lxowalle repo) install to /usr/lib/firmware/aic8800_sdio/,
+ # RNSBox Bluetooth LE transport ([[BLE Interface]]): BlueZ + D-Bus
+ # (bluetoothd runs from S40bluetoothd with -E, see /etc/default/bluetoothd)
 -- 
 2.43.0
 

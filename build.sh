@@ -254,7 +254,12 @@ rnsbox_slim_bsp() {
     #    content outgrows. The arm64 family packs through build-rnsbox-arm.sh
     #    (same shape, own copy of the literal).
     for packer in build-rnsbox.sh build-rnsbox-arm.sh; do
-        [ -f "$packer" ] && sed -i 's/BR2_TARGET_ROOTFS_EXT2_SIZE="200M"/BR2_TARGET_ROOTFS_EXT2_SIZE="128M"/' "$packer"
+        # NB: `if`, not `[ -f ] &&` — under set -e a false test in an AND-list
+        # kills the script (this ate the duo flows on CI: only the arm64 flow
+        # carries build-rnsbox-arm.sh).
+        if [ -f "$packer" ]; then
+            sed -i 's/BR2_TARGET_ROOTFS_EXT2_SIZE="200M"/BR2_TARGET_ROOTFS_EXT2_SIZE="128M"/' "$packer"
+        fi
     done
 }
 
