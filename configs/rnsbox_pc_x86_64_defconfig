@@ -14,6 +14,9 @@
 # portal login is admin/admin — identical to the rpi0-2w target.
 BR2_x86_64=y
 BR2_PACKAGE_HOST_LINUX_HEADERS_CUSTOM_6_12=y
+# the pc board's hash overrides — carries the sha256 of the 6.12.47 kernel
+# tarball (upstream dropped that pin from its own hash lists long ago)
+BR2_GLOBAL_PATCH_DIR="board/pc/patches"
 BR2_DOWNLOAD_FORCE_CHECK_HASHES=y
 # machine is shared; keep the load polite
 BR2_JLEVEL=2
