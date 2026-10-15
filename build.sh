@@ -147,7 +147,7 @@ case "$BOARD" in
         BUILD_STYLE=external
         UPSTREAM_URL="${UPSTREAM_URL:-https://github.com/buildroot/buildroot.git}"
         UPSTREAM_COMMIT="${UPSTREAM_COMMIT:-679b9ead7620bbf193620d1ebf56f53c1764d37a}"  # 2026.02.3
-        DEFCONFIG=rnsbox_rpi_universal_64_defconfig
+        DEFCONFIG=rnsbox_rpi_universal_defconfig
         ;;
     pc-x86_64)
         # PC / virtual machine target: same upstream buildroot as the rpi-universal
@@ -218,7 +218,7 @@ rnsbox_track_latest_rns() {
 # the download size. rnsbox_slim_bsp wires the shared target-slimmer and the
 # size/format knobs into every BSP (patches-style) tree; the external
 # rpi-universal flow gets the same treatment straight in
-# configs/rnsbox_rpi_universal_64_defconfig + board/raspberrypi.
+# configs/rnsbox_rpi_universal_defconfig + board/raspberrypi.
 rnsbox_slim_bsp() {
     # 1. the shared post-build slimmer (idempotent, deletes only provably
     #    unused content — see board/common/slim-target.sh for the keep-list
