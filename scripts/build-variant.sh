@@ -3,14 +3,15 @@
 #
 #   scripts/build-variant.sh <lite|dvd> <upstream-dir> <output-dir> <ext-dir>
 #
-#   lite : NCM-only gadget (no clients ISO), 400M rootfs — the default.
+#   lite : NCM-only gadget (no clients ISO), 160M rootfs (image-size;
+#         S02resizefs grows it on the card) — the default.
 #   dvd  : NCM + read-only clients "DVD" (ISO9660 in the rootfs, auto-sized
 #          to the fetched apps) + mass-storage LUN attached by S10usbdev.
 #
 # The variant touches two spots, then re-runs make (incremental: rootfs
 # repack + post-image + genimage only):
 #   1. ext-tree overlay ISO  <ext>/board/<b>/rootfs-overlay/opt/rnsbox-clients/usbdisk.iso
-#   2. output .config        BR2_TARGET_ROOTFS_EXT2_SIZE (400M lite | ISO + 400M dvd)
+#   2. output .config        BR2_TARGET_ROOTFS_EXT2_SIZE (160M lite | ISO + 400M dvd)
 # plus the usb.disk0 boot flag (rpi-firmware/ on the boot FAT). The tree is
 # restored to the lite state on exit.
 set -o pipefail
@@ -24,7 +25,7 @@ BOARD_DIR="$EXT/board/raspberrypi/rnsbox-0-2w"
 ISO_OVERLAY="$BOARD_DIR/rootfs-overlay/opt/rnsbox-clients/usbdisk.iso"
 ISO_STASH=/tmp/rnsbox-usbdisk.iso.stash
 FW="$O/images/rpi-firmware"
-LITE_EXT2=400M
+LITE_EXT2=160M
 
 restore() {
 	sed -i -E "s/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE=\"$LITE_EXT2\"/" "$O/.config"
