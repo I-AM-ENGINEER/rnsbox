@@ -1,3 +1,8 @@
 /dl/
 /out/
-local_docs
+local_docs/
+.tmp-*
+*.expect
+*.log
+__pycache__/
+*.pyc
