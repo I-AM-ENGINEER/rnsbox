@@ -24,7 +24,7 @@
 set -e
 
 HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
-BOARDS="licheerv-nano rpi0-2w"
+BOARDS="licheerv-nano milkv-duo-01-rv rpi0-2w"
 
 BOARD=""
 VARIANT=""
@@ -59,6 +59,20 @@ case "$BOARD" in
         HOST_TOOLS_URL="${HOST_TOOLS_URL:-https://github.com/sophgo/host-tools}"
         WORKDIR="${WORKDIR:-LicheeRV-Nano-Build}"
         RNSBOX_IMAGES_DIR="install/soc_sg2002_licheervnano_sd/images"
+        ;;
+    milkv-duo-01-rv)
+        # Milk-V Duo Module 01 (Evaluation Board) — SG2000, C906B RISC-V boot.
+        # Same vendor BSP + patch-series flow as the licheerv-nano; a
+        # sibling board dir (sg2000_duomodule01_sd) carries the SG2000
+        # grafts. RNSBOX_BSP_BOARD tells the BSP's build-rnsbox.sh which
+        # board dir to defconfig and pack.
+        BUILD_STYLE=patches
+        UPSTREAM_URL="${UPSTREAM_URL:-https://github.com/sipeed/LicheeRV-Nano-Build.git}"
+        UPSTREAM_COMMIT="${UPSTREAM_COMMIT:-d4003f15b35d43ad4842f427050ab2bba0114fa5}"
+        HOST_TOOLS_URL="${HOST_TOOLS_URL:-https://github.com/sophgo/host-tools}"
+        WORKDIR="${WORKDIR:-LicheeRV-Nano-Build-duo01}"
+        RNSBOX_IMAGES_DIR="install/soc_sg2000_duomodule01_sd/images"
+        export RNSBOX_BSP_BOARD=sg2000_duomodule01_sd
         ;;
     rpi0-2w)
         BUILD_STYLE=external
@@ -124,6 +138,9 @@ rnsbox_build_licheerv_nano() {
     # Initial full compile. build-rnsbox.sh (inside the patched tree) only
     # (re)packs, so one build_all is needed first; lite-shaped so the first
     # pack needs no clients ISO; the pack then produces the requested variant.
+    # WSL note: Windows PATH interop appends /mnt/c entries (some with
+    # spaces) that buildroot's dependency check rejects — strip them.
+    export PATH=$(printf '%s' "$PATH" | tr ':' '\n' | grep -v '^/mnt/[a-z]/' | paste -sd:)
     echo ">> initial full build (first run compiles Rust from source; be patient)"
     source build/cvisetup.sh
     defconfig sg2002_licheervnano_sd
@@ -138,6 +155,51 @@ rnsbox_build_licheerv_nano() {
     export RNSBOX_WITH_DVD=0
     defconfig sg2002_licheervnano_sd
     build_all
+
+    if [ "$VARIANT" = dvd ]; then
+        echo ">> fetching latest-stable client apps for the DVD"
+        ./fetch-clients.sh
+    fi
+    echo ">> packaging [$VARIANT] image"
+    ./build-rnsbox.sh "$VARIANT"
+}
+
+rnsbox_build_milkv_duo_01() {
+    # Same shape as the licheerv-nano build; the board dir (and with it the
+    # DRAM map, dts, defconfigs) differs, everything else — headless strip,
+    # shared packages, gadget/router/portal/rnsd series — is identical.
+    # WSL note: Windows PATH interop appends /mnt/c entries (some with
+    # spaces) that buildroot rejects - strip them.
+    export PATH=$(printf '%s' "$PATH" | tr ':' '\n' | grep -v '^/mnt/[a-z]/' | paste -sd:)
+    echo ">> initial full build (first run compiles Rust from source; be patient)"
+    source build/cvisetup.sh
+    defconfig sg2000_duomodule01_sd
+    export PATH=/usr/sbin:/sbin:$PATH
+    sed -i 's/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE="200M"/' \
+        buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig
+    sed -i 's#\(<partition label="ROOTFS" size_in_kb=\)"[0-9]*"#\1"1638400"#' \
+        build/boards/sg200x/sg2000_duomodule01_sd/partition/partition_sd.xml
+    sed -i '/"usb.disk0",/d; /"usb.disk0.size",/d' \
+        build/tools/common/sd_tools/genimage_rootless.cfg
+    chmod 0755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/S* 2>/dev/null || true
+    export RNSBOX_WITH_DVD=0
+    defconfig sg2000_duomodule01_sd
+
+    # Crash-resilient staging: each heavy phase is stamped in the BSP tree
+    # once it completes. A flaky build host (VM resets kill the build
+    # process but not the tree) then resumes instead of redoing the
+    # u-boot/kernel middleware passes every cycle; build-rnsbox.sh below
+    # re-runs the buildroot pack phase, the only one that can really
+    # change between runs. Delete .rnsbox-done-* to force a phase again
+    # (e.g. after changing this board's patches).
+    local stage
+    for stage in build_uboot build_kernel build_ramboot build_osdrv \
+                 build_3rd_party build_middleware pack_cfg; do
+        if [ ! -e ".rnsbox-done-$stage" ]; then
+            "$stage" || return 1
+            touch ".rnsbox-done-$stage"
+        fi
+    done
 
     if [ "$VARIANT" = dvd ]; then
         echo ">> fetching latest-stable client apps for the DVD"
@@ -169,8 +231,9 @@ rnsbox_build_rpi0_2w() {
 
 rnsbox_build() {
     case "$BOARD" in
-        licheerv-nano) rnsbox_build_licheerv_nano ;;
-        rpi0-2w)       rnsbox_build_rpi0_2w ;;
+        licheerv-nano)    rnsbox_build_licheerv_nano ;;
+        milkv-duo-01-rv)  rnsbox_build_milkv_duo_01 ;;
+        rpi0-2w)          rnsbox_build_rpi0_2w ;;
     esac
 }
 
@@ -232,6 +295,13 @@ if [ "${BUILD_STYLE:-patches}" = external ]; then
 fi
 
 # ---- patch-series flow (licheerv-nano) ---------------------------------------
+# WORKDIR must be absolute: the flow cd's into it, and the shared-package
+# sync + build steps below keep referencing "$WORKDIR/..." afterwards.
+case "$WORKDIR" in
+    /*) ;;
+    *) WORKDIR="$PWD/$WORKDIR" ;;
+esac
+
 if [ ! -e "$WORKDIR/.git" ]; then
     echo ">> cloning upstream base: $UPSTREAM_URL @ $UPSTREAM_COMMIT"
     git clone "$UPSTREAM_URL" "$WORKDIR"
@@ -259,6 +329,16 @@ echo ">> syncing shared packages from $HERE/package"
 for p in rnsbox-portal python-rns python-lxmf python-nomadnet; do
     rm -rf "$WORKDIR/buildroot/package/$p"
     cp -a "$HERE/package/$p" "$WORKDIR/buildroot/package/$p"
+done
+# The un-vendoring BSP patch removed the matching `source` lines from
+# buildroot/package/Config.in together with the vendored copies; without
+# them kconfig silently drops BR2_PACKAGE_PYTHON_RNS / PYTHON_LXMF /
+# PYTHON_NOMADNET / RNSBOX_PORTAL and the rootfs ships without rnsd and
+# the portal. Restore the lines so the synced dirs are visible.
+BR_PKG_CONFIG="$WORKDIR/buildroot/package/Config.in"
+for p in rnsbox-portal python-rns python-lxmf python-nomadnet; do
+    grep -q "source \"package/$p/Config.in\"" "$BR_PKG_CONFIG" || \
+        printf 'source "package/%s/Config.in"\n' "$p" >> "$BR_PKG_CONFIG"
 done
 
 rnsbox_track_latest_rns "$PWD"
