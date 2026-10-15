@@ -248,8 +248,9 @@ rnsbox_slim_bsp() {
     fi
     # 3. lite rootfs fixed size: the pack scripts re-stamp this literal at
     #    pack time (their restore() resets the DVD shape), so the pack
-    #    scripts themselves carry the slim value. 128M = py-only content
-    #    (~110M) + ext4 inode tables/journal + growth slack; S99resizefs
+    #    scripts themselves carry the slim value. 160M = py-only content
+    #    (~110M universal, ~135M duo-01) + ext4 inode tables/journal + growth
+#    slack; S99resizefs
     #    grows it on the card anyway. buildroot fails the fs step only if
     #    content outgrows. The arm64 family packs through build-rnsbox-arm.sh
     #    (same shape, own copy of the literal).
@@ -258,7 +259,7 @@ rnsbox_slim_bsp() {
         # kills the script (this ate the duo flows on CI: only the arm64 flow
         # carries build-rnsbox-arm.sh).
         if [ -f "$packer" ]; then
-            sed -i 's/BR2_TARGET_ROOTFS_EXT2_SIZE="200M"/BR2_TARGET_ROOTFS_EXT2_SIZE="128M"/' "$packer"
+            sed -i 's/BR2_TARGET_ROOTFS_EXT2_SIZE="200M"/BR2_TARGET_ROOTFS_EXT2_SIZE="160M"/' "$packer"
         fi
     done
 }
@@ -282,7 +283,7 @@ rnsbox_build_bsp_generic() {
     export PATH=$(echo "$PATH" | tr ':' '\n' | grep -v '^/mnt/[a-z]/' | paste -sd:)
     source build/cvisetup.sh
     export PATH=/usr/sbin:/sbin:$PATH
-    sed -i 's/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE="128M"/' \
+    sed -i 's/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE="160M"/' \
         "buildroot/configs/$RNSBOX_BR_DEFCONFIG"
     for b in $RNSBOX_DEFCONFIG_BOARDS; do
         sed -i 's#\(<partition label="ROOTFS" size_in_kb=\)"[0-9]*"#\1"1638400"#' \
@@ -346,7 +347,7 @@ rnsbox_build_milkv_duo_01() {
     source build/cvisetup.sh
     defconfig sg2000_duomodule01_sd
     export PATH=/usr/sbin:/sbin:$PATH
-    sed -i 's/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE="128M"/' \
+    sed -i 's/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE="160M"/' \
         buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig
     sed -i 's#\(<partition label="ROOTFS" size_in_kb=\)"[0-9]*"#\1"1638400"#' \
         build/boards/sg200x/sg2000_duomodule01_sd/partition/partition_sd.xml
@@ -398,7 +399,7 @@ rnsbox_univ_stage() {
     export PATH=/usr/sbin:/sbin:$PATH
     # lite shape, same as every RNSBox lite image: 128M rootfs ext4 in a
     # 1.6G partition (S99resizefs grows it on first boot), NCM-only gadget.
-    sed -i 's/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE="128M"/' \
+    sed -i 's/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE="160M"/' \
         buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig
     sed -i 's#\(<partition label="ROOTFS" size_in_kb=\)"[0-9]*"#\1"1638400"#' \
         "build/boards/$(rnsbox_univ_chip_dir "$board")/$board/partition/partition_sd.xml"
@@ -662,7 +663,7 @@ done
 
 # rootfs slimming: sync the slimmer + flip the size/format knobs (see the
 # rnsbox_slim_bsp comment block above for what and why)
-echo ">> slimming knobs: py-only python, 1% ext4 reservation, 128M lite rootfs, slim-target hook"
+echo ">> slimming knobs: py-only python, 1% ext4 reservation, 160M lite rootfs, slim-target hook"
 rnsbox_slim_bsp
 
 rnsbox_track_latest_rns "$PWD"
