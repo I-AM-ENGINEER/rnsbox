@@ -1,0 +1,63 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: smit1237 <smit1237@gmail.com>
+Date: Wed, 9 Sep 2026 01:39:58 +0300
+Subject: [PATCH 18/23] portal: in-place rnsd update (pip) + pip/setuptools on
+ the rootfs
+
+Builds on the update-check notifier with an actual in-place update, since the
+rootfs is writeable and rns is a pure-Python wheel. updatecheck.apply_update()
+installs the latest rns wheel with pip (--no-deps --only-binary, so the
+compiled deps cryptography/pyserial are never rebuilt), first clearing the old
+buildroot (distutils) install that pip cannot uninstall, keeping a rollback
+tarball, and restarting + verifying rnsd -- rolling back automatically if rnsd
+does not come back. Only site-packages is touched; /etc and user config are
+never modified. A dependency pre-check refuses the update (pointing at a
+reflash) if the new rns needs a newer cryptography/pyserial than is installed.
+(pip 22.3.1 on the target predates --break-system-packages, and buildroot's
+rootfs is not PEP-668 externally-managed, so no such flag is used.)
+
+The Reticulum tab gains an "Update rnsd to X now" button (with a confirm) when
+an update is available, via a new /reticulum/applyupdate route. Enables
+python-pip + python-setuptools in the defconfig so pip is on the box for this
+and for general package management.
+---
+ buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig b/buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig
+index 4929dcf3e..fdbd49452 100644
+--- a/buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig
++++ b/buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig
+@@ -1397,7 +1397,7 @@ BR2_PACKAGE_PYTHON3_BZIP2=y
+ BR2_PACKAGE_PYTHON3_SSL=y
+ # BR2_PACKAGE_PYTHON3_UNICODEDATA is not set
+ # BR2_PACKAGE_PYTHON3_SQLITE is not set
+-# BR2_PACKAGE_PYTHON3_PYEXPAT is not set
++BR2_PACKAGE_PYTHON3_PYEXPAT=y
+ # BR2_PACKAGE_PYTHON3_XZ is not set
+ BR2_PACKAGE_PYTHON3_ZLIB=y
+ 
+@@ -1648,7 +1648,10 @@ BR2_PACKAGE_PYTHON3_ZLIB=y
+ # BR2_PACKAGE_PYTHON_PIEXIF is not set
+ # BR2_PACKAGE_PYTHON_PIGPIO is not set
+ # BR2_PACKAGE_PYTHON_PILLOW is not set
+-# BR2_PACKAGE_PYTHON_PIP is not set
++# RNSBox: pip + setuptools on the (writeable) rootfs so rnsd can be updated in
++# place from its PyPI wheel (the portal's "Update rnsd" button), and for general
++# on-device package management.
++BR2_PACKAGE_PYTHON_PIP=y
+ # BR2_PACKAGE_PYTHON_PLUGGY is not set
+ # BR2_PACKAGE_PYTHON_PLY is not set
+ # BR2_PACKAGE_PYTHON_PORTEND is not set
+@@ -1755,7 +1758,7 @@ BR2_PACKAGE_PYTHON3_ZLIB=y
+ BR2_PACKAGE_PYTHON_SERIAL=y
+ # BR2_PACKAGE_PYTHON_SERIAL_ASYNCIO is not set
+ # BR2_PACKAGE_PYTHON_SETPROCTITLE is not set
+-# BR2_PACKAGE_PYTHON_SETUPTOOLS is not set
++BR2_PACKAGE_PYTHON_SETUPTOOLS=y
+ # BR2_PACKAGE_PYTHON_SH is not set
+ # BR2_PACKAGE_PYTHON_SHUTILWHICH is not set
+ # BR2_PACKAGE_PYTHON_SIMPLEAUDIO is not set
+-- 
+2.47.3
+

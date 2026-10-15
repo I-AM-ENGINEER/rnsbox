@@ -1,13 +1,25 @@
 #!/bin/bash
 # RNSBox post-image: ship the usb.* gadget flag files on the boot FAT (the
 # /boot flag-file semantics S10usbdev composes the gadget from), pin our
-# kernel cmdline, then assemble boot.vfat + sdcard.img.
+# kernel cmdline, add the DTB alias + kernel-built overlays the universal
+# image needs, then assemble boot.vfat + sdcard.img.
 #
 # The assembly part is the stock buildroot raspberrypi post-image inlined:
 # in an external tree there is no ../post-image.sh to delegate to, and the
 # logic (dtb/rpi-firmware globbing + the genimage.cfg.in template) is
 # board-generic anyway. The boot FAT is mounted at /boot by fstab, so the
 # flags are visible to the init scripts (and editable from any PC).
+#
+# Universal-image notes (one image for every 64-bit Pi):
+#   - every board DTB built by the defconfig lands in BINARIES_DIR and is
+#     globbed below; the boot firmware picks the right one per model;
+#   - the kernel arm64 build produces the overlays under
+#     arch/arm64/boot/dts/overlays (a symlink to the shared arm sources) —
+#     they are copied wholesale into rpi-firmware/overlays/ so dtoverlay=
+#     lines resolve on every model;
+#   - the firmware looks for bcm2710-rpi-3-a-plus.dtb on the 3A+ while the
+#     arm64 kernel builds that board as bcm2837-rpi-3-a-plus.dtb — the
+#     alias below closes the gap.
 set -e
 
 BOARD_DIR="$(dirname "$0")"
@@ -24,14 +36,37 @@ echo 0x1d6b                   > "${FW}/usb.idVendor"
 echo 0x0105                   > "${FW}/usb.idProduct"
 echo 0x0105                   > "${FW}/usb.bcdDevice"
 echo "RNSBox"                 > "${FW}/usb.manufacturer"
-echo "RNSBox Reticulum router (Pi Zero 2 W)" > "${FW}/usb.product"
+echo "RNSBox Reticulum router (Raspberry Pi, universal 64-bit)" > "${FW}/usb.product"
 echo "02:1d:6b:01:04:02"      > "${FW}/usb.ncm.mac"
 echo "rnsbox"                 > "${FW}/hostname"
 # usb.disk0 (+ .size) for the read-only clients DVD is added by
 # scripts/build-variant.sh for the dvd variant; lite ships NCM-only.
 
-# Our kernel cmdline (no serial console — the PL011 belongs to SLIP).
+# Our kernel cmdline (no GPIO-serial console — the PL011 belongs to SLIP on
+# the Zero 2 W; the Pi 5 debug-UART console rides on ttyAMA10).
 cat "${BOARD_DIR}/cmdline.txt" > "${FW}/cmdline.txt"
+
+# Kernel-built DTB overlays (arm64 overlay build via the arm/ dts symlink):
+# all *.dtbo plus the overlay_map.dtb/hat_map.dtb model maps and README.
+KOVERLAYS=$(echo "${BUILD_DIR}"/linux-*/arch/arm64/boot/dts/overlays)
+if [ -d "${KOVERLAYS}" ]; then
+	mkdir -p "${FW}/overlays"
+	# kernel-built files supersede the two stray dtbos the rpi-firmware
+	# repo ships in its own boot/overlays
+	cp -f "${KOVERLAYS}"/*.dtbo "${FW}/overlays/" 2>/dev/null || true
+	for f in overlay_map.dtb hat_map.dtb README; do
+		[ -f "${KOVERLAYS}/${f}" ] && cp -f "${KOVERLAYS}/${f}" "${FW}/overlays/"
+	done
+else
+	echo "WARNING: kernel overlays not found at ${KOVERLAYS}" >&2
+fi
+
+# 3A+ DTB alias (firmware name <- arm64 kernel name)
+if [ -f "${BINARIES_DIR}/bcm2837-rpi-3-a-plus.dtb" ] && \
+   [ ! -f "${BINARIES_DIR}/bcm2710-rpi-3-a-plus.dtb" ]; then
+	cp -f "${BINARIES_DIR}/bcm2837-rpi-3-a-plus.dtb" \
+	      "${BINARIES_DIR}/bcm2710-rpi-3-a-plus.dtb"
+fi
 
 # ---- stock raspberrypi image assembly (inlined) ----
 FILES=()

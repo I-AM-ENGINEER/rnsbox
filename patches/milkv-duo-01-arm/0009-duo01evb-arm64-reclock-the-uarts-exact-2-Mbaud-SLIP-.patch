@@ -1,0 +1,95 @@
+From 684da9f675739b5c18024f387b3f6524f89cd00e Mon Sep 17 00:00:00 2001
+From: rnsbox <rnsbox@localhost>
+Date: Thu, 15 Oct 2026 00:43:21 +0300
+Subject: [PATCH 09/11] =?UTF-8?q?duo01evb-arm64:=20reclock=20the=20uarts?=
+ =?UTF-8?q?=20=E2=80=94=20exact=202=20Mbaud=20SLIP,=20live=20console?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The arm64 board dts inherited soph_base.dtsi's uarts verbatim: 8250 with
+a hardcoded clock-frequency=25 MHz (FSBL sets clk_cam0_200=25 MHz at
+power-on). Once the dts reclock lands (assigned-clocks: disppll 768 MHz,
+cam0_200 = disppll/8 = 96 MHz in of_clk_init, before drivers probe), an
+8250 still dividing from 25 MHz dies 3.84x — the console is gone at the
+first reclock. Fix, same as the RV sg2000_duomodule01_sd board already
+ships:
+  - &clk: assigned-clocks/parents/rates — disppll -> 768 MHz (needs the
+    enabled LUT row, previous patch), cam0_200 -> disppll parent @ 96 MHz;
+  - uart0 (console): clocks=<&clk CV181X_CLK_UART0> + delete the 25 MHz
+    clock-frequency so the dw-uart reads the rate from the CCF;
+  - uart1 (SLIP): status okay + the same clocks fix — /dev/ttyS1 for
+    S31slip; 2 Mbaud is now exact (96M/16/3), console stays at 115200
+    (+0.16%).
+cpu_axi0 is NOT touched: FSBL already runs it from FPLL/3, it is not a
+disppll consumer, and the FSBL/driver parent encodings do not map 1:1.
+
+u-boot cvi_board_init.c: mux UART1 TX/RX onto XGPIOA[28]/[29] (fmux
+func=1, the encoding the Sipeed SG2002 boards use for these pads).
+---
+ .../dts_arm64/sg2000_duo01evb_arm64_sd.dts    | 30 +++++++++++++++++--
+ .../u-boot/cvi_board_init.c                   |  8 +++++
+ 2 files changed, 36 insertions(+), 2 deletions(-)
+
+diff --git a/build/boards/sg200x/sg2000_duo01evb_arm64_sd/dts_arm64/sg2000_duo01evb_arm64_sd.dts b/build/boards/sg200x/sg2000_duo01evb_arm64_sd/dts_arm64/sg2000_duo01evb_arm64_sd.dts
+index b86e50fa6..74ee3a2cf 100644
+--- a/build/boards/sg200x/sg2000_duo01evb_arm64_sd/dts_arm64/sg2000_duo01evb_arm64_sd.dts
++++ b/build/boards/sg200x/sg2000_duo01evb_arm64_sd/dts_arm64/sg2000_duo01evb_arm64_sd.dts
+@@ -4,8 +4,34 @@
+ #include "soph_asic_sd.dtsi"
+ #include "soph_default_memmap.dtsi"
+ 
+-/ {
+-	model = "Milk-V Duo Module 01 Evaluation Board (ARM64)";
++// RNSBox: reclock disppll 1188 -> 768 MHz and clk_cam0_200 osc/1 ->
++// disppll/8 = 96 MHz (of_clk_init, before any driver probes). Every
++// dw-uart is a gate-only child of clk_cam0_200, so the 8250 input
++// becomes 96 MHz: 2 Mbaud is exact (96M/16/3), 1 Mbaud too (quot 6).
++// The 8250 driver must take the rate from the CCF — the stale 25 MHz
++// clock-frequency property is deleted below; without the uart0 fix the
++// console dies 3.84x the moment the reclock lands. The 768 MHz rate
++// needs the enabled LUT entry in the clk driver (this series).
++&clk {
++	assigned-clocks = <&clk CV181X_CLK_DISPPLL>, <&clk CV181X_CLK_CAM0_200>;
++	assigned-clock-parents = <0>, <&clk CV181X_CLK_DISPPLL>;
++	assigned-clock-rates = <768000000>, <96000000>;
++};
++
++&uart0 {
++	clocks = <&clk CV181X_CLK_UART0>;
++	/delete-property/ clock-frequency;
++};
+ 
++// SLIP to the HaLow modem (S31slip, /dev/ttyS1). Pads XGPIOA[28]/[29]
++// are muxed to UART1 TX/RX by u-boot (cvi_board_init.c, fmux func=1 —
++// the same encoding the Sipeed SG2002 boards use for A28/A29).
++&uart1 {
++	status = "okay";
++	clocks = <&clk CV181X_CLK_UART1>;
++	/delete-property/ clock-frequency;
+ };
+ 
++/ {
++	model = "Milk-V Duo Module 01 Evaluation Board (ARM64)";
++};
+diff --git a/build/boards/sg200x/sg2000_duo01evb_arm64_sd/u-boot/cvi_board_init.c b/build/boards/sg200x/sg2000_duo01evb_arm64_sd/u-boot/cvi_board_init.c
+index 129e880c9..b95c015a2 100644
+--- a/build/boards/sg200x/sg2000_duo01evb_arm64_sd/u-boot/cvi_board_init.c
++++ b/build/boards/sg200x/sg2000_duo01evb_arm64_sd/u-boot/cvi_board_init.c
+@@ -4,5 +4,13 @@ int cvi_board_init(void)
+ 
+ 	PINMUX_CONFIG(IIC3_SCL, IIC3_SCL);
+ 	PINMUX_CONFIG(IIC3_SDA, IIC3_SDA);
++
++	// UART1 (SLIP to the HaLow modem): XGPIOA[28] TX / XGPIOA[29] RX,
++	// fmux func=1 — the same encoding the Sipeed SG2002 boards use for
++	// these pads. Whether the EVB routes them out is a hardware
++	// bring-up question; the pads can be re-muxed at runtime
++	// (portal/devmem) without touching u-boot.
++	mmio_write_32(0x03001070, 0x1); // GPIOA 28 UART1 TX
++	mmio_write_32(0x03001074, 0x1); // GPIOA 29 UART1 RX
+ 	return 0;
+ }
+-- 
+2.43.0
+

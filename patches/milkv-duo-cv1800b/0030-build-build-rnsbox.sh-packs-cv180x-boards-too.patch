@@ -1,0 +1,53 @@
+From 86d4cd97af56ae578c0fee6e7745935af4d08ca0 Mon Sep 17 00:00:00 2001
+From: rnsbox <rnsbox@localhost>
+Date: Thu, 15 Oct 2026 00:14:33 +0300
+Subject: [PATCH 4/4] build: build-rnsbox.sh packs cv180x boards too
+
+The pack script hardcoded the sg200x chip dir when locating the board
+partition xml; derive it from the board name prefix so the universal
+CVITEK flow packs cv1800b_sophpi_duo_sd (cv180x) and sg200x boards with
+the same script. Also drop the one-board usb.product string - the gadget
+describes itself as an RNSBox router on every board now.
+---
+ build-rnsbox.sh                                        | 10 +++++++++-
+ .../common/sd_tools/sd_gen_burn_image_rootless.sh      |  2 +-
+ 2 files changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/build-rnsbox.sh b/build-rnsbox.sh
+index 0aa0aea63..b9b93f806 100755
+--- a/build-rnsbox.sh
++++ b/build-rnsbox.sh
+@@ -27,8 +27,16 @@ echo "=================== RNSBox build [$VARIANT] $(date) ==================="
+ # lichee default keeps this script working standalone in a lichee tree.
+ BSP_BOARD="${RNSBOX_BSP_BOARD:-sg2002_licheervnano_sd}"
+ 
++# Chip-arch dir of the board being packed: sg2000_*/sg2002_* live under
++# build/boards/sg200x/, cv1800b_* under build/boards/cv180x/ (the universal
++# CVITEK flow packs both families from this one script).
++case "${BSP_BOARD%%_*}" in
++    cv1800b) BSP_CHIP_DIR=cv180x ;;
++    *)       BSP_CHIP_DIR=sg200x ;;
++esac
++
+ DEFCONFIG=buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig
+-PARTXML=build/boards/sg200x/$BSP_BOARD/partition/partition_sd.xml
++PARTXML=build/boards/$BSP_CHIP_DIR/$BSP_BOARD/partition/partition_sd.xml
+ GENIMG=build/tools/common/sd_tools/genimage_rootless.cfg
+ ISO_OVERLAY=buildroot/board/cvitek/SG200X/overlay/opt/rnsbox-clients/usbdisk.iso
+ ISO_STASH=/tmp/rnsbox-usbdisk.iso.stash
+diff --git a/build/tools/common/sd_tools/sd_gen_burn_image_rootless.sh b/build/tools/common/sd_tools/sd_gen_burn_image_rootless.sh
+index 02f5e5573..b3cfa8959 100755
+--- a/build/tools/common/sd_tools/sd_gen_burn_image_rootless.sh
++++ b/build/tools/common/sd_tools/sd_gen_burn_image_rootless.sh
+@@ -55,7 +55,7 @@ echo 0x1d6b > ${output_dir}/input/usb.idVendor
+ echo 0x0105 > ${output_dir}/input/usb.idProduct
+ echo 0x0105 > ${output_dir}/input/usb.bcdDevice
+ echo "RNSBox" > ${output_dir}/input/usb.manufacturer
+-echo "RNSBox Reticulum router (LicheeRV Nano-e)" > ${output_dir}/input/usb.product
++echo "RNSBox Reticulum router" > ${output_dir}/input/usb.product
+ # Pin the device-side NCM MAC so host-side `enxXXXX` ifname is deterministic.
+ echo "02:1d:6b:01:04:02" > ${output_dir}/input/usb.ncm.mac
+ # Override the auto-generated `licheervnano-<keyhash>` hostname (S10uuid
+-- 
+2.43.0
+
