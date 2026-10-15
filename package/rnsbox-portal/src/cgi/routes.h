@@ -38,6 +38,12 @@ void reticulum_slip(const http::Request&, http::Response&);        // POST PRG
 void reticulum_rnsh_save(const http::Request&, http::Response&);   // POST PRG
 void reticulum_halow_add(const http::Request&, http::Response&);   // POST PRG
 
+// access tab (rnsh remote access — issued key files)
+void access_page(const http::Request&, http::Response&);           // GET  render
+void access_issue(const http::Request&, http::Response&);          // POST -> text/plain download
+void access_revoke(const http::Request&, http::Response&);         // POST PRG
+void access_reissue(const http::Request&, http::Response&);        // POST -> text/plain download
+
 // settings tab
 void settings_page(const http::Request&, http::Response&);         // GET  render
 void settings_password(const http::Request&, http::Response&);     // POST PRG
