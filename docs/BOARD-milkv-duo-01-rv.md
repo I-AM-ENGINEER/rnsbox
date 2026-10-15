@@ -103,6 +103,15 @@ Observed results of the validation boot (all markers green):
 - `/etc/rnsbox/` operator config and `/etc/init.d/` ship as built;
 - root shell reachable on `ttyS0`; `poweroff` path clean.
 
+- re-validated after the packaging fix (edf670e): the un-vendoring patch
+  had silently dropped the shared packages from patch-flow rootfs builds
+  (kconfig lost the `source` lines for python-rns/lxmf/nomadnet and
+  rnsbox-portal), so interim images shipped without `rnsd` — the fixed
+  rootfs was extracted and verified to contain `/usr/bin/rnsd`,
+  `/usr/sbin/rnsbox-portal`, python3 with RNS/LXMF/nomadnet/cryptography
+  43.0.3 in site-packages, and the boot harness was re-run against its
+  `/etc` with identical results (`qemu-boot-rv-fixed.log`).
+
 **Tier 2 — hardware-only (needs the real board)**
 
 - **The product daemon binaries themselves**: `rnsd` (python3),
