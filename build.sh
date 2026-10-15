@@ -259,7 +259,9 @@ rnsbox_slim_bsp() {
         # kills the script (this ate the duo flows on CI: only the arm64 flow
         # carries build-rnsbox-arm.sh).
         if [ -f "$packer" ]; then
-            sed -i 's/BR2_TARGET_ROOTFS_EXT2_SIZE="200M"/BR2_TARGET_ROOTFS_EXT2_SIZE="512M"/' "$packer"
+            # stamp whatever the packer currently carries (a reused workdir's
+            # packer may say 200M, 128M or anything a previous era left)
+            sed -i 's/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE="512M"/' "$packer"
         fi
     done
 }
@@ -285,6 +287,12 @@ rnsbox_build_bsp_generic() {
     export PATH=/usr/sbin:/sbin:$PATH
     sed -i 's/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE="512M"/' \
         "buildroot/configs/$RNSBOX_BR_DEFCONFIG"
+    # incremental builds never re-import the defconfig: stamp the live
+    # .config too, or the fs step keeps whatever size a previous era set
+    if [ -f buildroot/output/.config ]; then
+        sed -i 's/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE="512M"/' \
+            buildroot/output/.config
+    fi
     for b in $RNSBOX_DEFCONFIG_BOARDS; do
         sed -i 's#\(<partition label="ROOTFS" size_in_kb=\)"[0-9]*"#\1"1638400"#' \
             "build/boards/sg200x/$b/partition/partition_sd.xml"
@@ -349,6 +357,10 @@ rnsbox_build_milkv_duo_01() {
     export PATH=/usr/sbin:/sbin:$PATH
     sed -i 's/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE="512M"/' \
         buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig
+    if [ -f buildroot/output/.config ]; then
+        sed -i 's/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE="512M"/' \
+            buildroot/output/.config
+    fi
     sed -i 's#\(<partition label="ROOTFS" size_in_kb=\)"[0-9]*"#\1"1638400"#' \
         build/boards/sg200x/sg2000_duomodule01_sd/partition/partition_sd.xml
     sed -i '/"usb.disk0",/d; /"usb.disk0.size",/d' \
@@ -401,6 +413,10 @@ rnsbox_univ_stage() {
     # 1.6G partition (S99resizefs grows it on first boot), NCM-only gadget.
     sed -i 's/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE="512M"/' \
         buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig
+    if [ -f buildroot/output/.config ]; then
+        sed -i 's/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE="512M"/' \
+            buildroot/output/.config
+    fi
     sed -i 's#\(<partition label="ROOTFS" size_in_kb=\)"[0-9]*"#\1"1638400"#' \
         "build/boards/$(rnsbox_univ_chip_dir "$board")/$board/partition/partition_sd.xml"
     sed -i '/"usb.disk0",/d; /"usb.disk0.size",/d' \
