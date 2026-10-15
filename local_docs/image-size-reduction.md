@@ -10,11 +10,12 @@ SLIP, gadget) и пользовательский опыт.
 |---|---|---|---|
 | CVITEK universal lite .img (sg2000/sg2002/cv1800b) | 216 MiB | **144 MiB** | **-72 MiB (-33%)** |
 | - rootfs.ext4 в образе | 200 MiB | 128 MiB | -72 MiB |
-| rpi-universal lite .img | 528 MiB | ~208 MiB | ~-320 MiB (-61%) |
+| rpi-universal lite .img | 528 MiB | **208 MiB** | **-320 MiB (-61%)** |
 | - rootfs.ext4 | 400 MiB | 160 MiB | -240 MiB |
 | - boot.vfat | 128 MiB | 48 MiB | -80 MiB |
 
-(цифра rpi — расчётная до пересборки, см. «Состояние» в конце)
+Собрано и проверено; тестовые образы: Downloads/rnsbox-img-test (с
+SHA256SUMS и README-ПРОШИВКА.md).
 
 ## Ключевой факт, на котором всё держится
 
@@ -159,8 +160,22 @@ Runtime-конфиги не тронуты; S51pycompile — фоновая за
       128M: used 93 / free 19+1% reserved / инодов 32768 (файлов 5705);
       S-цепочка 38 скриптов на месте; rnsd/uhttpd/portal-cgi/pip/RNS/
       LXMF/nomadnet в ФС проверены
-- [ ] пересборка cv1800b/sg2002 вариантов (тот же rootfs, другие boot-блобы)
-- [ ] rpi0-2w пересборка + замер
-- [ ] QEMU: rpi raspi3b полный бут (aarch64 исполняется mainline QEMU);
-      CVITEK RV64 — xthead-бинари mainline QEMU не исполняет, проверка
-      структурная (методика duo01-rv-validate)
+- [x] cv1800b и sg2002 варианты пересобраны (тот же slim-rootfs, свои
+      boot-блобы): оба 144 MiB
+- [x] rpi0-2w пересобран: 528 -> 208 MiB (rootfs 160M: контент 111 МБ
+      после PY_ONLY/чистки; boot.vfat 48M: payload 34 МБ)
+- [x] QEMU-смоук rpi (virt-машина, aarch64 mainline QEMU + образное ядро
+      rpi не совместимо с raspi3b в QEMU 8.2 —_serial молчит; бут на
+      virt-ядре из out-qemu): ПОЛНАЯ S-цепочка до конца, «Starting uhttpd
+      (portal): OK», «Starting rnsd: OK» (python py-only работает),
+      sshd/dnsmasq/cron/ntp OK. nftables в QEMU не грузится — у virt-ядра
+      нет netfilter-модулей (ограничение стенда, не образа). Лог —
+      rnsbox-img-test/qemu-boot-rpi-virt.log. Сериал-логина у rpi-образа
+      НЕТ ПО ЗАМЫСЛУ (UART занят SLIP-линком, getty только на HDMI) —
+      отсутствие «login:» в логе не сбой
+- [x] попутный фикс бута rpi: rcS из оверлея был 644 (независимо от этой
+      задачи текущий rpi-образ QEMU не проходил — «can't run rcS»);
+      исправлено в post-build.sh + git-режим 755
+- [x] CVITEK RV64: xthead-бинари mainline QEMU не исполняет — структурная
+      сверка с эталоном rnsbox-duo-test (init.d diff = только +S51pycompile;
+      все ключевые бинари/пакеты на месте, df свободного места проверен)
