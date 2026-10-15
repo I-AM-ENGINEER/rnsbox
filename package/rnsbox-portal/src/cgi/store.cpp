@@ -3,7 +3,9 @@
 #include "util.h"
 #include <cctype>
 #include <cstdlib>
+#include <cstdint>
 #include <cstring>
+#include <algorithm>
 
 namespace store {
 
@@ -493,4 +495,102 @@ bool add_halow_interface(const std::string& name_in, const std::string& host, in
     return true;
 }
 
+
+// ---- Bluetooth LE transport ([[BLE Interface]] stanza in reticulum config)
+// The stanza ships in /etc/reticulum/config (enabled by default). The portal
+// edits it IN PLACE - comments, key order and the rest of the file stay
+// byte-identical - so the raw-config editor keeps showing the whole truth.
+// rnsd has to restart (S82rnsd) for a change to apply.
+constexpr const char* BLE_SECTION = "ble interface";
+
+BleConfig read_ble() {
+    BleConfig c;
+    bool in = false;
+    for (const auto& ln : read_lines(RETICULUM_CONFIG)) {
+        std::string s = util::trim(ln);
+        if (!s.empty() && s[0] == '[') {
+            std::string low = s;
+            for (auto& ch : low) ch = (char)tolower((unsigned char)ch);
+            in = (low.find(BLE_SECTION) != std::string::npos);
+            continue;
+        }
+        if (!in || s.empty() || s[0] == '#' || s.find('=') == std::string::npos) continue;
+        size_t eq = s.find('=');
+        std::string k = util::trim(s.substr(0, eq)), v = s.substr(eq + 1);
+        size_t h = v.find('#'); if (h != std::string::npos) v = v.substr(0, h);
+        v = util::trim(v);
+        if (v.size() >= 2 && v.front() == '"' && v.back() == '"')
+            v = v.substr(1, v.size() - 2);
+        for (auto& ch : k) ch = (char)tolower((unsigned char)ch);
+        if (k == "enabled") c.enabled = v.empty() ? "no" : v;
+        else if (k == "device_name") c.device_name = v;
+    }
+    return c;
+}
+
+bool write_ble(const BleConfig& cfg, std::string& err) {
+    std::string en = cron_truthy(cfg.enabled) ? "yes" : "no";
+    // The name lands inside a config value and is advertised over the air:
+    // no line breaks/control chars (conf_value_ok), none of the config
+    // syntax chars, bounded length (BLE ad payloads are tiny anyway).
+    std::string name = util::trim(cfg.device_name);
+    if (!name.empty()) {
+        if (!conf_value_ok(name)) { err = "device name must not contain line breaks or control characters"; return false; }
+        if (name.find_first_of("[]#=\"'") != std::string::npos) { err = "device name must not contain []#= or quote characters"; return false; }
+        if (name.size() > 16) { err = "device name too long (max 16 characters)"; return false; }
+    }
+    auto lines = read_lines(RETICULUM_CONFIG);
+    if (lines.empty()) { err = "no reticulum config"; return false; }
+
+    bool in = false, saw_section = false, saw_enabled = false, saw_name = false;
+    size_t insert_after = std::string::npos;   // line index a missing key goes under
+    for (size_t i = 0; i < lines.size(); ++i) {
+        std::string& ln = lines[i];
+        std::string s = util::trim(ln);
+        if (!s.empty() && s[0] == '[') {
+            std::string low = s;
+            for (auto& ch : low) ch = (char)tolower((unsigned char)ch);
+            in = (low.find(BLE_SECTION) != std::string::npos);
+            if (in) saw_section = true;
+            continue;
+        }
+        if (!in) continue;
+        // Remember the stanza's first key line: a key the config lacks (a
+        // hand-trimmed file) is inserted under it rather than dropping the
+        // save or appending outside the stanza.
+        if (!s.empty() && s[0] != '#' && insert_after == std::string::npos) insert_after = i;
+        if (s.empty() || s[0] == '#') continue;
+        size_t eq = s.find('=');
+        if (eq == std::string::npos) continue;
+        std::string k = util::trim(s.substr(0, eq));
+        for (auto& ch : k) ch = (char)tolower((unsigned char)ch);
+        if (k != "enabled" && k != "device_name") continue;
+        std::string indent;
+        for (char ch : ln) { if (ch == ' ' || ch == '\t') indent += ch; else break; }
+        if (k == "enabled") {
+            ln = indent + "enabled = " + en;
+            saw_enabled = true;
+        } else {
+            // Blank = advertise the service UUID only, the driver default:
+            // drop the key entirely (the form reads back blank).
+            if (!name.empty()) ln = indent + "device_name = " + name;
+            else ln.clear();
+            saw_name = true;
+        }
+    }
+    if (!saw_section) { err = "no [[BLE Interface]] stanza in the reticulum config"; return false; }
+    if (!saw_enabled) { err = "[[BLE Interface]] stanza is missing the enabled key"; return false; }
+    if (!saw_name && !name.empty()) {
+        if (insert_after == std::string::npos) { err = "[[BLE Interface]] stanza has no keys to anchor device_name under"; return false; }
+        lines.insert(lines.begin() + insert_after + 1, "    device_name = " + name);
+    }
+    // A cleared device_name left an empty line behind: drop it so a
+    // save-toggle-save cycle never grows the file.
+    lines.erase(std::remove(lines.begin(), lines.end(), std::string()), lines.end());
+
+    std::string o;
+    for (const auto& l : lines) o += l + "\n";
+    if (!util::write_file_atomic(RETICULUM_CONFIG, o, 0600)) { err = "write failed"; return false; }  // see write_reticulum_config
+    return true;
+}
 }  // namespace store

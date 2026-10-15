@@ -37,6 +37,8 @@ void reticulum_applyupdate(const http::Request&, http::Response&); // POST PRG (
 void reticulum_slip(const http::Request&, http::Response&);        // POST PRG
 void reticulum_rnsh_save(const http::Request&, http::Response&);   // POST PRG
 void reticulum_halow_add(const http::Request&, http::Response&);   // POST PRG
+void reticulum_bluetooth(const http::Request&, http::Response&);        // POST PRG
+void reticulum_bluetooth_raise(const http::Request&, http::Response&);  // POST PRG
 
 // settings tab
 void settings_page(const http::Request&, http::Response&);         // GET  render

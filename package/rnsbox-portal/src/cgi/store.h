@@ -94,5 +94,17 @@ constexpr int SLIP_MAX_BAUD = 4000000;
 // it is written into a [[section]] header line).
 bool add_halow_interface(const std::string& name, const std::string& host, int port, std::string& msg);
 
+// --- Bluetooth LE transport (the [[BLE Interface]] stanza) ---
+// Edits the stanza IN PLACE inside /etc/reticulum/config (comments and the
+// rest of the file untouched), so the raw editor keeps showing the truth.
+// rnsd restart applies. The stanza itself ships with the image; a config
+// without it (deleted by hand) makes write_ble fail with a message.
+struct BleConfig {
+    std::string enabled = "yes";
+    std::string device_name;   // blank = advertise the service UUID only
+};
+BleConfig read_ble();
+bool write_ble(const BleConfig& c, std::string& err);   // name <= 16 chars, no []#= or quotes
+
 }  // namespace store
 #endif

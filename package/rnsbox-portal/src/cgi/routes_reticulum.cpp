@@ -13,6 +13,7 @@
 #include <cstring>
 #include <ctime>
 #include <string>
+#include <dirent.h>
 #include <fcntl.h>
 #include <sys/file.h>
 #include <sys/stat.h>
@@ -283,6 +284,58 @@ static bool reticulum_has_tcp_client(const std::string& host, int port_i) {
     return false;
 }
 
+// ===================== Bluetooth (BLE transport) ==========================
+// Stack state for the card + the status JSON: adapter (sysfs), system D-Bus
+// (socket presence) and bluetoothd (/proc comm scan). All cheap — the page
+// paint path runs these inline; no subprocesses.
+struct BtState {
+    bool stack = false;        // /sys/class/bluetooth exists at all
+    bool hci = false;          // an hciN adapter is registered
+    std::string hci_name;      // "hci0"
+    bool dbus = false;         // the system bus socket is there
+    bool daemon = false;       // bluetoothd is running
+};
+
+static BtState bt_status() {
+    BtState s;
+    if (DIR* d = opendir("/sys/class/bluetooth")) {
+        s.stack = true;
+        while (dirent* e = readdir(d)) {
+            if (strncmp(e->d_name, "hci", 3) == 0) { s.hci = true; s.hci_name = e->d_name; break; }
+        }
+        closedir(d);
+    }
+    s.dbus = (::access("/run/dbus/system_bus_socket", F_OK) == 0);
+    if (DIR* p = opendir("/proc")) {
+        while (dirent* e = readdir(p)) {
+            if (e->d_name[0] < '0' || e->d_name[0] > '9') continue;
+            std::string c = util::trim(util::read_file("/proc/" + std::string(e->d_name) + "/comm", 64));
+            if (c == "bluetoothd") { s.daemon = true; break; }
+        }
+        closedir(p);
+    }
+    return s;
+}
+
+static bool bt_installed() {
+    // The ble_reticulum package ships the shim RNS exec()s; absent = the
+    // image was built without the BLE stack (64 MB cv1800b RAM-boot board).
+    return ::access("/etc/reticulum/interfaces/BLEInterface.py", F_OK) == 0;
+}
+
+static std::string bt_status_html(const BtState& b) {
+    if (!b.stack)
+        return "<span class=\"badge\">no Bluetooth stack in the kernel</span>";
+    if (!b.hci)
+        return "<span class=\"badge warn\">no adapter</span> <span class=\"muted\">(onboard BT off / no USB dongle yet — rnsd re-probes every 30 s)</span>";
+    std::string o = "<span class=\"badge ok\">" + E(b.hci_name) + " present</span>";
+    o += b.dbus ? " <span class=\"badge ok\">dbus</span>"
+                : " <span class=\"badge err\">dbus down</span>";
+    o += b.daemon ? " <span class=\"badge ok\">bluetoothd</span>"
+                  : " <span class=\"badge err\">bluetoothd down</span>";
+    return o;
+}
+
 // ===================== GET render =====================
 
 void reticulum_page(const Request& req, Response& res) {
@@ -404,6 +457,40 @@ void reticulum_page(const Request& req, Response& res) {
     h = R(std::move(h), "__SLIP_BAUD__",     E(sl.baud));
     h = R(std::move(h), "__SLIP_LOCAL_IP__", E(sl.local_ip));
     h = R(std::move(h), "__SLIP_PEER_IP__",  E(sl.peer_ip));
+
+    // Bluetooth (BLE transport) card. The form block is filled server-side
+    // (like __HALOW_LIVE_BLOCK__): a BLE-less image (cv1800b RAM-boot) gets
+    // just a note instead of controls that could never work.
+    store::BleConfig bl = store::read_ble();
+    BtState bt = bt_status();
+    bool bt_on = truthy(bl.enabled);
+    std::string bt_form;
+    if (!bt_installed()) {
+        bt_form = "<p class=\"muted\" style=\"margin:8px 0 0\">The BLE transport is not part of this image "
+                  "(no BLE stack packages).</p>";
+    } else {
+        bt_form =
+            "<form method=\"post\" action=\"" + base + "/reticulum/bluetooth\">\n"
+            "    <label style=\"margin:8px 0 0\"><input type=\"checkbox\" name=\"enabled\" "
+            "__BT_ENABLED_CHECKED__> Enable BLE transport (scans for peers AND accepts inbound "
+            "connections over its own GATT server)</label>\n"
+            "    <div class=\"row-form\" style=\"margin-top:10px\">\n"
+            "      <label style=\"margin:0\">Advertised name\n"
+            "        <input type=\"text\" name=\"device_name\" value=\"__BT_NAME__\" maxlength=\"16\" "
+            "title=\"Keep it short: BLE advertisement payloads are 31 bytes total. Blank = advertise the service UUID only\"></label>\n"
+            "    </div>\n"
+            "    <button type=\"submit\" class=\"btn-primary\" style=\"margin-top:10px\">Save &amp; restart rnsd</button>\n"
+            "    <span class=\"muted\">saving restarts rnsd — active links reconnect on their own</span>\n"
+            "  </form>\n"
+            "  <form method=\"post\" action=\"" + base + "/reticulum/bluetooth/raise\" class=\"row-form\">\n"
+            "    <button type=\"submit\" class=\"btn\">Re-raise the stack</button>\n"
+            "    <span class=\"muted\">restarts bluetoothd + rnsd — for a wedged adapter or a dongle plugged in and not picked up</span>\n"
+            "  </form>";
+    }
+    h = R(std::move(h), "__BT_FORM_BLOCK__", bt_form);
+    h = R(std::move(h), "__BT_STACK_STATUS__", bt_status_html(bt));
+    h = R(std::move(h), "__BT_ENABLED_CHECKED__", (bt_on && bt_installed()) ? "checked" : "");
+    h = R(std::move(h), "__BT_NAME__", E(bl.device_name));
     h = rnsh_fill(std::move(h));
     h = rnsdmon_fill(std::move(h));
     h = R(std::move(h), "__CONFIG__",        E(cfg));
@@ -429,6 +516,17 @@ void reticulum_status(const Request& req, Response& res) {
         "\",\"baud\":\"" + http::json_escape(sl.baud) +
         "\",\"local_ip\":\"" + http::json_escape(sl.local_ip) +
         "\",\"peer_ip\":\"" + http::json_escape(sl.peer_ip) + "\"}";
+    {
+        store::BleConfig bl = store::read_ble();
+        BtState bt = bt_status();
+        o += ",\"ble\":{\"installed\":" + std::string(bt_installed() ? "true" : "false") +
+            ",\"enabled\":\"" + http::json_escape(bl.enabled) +
+            "\",\"device_name\":\"" + http::json_escape(bl.device_name) +
+            "\",\"hci\":" + std::string(bt.hci ? "true" : "false") +
+            ",\"hci_name\":\"" + http::json_escape(bt.hci_name) +
+            "\",\"dbus\":" + std::string(bt.dbus ? "true" : "false") +
+            ",\"bluetoothd\":" + std::string(bt.daemon ? "true" : "false") + "}";
+    }
     if (with_raw)
         o += ",\"raw\":\"" + http::json_escape(rn.raw) + "\"";
     o += "}";
@@ -731,4 +829,43 @@ void reticulum_applyupdate(const Request& req, Response& res) {
         update_json(res, false, false, "Update not applied: " + (uerror.empty() ? "unknown error" : uerror) + ".");
 }
 
+
+
+// ===================== Bluetooth (BLE transport) POST ======================
+
+void reticulum_bluetooth(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, false)) return;
+    store::BleConfig c;
+    c.enabled     = req.f("enabled") == "on" ? "yes" : "no";
+    c.device_name = util::trim(req.f("device_name"));
+    std::string err;
+    if (!store::write_ble(c, err)) {
+        render::redirect_flash(res, ret_redirect(), "error", "Bluetooth: " + err + ".");
+        return;
+    }
+    // The interface exists only while rnsd parses its config, so a toggle
+    // (or a renamed advertisement) needs the restart — said so up front.
+    web::run_init("S82rnsd");
+    if (c.enabled == "yes")
+        render::redirect_flash(res, ret_redirect(), "success",
+            "BLE transport enabled" +
+            (c.device_name.empty() ? std::string("") : " as “" + c.device_name + "”") +
+            " and rnsd restarted to apply (active links reconnect on their own). "
+            "Without an adapter it runs as a logged no-op and picks a USB dongle up within 30 s of it appearing.");
+    else
+        render::redirect_flash(res, ret_redirect(), "success",
+            "BLE transport disabled and rnsd restarted to apply. The Bluetooth stack stays up "
+            "(bluetoothd + dbus) — disable those under Network if you want the radio fully off.");
+}
+
+void reticulum_bluetooth_raise(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, false)) return;
+    // bluetoothd first (it re-scans adapters as they appear), then rnsd —
+    // a fresh BLEInterface probe then sees whatever the stack found.
+    web::run_init("S40bluetoothd", "restart");
+    web::run_init("S82rnsd");
+    render::redirect_flash(res, ret_redirect(), "success",
+        "Bluetooth stack and rnsd restarted. Check the Adapter line above: hci0 present + dbus + bluetoothd "
+        "all green is a healthy stack; a missing adapter means no onboard radio and no dongle.");
+}
 }  // namespace routes
