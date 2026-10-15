@@ -1,0 +1,393 @@
+#!/usr/bin/python3
+# rnsbox-echobot — the RNSBox local LXMF echo bot.
+#
+# Announces one LXMF delivery destination on rnsd's shared Reticulum instance
+# and echoes every message it receives back to its sender — the box's
+# "reachable?" presence for any LXMF client (NomadNet, Sideband, ...),
+# testable out of the box. Started by /etc/init.d/S87echobot; configured by
+# /etc/rnsbox/echobot.conf (enabled, interval, name, announce_at_start).
+#
+# Own LXMRouter + own identity, like lxmd and nomadnet: every process on the
+# box holds its own LXMF delivery destination and they coexist over the ONE
+# shared Reticulum instance (rnsd, S82rnsd). The identity lives at
+# /var/lib/rnsbox-echobot/identity.pem on the persistent rootfs (created on
+# first start, never regenerated), so the bot's LXMF address — and the 6-hex
+# suffix of its announced name (the first 3 bytes of the identity hash) — are
+# stable across reboots and updates.
+#
+# Shared-instance race: at boot this script may run before rnsd has opened the
+# shared instance. Constructing RNS.Reticulum() then would silently start a
+# SECOND instance (no interfaces), and it could not be retried — RNS pins its
+# singleton before failing. So wait for the shared instance first, by polling
+# /proc/net/unix (@rns/<path> LISTEN) and /proc/net/tcp (127.0.0.1:37428
+# LISTEN) — the same test S85lxmd's rns_shared_up() makes — and build the one
+# RNS.Reticulum() only once the socket is there. If rnsd restarts later, the
+# client interface RNS gave us reconnects on its own.
+#
+# Forced announce: the portal runs `S87echobot announce`, which sends SIGUSR1;
+# the announce loop picks it up within its 1 s tick.
+#
+# Status for the portal: /var/lib/rnsbox-echobot/state.json (atomic rewrites),
+# read directly by the CGI. Announces are logged to stdout -> syslog via the
+# init script's FIFO ("LXMF announced <hash> as <name>"), so `logread |
+# grep echobot` shows the announce history.
+#
+# No propagation node: replies go DIRECT (or OPPORTUNISTIC when a ratchet is
+# known and no link exists — one packet instead of a link setup). Received
+# LXMF fields are NOT echoed (they can carry multi-megabyte file attachments;
+# an echo bot proves reachability, it must not amplify traffic). No inbound
+# stamp cost is set: requiring proof-of-work would make this box's CPU a
+# public work target.
+
+import json
+import os
+import queue
+import signal
+import sys
+import threading
+import time
+
+CONF_PATH = "/etc/rnsbox/echobot.conf"
+STATE_DIR = "/var/lib/rnsbox-echobot"
+IDENTITY_PATH = os.path.join(STATE_DIR, "identity.pem")
+STATE_PATH = os.path.join(STATE_DIR, "state.json")
+RNS_CONFIGDIR = "/etc/reticulum"
+
+DEFAULT_NAME = "rnsbox echo bot"
+DEFAULT_INTERVAL = 86400        # one announce per day
+MIN_INTERVAL = 600              # 10 min: an announce flood helps nobody
+MAX_INTERVAL = 30 * 86400       # 30 days
+PATH_WAIT_SECONDS = 15          # how long a reply waits for the sender's path
+
+APP_NAME = "lxmf"               # LXMF's APP_NAME; delivery = "lxmf.delivery"
+
+# Counters that survive restarts (the identity — and so the bot — does too);
+# everything identity/config-derived is rewritten on every start.
+PERSISTED_FIELDS = ("last_announce", "announce_count", "echo_ok", "echo_fail")
+
+
+def log(msg):
+    # stdout is a FIFO to logger (syslog, tag echobot[pid]) — unbuffered via
+    # PYTHONUNBUFFERED=1 from the init script.
+    try:
+        sys.stdout.write(time.strftime("%Y-%m-%d %H:%M:%S ") + msg + "\n")
+        sys.stdout.flush()
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------- config ----
+
+def read_conf(path):
+    conf = {
+        "enabled": True,
+        "interval": DEFAULT_INTERVAL,
+        "name": DEFAULT_NAME,
+        "announce_at_start": True,
+    }
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, val = line.split("=", 1)
+                key = key.strip().lower()
+                val = val.strip().strip('"').strip("'")
+                low = val.lower()
+                if key == "enabled":
+                    conf["enabled"] = low not in ("no", "0", "false", "off", "")
+                elif key == "interval":
+                    try:
+                        conf["interval"] = int(val)
+                    except ValueError:
+                        pass
+                elif key == "name" and val:
+                    conf["name"] = val[:64]
+                elif key == "announce_at_start":
+                    conf["announce_at_start"] = low not in ("no", "0", "false", "off", "")
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        log("could not read " + path + ": " + repr(e))
+    if conf["interval"] < MIN_INTERVAL:
+        conf["interval"] = MIN_INTERVAL
+    if conf["interval"] > MAX_INTERVAL:
+        conf["interval"] = MAX_INTERVAL
+    return conf
+
+
+# ----------------------------------------------------------------- state ----
+
+class State:
+    # What the portal's Echo bot tab shows. Written atomically; the CGI reads
+    # it straight from disk on every page paint. RLock: announce bookkeeping
+    # runs while holding the lock and calls bump().
+    FIELDS = ("status", "detail", "lxmf_addr", "suffix", "name_base",
+              "display_name", "interval", "started_at", "last_announce",
+              "announce_count", "echo_ok", "echo_fail")
+
+    def __init__(self):
+        self.lock = threading.RLock()
+        self.data = {k: (0 if k in PERSISTED_FIELDS or k in
+                         ("interval", "started_at") else
+                         ("starting" if k == "status" else ""))
+                     for k in self.FIELDS}
+        # Keep counters (and the last announce time) across restarts.
+        try:
+            with open(STATE_PATH, "r", encoding="utf-8") as f:
+                old = json.load(f)
+            for k in PERSISTED_FIELDS:
+                if isinstance(old.get(k), int) and old[k] >= 0:
+                    self.data[k] = old[k]
+        except Exception:
+            pass
+
+    def set(self, **kw):
+        with self.lock:
+            self.data.update(kw)
+            self.write()
+
+    def bump(self, key, **extra):
+        with self.lock:
+            self.data[key] = int(self.data.get(key, 0)) + 1
+            self.data.update(extra)
+            self.write()
+
+    def write(self):
+        tmp = STATE_PATH + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self.data, f, indent=1)
+                f.write("\n")
+            os.replace(tmp, STATE_PATH)
+            os.chmod(STATE_PATH, 0o600)
+        except Exception as e:
+            log("could not write state.json: " + repr(e))
+
+
+# ------------------------------------------------- shared instance probe ----
+
+def shared_instance_up():
+    # True once rnsd's shared instance accepts clients. RNS on Linux listens
+    # on the abstract AF_UNIX socket @rns/<path> (flags 00010000 = listening,
+    # in /proc/net/unix; @rns/<path>/rpc is its RPC socket, not this), or on
+    # 127.0.0.1:37428 (state 0A = LISTEN) with shared_instance_type = tcp.
+    # Same test as S85lxmd/S46wanwatch rns_shared_up(); builtins only.
+    try:
+        with open("/proc/net/unix", "r") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 7 and parts[3] == "00010000":
+                    path = parts[-1]
+                    if path.startswith("@rns/") and path.count("/") == 1:
+                        return True
+    except Exception:
+        pass
+    try:
+        with open("/proc/net/tcp", "r") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 4 and parts[1] == "0100007F:9234" and parts[3] == "0A":
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+# ------------------------------------------------------------------ bot -----
+
+def main():
+    conf = read_conf(CONF_PATH)
+    if not conf["enabled"]:
+        log("disabled in " + CONF_PATH + " (enabled=no); exiting")
+        return 0
+
+    os.makedirs(STATE_DIR, exist_ok=True)
+    state = State()
+    state.set(status="waiting", detail="waiting for rnsd's shared instance",
+              name_base=conf["name"], interval=conf["interval"],
+              started_at=int(time.time()))
+
+    # ---- wait for rnsd's shared instance (S82rnsd may still be starting) ----
+    waited = 0
+    while not shared_instance_up():
+        if waited % 60 == 0:
+            log("waiting for rnsd's shared instance (" + str(waited) + "s)")
+        time.sleep(1)
+        waited += 1
+    log("rnsd's shared instance is up (waited " + str(waited) + "s)")
+
+    import RNS
+    import LXMF
+
+    # Syslog should hold more than our own lines: paths, interface connects.
+    RNS.loglevel = RNS.LOG_INFO
+
+    # Attach to rnsd's shared instance — never a second transport stack.
+    RNS.Reticulum(configdir=RNS_CONFIGDIR)
+
+    # ---- identity: persistent, so address + name suffix never change -------
+    if os.path.isfile(IDENTITY_PATH) and os.path.getsize(IDENTITY_PATH) > 0:
+        identity = RNS.Identity(create_keys=False)
+        identity.load(IDENTITY_PATH)
+        log("identity loaded from " + IDENTITY_PATH)
+    else:
+        identity = RNS.Identity(create_keys=True)
+        tmp = IDENTITY_PATH + ".tmp"
+        with open(tmp, "wb") as f:
+            f.write(identity.get_private_key())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, IDENTITY_PATH)
+        log("new identity created at " + IDENTITY_PATH)
+
+    suffix = identity.hash[:3].hex()
+    display_name = (conf["name"] + " " + suffix).strip()
+    state.set(status="waiting", detail="attaching to the shared instance",
+              lxmf_addr=identity.hash.hex(), suffix=suffix,
+              name_base=conf["name"], display_name=display_name,
+              interval=conf["interval"], started_at=int(time.time()))
+    log("LXMF address " + identity.hash.hex() + " (\"" + display_name + "\")")
+
+    # ---- LXMF router + delivery destination --------------------------------
+    router = LXMF.LXMRouter(identity=identity, storagepath=STATE_DIR)
+    delivery = router.register_delivery_identity(identity, display_name=display_name)
+    if delivery is None:
+        state.set(status="error", detail="could not register the delivery destination")
+        log("FATAL: could not register the LXMF delivery destination")
+        return 1
+
+    announce_wanted = threading.Event()
+    stop_wanted = threading.Event()
+    replies = queue.Queue()
+
+    def on_message(lxmessage):
+        # Runs on LXMF's receive path: enqueue and return immediately.
+        replies.put(lxmessage)
+
+    router.register_delivery_callback(on_message)
+
+    def do_announce():
+        try:
+            router.announce(delivery.hash)
+        except Exception as e:
+            log("announce failed: " + repr(e))
+            return
+        with state.lock:
+            state.data["last_announce"] = int(time.time())
+            state.bump("announce_count")
+        log("LXMF announced " + delivery.hash.hex() + " as \"" + display_name + "\"")
+
+    def announce_loop():
+        # Announce at start, then every `interval` seconds (monotonic clock:
+        # a wall-clock step must not skip or double an announce), plus on
+        # SIGUSR1 (the portal's "Announce now").
+        if conf["announce_at_start"]:
+            time.sleep(1)   # let RNS finish bringing interfaces up
+            do_announce()
+        next_at = time.monotonic() + conf["interval"]
+        while not stop_wanted.is_set():
+            if announce_wanted.is_set():
+                announce_wanted.clear()
+                do_announce()
+                next_at = time.monotonic() + conf["interval"]
+            elif time.monotonic() >= next_at:
+                do_announce()
+                next_at = time.monotonic() + conf["interval"]
+            time.sleep(1)
+
+    def echo_worker():
+        # Replies from a worker thread: waiting for the sender's path must
+        # never stall LXMF's delivery pipeline.
+        while not stop_wanted.is_set():
+            try:
+                msg = replies.get(timeout=1)
+            except queue.Empty:
+                continue
+            src = getattr(msg, "source_hash", None)
+            content = getattr(msg, "content", b"")
+            title = getattr(msg, "title", "") or ""
+            try:
+                content = content.decode("utf-8", errors="replace") if isinstance(content, bytes) else content
+            except Exception:
+                content = str(content)
+            if src is None:
+                state.bump("echo_fail")
+                continue
+            srchex = src.hex()
+            log("received a message from " + srchex + " (" + str(len(content)) + " bytes); echoing back")
+            try:
+                dest_identity = RNS.Identity.recall(src)
+                if dest_identity is None:
+                    RNS.Transport.request_path(src)
+                    deadline = time.time() + PATH_WAIT_SECONDS
+                    while dest_identity is None and time.time() < deadline:
+                        time.sleep(0.2)
+                        dest_identity = RNS.Identity.recall(src)
+                if dest_identity is None:
+                    log("no path/identity for " + srchex + " — reply dropped")
+                    state.bump("echo_fail")
+                    continue
+
+                dest = RNS.Destination(dest_identity, RNS.Destination.OUT,
+                                       RNS.Destination.SINGLE, APP_NAME, "delivery")
+                # DIRECT by default; OPPORTUNISTIC when there is no link yet
+                # but a ratchet is known — one packet instead of a link setup.
+                method = LXMF.LXMessage.DIRECT
+                if (not router.delivery_link_available(src)
+                        and RNS.Identity.current_ratchet_id(src) is not None):
+                    method = LXMF.LXMessage.OPPORTUNISTIC
+
+                reply = LXMF.LXMessage(destination=dest, source=delivery,
+                                       content=content, title=title,
+                                       desired_method=method)
+
+                def on_delivered(lxm, s=src):
+                    log("echo delivered to " + s.hex())
+                    state.bump("echo_ok")
+
+                def on_failed(lxm, s=src):
+                    log("echo to " + s.hex() + " failed")
+                    state.bump("echo_fail")
+
+                reply.register_delivery_callback(on_delivered)
+                reply.register_failed_callback(on_failed)
+                router.handle_outbound(reply)
+            except Exception as e:
+                log("echo to " + srchex + " failed: " + repr(e))
+                state.bump("echo_fail")
+
+    def on_usr1(signum, frame):
+        announce_wanted.set()
+
+    def on_term(signum, frame):
+        stop_wanted.set()
+
+    signal.signal(signal.SIGUSR1, on_usr1)
+    signal.signal(signal.SIGTERM, on_term)
+    signal.signal(signal.SIGINT, on_term)
+
+    for t in (threading.Thread(target=announce_loop, daemon=True),
+              threading.Thread(target=echo_worker, daemon=True)):
+        t.start()
+
+    state.set(status="running", detail="announcing and echoing",
+              lxmf_addr=identity.hash.hex(), suffix=suffix,
+              name_base=conf["name"], display_name=display_name,
+              interval=conf["interval"], started_at=int(time.time()))
+    log("echo bot running: address " + delivery.hash.hex() +
+        ", announce interval " + str(conf["interval"]) + "s")
+
+    # Main thread just waits; RNS's own threads carry the traffic.
+    try:
+        while not stop_wanted.is_set():
+            time.sleep(0.5)
+    finally:
+        state.set(status="stopped", detail="stopped")
+        log("stopping")
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
