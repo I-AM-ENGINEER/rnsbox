@@ -95,7 +95,7 @@ std::string layout(const http::Request& req, http::Response& res,
         {"__USER__",     esc(s.user)},
     };
     // Active-nav: exactly one id gets "active", the rest collapse to "".
-    static const char* ids[] = {"dashboard", "network", "wifi", "reticulum", "updates", "settings", "donate"};
+    static const char* ids[] = {"dashboard", "network", "wifi", "reticulum", "updates", "settings", "donate", "access"};
     for (const char* id : ids)
         kv.push_back({std::string("__ACT_") + id + "__",
                       (active && std::string(active) == id) ? "active" : ""});

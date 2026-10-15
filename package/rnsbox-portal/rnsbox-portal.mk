@@ -49,6 +49,7 @@ define RNSBOX_PORTAL_INSTALL_TARGET_CMDS
 	$(INSTALL) -m 0644 $(@D)/cgi/www/qr/*.svg $(TARGET_DIR)/www/qr/
 	$(INSTALL) -D -m 0755 $(@D)/cgi/helpers/updatecheck.py $(TARGET_DIR)/usr/lib/rnsbox/updatecheck.py
 	$(INSTALL) -D -m 0755 $(@D)/cgi/helpers/rnode.py $(TARGET_DIR)/usr/lib/rnsbox/rnode.py
+	$(INSTALL) -D -m 0755 $(@D)/cgi/helpers/rnshaccess.py $(TARGET_DIR)/usr/lib/rnsbox/rnshaccess.py
 	$(INSTALL) -D -m 0755 $(@D)/cgi/helpers/halow.py $(TARGET_DIR)/usr/lib/rnsbox/halow.py
 	$(INSTALL) -D -m 0755 $(@D)/bin/rnsbox-update-check $(TARGET_DIR)/usr/sbin/rnsbox-update-check
 	# S07usbmode — USB role (device|host) from /etc/rnsbox/usb.conf; sorts
