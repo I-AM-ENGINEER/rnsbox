@@ -259,6 +259,14 @@ regen_dnsmasq() {
 		echo "dhcp-range=set:lan,$LAN_DHCP_START,$LAN_DHCP_END,255.255.255.0,12h"
 		echo "dhcp-option=tag:lan,3,$LAN_IP"
 		echo "dhcp-option=tag:lan,6,$LAN_IP"
+		# The HaLow modem over SLIP resolves through the box (its lwIP defaults
+		# its DNS to the SLIP gateway): DNS only — the link is point-to-point
+		# with static addressing, no DHCP. sl0 may be absent (modem not wired):
+		# dnsmasq only warns about an unknown interface and keeps serving.
+		if grep -qE '^enabled[[:space:]]*=[[:space:]]*yes' /etc/rnsbox/slip.conf 2>/dev/null; then
+			echo "interface=sl0"
+			echo "no-dhcp-interface=sl0"
+		fi
 	} >> "$DNSMASQ_FILE"
 }
 
