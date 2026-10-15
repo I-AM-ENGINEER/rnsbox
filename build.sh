@@ -24,7 +24,7 @@
 set -e
 
 HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
-BOARDS="licheerv-nano milkv-duo-01-rv rpi0-2w"
+BOARDS="licheerv-nano milkv-duo-01-rv milkv-duo-cv1800b rpi0-2w"
 
 BOARD=""
 VARIANT=""
@@ -73,6 +73,27 @@ case "$BOARD" in
         WORKDIR="${WORKDIR:-LicheeRV-Nano-Build-duo01}"
         RNSBOX_IMAGES_DIR="install/soc_sg2000_duomodule01_sd/images"
         export RNSBOX_BSP_BOARD=sg2000_duomodule01_sd
+        ;;
+    milkv-duo-cv1800b)
+        # Universal CVITEK RV64 entry: ONE buildroot rootfs + per-board
+        # boot artifacts for the whole family - cv1800b (Milk-V Duo 64M,
+        # C906-only phobos kernel), sg2000_duomodule01 (Duo Module 01 EVB)
+        # and sg2002_licheervnano (LicheeRV Nano). The vendor build dirs
+        # are per board (build/<board>, ramdisk/build/<board>,
+        # install/soc_<board>) while the buildroot output is shared, so
+        # both chip kernels - the CV180X-vs-CV181X Kconfig choice forbids
+        # a single Image for phobos and mars - and the one rootfs coexist
+        # in this workdir. A new sibling board = a new board dir + boot
+        # blobs in the BSP, zero new porting.
+        BUILD_STYLE=patches
+        UPSTREAM_URL="${UPSTREAM_URL:-https://github.com/sipeed/LicheeRV-Nano-Build.git}"
+        UPSTREAM_COMMIT="${UPSTREAM_COMMIT:-d4003f15b35d43ad4842f427050ab2bba0114fa5}"
+        HOST_TOOLS_URL="${HOST_TOOLS_URL:-https://github.com/sophgo/host-tools}"
+        WORKDIR="${WORKDIR:-LicheeRV-Nano-Build-cvitek-universal}"
+        RNSBOX_UNIVERSAL_BOARDS="${RNSBOX_UNIVERSAL_BOARDS:-cv1800b_sophpi_duo_sd sg2000_duomodule01_sd sg2002_licheervnano_sd}"
+        # first-class board of this entry; sg2000/sg2002 images land in
+        # install/soc_<board>/images next to it
+        RNSBOX_IMAGES_DIR="install/soc_cv1800b_sophpi_duo_sd/images"
         ;;
     rpi0-2w)
         BUILD_STYLE=external
@@ -209,6 +230,118 @@ rnsbox_build_milkv_duo_01() {
     ./build-rnsbox.sh "$VARIANT"
 }
 
+# ---- universal CVITEK RV64 flow (milkv-duo-cv1800b) --------------------------
+rnsbox_univ_chip_dir() {
+    case "$1" in
+        cv1800b_*) echo cv180x ;;
+        *)         echo sg200x ;;
+    esac
+}
+
+rnsbox_univ_stage() {
+    # $1 board dir name, $2 resume tag. Runs the vendor stage list once per
+    # board; .rnsbox-done-<tag>-<stage> stamps in the BSP tree make every
+    # relaunch resume where it died (delete one to force a phase again).
+    local board="$1" tag="$2" stage
+    source build/cvisetup.sh
+    defconfig "$board"
+    export PATH=/usr/sbin:/sbin:$PATH
+    # lite shape, same as every RNSBox lite image: 200M rootfs ext4 in a
+    # 1.6G partition (S99resizefs grows it on first boot), NCM-only gadget.
+    sed -i 's/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE="200M"/' \
+        buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig
+    sed -i 's#\(<partition label="ROOTFS" size_in_kb=\)"[0-9]*"#\1"1638400"#' \
+        "build/boards/$(rnsbox_univ_chip_dir "$board")/$board/partition/partition_sd.xml"
+    sed -i '/"usb.disk0",/d; /"usb.disk0.size",/d' \
+        build/tools/common/sd_tools/genimage_rootless.cfg
+    chmod 0755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/S* 2>/dev/null || true
+    export RNSBOX_WITH_DVD=0
+    export NPROC="${RNSBOX_NPROC:-2}"
+    export MAKEFLAGS="NPROC=${NPROC}${MAKEFLAGS:+ $MAKEFLAGS}"
+    defconfig "$board"
+
+    # The ramdisk workspace (target/, configs/) must exist before
+    # build_kernel: its pack_boot packs boot.itb from it, and a fresh tree
+    # has none. create_ramdisk_folder (what build_ramboot calls) populates
+    # it WITHOUT touching the kernel O= dir - it must stay before
+    # build_kernel, while build_ramboot itself (make ramboot -> kernel-dts)
+    # needs the kernel O= configured, i.e. it must stay AFTER build_kernel.
+    if [ ! -e ".rnsbox-done-$tag-ramdisk_ws" ]; then
+        create_ramdisk_folder || return 1
+        touch ".rnsbox-done-$tag-ramdisk_ws"
+    fi
+
+    for stage in build_uboot build_kernel build_ramboot build_osdrv \
+                 build_3rd_party build_middleware pack_cfg; do
+        [ -e ".rnsbox-done-$tag-$stage" ] && continue
+        "$stage" || return 1
+        touch ".rnsbox-done-$tag-$stage"
+    done
+}
+
+rnsbox_univ_stage_sg2002() {
+    # sg2002_licheervnano reuses the sg2000 pass (same mars kernel recipe):
+    # hardlink the per-board kernel O= + ramdisk dirs, then let make flip
+    # the .config to the sg2002 board defconfig, rebuild the DTBs against
+    # the sg2002 memmap and repack boot.sd. osdrv/middleware kos are
+    # chip-arch (SG200X) outputs and come along with the hardlinks.
+    source build/cvisetup.sh
+    defconfig sg2002_licheervnano_sd
+    export PATH=/usr/sbin:/sbin:$PATH
+    export RNSBOX_WITH_DVD=0
+
+    if [ ! -e .rnsbox-done-sg2002-build_uboot ]; then
+        build_uboot || return 1
+        touch .rnsbox-done-sg2002-build_uboot
+    fi
+    [ -e .rnsbox-done-sg2002-kernel-reuse ] && return 0
+
+    rm -rf build/sg2002_licheervnano_sd ramdisk/build/sg2002_licheervnano_sd
+    # REAL copies, not hardlinks: the vendor make rewrites files like the
+    # kernel .config truncate-in-place (cp without unlink), which would
+    # push sg2002 content into the sg2000 originals through a shared inode.
+    cp -a build/sg2000_duomodule01_sd build/sg2002_licheervnano_sd
+    cp -a ramdisk/build/sg2000_duomodule01_sd ramdisk/build/sg2002_licheervnano_sd
+    # drop the copied DTBs so kernel-dts rebuilds them against the sg2002
+    # memmap (the memmap header is included at dtc preprocessing time)
+    rm -f build/sg2002_licheervnano_sd/arch/riscv/boot/dts/cvitek/*.dtb
+    build_kernel || return 1
+    touch .rnsbox-done-sg2002-kernel-reuse
+}
+
+rnsbox_build_milkv_duo_cv1800b() {
+    # WSL note: Windows PATH interop appends /mnt/c entries (some with
+    # spaces) that buildroot rejects - strip them.
+    export PATH=$(printf '%s' "$PATH" | tr ':' '\n' | grep -v '^/mnt/[a-z]/' | paste -sd:)
+    export RNSBOX_NPROC="${RNSBOX_NPROC:-2}"
+
+    local b
+    for b in $RNSBOX_UNIVERSAL_BOARDS; do
+        case "$b" in
+            cv1800b_*)
+                echo ">> [$b] phobos kernel pass (64MB board, full build)"
+                rnsbox_univ_stage "$b" cv1800b || return 1
+                ;;
+            sg2000_*)
+                echo ">> [$b] mars kernel pass (also builds the shared rootfs)"
+                rnsbox_univ_stage "$b" sg2000 || return 1
+                ;;
+            sg2002_*)
+                echo ">> [$b] reuse pass (mars kernel objects, own DTB/fip/uboot)"
+                rnsbox_univ_stage_sg2002 || return 1
+                ;;
+        esac
+    done
+
+    # image assembly: per-board boot blobs + THE shared rootfs.ext4.
+    # build-rnsbox.sh re-defconfigs per board, packs the rootfs once per
+    # run (incremental) and burns one image per board.
+    for b in $RNSBOX_UNIVERSAL_BOARDS; do
+        echo ">> packing [$VARIANT] image for $b"
+        RNSBOX_BSP_BOARD="$b" ./build-rnsbox.sh "$VARIANT" || return 1
+    done
+}
+
 rnsbox_build_rpi0_2w() {
     # Set up by the external flow below: $UPSTREAM (pristine clone at the
     # pin), $EXT (this repo, WSL-local copy when run from /mnt), $ODIR.
@@ -231,9 +364,10 @@ rnsbox_build_rpi0_2w() {
 
 rnsbox_build() {
     case "$BOARD" in
-        licheerv-nano)    rnsbox_build_licheerv_nano ;;
-        milkv-duo-01-rv)  rnsbox_build_milkv_duo_01 ;;
-        rpi0-2w)          rnsbox_build_rpi0_2w ;;
+        licheerv-nano)         rnsbox_build_licheerv_nano ;;
+        milkv-duo-01-rv)       rnsbox_build_milkv_duo_01 ;;
+        milkv-duo-cv1800b)     rnsbox_build_milkv_duo_cv1800b ;;
+        rpi0-2w)               rnsbox_build_rpi0_2w ;;
     esac
 }
 

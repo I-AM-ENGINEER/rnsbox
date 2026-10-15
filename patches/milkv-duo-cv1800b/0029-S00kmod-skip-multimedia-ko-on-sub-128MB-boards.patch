@@ -1,0 +1,41 @@
+From 3b2a3db4322bfc0a9c63bf1e70e2a82e5c7b136b Mon Sep 17 00:00:00 2001
+From: rnsbox <rnsbox@localhost>
+Date: Thu, 15 Oct 2026 00:14:11 +0300
+Subject: [PATCH 3/4] S00kmod: skip the multimedia ko stack on sub-128MB boards
+
+The soph_* camera pipeline kos are pinned, unswappable RAM and headless
+RNSBox never feeds them; on the 64MB CV1800B they would eat a third of
+DRAM before init reaches the portal. Gate the pipeline block on MemTotal
+(boards < 128MB skip it); pwm/saradc stay (tiny, and the 64MB board has
+nothing else). S07kmod2 keeps loading watchdog + RTC everywhere.
+---
+ .../board/cvitek/SG200X/overlay/etc/init.d/S00kmod  | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S00kmod b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S00kmod
+index 4c5ff6840..0b15e7899 100755
+--- a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S00kmod
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S00kmod
+@@ -7,6 +7,19 @@ then
+ 	cd /mnt/system/ko/
+ 	insmod soph_sys.ko
+ 	insmod soph_base.ko
++	# RNSBox: the multimedia pipeline (VI/VPSS/DWA/VO/RGN/TPU/VCODEC/JPEG/
++	# VC driver/IVE) is camera SoC machinery that headless RNSBox never
++	# feeds, and every loaded ko is pinned, unswappable RAM. On the 64MB
++	# CV1800B boards it would eat a third of DRAM before init even gets to
++	# the portal. Boards with < 128MB of RAM skip it (S07kmod2 below still
++	# loads the watchdog/RTC/monitor trio, which we DO want).
++	if [ "$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)" -lt 128 ]; then
++		echo "(64MB board: multimedia ko skipped)"
++		insmod soph_pwm.ko
++		insmod soph_saradc.ko
++		echo "OK"
++		exit 0
++	fi
+ 	insmod soph_rtos_cmdqu.ko # optional for RTOS core
+ 	insmod soph_fast_image.ko # optional for RTOS core
+ 	insmod soph_mipi_rx.ko
+-- 
+2.43.0
+

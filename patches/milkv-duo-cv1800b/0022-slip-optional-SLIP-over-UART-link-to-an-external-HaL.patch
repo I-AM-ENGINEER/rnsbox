@@ -1,0 +1,1317 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: smit1237 <smit1237@gmail.com>
+Date: Tue, 15 Sep 2026 04:55:01 +0300
+Subject: [PATCH 22/23] slip: optional SLIP-over-UART link to an external HaLow
+ (RNode) modem
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Lets RNSBox use an external WiFi-HaLow RNode modem as a long-range sub-GHz
+Reticulum interface over a 3-wire UART, using SLIP (IP-over-serial). rnsd
+reaches the modem as a normal TCPClientInterface. Opt-in, OFF by default.
+
+- kernel: CONFIG_SLIP=y (SLIP is under NETDEVICES, outside NET_CORE, depends
+  only on TTY).
+- buildroot: BR2_PACKAGE_UTIL_LINUX_BINARIES=y for ldattach (attaches the
+  N_SLIP line discipline). busybox stty sets the non-standard 1.5 Mbaud first,
+  since musl's ldattach -s cannot.
+- S31slip init + /etc/rnsbox/slip.conf: when enabled, set the line speed with
+  stty then ldattach SLIP on the UART and bring up a point-to-point sl0
+  (local_ip peer peer_ip). No-op when disabled, the device is absent, or the
+  modem isn't wired. Does not touch eth0/usb0.
+- portal (Reticulum tab): a 'HaLow modem (SLIP)' card — enable/disable, UART
+  device, baud, local/peer IP, live sl0 status; store.read/write_slip_conf,
+  sysinfo.slip_status, applied live via S31slip reload.
+- portal: reverse-proxy the modem's own web UI through the portal, behind
+  @login_required, at /modem/ — it serves the modem's self-contained config
+  page with its /api/ fetches rewritten to /modem/api/ and proxies those over
+  sl0. An 'Open modem web UI' button sits on the card. This reuses the portal
+  login to gate the modem instead of exposing it via an unauthenticated LAN
+  DNAT. (OTA upload through the proxy can exceed MAX_CONTENT_LENGTH; flash the
+  modem over its own Ethernet UI.)
+- portal: carrierless interfaces (sl0, tun) report operstate 'unknown' even
+  when fully up, which the UI flagged as a scary badge. sysinfo now resolves
+  an admin-up 'unknown' interface that has carrier to 'up', so the
+  All-interfaces table shows UP rather than a false alarm.
+- docs: README.RNSBox.md 'Connecting a WiFi-HaLow modem' section.
+
+Wiring (Nano-e): UART1 GPIOA28 TX / A29 RX (/dev/ttyS1), 3.3 V. The Nano UART
+maxes at 1,562,500 baud (25 MHz/16), so the modem must be set to 1.5 Mbaud.
+(duo-01 series: hunk for build/boards/sg200x/sg2002_licheervnano_sd/linux/sg2002_licheervnano_sd_defconfig dropped — subsumed by the sg2000_duomodule01_sd board dir)
+---
+ README.RNSBox.md                              |  84 ++++
+ .../linux/sg2002_licheervnano_sd_defconfig    |   1 +
+ .../cvitek/SG200X/overlay/etc/init.d/S31slip  |  81 ++++
+ .../SG200X/overlay/etc/rnsbox/slip.conf       |  26 ++
+ .../cvitek_SG200X_musl_riscv64_defconfig      |   2 +-
+ .../rnsbox-portal/src/cgi/helpers/halow.py    | 113 +++++
+ .../src/cgi/pages/reticulum.html              | 207 +++++++++
+ .../rnsbox-portal/src/cgi/routes_modem.cpp    | 249 ++++++++++
+ .../src/cgi/routes_reticulum.cpp              | 433 ++++++++++++++++++
+ 9 files changed, 1195 insertions(+), 1 deletion(-)
+ create mode 100755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/S31slip
+ create mode 100644 buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/slip.conf
+ create mode 100644 buildroot/package/rnsbox-portal/src/cgi/helpers/halow.py
+ create mode 100644 buildroot/package/rnsbox-portal/src/cgi/pages/reticulum.html
+ create mode 100644 buildroot/package/rnsbox-portal/src/cgi/routes_modem.cpp
+ create mode 100644 buildroot/package/rnsbox-portal/src/cgi/routes_reticulum.cpp
+
+diff --git a/README.RNSBox.md b/README.RNSBox.md
+index fb9edf0cf..cae084412 100644
+--- a/README.RNSBox.md
++++ b/README.RNSBox.md
+@@ -100,6 +100,90 @@ See [APPLYING.md](APPLYING.md) for the full flow.
+   `build/clients-stick/`. Treat the clients disc as optional and review that
+   directory before relying on it. The `lite` build does not need it.
+ 
++## Connecting a WiFi-HaLow (RNode) modem over SLIP
++
++RNSBox can use an external **WiFi-HaLow** RNode modem — a Taixin TXW-series
++HaLow bridge running I-AM-ENGINEER's
++[RNode_Halow_Firmware](https://github.com/I-AM-ENGINEER/RNode_Halow_Firmware) —
++as a long-range sub-GHz Reticulum interface, connected over a 3-wire UART using
++**SLIP** (IP-over-serial). Optional and **off by default**.
++
++### Wiring — pinout
++
++Use **UART1** = `/dev/ttyS1` — **not** `ttyS0`, which is the Linux serial
++console. On the LicheeRV Nano-e, UART1 is the two pads labelled **`GPIOA28`**
++(SoC function `UART1_TX`) and **`GPIOA29`** (`UART1_RX`) on Sipeed's pinout
++diagram; take **GND** from any ground pad on the same header. All three lines are
++**3.3 V TTL** — never wire a 5 V or RS-232 level.
++
++TX and RX must **cross over** — the box's TX goes to the modem's RX and vice
++versa:
++
++```
++  LicheeRV Nano-e (UART1 / ttyS1)                  HaLow RNode modem
++  ─────────────────────────────────                ─────────────────
++   GPIOA28  ·  UART1_TX  ─────────────────────────►  RX
++   GPIOA29  ·  UART1_RX  ◄─────────────────────────  TX
++   GND                   ────────────────────────── GND   (required)
++```
++
++| Nano-e pad | Function | Wire to modem |
++|------------|----------|---------------|
++| `GPIOA28`  | UART1_TX | RX            |
++| `GPIOA29`  | UART1_RX | TX            |
++| `GND`      | ground   | GND           |
++
++Keep the leads short — at 1.5 Mbaud, long unshielded jumpers invite frame errors.
++
++### Baud
++
++Both ends must run the **same baud**. The Nano-e's UART is clocked from 25 MHz,
++so its ceiling is **1,562,500** (25 MHz / 16) — it cannot reach the modem's
++2,000,000 default. Use **1500000** on both sides:
++
++- **Modem**: set SLIP baud to `1500000` over its Ethernet web UI (or `POST
++  /api/slip_cfg`). Runtime-settable and persisted — no reflash.
++- **RNSBox**: `baud=1500000` in the *HaLow modem (SLIP)* card (or
++  `/etc/rnsbox/slip.conf`).
++
++If `rx_over_errors` climbs under load (`ip -s link show sl0`), drop both ends to
++`1000000` or `921600`.
++
++### Bring it up
++
++1. **Configure + wire** the modem as above; note its SLIP IPs (defaults: modem
++   `192.168.7.2`, host `192.168.7.1`).
++2. **Enable it**: portal → Reticulum tab → *HaLow modem (SLIP)* → tick *Enable*,
++   set device/baud/IPs to match, *Save & apply*. This sets the line speed
++   (`stty`), attaches SLIP (`ldattach`), and brings up a point-to-point `sl0` to
++   the modem — equivalent to editing `/etc/rnsbox/slip.conf` (applied by
++   `S31slip`). `ping 192.168.7.2` should now answer.
++3. **Add the Reticulum interface** in the config editor, then Restart rnsd:
++
++   ```
++   [[HaLow]]
++     type = TCPClientInterface
++     enabled = yes
++     target_host = 192.168.7.2
++     target_port = 8001
++   ```
++
++   RNode_Halow_Firmware serves its RNode TCP endpoint on **port 8001** (not the
++   `4242` the standalone Reticulum docs use). Confirm the port with
++   `curl http://192.168.7.2/api/tcp_server_cfg`.
++
++### Managing the modem from the portal
++
++With SLIP up, the modem's own web UI is reachable only from the box. The portal
++reverse-proxies it behind the login — *Reticulum tab → Open modem web UI* (or
++browse to `/modem/`) opens the modem's full config/stats page through your
++portal session, so nothing is exposed unauthenticated on the LAN. (Firmware OTA
++is the exception: flash the modem over its own Ethernet UI.)
++
++The SLIP link is a point-to-point host route to the modem only; it doesn't touch
++the `eth0` WAN or `usb0` LAN. Requires `CONFIG_SLIP` (kernel) and `ldattach`
++(util-linux) — both shipped.
++
+ ## Support RNSBox
+ 
+ RNSBox is free and open source (MIT). If it's useful to you, you can support
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S31slip b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S31slip
+new file mode 100755
+index 000000000..6f220d562
+--- /dev/null
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S31slip
+@@ -0,0 +1,81 @@
++#!/bin/sh
++# S31slip - optional SLIP-over-UART link to an external WiFi-HaLow (RNode)
++# modem. Reads /etc/rnsbox/slip.conf; when enabled, attaches the SLIP line
++# discipline to the configured UART (ldattach) and brings up a point-to-point
++# sl0 interface to the modem. rnsd then reaches the modem as a normal
++# Reticulum interface via a TCPClientInterface to peer_ip:4242 (added to
++# /etc/reticulum/config by the operator).
++#
++# OFF by default. Harmless no-op when disabled, when the UART device is
++# absent, or when the modem simply isn't wired (sl0 just never comes up).
++
++CONF=/etc/rnsbox/slip.conf
++LOG=/var/log/slip.log
++
++# read one key=value from the conf (single value, no shell sourcing)
++cfg() {
++	sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$CONF" 2>/dev/null \
++	  | tail -1 | tr -d '"' | tr -d "'" | awk '{print $1}'
++}
++
++start() {
++	[ -r "$CONF" ] || { echo "S31slip: no $CONF; skipping"; return 0; }
++	enabled=$(cfg enabled)
++	case "$enabled" in yes|true|1|on) ;; *) echo "S31slip: disabled"; return 0 ;; esac
++
++	device=$(cfg device);     [ -n "$device" ]   || device=/dev/ttyS1
++	baud=$(cfg baud);         [ -n "$baud" ]     || baud=1500000
++	local_ip=$(cfg local_ip); [ -n "$local_ip" ] || local_ip=192.168.7.1
++	peer_ip=$(cfg peer_ip);   [ -n "$peer_ip" ]  || peer_ip=192.168.7.2
++
++	if [ ! -e "$device" ]; then
++		echo "S31slip: $device not present; skipping"
++		return 1
++	fi
++
++	printf "Starting SLIP (%s @ %s baud) -> sl0: " "$device" "$baud"
++	# Set the line speed with busybox stty (it maps a decimal baud to the right
++	# Bxxxx constant). util-linux ldattach's own `-s <baud>` can NOT do this on
++	# a musl target - musl's cfsetspeed rejects a raw decimal and ldattach's
++	# BOTHER fallback is compiled out - so we set the speed here and attach
++	# without -s. ldattach's cfmakeraw preserves the speed bits.
++	if ! stty -F "$device" "$baud" raw -echo >>"$LOG" 2>&1; then
++		echo "FAIL (stty could not set $baud on $device; see $LOG)"
++		return 1
++	fi
++	# ldattach daemonizes and holds the tty open, keeping N_SLIP loaded so the
++	# kernel slip driver's sl0 netdev stays registered.
++	ldattach SLIP "$device" >>"$LOG" 2>&1
++
++	i=0
++	while [ $i -lt 20 ]; do
++		ip link show sl0 >/dev/null 2>&1 && break
++		i=$((i + 1)); sleep 0.2
++	done
++	if ! ip link show sl0 >/dev/null 2>&1; then
++		echo "FAIL (sl0 not created)"
++		killall ldattach 2>/dev/null
++		return 1
++	fi
++
++	# point-to-point: our end = local_ip, the modem = peer_ip. A host route to
++	# peer_ip goes out sl0; nothing else is affected (no default route change).
++	ip addr flush dev sl0 2>/dev/null
++	ip addr add "$local_ip" peer "$peer_ip" dev sl0 2>/dev/null
++	ip link set sl0 up 2>/dev/null
++	echo "OK ($local_ip -> $peer_ip)"
++}
++
++stop() {
++	killall ldattach 2>/dev/null
++	ip link set sl0 down 2>/dev/null
++	ip addr flush dev sl0 2>/dev/null
++	echo "S31slip: stopped"
++}
++
++case "${1:-start}" in
++	start)          start ;;
++	stop)           stop ;;
++	restart|reload) stop; sleep 1; start ;;
++	*) echo "Usage: $0 {start|stop|restart|reload}" >&2; exit 1 ;;
++esac
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/slip.conf b/buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/slip.conf
+new file mode 100644
+index 000000000..207320d47
+--- /dev/null
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/slip.conf
+@@ -0,0 +1,26 @@
++# SLIP-over-UART link to an external WiFi-HaLow (RNode) modem.
++#
++# Optional, OFF by default. When enabled, S31slip attaches the SLIP line
++# discipline to the UART and brings up a point-to-point interface (sl0) to
++# the modem. rnsd then reaches the modem as a normal Reticulum interface by
++# adding, in /etc/reticulum/config:
++#
++#     [[HaLow]]
++#       type = TCPClientInterface
++#       target_host = 192.168.7.2      # = peer_ip below
++#       target_port = 4242
++#
++# Wiring (LicheeRV Nano-e): UART1 on GPIOA28 (TX) / GPIOA29 (RX), 3.3 V,
++# common ground — device = /dev/ttyS1. Do NOT use ttyS0 (console).
++#
++# baud MUST match the modem's SLIP baud. The Nano's UART tops out at
++# 1,562,500 (25 MHz/16); the modem defaults to 2,000,000 which the Nano
++# cannot reach, so set the modem to 1500000 (via its web UI) and match it
++# here. local_ip/peer_ip must match the modem's SLIP config (defaults
++# 192.168.7.2 device / 192.168.7.1 host).
++
++enabled=no
++device=/dev/ttyS1
++baud=1500000
++local_ip=192.168.7.1
++peer_ip=192.168.7.2
+diff --git a/buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig b/buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig
+index fdbd49452..7634161a1 100644
+--- a/buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig
++++ b/buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig
+@@ -3640,7 +3640,7 @@ BR2_PACKAGE_UTIL_LINUX_LIBBLKID=y
+ # BR2_PACKAGE_UTIL_LINUX_LIBMOUNT is not set
+ BR2_PACKAGE_UTIL_LINUX_LIBSMARTCOLS=y
+ BR2_PACKAGE_UTIL_LINUX_LIBUUID=y
+-# BR2_PACKAGE_UTIL_LINUX_BINARIES is not set
++BR2_PACKAGE_UTIL_LINUX_BINARIES=y
+ # BR2_PACKAGE_UTIL_LINUX_AGETTY is not set
+ # BR2_PACKAGE_UTIL_LINUX_BFS is not set
+ # BR2_PACKAGE_UTIL_LINUX_CAL is not set
+diff --git a/buildroot/package/rnsbox-portal/src/cgi/helpers/halow.py b/buildroot/package/rnsbox-portal/src/cgi/helpers/halow.py
+new file mode 100644
+index 000000000..f1b51adf6
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/cgi/helpers/halow.py
+@@ -0,0 +1,113 @@
++#!/usr/bin/env python3
++"""halow.py — live HaLow (RNode) modem status over SLIP, printed as JSON.
++
++Standalone helper (no rnsbox_portal package, stdlib only). The C++ portal shells
++to it for the /reticulum/halow AJAX endpoint (dashboard + Reticulum-tab cards).
++It reads /etc/rnsbox/slip.conf directly and never raises — a slow/absent modem
++just yields {"reachable": false, ...}. Mirrors the old sysinfo.halow_status().
++"""
++import json
++import os
++import urllib.request
++
++SLIP_CONF = "/etc/rnsbox/slip.conf"
++
++
++def read_slip():
++    cfg = {"enabled": "no", "device": "/dev/ttyS1", "baud": "1500000",
++           "local_ip": "192.168.7.1", "peer_ip": "192.168.7.2"}
++    try:
++        with open(SLIP_CONF) as f:
++            for ln in f:
++                ln = ln.strip()
++                if not ln or ln.startswith("#") or "=" not in ln:
++                    continue
++                k, v = ln.split("=", 1)
++                cfg[k.strip()] = v.strip()
++    except OSError:
++        pass
++    return cfg
++
++
++def _slurp(p):
++    try:
++        with open(p) as f:
++            return f.read()
++    except OSError:
++        return ""
++
++
++def _oper_up(dev):
++    base = "/sys/class/net/" + dev
++    if not os.path.isdir(base):
++        return False
++    st = _slurp(base + "/operstate").strip()
++    if st == "up":
++        return True
++    if st == "unknown":
++        try:
++            iff = int((_slurp(base + "/flags").strip() or "0"), 16) & 0x1
++        except ValueError:
++            iff = 0
++        return bool(iff) and _slurp(base + "/carrier").strip() == "1"
++    return False
++
++
++def _modem_api(peer, name, timeout=2.5):
++    try:
++        req = urllib.request.Request("http://%s/api/%s" % (peer, name),
++                                     headers={"Accept-Encoding": "identity"})
++        with urllib.request.urlopen(req, timeout=timeout) as r:
++            return json.loads(r.read().decode("utf-8", "replace"))
++    except Exception:  # noqa: BLE001 - modem down / SLIP not up / bad json
++        return None
++
++
++def halow_status(slip):
++    peer = (slip.get("peer_ip") or "192.168.7.2").strip()
++    enabled = (slip.get("enabled", "no").strip().lower()
++               not in ("no", "0", "false", "off", ""))
++    out = {"enabled": enabled, "peer": peer,
++           "local": (slip.get("local_ip") or "").strip(),
++           "sl0_up": _oper_up("sl0"), "reachable": False, "neighbours": []}
++    if not out["enabled"] or not out["sl0_up"]:
++        return out
++    stat = _modem_api(peer, "get_stat")
++    allc = _modem_api(peer, "get_all")
++    near = _modem_api(peer, "get_nearby_modems")
++    if stat is None and allc is None:
++        return out
++    out["reachable"] = True
++    h = (allc or {}).get("halow", {})
++    out["radio"] = {"freq": h.get("central_freq"), "bw": h.get("bandwidth"),
++                    "mcs": h.get("mcs_index"), "power": h.get("power_dbm")}
++    tcp = (allc or {}).get("tcp", {})
++    conn = tcp.get("connected")
++    out["tcp_port"] = tcp.get("port")
++    out["rnsd_up"] = bool(conn and conn != "no connection")
++    out["connected"] = conn
++    d = (stat or {}).get("device", {})
++    r = (stat or {}).get("radio", {})
++    out["device"] = {"temp": d.get("chip_temp"), "fw": d.get("ver"),
++                     "uptime": d.get("uptime"), "hostname": d.get("hostname")}
++    out["stats"] = {"airtime": r.get("airtime"), "ch_util": r.get("ch_util"),
++                    "noise": r.get("bg_pwr_dbm"), "rx_speed": r.get("rx_speed"),
++                    "tx_speed": r.get("tx_speed"), "rx_bytes": r.get("rx_bytes"),
++                    "tx_bytes": r.get("tx_bytes")}
++    peers = []
++    for n in ((near or {}).get("d") or []):
++        peers.append({"mac": n.get("mac"), "rssi": n.get("rx_rssi"),
++                      "snr": n.get("rx_snr"), "rx_mcs": n.get("rx_mcs"),
++                      "tx_mcs": n.get("tx_mcs"), "tx_acked": n.get("tx_acked"),
++                      "tx_frames": n.get("tx_frames"), "tx_loss": n.get("tx_loss_pct"),
++                      "age": n.get("rx_last_age")})
++    out["neighbours"] = peers
++    if peers:
++        out["best"] = max(
++            peers,
++            key=lambda p: p["rssi"] if isinstance(p["rssi"], (int, float)) else -9999)
++    return out
++
++
++if __name__ == "__main__":
++    print(json.dumps(halow_status(read_slip())))
+diff --git a/buildroot/package/rnsbox-portal/src/cgi/pages/reticulum.html b/buildroot/package/rnsbox-portal/src/cgi/pages/reticulum.html
+new file mode 100644
+index 000000000..b11f76535
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/cgi/pages/reticulum.html
+@@ -0,0 +1,207 @@
++<h2>Reticulum</h2>
++
++<section class="card">
++  <h3>rnsd status</h3>
++  <table class="kv">
++    <tr><th>State</th><td id="rnsd-state">
++      __RNSD_STATE__
++    </td></tr>
++    <tr><th>Version</th><td>
++      Reticulum (rnsd) <strong>__RNS_VERSION__</strong>
++      __UPDATE_BADGE__
++    </td></tr>
++    <tr><th>Update check</th><td>
++      __UPDATE_CHECK_LINE__
++    </td></tr>
++  </table>
++  <form method="post" action="__BASE__/reticulum/restart" class="inline">
++    <button type="submit" class="btn-primary">Restart rnsd</button>
++  </form>
++  <button type="button" class="btn" onclick="loadRnstatus()">Refresh</button>
++  <button type="button" class="btn" id="btn-checkupd" onclick="doUpdate('checkupdate', this, false)">Check for updates</button>
++  __APPLY_UPDATE_FORM__
++  <span id="update-msg" class="msg" style="margin-left:8px"></span>
++
++  <form method="post" action="__BASE__/reticulum/autoupdate" class="row-form" style="margin-top:10px">
++    <label style="margin:0"><input type="checkbox" name="auto_update"
++      __AUTO_UPDATE_CHECKED__ onchange="this.form.submit()"> check for updates daily</label>
++    <noscript><button type="submit" class="btn">Save</button></noscript>
++    <span class="muted">in-place update replaces only the rnsd package (pure-Python); your config is untouched and it rolls back if rnsd fails to restart</span>
++  </form>
++
++  <form method="post" action="__BASE__/reticulum/autorestart" class="row-form" style="margin-top:10px">
++    <label for="rnsd_days" style="margin:0">Auto-restart rnsd</label>
++    <select id="rnsd_days" name="days">
++      __RESTART_DAYS_OPTIONS__
++    </select>
++    <button type="submit" class="btn">Save schedule</button>
++    <span class="muted">restarts at 04:00 — bounds rnsd's announce-cache RAM growth</span>
++  </form>
++
++  <h4>rnstatus -a</h4>
++  <pre class="log" id="rnstatus"><span class="muted">loading… (querying the rnsd instance, can take a few seconds)</span></pre>
++</section>
++
++<section class="card">
++  <h3>HaLow modem (SLIP)</h3>
++  <p class="muted">Optional point-to-point serial link (<code>sl0</code>) to an external
++  WiFi-HaLow RNode modem over a UART. When the modem is reachable, the
++  <strong>Add to rnsd config</strong> button below routes Reticulum through it
++  (a <code>TCPClientInterface</code> named after the modem's hostname). Off by default.</p>
++
++  <table class="kv">
++    <tr><th>Link (sl0)</th><td>
++      __SLIP_LINK_STATUS__
++    </td></tr>
++  </table>
++
++  __HALOW_LIVE_BLOCK__
++
++  <form method="post" action="__BASE__/reticulum/slip">
++    <label style="margin:8px 0 0"><input type="checkbox" name="enabled"
++      __SLIP_ENABLED_CHECKED__> Enable SLIP link at boot</label>
++    <div class="row-form" style="margin-top:10px">
++      <label style="margin:0">UART device
++        <input type="text" name="device" value="__SLIP_DEVICE__"></label>
++      <label style="margin:0">Baud
++        <input type="number" name="baud" value="__SLIP_BAUD__" min="1" max="4000000"></label>
++      <label style="margin:0">This box (local IP)
++        <input type="text" name="local_ip" value="__SLIP_LOCAL_IP__"></label>
++      <label style="margin:0">Modem (peer IP)
++        <input type="text" name="peer_ip" value="__SLIP_PEER_IP__"></label>
++    </div>
++    <button type="submit" class="btn-primary" style="margin-top:10px">Save &amp; apply</button>
++    <p class="muted">Wire UART1 (<code>GPIOA28</code> TX / <code>A29</code> RX, 3.3&nbsp;V) to the modem,
++    cross TX&harr;RX, common ground &mdash; device <code>/dev/ttyS1</code> (not <code>ttyS0</code>, the console).
++    <strong>Baud must match the modem.</strong> The Nano's UART maxes at 1,562,500, so set the modem to
++    1.5&nbsp;Mbaud (over its Ethernet web UI) and match it here. The IPs must match the modem's SLIP config
++    (defaults <code>192.168.7.2</code> modem / <code>192.168.7.1</code> box).</p>
++  </form>
++</section>
++
++<section class="card">
++  <h3>/etc/reticulum/config</h3>
++  <p class="muted">Hand-edit the rnsd configuration. Comments and interface declarations are passed verbatim to Reticulum. Click <em>Save</em> then <em>Restart rnsd</em> to apply.</p>
++  <form method="post" action="__BASE__/reticulum/config">
++    <textarea name="config" rows="24" spellcheck="false">__CONFIG__</textarea>
++    <button type="submit" class="btn-primary">Save</button>
++  </form>
++</section>
++
++<script>
++function loadRnstatus(){
++  var pre = document.getElementById('rnstatus');
++  var st  = document.getElementById('rnsd-state');
++  pre.innerHTML = '<span class="muted">loading… (querying the rnsd instance, can take a few seconds)</span>';
++  fetch('__BASE__/reticulum/status?raw=1').then(function(r){ return r.json(); }).then(function(d){
++    // refresh the state badge too (it's free and may have changed since load)
++    if (d.running) {
++      st.innerHTML = '<span class="badge ok">RUNNING</span> (pid ' + d.pid + ')' +
++                     (d.rss_mb ? ' · ' + d.rss_mb + ' MB RSS' : '');
++    } else {
++      st.innerHTML = '<span class="badge err">STOPPED</span>';
++    }
++    pre.textContent = d.raw ? d.raw : (d.running ? '(rnstatus returned nothing)' : 'rnsd is not running.');
++  }).catch(function(){
++    pre.textContent = 'failed to fetch rnstatus (request timed out or rnsd unreachable).';
++  });
++}
++document.addEventListener('DOMContentLoaded', loadRnstatus);
++</script>
++<script>
++// Update check / apply — async with a live spinner so the page never blank-hangs
++// (an in-place apply can take a minute) and never navigates away (no phantom
++// logout). Shows "⠹ Updating rnsd…" while it runs, then the result; on a
++// version change it reloads so the badge + version refresh.
++function doUpdate(action, btn, isApply){
++  if(isApply && !confirm('Update rnsd now?\n\nThe rns package is replaced in place and rnsd restarts. Your config is not touched, and it rolls back automatically if rnsd fails to come up.')) return;
++  var msg=document.getElementById('update-msg');
++  var frames='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏', fi=0;
++  var verb=isApply?'Updating rnsd':'Checking for updates';
++  var wasText=btn.textContent;
++  btn.disabled=true; if(isApply) btn.textContent='Working…';
++  msg.style.color='var(--muted)';
++  var timer=setInterval(function(){ msg.textContent=' '+frames[fi=(fi+1)%frames.length]+' '+verb+'…'; }, 90);
++  msg.textContent=' '+frames[0]+' '+verb+'…';
++  fetch('__BASE__/reticulum/'+action, {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}})
++    .then(function(r){ if(r.status===401){ throw new Error('session expired — please log in again'); } return r.json(); })
++    .then(function(d){
++      clearInterval(timer); btn.disabled=false; if(isApply) btn.textContent=wasText;
++      msg.textContent=' '+(d.message||(d.ok?'done':'failed'));
++      msg.style.color=d.ok?'var(--ok)':'var(--err)';
++      if(d.reload){ setTimeout(function(){ location.reload(); }, 2500); }
++    })
++    .catch(function(e){
++      clearInterval(timer); btn.disabled=false; if(isApply) btn.textContent=wasText;
++      msg.textContent=' '+(e.message||'request failed');
++      msg.style.color='var(--err)';
++    });
++}
++</script>
++<script>
++(function(){
++  var live=document.getElementById('halow-live'), det=document.getElementById('halow-neigh');
++  var addForm=document.getElementById('halow-add-form');
++  var HALOW_IN_CONFIG = __HALOW_IN_CONFIG__;
++  if(!live) return;
++  function esc(s){ return (''+(s==null?'':s)).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
++  function num(v){ if(v==null) return null; var m=(''+v).match(/-?\d+(\.\d+)?/); return m?parseFloat(m[0]):null; }
++  function unit(v,u){ if(v==null||v==='') return '?'; return /^-?\d+(\.\d+)?$/.test(''+v)? v+' '+u : esc(v); }
++  function sig(v,u,g,a){ if(v==null) return '<span class="muted">—</span>'; var c=v>=g?'sig-g':(v>=a?'sig-a':'sig-r'); return '<span class="'+c+'">'+v+' '+u+'</span>'; }
++  function noise(v){ var n=num(v); if(n==null) return '<span class="muted">—</span>'; var c=n<=-80?'sig-g':(n<=-70?'sig-a':'sig-r'); return '<span class="'+c+'">'+n+' dBm</span>'; }
++  function mac(m){ if(!m) return '?'; m=(''+m).replace(/[:\-]/g,''); return (m.match(/../g)||[m]).join(':').toLowerCase(); }
++  fetch('__BASE__/reticulum/halow').then(function(r){return r.json();}).then(function(d){
++    if(!d.enabled) return;
++    if(!d.reachable){
++      live.className='halow-live';
++      live.innerHTML=d.sl0_up
++        ? '<span class="badge err">unreachable</span> sl0 is up but the modem isn\'t answering over SLIP.'
++        : '<span class="badge warn">sl0 down</span> the SLIP link isn\'t up.';
++      return;
++    }
++    var rd=d.radio||{}, st=d.stats||{}, dv=d.device||{}, ns=d.neighbours||[];
++    var name=(dv.hostname||'RNode-Halow'), port=(d.tcp_port||8001);
++    var iface = d.rnsd_up
++      ? '<span class="badge ok">UP</span> <span class="val">'+esc(name)+'</span> &rarr; :'+esc(port)
++      : '<span class="badge warn">DOWN</span> '+(HALOW_IN_CONFIG?'not connected':'<span class="dim">not in rnsd config yet</span>');
++    var air=num(st.airtime);
++    var airbar = air!=null ? '<span class="hbar"><span style="width:'+Math.max(0,Math.min(100,air))+'%"></span></span> ' : '';
++    // mcs_index arrives as "MCS0" on this firmware, but strip any leading
++    // "MCS" and re-add it so a bare index renders identically.
++    var mcs = (rd.mcs==null||rd.mcs==='') ? 'MCS?' : 'MCS'+esc((''+rd.mcs).replace(/^mcs\s*/i,''));
++    var fw = (dv.fw ? esc((''+dv.fw).split(' ')[0]) : '?');   // "2.3.0 (build…)" -> "2.3.0"
++    var rows=[
++      ['Link (sl0)','<span class="badge ok">UP</span> <span class="val">'+esc(d.local)+' &rarr; '+esc(d.peer)+'</span>'],
++      ['rnsd interface', iface],
++      ['Radio','<span class="val">'+unit(rd.freq,'MHz')+' · '+unit(rd.bw,'MHz')+' · '+mcs+' · '+unit(rd.power,'dBm')+'</span>'],
++      ['Airtime', airbar+'<span class="val">'+esc(st.airtime||'?')+'</span> <span class="dim">· ch-util '+esc(st.ch_util||'?')+'</span>'],
++      ['Noise floor', noise(st.noise)],
++      ['Throughput','<span class="val">&darr; '+esc(st.rx_speed||'?')+' · &uarr; '+esc(st.tx_speed||'?')+'</span>'+((st.rx_bytes||st.tx_bytes)?' <span class="dim">('+esc(st.rx_bytes||'?')+' / '+esc(st.tx_bytes||'?')+')</span>':'')],
++      ['Modem','<span class="val">'+esc(dv.temp||'?')+' · fw '+fw+' · up '+esc(dv.uptime||'?')+'</span>'],
++    ];
++    live.className='halow-live';
++    live.innerHTML='<table class="kv halow-kv">'+rows.map(function(x){return '<tr><th>'+x[0]+'</th><td>'+x[1]+'</td></tr>';}).join('')+'</table>';
++    // Quick-add: the modem is reachable but no interface routes through it yet.
++    if(addForm && !HALOW_IN_CONFIG){
++      var nf=document.getElementById('halow-add-name'), pf=document.getElementById('halow-add-port');
++      if(nf) nf.value=(dv.hostname||'');   // blank -> server queries the modem
++      if(pf) pf.value=port;
++      addForm.hidden=false;
++    }
++    if(ns.length){
++      document.getElementById('halow-ncount').textContent=ns.length;
++      var head='<tr><th>Node</th><th>RSSI</th><th>SNR</th><th>MCS &darr;/&uarr;</th><th>TX acked</th><th>TX loss</th><th>Last</th></tr>';
++      var body=ns.map(function(p){
++        return '<tr><td class="mono">'+esc(mac(p.mac))+'</td>'+
++          '<td>'+sig(num(p.rssi),'dBm',-75,-88)+'</td><td>'+sig(num(p.snr),'dB',10,5)+'</td>'+
++          '<td class="val">'+esc(p.rx_mcs)+' / '+esc(p.tx_mcs)+'</td>'+
++          '<td class="val">'+esc(p.tx_acked)+' / '+esc(p.tx_frames)+'</td>'+
++          '<td>'+esc(p.tx_loss||0)+'%</td>'+
++          '<td class="val dim">'+(p.age!=null?Math.round(p.age/1000)+' s':'—')+'</td></tr>';
++      }).join('');
++      document.getElementById('halow-ntable').innerHTML=head+body;
++      det.hidden=false;   // reveal the section; it stays collapsed (no `open`)
++    }
++  }).catch(function(){ live.className='halow-live'; live.textContent='Could not read modem status.'; });
++})();
++</script>
+\ No newline at end of file
+diff --git a/buildroot/package/rnsbox-portal/src/cgi/routes_modem.cpp b/buildroot/package/rnsbox-portal/src/cgi/routes_modem.cpp
+new file mode 100644
+index 000000000..fb19e96d6
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/cgi/routes_modem.cpp
+@@ -0,0 +1,249 @@
++// routes_modem.cpp — reverse-proxy for the external HaLow (RNode) modem's own
++// web UI + JSON API, reachable only from this box over the SLIP link (sl0).
++// Faithful port of the old Flask /modem + /modem/api/<path> routes: the modem
++// serves one self-contained config page at http://<peer_ip>/ plus /api/* JSON;
++// we proxy it behind the portal login so the whole UI is usable through the
++// portal and gated by the login, rather than DNAT'd unauthenticated onto the LAN.
++//
++// The old code requested `Accept-Encoding: identity` (uncompressed) so no gzip
++// decode is needed — a tiny HTTP/1.0 client (connect, send, read-to-close) does
++// the whole job with no libcurl/zlib. The modem page's own fetch('/api/..')
++// calls are rewritten to '<base>/modem/api/..' so they stay under the portal.
++#include "routes.h"
++#include "web.h"
++#include "store.h"
++#include "sysinfo.h"
++#include "util.h"
++#include <cctype>
++#include <cerrno>
++#include <cstdlib>
++#include <cstring>
++#include <string>
++#include <arpa/inet.h>
++#include <fcntl.h>
++#include <netinet/in.h>
++#include <sys/socket.h>
++#include <sys/select.h>
++#include <unistd.h>
++#include <zlib.h>
++
++using http::Request;
++using http::Response;
++
++namespace routes {
++
++namespace {
++
++constexpr int MODEM_TIMEOUT = 8;                 // seconds (matches old Flask)
++constexpr size_t MODEM_MAX_RESP = 4 * 1024 * 1024;   // cap a proxied response
++
++std::string modem_peer() {
++    store::SlipConfig sl = store::read_slip();
++    std::string p = util::trim(sl.peer_ip);
++    return p.empty() ? std::string("192.168.7.2") : p;
++}
++
++// The RNode modem serves gzip-encoded assets (its index.html) and ignores our
++// Accept-Encoding: identity, so decode gzip in-proxy (like the old Flask code).
++bool looks_gzip(const std::string& s) {
++    return s.size() >= 2 && (unsigned char)s[0] == 0x1f && (unsigned char)s[1] == 0x8b;
++}
++bool gunzip(const std::string& in, std::string& out) {
++    z_stream zs;
++    memset(&zs, 0, sizeof(zs));
++    if (inflateInit2(&zs, 16 + MAX_WBITS) != Z_OK) return false;   // 16 => gzip wrapper
++    zs.next_in = (Bytef*)in.data();
++    zs.avail_in = (uInt)in.size();
++    char buf[16384];
++    int ret;
++    do {
++        zs.next_out = (Bytef*)buf;
++        zs.avail_out = sizeof(buf);
++        ret = inflate(&zs, Z_NO_FLUSH);
++        if (ret != Z_OK && ret != Z_STREAM_END) { inflateEnd(&zs); return false; }
++        out.append(buf, sizeof(buf) - zs.avail_out);
++        if (out.size() > MODEM_MAX_RESP) { inflateEnd(&zs); return false; }
++    } while (ret != Z_STREAM_END);
++    inflateEnd(&zs);
++    return true;
++}
++
++// If `body` is gzip, inflate it in place (best-effort; leaves it alone on error).
++void maybe_gunzip(std::string& body) {
++    if (!looks_gzip(body)) return;
++    std::string dec;
++    if (gunzip(body, dec)) body.swap(dec);
++}
++
++// Minimal HTTP/1.0 client to <peer>:80. Returns false on any connect/IO failure.
++// On success: `status`/`reason` from the response line, `resp_ctype` = the
++// Content-Type header, `out` = the response body.
++bool modem_fetch(const std::string& peer, const std::string& method,
++                 const std::string& path_and_query, const std::string& body,
++                 const std::string& req_ctype,
++                 int& status, std::string& reason, std::string& resp_ctype, std::string& out) {
++    status = 0; reason.clear(); resp_ctype.clear(); out.clear();
++
++    struct in_addr addr;
++    if (inet_pton(AF_INET, peer.c_str(), &addr) != 1) return false;   // peer is an IPv4 literal
++
++    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
++    if (fd < 0) return false;
++
++    struct Closer { int f; ~Closer() { if (f >= 0) ::close(f); } } closer{fd};
++
++    // Non-blocking connect with a bounded timeout (sl0 down => connect fails fast,
++    // but guard against a black-hole route hanging the CGI).
++    int flags = ::fcntl(fd, F_GETFL, 0);
++    ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
++    struct sockaddr_in sa;
++    memset(&sa, 0, sizeof(sa));
++    sa.sin_family = AF_INET;
++    sa.sin_port = htons(80);
++    sa.sin_addr = addr;
++    int rc = ::connect(fd, (struct sockaddr*)&sa, sizeof(sa));
++    if (rc != 0) {
++        if (errno != EINPROGRESS) return false;
++        fd_set wf; FD_ZERO(&wf); FD_SET(fd, &wf);
++        struct timeval tv{MODEM_TIMEOUT, 0};
++        if (::select(fd + 1, nullptr, &wf, nullptr, &tv) <= 0) return false;
++        int soerr = 0; socklen_t sl = sizeof(soerr);
++        if (::getsockopt(fd, SOL_SOCKET, SO_ERROR, &soerr, &sl) != 0 || soerr != 0) return false;
++    }
++    ::fcntl(fd, F_SETFL, flags);   // back to blocking
++    struct timeval tv{MODEM_TIMEOUT, 0};
++    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
++    ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
++
++    // Build + send the request (HTTP/1.0 + Connection: close => read to EOF).
++    std::string req = method + " " + path_and_query + " HTTP/1.0\r\n";
++    req += "Host: " + peer + "\r\n";
++    req += "Accept-Encoding: identity\r\n";
++    req += "Connection: close\r\n";
++    if (method == "POST") {
++        if (!req_ctype.empty()) req += "Content-Type: " + req_ctype + "\r\n";
++        req += "Content-Length: " + std::to_string(body.size()) + "\r\n";
++    }
++    req += "\r\n";
++    if (method == "POST") req += body;
++
++    size_t sent = 0;
++    while (sent < req.size()) {
++        ssize_t n = ::write(fd, req.data() + sent, req.size() - sent);
++        if (n <= 0) return false;
++        sent += (size_t)n;
++    }
++
++    // Read the whole response.
++    std::string raw;
++    char buf[8192];
++    for (;;) {
++        ssize_t n = ::read(fd, buf, sizeof(buf));
++        if (n < 0) return false;
++        if (n == 0) break;
++        raw.append(buf, (size_t)n);
++        if (raw.size() > MODEM_MAX_RESP) break;
++    }
++    if (raw.empty()) return false;
++
++    // Parse the status line + headers.
++    size_t hdr_end = raw.find("\r\n\r\n");
++    size_t body_off = (hdr_end == std::string::npos) ? raw.size() : hdr_end + 4;
++    std::string head = raw.substr(0, (hdr_end == std::string::npos) ? raw.size() : hdr_end);
++    out = (body_off <= raw.size()) ? raw.substr(body_off) : std::string();
++
++    // "HTTP/1.x <code> <reason>"
++    size_t sp1 = head.find(' ');
++    if (sp1 != std::string::npos) {
++        status = atoi(head.c_str() + sp1 + 1);
++        size_t sp2 = head.find(' ', sp1 + 1);
++        size_t eol = head.find('\r', sp1 + 1);
++        if (sp2 != std::string::npos && eol != std::string::npos && sp2 < eol)
++            reason = head.substr(sp2 + 1, eol - sp2 - 1);
++    }
++    if (status == 0) status = 200;
++    if (reason.empty()) reason = "OK";
++
++    // Content-Type header (case-insensitive scan).
++    size_t i = 0;
++    while (i < head.size()) {
++        size_t nl = head.find('\n', i);
++        std::string line = head.substr(i, (nl == std::string::npos ? head.size() : nl) - i);
++        i = (nl == std::string::npos) ? head.size() : nl + 1;
++        std::string low = line;
++        for (char& c : low) c = (char)tolower((unsigned char)c);
++        if (low.rfind("content-type:", 0) == 0) {
++            resp_ctype = util::trim(line.substr(13));
++            break;
++        }
++    }
++    return true;
++}
++
++}  // namespace
++
++// GET /modem  (and /modem/) — proxy the modem's root page, rewriting /api/ links.
++void modem_ui(const Request& req, Response& res) {
++    if (!web::require_auth(req, res, false)) return;
++    std::string peer = modem_peer();
++    int status; std::string reason, ct, body;
++    // Fast-fail if the SLIP link is down (no route to the modem => an 8 s connect
++    // timeout otherwise, since the SYN black-holes out the default route).
++    if (!sysinfo::slip_status().up) {
++        res.status = "502 Bad Gateway";
++        res.content_type = "text/plain; charset=utf-8";
++        res.body = "The SLIP link (sl0) is not up, so the HaLow modem at http://" + peer +
++                   " can't be reached.\n\nEnable the SLIP link on the Reticulum tab and wire the modem.\n";
++        return;
++    }
++    if (!modem_fetch(peer, "GET", "/", "", "", status, reason, ct, body)) {
++        res.status = "502 Bad Gateway";
++        res.content_type = "text/plain; charset=utf-8";
++        res.body = "HaLow modem not reachable at http://" + peer + ".\n\n"
++                   "Enable the SLIP link, wire the modem, and confirm sl0 is up, then retry.\n";
++        return;
++    }
++    maybe_gunzip(body);   // modem serves gzip'd index.html; inflate so we can rewrite it
++    std::string low = ct; for (char& c : low) c = (char)tolower((unsigned char)c);
++    if (low.find("html") != std::string::npos) {
++        // Keep the modem's own fetch('/api/..') calls under the portal.
++        body = web::replace_all(std::move(body), "/api/", web::base() + "/modem/api/");
++        res.content_type = "text/html; charset=utf-8";
++    } else {
++        res.content_type = ct.empty() ? "application/octet-stream" : ct;
++    }
++    res.status = std::to_string(status) + " " + reason;
++    res.body = body;
++}
++
++// GET/POST /modem/api/<endpoint> — proxy the modem's JSON API.
++void modem_api(const Request& req, Response& res) {
++    if (!web::require_auth(req, res, false)) return;
++    std::string peer = modem_peer();
++    if (!sysinfo::slip_status().up) {
++        res.status = "502 Bad Gateway";
++        res.content_type = "application/json";
++        res.body = "{\"error\":\"SLIP link (sl0) is not up\",\"rc\":-502}";
++        return;
++    }
++    const char* pfx = "/modem/api/";
++    std::string endpoint = (req.path.size() > strlen(pfx)) ? req.path.substr(strlen(pfx)) : std::string();
++    std::string pq = "/api/" + endpoint;
++    if (!req.query.empty()) pq += "?" + req.query;
++    std::string body = (req.method == "POST") ? req.body : std::string();
++    const char* env_ct = getenv("CONTENT_TYPE");
++    std::string req_ct = env_ct ? env_ct : "";
++    int status; std::string reason, ct, out;
++    if (!modem_fetch(peer, req.method, pq, body, req_ct, status, reason, ct, out)) {
++        res.status = "502 Bad Gateway";
++        res.content_type = "application/json";
++        res.body = "{\"error\":\"modem unreachable over SLIP\",\"rc\":-502}";
++        return;
++    }
++    maybe_gunzip(out);   // decode any gzip'd API response too
++    res.status = std::to_string(status) + " " + reason;
++    res.content_type = ct.empty() ? "application/json" : ct;
++    res.body = out;
++}
++
++}  // namespace routes
+diff --git a/buildroot/package/rnsbox-portal/src/cgi/routes_reticulum.cpp b/buildroot/package/rnsbox-portal/src/cgi/routes_reticulum.cpp
+new file mode 100644
+index 000000000..15aec1b57
+--- /dev/null
++++ b/buildroot/package/rnsbox-portal/src/cgi/routes_reticulum.cpp
+@@ -0,0 +1,433 @@
++// routes_reticulum.cpp — Reticulum tab: server-rendered page + PRG forms +
++// AJAX JSON endpoints (rnsd status / live HaLow modem). Faithful port of the
++// old Flask reticulum() view + its POST/AJAX routes.
++#include "routes.h"
++#include "render.h"
++#include "web.h"
++#include "store.h"
++#include "sysinfo.h"
++#include "updatecheck.h"
++#include "util.h"
++#include <cctype>
++#include <cstdlib>
++#include <cstring>
++#include <ctime>
++#include <string>
++
++using http::Request;
++using http::Response;
++
++namespace routes {
++
++static std::string R(std::string s, const std::string& a, const std::string& b) { return web::replace_all(std::move(s), a, b); }
++static std::string E(const std::string& s) { return render::esc(s); }
++static std::string ret_redirect() { return web::base() + "/reticulum"; }
++
++// store._truthy: falsey iff stripped/lowered value in {no,0,false,off,""}.
++static bool truthy(const std::string& s) {
++    std::string v = util::trim(s);
++    for (char& c : v) c = (char)tolower((unsigned char)c);
++    return !(v == "no" || v == "0" || v == "false" || v == "off" || v.empty());
++}
++
++// --- tiny best-effort JSON field readers (state file / python helper out) ---
++static std::string json_str(const std::string& j, const char* key) {
++    std::string pat = std::string("\"") + key + "\"";
++    size_t p = j.find(pat);
++    if (p == std::string::npos) return "";
++    p = j.find(':', p + pat.size());
++    if (p == std::string::npos) return "";
++    ++p;
++    while (p < j.size() && (j[p] == ' ' || j[p] == '\t')) ++p;
++    if (p >= j.size() || j[p] != '"') return "";   // null / number / missing
++    ++p;
++    std::string out;
++    while (p < j.size() && j[p] != '"') {
++        if (j[p] == '\\' && p + 1 < j.size()) {
++            ++p;
++            switch (j[p]) {
++                case 'n': out += '\n'; break;
++                case 't': out += '\t'; break;
++                case 'r': out += '\r'; break;
++                default:  out += j[p]; break;
++            }
++        } else {
++            out += j[p];
++        }
++        ++p;
++    }
++    return out;
++}
++static bool json_true(const std::string& j, const char* key) {
++    std::string pat = std::string("\"") + key + "\"";
++    size_t p = j.find(pat);
++    if (p == std::string::npos) return false;
++    p = j.find(':', p + pat.size());
++    if (p == std::string::npos) return false;
++    ++p;
++    while (p < j.size() && (j[p] == ' ' || j[p] == '\t')) ++p;
++    return j.compare(p, 4, "true") == 0;
++}
++static long json_num(const std::string& j, const char* key) {
++    std::string pat = std::string("\"") + key + "\"";
++    size_t p = j.find(pat);
++    if (p == std::string::npos) return 0;
++    p = j.find(':', p + pat.size());
++    if (p == std::string::npos) return 0;
++    return strtol(j.c_str() + p + 1, nullptr, 10);
++}
++
++// Port of store.reticulum_has_tcp_client (the C++ store keeps this private).
++static bool reticulum_has_tcp_client(const std::string& host, int port_i) {
++    std::string cfg = util::read_file(store::RETICULUM_CONFIG, 256 * 1024);
++    std::string port = std::to_string(port_i);
++    bool is_tcp = false, have_host = false, have_port = false;
++    std::string cur_host, cur_port;
++    size_t i = 0;
++    while (i <= cfg.size()) {
++        size_t nl = cfg.find('\n', i);
++        std::string ln = cfg.substr(i, nl == std::string::npos ? std::string::npos : nl - i);
++        i = (nl == std::string::npos) ? cfg.size() + 1 : nl + 1;
++        std::string s = util::trim(ln);
++        if (!s.empty() && s[0] == '[') { is_tcp = false; have_host = have_port = false; cur_host.clear(); cur_port.clear(); continue; }
++        if (s.empty() || s[0] == '#' || s.find('=') == std::string::npos) continue;
++        size_t eq = s.find('=');
++        std::string k = util::trim(s.substr(0, eq));
++        std::string v = util::trim(s.substr(eq + 1));
++        size_t hash = v.find('#');
++        if (hash != std::string::npos) v = util::trim(v.substr(0, hash));
++        for (char& c : k) c = (char)tolower((unsigned char)c);
++        if (k == "type") is_tcp = (v == "TCPClientInterface");
++        else if (k == "target_host") { cur_host = v; have_host = true; }
++        else if (k == "target_port") { cur_port = v; have_port = true; }
++        if (is_tcp && have_host && have_port && cur_host == host && cur_port == port) return true;
++    }
++    return false;
++}
++
++// ===================== GET render =====================
++
++void reticulum_page(const Request& req, Response& res) {
++    if (!web::require_auth(req, res, false)) return;
++    std::string base = web::base();
++
++    sysinfo::Rnsd rn = sysinfo::rnsd_status();     // cheap liveness (running/pid)
++    store::SlipConfig sl = store::read_slip();
++    sysinfo::Slip slst = sysinfo::slip_status();
++    bool slip_on = truthy(sl.enabled);
++    int days = store::read_rnsd_restart_days();
++
++    std::string cfg = store::read_reticulum_config();
++    if (cfg.empty())
++        cfg = "# /etc/reticulum/config not present yet — rnsd creates a\n"
++              "# default on first start. Edit here to override.\n";
++
++    // update-check state (cheap, no python spawn on page paint): installed comes
++    // from the dist-info (always known); latest/error/checked_at from the last
++    // check's persisted JSON; update_available is recomputed against installed.
++    updatecheck::State u = updatecheck::display();
++    std::string installed = u.installed;
++    std::string latest    = u.latest;
++    std::string uerror    = u.error;
++    bool update_available = u.update_available;
++    long checked_at       = u.checked_at;
++
++    std::string ucv = util::conf_get(store::CRON_FILE, "update_check");
++    bool auto_update = truthy(ucv.empty() ? "yes" : ucv);   // default on
++
++    std::string h = render::page_file("reticulum");
++    h = R(std::move(h), "__BASE__", base);
++
++    h = R(std::move(h), "__RNSD_STATE__", rn.running
++        ? "<span class=\"badge ok\">RUNNING</span> (pid " + E(rn.pid) + ")"
++        : "<span class=\"badge err\">STOPPED</span>");
++
++    h = R(std::move(h), "__RNS_VERSION__", E(installed.empty() ? "unknown" : installed));
++
++    std::string badge;
++    if (update_available)
++        badge = "<span class=\"badge warn\">update available: " + E(latest) + "</span>";
++    else if (!latest.empty() && uerror.empty())
++        badge = "<span class=\"badge ok\">up to date</span>";
++    h = R(std::move(h), "__UPDATE_BADGE__", badge);
++
++    std::string chk;
++    if (checked_at > 0) {
++        char buf[64]; time_t t = (time_t)checked_at; struct tm g;
++        gmtime_r(&t, &g);
++        strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M UTC", &g);
++        chk = "last checked " + E(buf);
++    } else {
++        chk = "not checked yet";
++    }
++    if (!uerror.empty())
++        chk += " <span class=\"muted\">— last attempt failed (offline?)</span>";
++    h = R(std::move(h), "__UPDATE_CHECK_LINE__", chk);
++
++    std::string apply_form;
++    if (update_available) {
++        std::string le = E(latest);
++        // Async button (see doUpdate() in reticulum.html): fetch + spinner, no
++        // page navigation, so a long in-place apply never blank-hangs or lands
++        // the browser on a phantom-logout page.
++        apply_form =
++            "<button type=\"button\" class=\"btn-primary\" onclick=\"doUpdate('applyupdate', this, true)\">Update rnsd to " + le + " now</button>";
++    }
++    h = R(std::move(h), "__APPLY_UPDATE_FORM__", apply_form);
++
++    h = R(std::move(h), "__AUTO_UPDATE_CHECKED__", auto_update ? "checked" : "");
++
++    std::string opts = "<option value=\"0\" " + std::string(days == 0 ? "selected" : "") + ">None (default)</option>";
++    for (int d = 1; d <= 7; ++d)
++        opts += "\n      <option value=\"" + std::to_string(d) + "\" " +
++                (days == d ? "selected" : "") + ">every " + std::to_string(d) +
++                " day" + (d > 1 ? "s" : "") + "</option>";
++    h = R(std::move(h), "__RESTART_DAYS_OPTIONS__", opts);
++
++    std::string link;
++    if (slst.up)
++        link = "<span class=\"badge ok\">UP</span> " + E(sl.local_ip) + " &rarr; " + E(sl.peer_ip);
++    else if (slst.present)
++        link = "<span class=\"badge warn\">DOWN</span> (attached, no address)";
++    else if (slip_on)
++        link = "<span class=\"badge warn\">not attached</span> (modem wired?)";
++    else
++        link = "<span class=\"badge\">disabled</span>";
++    h = R(std::move(h), "__SLIP_LINK_STATUS__", link);
++
++    std::string halow;
++    if (slip_on) {
++        halow =
++            "<div id=\"halow-live\" class=\"halow-live muted\">Loading modem status…</div>\n"
++            "  <details class=\"neigh\" id=\"halow-neigh\" hidden>\n"
++            "    <summary>Neighbours heard (<span id=\"halow-ncount\">0</span>)</summary>\n"
++            "    <div class=\"body\"><table class=\"data\" id=\"halow-ntable\"></table></div>\n"
++            "  </details>\n"
++            "  <div class=\"halow-actions\">\n"
++            "    <a class=\"btn\" href=\"" + base + "/modem\" target=\"_blank\" rel=\"noopener\">Open modem web UI &rarr;</a>\n"
++            "    <form method=\"post\" action=\"" + base + "/reticulum/halow/add\" class=\"inline\" id=\"halow-add-form\" hidden>\n"
++            "      <input type=\"hidden\" name=\"iface_name\" id=\"halow-add-name\" value=\"\">\n"
++            "      <input type=\"hidden\" name=\"iface_port\" id=\"halow-add-port\" value=\"8001\">\n"
++            "      <button type=\"submit\" class=\"btn-primary\">+ Add to rnsd config</button>\n"
++            "    </form>\n"
++            "  </div>\n"
++            "  <p class=\"muted\" style=\"margin:6px 0 0\">Full stats, graphs &amp; config live in the modem's own web page.</p>";
++    }
++    h = R(std::move(h), "__HALOW_LIVE_BLOCK__", halow);
++
++    bool halow_in_config = reticulum_has_tcp_client(sl.peer_ip.empty() ? "192.168.7.2" : sl.peer_ip, 8001);
++    h = R(std::move(h), "__HALOW_IN_CONFIG__", halow_in_config ? "true" : "false");
++
++    h = R(std::move(h), "__SLIP_ENABLED_CHECKED__", slip_on ? "checked" : "");
++    h = R(std::move(h), "__SLIP_DEVICE__",   E(sl.device));
++    h = R(std::move(h), "__SLIP_BAUD__",     E(sl.baud));
++    h = R(std::move(h), "__SLIP_LOCAL_IP__", E(sl.local_ip));
++    h = R(std::move(h), "__SLIP_PEER_IP__",  E(sl.peer_ip));
++    h = R(std::move(h), "__CONFIG__",        E(cfg));
++
++    res.body = render::layout(req, res, "Reticulum", "reticulum", h);
++}
++
++// ===================== AJAX GET JSON =====================
++
++void reticulum_status(const Request& req, Response& res) {
++    if (!web::require_auth(req, res, true)) return;
++    bool with_raw = (req.a("raw") == "1");   // slow path: cold-starts rnstatus (~5 s)
++    // sysinfo::rnsd_status uses the pidfile + /proc-cmdline scan; a plain
++    // `pidof rnsd` never matches (rnsd's comm is python3).
++    sysinfo::Rnsd rn = sysinfo::rnsd_status(with_raw);
++    store::SlipConfig sl = store::read_slip();
++    std::string o = std::string("{\"running\":") + (rn.running ? "true" : "false") +
++        ",\"pid\":" + (rn.pid.empty() ? "0" : rn.pid) +
++        ",\"rss_mb\":" + std::to_string(rn.rss_mb) +
++        ",\"restart_days\":" + std::to_string(store::read_rnsd_restart_days()) +
++        ",\"slip\":{\"enabled\":\"" + http::json_escape(sl.enabled) +
++        "\",\"device\":\"" + http::json_escape(sl.device) +
++        "\",\"baud\":\"" + http::json_escape(sl.baud) +
++        "\",\"local_ip\":\"" + http::json_escape(sl.local_ip) +
++        "\",\"peer_ip\":\"" + http::json_escape(sl.peer_ip) + "\"}";
++    if (with_raw)
++        o += ",\"raw\":\"" + http::json_escape(rn.raw) + "\"";
++    o += "}";
++    res.content_type = "application/json";
++    res.body = o;
++}
++
++// Best-effort live-modem endpoint. The real stats need the python halow_status()
++// helper (HTTP-over-SLIP + JSON), which has no native C++ port yet — so this
++// returns reachable:false and the page's JS renders the "unreachable / sl0 down"
++// state faithfully. See NOTE.
++void reticulum_halow(const Request& req, Response& res) {
++    if (!web::require_auth(req, res, true)) return;
++    res.content_type = "application/json";
++    // Live modem status is HTTP-over-SLIP + JSON — delegated to the python helper
++    // (fails soft). It only spawns on this async fetch, never on a page paint,
++    // and only when the page renders the card (SLIP enabled).
++    util::RunResult rr = util::run({"/usr/bin/python3", "/usr/lib/rnsbox/halow.py"}, "", 10);
++    std::string out = util::trim(rr.out);
++    if (rr.exit_code == 0 && !out.empty() && out[0] == '{') {
++        res.body = rr.out;
++        return;
++    }
++    // helper missing/failed — minimal best-effort shape so the JS still renders.
++    store::SlipConfig sl = store::read_slip();
++    bool enabled = truthy(sl.enabled);
++    bool sl0_up = sysinfo::slip_status().up;
++    std::string peer = sl.peer_ip.empty() ? "192.168.7.2" : sl.peer_ip;
++    res.body = std::string("{\"enabled\":") + (enabled ? "true" : "false") +
++        ",\"peer\":\"" + http::json_escape(peer) + "\"" +
++        ",\"local\":\"" + http::json_escape(sl.local_ip) + "\"" +
++        ",\"sl0_up\":" + (sl0_up ? "true" : "false") +
++        ",\"reachable\":false,\"neighbours\":[]}";
++}
++
++// ===================== PRG POST handlers =====================
++
++void reticulum_config_save(const Request& req, Response& res) {
++    if (!web::require_auth(req, res, false)) return;
++    std::string err;
++    if (!store::write_reticulum_config(req.f("config"), err)) {
++        render::redirect_flash(res, ret_redirect(), "error", "Error: " + err);
++        return;
++    }
++    // NB: matches old Flask — saving does NOT restart rnsd.
++    render::redirect_flash(res, ret_redirect(), "success", "Config saved — restart rnsd to apply.");
++}
++
++void reticulum_restart(const Request& req, Response& res) {
++    if (!web::require_auth(req, res, false)) return;
++    web::run_init("S82rnsd");
++    render::redirect_flash(res, ret_redirect(), "success", "rnsd restart requested");
++}
++
++void reticulum_autorestart(const Request& req, Response& res) {
++    if (!web::require_auth(req, res, false)) return;
++    int days = atoi(req.f("days").c_str());
++    std::string err;
++    if (!store::write_rnsd_restart_days(days, err)) {
++        render::redirect_flash(res, ret_redirect(), "error", "Bad input: " + err);
++        return;
++    }
++    web::run_init("S84cron", "reload");
++    if (days == 0)
++        render::redirect_flash(res, ret_redirect(), "success", "rnsd auto-restart disabled.");
++    else
++        render::redirect_flash(res, ret_redirect(), "success",
++            "rnsd will auto-restart every " + std::to_string(days) + " day(s) at 04:00.");
++}
++
++void reticulum_slip(const Request& req, Response& res) {
++    if (!web::require_auth(req, res, false)) return;
++    store::SlipConfig c;
++    c.enabled  = req.f("enabled") == "on" ? "yes" : "no";
++    c.device   = util::trim(req.f("device"));
++    c.baud     = util::trim(req.f("baud"));
++    c.local_ip = util::trim(req.f("local_ip"));
++    c.peer_ip  = util::trim(req.f("peer_ip"));
++    std::string err;
++    if (!store::write_slip(c, err)) {
++        render::redirect_flash(res, ret_redirect(), "error", "SLIP: " + err + ".");
++        return;
++    }
++    web::run_init("S31slip", "reload");
++    if (c.enabled == "yes")
++        render::redirect_flash(res, ret_redirect(), "success",
++            "SLIP link enabled on " + c.device + " @ " + c.baud + " baud. Once the modem is "
++            "reachable, use “Add to rnsd config” on the HaLow card below to route "
++            "Reticulum through it (TCPClientInterface → " + c.peer_ip + ":8001).");
++    else
++        render::redirect_flash(res, ret_redirect(), "success", "SLIP link disabled.");
++}
++
++void reticulum_halow_add(const Request& req, Response& res) {
++    if (!web::require_auth(req, res, false)) return;
++    store::SlipConfig sl = store::read_slip();
++    std::string peer = sl.peer_ip.empty() ? "192.168.7.2" : sl.peer_ip;
++    std::string name = util::trim(req.f("iface_name"));
++    int port = atoi(req.f("iface_port").c_str());
++    if (port < 1 || port > 65535) port = 8001;
++    // NOTE: the old view queried the modem for its hostname when the browser
++    // didn't supply one (JS off). That path needs halow_status() (no C++ port);
++    // store::add_halow_interface() falls back to "RNode-Halow" for a blank name.
++    std::string msg;
++    if (store::add_halow_interface(name, peer, port, msg)) {
++        web::run_init("S82rnsd");
++        render::redirect_flash(res, ret_redirect(), "success",
++            "Added HaLow interface “" + msg + "” (TCPClientInterface → " +
++            peer + ":" + std::to_string(port) + ") and restarted rnsd.");
++    } else if (msg == "already") {
++        render::redirect_flash(res, ret_redirect(), "success",
++            "That HaLow interface is already in the Reticulum config.");
++    } else {
++        render::redirect_flash(res, ret_redirect(), "error",
++            "Couldn't add the HaLow interface: " + msg + ".");
++    }
++}
++
++void reticulum_autoupdate(const Request& req, Response& res) {
++    if (!web::require_auth(req, res, false)) return;
++    bool enabled = req.f("auto_update") == "on";
++    std::string err;
++    if (!store::write_update_check(enabled, err)) {   // NOTE: add to store (see notes)
++        render::redirect_flash(res, ret_redirect(), "error", "Error: " + err);
++        return;
++    }
++    web::run_init("S84cron", "reload");
++    render::redirect_flash(res, ret_redirect(), "success",
++        std::string("Automatic update checks ") + (enabled ? "enabled (daily)." : "disabled."));
++}
++
++// checkupdate / applyupdate — ASYNC JSON endpoints (the reticulum.html doUpdate()
++// spinner calls these via fetch). They shell out to the python updatecheck helper
++// and return {"ok":bool,"reload":bool,"message":"..."}. Auth failure is a JSON 401
++// (require_auth json=true), so the page shows "session expired" instead of
++// navigating to a login page mid-update.
++static void update_json(Response& res, bool ok, bool reload, const std::string& message) {
++    res.content_type = "application/json";
++    res.body = std::string("{\"ok\":") + (ok ? "true" : "false") +
++        ",\"reload\":" + (reload ? "true" : "false") +
++        ",\"message\":\"" + http::json_escape(message) + "\"}";
++}
++
++void reticulum_checkupdate(const Request& req, Response& res) {
++    if (!web::require_auth(req, res, true)) return;
++    auto rr = util::run({"/usr/bin/python3", "/usr/lib/rnsbox/updatecheck.py", "check"}, "", 60);
++    std::string j = rr.out;
++    if (j.find("installed") == std::string::npos && j.find("error") == std::string::npos) {
++        update_json(res, false, false, "Update check failed — the box may be offline. Last known latest: unknown.");
++        return;
++    }
++    std::string uerror = json_str(j, "error");
++    std::string latest = json_str(j, "latest");
++    std::string installed = json_str(j, "installed");
++    bool avail = json_true(j, "update_available");
++    if (!uerror.empty())
++        update_json(res, false, false,
++            "Update check failed — the box may be offline. Last known latest: " +
++            (latest.empty() ? "unknown" : latest) + ".");
++    else if (avail)
++        update_json(res, true, true, "Update available: rns " + latest + " (installed " + installed + ").");
++    else
++        update_json(res, true, true, "rnsd is up to date (" + (installed.empty() ? "unknown" : installed) + ").");
++}
++
++void reticulum_applyupdate(const Request& req, Response& res) {
++    if (!web::require_auth(req, res, true)) return;
++    // Long: pip install + rnsd restart. uhttpd's script/network timeouts are
++    // raised to 200s in S81router so this isn't killed mid-flight.
++    auto rr = util::run({"/usr/bin/python3", "/usr/lib/rnsbox/updatecheck.py", "apply"}, "", 190);
++    std::string j = rr.out;
++    bool ok = json_true(j, "ok");
++    bool rolled = json_true(j, "rolled_back");
++    std::string from = json_str(j, "from");
++    std::string to = json_str(j, "to");
++    std::string uerror = json_str(j, "error");
++    if (ok)
++        update_json(res, true, true, "rnsd updated " + from + " → " + to + " and restarted.");
++    else if (rolled)
++        update_json(res, false, false, "Update failed (" + uerror + ") — reverted to " + from + ".");
++    else
++        update_json(res, false, false, "Update not applied: " + (uerror.empty() ? "unknown error" : uerror) + ".");
++}
++
++}  // namespace routes
+\ No newline at end of file
+-- 
+2.47.3
+
