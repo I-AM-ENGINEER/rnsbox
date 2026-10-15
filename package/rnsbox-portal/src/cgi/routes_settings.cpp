@@ -139,7 +139,14 @@ void settings_password(const Request& req, Response& res) {
         render::redirect_flash(res, settings_redirect(), "error", "New password must be at least 6 characters");
     } else {
         session::set_password(s.user, neu);
-        render::redirect_flash(res, settings_redirect(), "success", "Password changed");
+        // sec: a session issued under the OLD password must not survive the
+        // change (whoever held one — e.g. signed in with the factory default
+        // just before the operator changed it — would stay logged in for up
+        // to the 24 h TTL). Drop every session; the next request re-auths.
+        session::revoke_all();
+        res.set_cookie(session::clear(req.cookie(session::COOKIE_NAME)));   // expire this browser's cookie too
+        render::redirect_flash(res, web::base() + "/login", "success",
+            "Password changed — sign in again with the new password.");
     }
 }
 

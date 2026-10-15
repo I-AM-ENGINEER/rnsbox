@@ -30,7 +30,11 @@ std::string read_file(const std::string& path, size_t max_bytes) {
 
 bool write_file_atomic(const std::string& path, const std::string& data, int mode) {
     std::string tmp = path + ".tmp";
-    int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, mode);
+    // O_NOFOLLOW: the .tmp name is predictable, so never write through a
+    // symlink someone pre-planted at <path>.tmp (defense in depth — today
+    // every directory we write into is root-owned 0755). O_CLOEXEC: the fd
+    // must not leak into util::run() children (init scripts, pip, ...).
+    int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, mode);
     if (fd < 0) return false;
     const char* p = data.data();
     size_t left = data.size();
