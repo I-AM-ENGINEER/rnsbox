@@ -1,0 +1,4 @@
+# Broadcom BT firmware blobs, RPi-Distro/bluez-firmware @ 6851250bf9d51ff50e3c5b2cf2111e2419d4335b (broadcom/)
+sha256  c096ad4a5c3f06ed7d69eba246bf89ada9acba64a5b6f51b1e9c12f99bb1e1a7  BCM43430A1.hcd
+sha256  51c45e77ddad91a19e96dc8fb75295b2087c279940df2634b23baf71b6dea42c  BCM4345C0.hcd
+sha256  fb9f4ec2df5301bd35f416384e103c012c5983024c49aa72fbbaf90177512caa  BCM4345C5.hcd

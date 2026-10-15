@@ -1,0 +1,17 @@
+# BlueZ daemon configuration — minimal, RNSBox.
+#
+# Only what the Reticulum BLE transport needs; everything else stays at the
+# upstream defaults (see `bluetoothd --help` and the bluez docs). bluetoothd
+# reads this at start; apply changes with
+# `/etc/init.d/S40bluetoothd restart` (rnsd reconnects to BlueZ on its own).
+#
+# Experimental: enable BlueZ experimental interfaces. The BLE GATT server /
+# LE advertising APIs ble-reticulum (via bluezero) registers need them on
+# several BlueZ 5.x releases; /etc/default/bluetoothd passes -E too, so this
+# is the second belt on the same braces.
+[General]
+Experimental = true
+
+# ControllerMode: leave at "dual" (default). BLE is what we use, but
+# restricting to "le" buys nothing here and would break dongles that only
+# implement BR/EDR discovery quirks.

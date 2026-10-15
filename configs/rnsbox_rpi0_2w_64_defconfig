@@ -113,5 +113,19 @@ BR2_PACKAGE_IW=y
 # opt-in extras: LXMF propagation node, NomadNet node, rnsd auto-restart
 BR2_PACKAGE_PYTHON_LXMF=y
 BR2_PACKAGE_PYTHON_NOMADNET=y
+# Bluetooth LE transport (Reticulum [[BLE Interface]]): BlueZ + D-Bus +
+# bleak/dbus-fast (bleak selects dbus-fast), the vendored ble-reticulum
+# classes (they select bluezero + dbus-python) and the Broadcom BT firmware
+# the onboard controllers need. Onboard BT on the Zero 2 W hangs off the
+# mini-uart (config.txt miniuart-bt); every other BT source is a USB dongle.
+# Without any adapter the interface degrades into a logged no-op.
+BR2_PACKAGE_BLUEZ5_UTILS=y
+BR2_PACKAGE_BLUEZ5_UTILS_CLIENT=y
+BR2_PACKAGE_BLUEZ5_UTILS_TOOLS=y
+BR2_PACKAGE_BLUEZ5_UTILS_DEPRECATED=y
+BR2_PACKAGE_BLUEZ5_UTILS_MONITOR=y
+BR2_PACKAGE_PYTHON_BLEAK=y
+BR2_PACKAGE_PYTHON_BLE_RETICULUM=y
+BR2_PACKAGE_RNSBOX_BT_FIRMWARE=y
 # kernel release suffix (uname -r -> 6.x.y-rnsbox)
 BR2_LINUX_KERNEL_LOCALVERSION="-rnsbox"
