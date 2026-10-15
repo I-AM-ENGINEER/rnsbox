@@ -125,6 +125,11 @@ jobs:
             2>&1 | tee /mnt/tmp/build.log
           echo "BUILD_SECONDS=$(( $(date +%s) - START ))" | tee -a "$GITHUB_ENV"
 
+      - name: Build-log tail on failure (step summary is anonymously readable)
+        if: failure()
+        run: |
+          { echo "### build.log tail"; echo '```'; tail -n 150 /mnt/tmp/build.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Disk after + image + timing
         if: always()
         run: |
