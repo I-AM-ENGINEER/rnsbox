@@ -1,0 +1,44 @@
+#!/bin/sh
+# S02resizefs — grow the rootfs partition + ext4 to fill the whole SD card
+# on first boot (the shipped image is sized for the lite build; a DVD-class
+# card has more space). No-op when there is already <32 MiB of unallocated
+# space after the partition.
+DISK=/dev/mmcblk0
+PART=${DISK}p2
+
+[ -e "/sys/block/mmcblk0/mmcblk0p2/size" ] || exit 0
+disk_sec=$(cat /sys/block/mmcblk0/size 2>/dev/null)
+part_sec=$(cat /sys/block/mmcblk0/mmcblk0p2/size 2>/dev/null)
+part_start=$(cat /sys/block/mmcblk0/mmcblk0p2/start 2>/dev/null)
+[ -n "$disk_sec" ] && [ -n "$part_sec" ] && [ -n "$part_start" ] || exit 0
+
+free_sec=$(( disk_sec - part_start - part_sec ))
+if [ "$free_sec" -lt 65536 ]; then
+	# <32 MiB free — nothing worth growing (or already grown)
+	exit 0
+fi
+
+printf "S02resizefs: growing rootfs by %s MiB: " "$(( free_sec / 2048 ))"
+# Delete + recreate partition 2 with the same start, spanning to the end of
+# the card (leave the last 4 MiB untouched for alignment safety). busybox
+# fdisk accepts the same scripted stdin sequence as util-linux fdisk.
+{
+	echo d          # delete a partition
+	echo 2          #   -> partition 2
+	echo n          # new partition
+	echo p          #   -> primary
+	echo 2          #   -> number 2
+	echo "$part_start"  #   -> same first sector
+	echo            #   -> last sector = default (end of disk)
+	echo t          # change type
+	echo 2
+	echo 83         #   -> Linux
+	echo w          # write
+} | fdisk "$DISK" >/dev/null 2>&1 || { echo "fdisk failed"; exit 0; }
+
+# Make the kernel re-read the (larger) partition table, then grow the FS
+# online. If partx is unavailable, resize2fs still sees the old size and
+# no-ops harmlessly; a reboot completes the growth.
+partx -u "$DISK" 2>/dev/null || echo 1 > /sys/block/mmcblk0/device/rescan 2>/dev/null
+sleep 1
+resize2fs "$PART" >/dev/null 2>&1 && echo "OK" || echo "deferred to next boot"

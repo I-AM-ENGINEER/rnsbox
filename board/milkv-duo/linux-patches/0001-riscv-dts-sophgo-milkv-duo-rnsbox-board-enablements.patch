@@ -1,0 +1,44 @@
+diff --git a/arch/riscv/boot/dts/sophgo/cv1800b-milkv-duo.dts b/arch/riscv/boot/dts/sophgo/cv1800b-milkv-duo.dts
+index 0e6d79e6e..36117e273 100644
+--- a/arch/riscv/boot/dts/sophgo/cv1800b-milkv-duo.dts
++++ b/arch/riscv/boot/dts/sophgo/cv1800b-milkv-duo.dts
+@@ -28,8 +28,16 @@ reserved-memory {
+ 		#size-cells = <1>;
+ 		ranges;
+ 
+-		coprocessor_rtos: region@83f40000 {
+-			reg = <0x83f40000 0xc0000>;
++		/*
++		 * The vendor OpenSBI in fip.bin lives here and does not
++		 * reserve itself through the FDT (the vendor kernel parses
++		 * the riscv.fwsz bootarg instead, which mainline ignores):
++		 * hide the firmware region from the allocator explicitly.
++		 * The stock coprocessor_rtos carve-out (C906L FreeRTOS) is
++		 * dropped - RNSBox does not run FreeRTOS.
++		 */
++		opensbi: region@80000000 {
++			reg = <0x80000000 0x80000>;
+ 			no-map;
+ 		};
+ 	};
+@@ -102,6 +110,19 @@ &uart0 {
+ };
+ 
+ &usb {
+-	dr_mode = "host";
++	/*
++	 * RNSBox talks to the world through the DWC2 gadget (CDC-NCM portal
++	 * on the USB-C port); needs the dwc2 -> generic-PHY mode propagation
++	 * patch (phy-cv1800-usb2 gates VBUS/ID-override on set_mode).
++	 */
++	dr_mode = "peripheral";
++	status = "okay";
++};
++
++&mdio {
++	status = "okay";
++};
++
++&gmac0 {
+ 	status = "okay";
+ };
