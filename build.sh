@@ -260,8 +260,15 @@ rnsbox_slim_bsp() {
         # carries build-rnsbox-arm.sh).
         if [ -f "$packer" ]; then
             # stamp whatever the packer currently carries (a reused workdir's
-            # packer may say 200M, 128M or anything a previous era left)
-            sed -i 's/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE="512M"/' "$packer"
+            # packer may say 200M, 128M or anything a previous era left) —
+            # BOTH the assignment lines AND the packer's own internal
+            # re-stamp commands: its lite path rewrites the defconfig to its
+            # literal at pack time and re-imports it, overriding everything
+            # stamped before it ran.
+            sed -i -e 's/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE="512M"/' \
+                   -e 's/BR2_TARGET_ROOTFS_EXT2_SIZE="128M"/BR2_TARGET_ROOTFS_EXT2_SIZE="512M"/' \
+                   -e 's/BR2_TARGET_ROOTFS_EXT2_SIZE="200M"/BR2_TARGET_ROOTFS_EXT2_SIZE="512M"/' \
+                   -e 's/BR2_TARGET_ROOTFS_EXT2_SIZE="160M"/BR2_TARGET_ROOTFS_EXT2_SIZE="512M"/' "$packer"
         fi
     done
 }
