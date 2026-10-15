@@ -1,0 +1,60 @@
+#!/bin/sh
+# S09ipv6 — confine IPv6 to the LAN iface before any other iface is up.
+#
+# IPv6 is compiled into the kernel for ONE consumer: Reticulum's AutoInterface
+# on the LAN (/etc/reticulum/config). It needs a fe80:: link-local address on
+# the LAN iface and joins an ff12:: link-scope multicast group (UDP 29716
+# multicast discovery, 29717 unicast discovery, 42671 data). The LAN iface is
+# the bridge br-lan (usb0 + the hotspot as ports), or usb0 alone if the bridge
+# can't be made — S30gadget_nic records which in /run/lan-iface. Nothing else
+# on the box uses IPv6, so every other iface — eth0, wlan0, wlan1, sl0, a USB
+# dongle, and usb0 while it is a bridge port — stays IPv4-only and never gets
+# a link-local/SLAAC address a WAN peer could reach. (nftgen's ip6 table is
+# the second layer: drop unless LAN.)
+#
+# Order matters. This runs after S10usbdev (usb0 may or may not exist yet) and
+# before S30eth, S30gadget_nic
+# (creates br-lan), S31slip (creates sl0) and S35wifi (creates wlan0/wlan1):
+#   1. conf/default/disable_ipv6=1 — every iface registered from now on starts
+#      with IPv6 off (also one that only gets IPv6 later, when its MTU is
+#      raised to >= 1280, e.g. sl0).
+#   2. every iface that already exists, except lo (and the LAN iface when
+#      this is re-run after S30gadget_nic), is switched off now — in practice
+#      eth0, registered by its driver at kernel boot, and usb0.
+#   3. S30gadget_nic opts the LAN iface back in just before raising it (br-lan
+#      is created after this runs and so inherits default=1; usb0 is opted in
+#      only in the no-bridge fallback).
+# conf/all/disable_ipv6 is deliberately NOT written: on 5.10 that pushes the
+# value to every existing iface, lo and the LAN iface included.
+# The IPv4 counterpart is S29fw: it loads a fail-closed nftables ruleset (lo +
+# br-lan/usb0 only) before S30eth/S35wifi address the WAN, until S60routing's
+# real one.
+#
+# A kernel without IPv6 has no /proc/sys/net/ipv6 — then this is a no-op.
+
+# The only ifaces allowed to keep IPv6: lo, and the LAN iface once
+# S30gadget_nic has recorded it (a restart must not switch it off).
+LAN_V6=lo
+{ read -r _lan < /run/lan-iface; } 2>/dev/null
+case "$_lan" in br-lan|usb0) LAN_V6="lo $_lan" ;; esac
+
+start() {
+	if [ ! -d /proc/sys/net/ipv6/conf ]; then
+		echo "S09ipv6: kernel has no IPv6; nothing to do"
+		return 0
+	fi
+	echo 1 > /proc/sys/net/ipv6/conf/default/disable_ipv6
+	for d in /proc/sys/net/ipv6/conf/*; do
+		ifc=${d##*/}
+		case " all default $LAN_V6 " in *" $ifc "*) continue ;; esac
+		echo 1 > "$d/disable_ipv6" 2>/dev/null
+	done
+	echo 0 > /proc/sys/net/ipv6/conf/lo/disable_ipv6 2>/dev/null
+	echo "S09ipv6: IPv6 off by default; kept only on: $LAN_V6"
+}
+
+case "${1:-start}" in
+	start|restart) start ;;
+	stop)          ;;    # nothing to undo; the policy must hold until power-off
+	*) echo "Usage: $0 {start|stop|restart}" >&2; exit 1 ;;
+esac
