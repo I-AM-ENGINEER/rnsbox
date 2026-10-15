@@ -18,7 +18,7 @@ on:
         type: string
         default: ""
   push:
-    branches: [raspberry-pi-zero-2w]
+    branches: [main]
     paths:
       - 'package/**'
       - 'board/**'
@@ -44,15 +44,24 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # external tree: internal image filename at
-          # $ODIR/images/rnsbox-<board>-<variant>.img (variant suffix is
-          # internal; release assets drop it)
+          # external tree: images land in $ODIR/images/
           - board: rpi0-2w
             imgdir: /mnt/rnsbox/out/rpi0-2w/images
+          - board: pc-x86_64
+            imgdir: /mnt/rnsbox/out/pc-x86_64/images
           # patch series over the vendor BSP: build.sh clones the BSP into
-          # $WORKDIR and the packer leaves <...>-<variant>.img in install/
+          # $WORKDIR and the packer leaves <board>-<variant>.img under
+          # install/soc_*/images — one directory level up, because the
+          # universal flows (cv1800b, duo-01-arm) pack SEVERAL boards per
+          # run; the packaging step finds every image recursively.
           - board: licheerv-nano
-            imgdir: /mnt/rnsbox/lichee/install/soc_sg2002_licheervnano_sd/images
+            imgdir: /mnt/rnsbox/lichee/install
+          - board: milkv-duo-01-rv
+            imgdir: /mnt/rnsbox/lichee/install
+          - board: milkv-duo-01-arm
+            imgdir: /mnt/rnsbox/lichee/install
+          - board: milkv-duo-cv1800b
+            imgdir: /mnt/rnsbox/lichee/install
     env:
       BOARD: ${{ matrix.board }}
       VARIANT: ${{ github.event.inputs.variant || 'lite' }}
@@ -164,40 +173,37 @@ jobs:
           echo "## images"; ls -lh "${{ matrix.imgdir }}" 2>/dev/null || echo "(no images dir — build did not reach packaging)"
           echo "## last 40 build.log lines"; tail -n 40 /mnt/tmp/build.log 2>/dev/null || true
 
-      - name: Package image (.img.xz, normalized name)
+      - name: Package images (.img.xz, normalized names)
         if: success()
         run: |
           set -x
           IMGDIR="${{ matrix.imgdir }}"
           df -h / /mnt
-          ls -la "$IMGDIR" || echo "::error::images dir missing: $IMGDIR"
-          # rpi names the image deterministically (the internal filename keeps
-          # the -<variant> suffix); the lichee packer copies its genimage
-          # output to <vendor-name>-<variant>.img — glob for it, then
-          # normalize: every board's release asset is rnsbox-<board>.img.xz
-          # (no variant suffix; the lite/dvd machinery is internal) so the
-          # single multi-board release holds consistently named assets.
-          IMG="$(ls -t "$IMGDIR"/*-"$VARIANT".img 2>/dev/null | head -1)"
-          [ -n "$IMG" ] || IMG="$(ls -t "$IMGDIR"/*.img 2>/dev/null | head -1)"
-          if [ -z "$IMG" ]; then
-            echo "::error::no .img in $IMGDIR for variant $VARIANT"
-            exit 1
-          fi
-          IMG="$(basename "$IMG")"
-          echo "Packaging $IMG"
-          BASE="rnsbox-$BOARD"
+          # One job can produce SEVERAL images (the universal CVITEK/ARM64
+          # flows pack the whole board family). Find them recursively, keep
+          # every board's image, normalize: strip the internal -<variant>
+          # suffix, prefix with rnsbox- when the packer didn't.
+          mapfile -t IMGS < <(find "$IMGDIR" -name "*-$VARIANT.img" -type f | sort)
+          [ "${#IMGS[@]}" -gt 0 ] || { echo "::error::no *-$VARIANT.img under $IMGDIR"; find "$IMGDIR" -name '*.img' | head; exit 1; }
           STAGE="$RUNNER_TEMP/pkg"; rm -rf "$STAGE"; mkdir -p "$STAGE"
-          cp -v "$IMGDIR/$IMG" "$STAGE/$BASE.img" || echo "::error::cp failed; df=$(df -h / /mnt | tr -s ' ' | tr '\n' ';')"
+          for f in "${IMGS[@]}"; do
+            BASE="$(basename "$f" -"$VARIANT".img)"
+            case "$BASE" in rnsbox-*) ;; *) BASE="rnsbox-$BASE" ;; esac
+            echo "Packaging $(basename "$f") -> $BASE.img"
+            cp -v "$f" "$STAGE/$BASE.img" || { echo "::error::cp failed; df=$(df -h / /mnt | tr -s ' ' | tr '\n' ';')"; exit 1; }
+          done
           cd "$STAGE"
-          if ! xz -T2 -9 -k -f "$BASE.img"; then
-            echo "::error::xz -9 failed; df=$(df -h / /mnt | tr -s ' ' | tr '\n' ';')"
-            xz -T2 -6 -k -f "$BASE.img" || { echo "::error::xz -6 failed too"; ls -la; exit 1; }
-          fi
+          for f in *.img; do
+            if ! xz -T2 -9 -k -f "$f"; then
+              echo "::warning::xz -9 failed for $f; df=$(df -h / /mnt | tr -s ' ' | tr '\n' ';')"
+              xz -T2 -6 -k -f "$f" || { echo "::error::xz -6 failed too"; ls -la; exit 1; }
+            fi
+          done
           # checksums go into the release notes text; keep the file internal
           # to the artifact so the release job can quote it there
-          sha256sum "$BASE.img.xz" | tee SHA256SUMS
+          sha256sum *.img.xz | tee SHA256SUMS
           ls -lh
-          { echo "IMG=$BASE.img"; echo "IMGDIR=$STAGE"; } >> "$GITHUB_ENV"
+          echo "IMGDIR=$STAGE" >> "$GITHUB_ENV"
 
       - name: Upload image
         if: success()
@@ -205,7 +211,7 @@ jobs:
         with:
           name: rnsbox-${{ matrix.board }}-image
           path: |
-            ${{ env.IMGDIR }}/${{ env.IMG }}.xz
+            ${{ env.IMGDIR }}/*.img.xz
             ${{ env.IMGDIR }}/SHA256SUMS
           if-no-files-found: warn
           retention-days: 7
@@ -261,13 +267,17 @@ jobs:
             echo "| Board | Image | sha256 |"
             echo "|---|---|---|"
             for d in dist/*/; do
-              board=$(basename "$d" | sed "s/^rnsbox-//; s/-image\$//")
-              xz=$(ls "$d"/*.img.xz 2>/dev/null | head -1)
-              [ -n "$xz" ] || { echo "::error::no .img.xz in $d"; exit 1; }
-              cp "$xz" rel/
-              sum=$(awk '{print $1}' "$d/SHA256SUMS")
-              echo "| $board | \`$(basename "$xz")\` | \`$sum\` |"
+              for xz in "$d"*.img.xz; do
+                [ -e "$xz" ] || { echo "::error::no .img.xz in $d"; exit 1; }
+                cp "$xz" rel/
+                echo "| $(basename "$xz" | sed 's/^rnsbox-//; s/\.img\.xz$//') | \`$(basename "$xz")\` | \`(see SHA256SUMS in build artifacts; quoted below)\` |"
+              done
             done
+            echo
+            echo "### SHA256"
+            echo '```'
+            cat dist/*/SHA256SUMS
+            echo '```'
             echo
             echo "Flash the image for your board to a microSD:"
             echo '```'
@@ -275,7 +285,9 @@ jobs:
             echo "sudo dd if=rnsbox-<board>.img of=/dev/sdX bs=4M conv=fsync status=progress"
             echo '```'
             echo
-            echo "Default web admin: http://10.42.0.1 (admin/admin); ssh root@10.42.0.1 (root/admin)."
+            echo "Web admin: http://10.42.0.1 (factory login admin/admin — the portal
+            nags you to change it, and WAN login is blocked until you do). SSH is
+            OFF by default; enable it in Settings → SSH."
           } > /tmp/notes.md
           cd rel
           if gh release view "$VER" --repo "${{ github.repository }}" >/dev/null 2>&1; then
