@@ -75,6 +75,89 @@ static std::string rtc_temp_row(const sysinfo::Rtc& rtc) {
     return "<tr><th>RTC temperature</th><td>" + E(buf) + " &deg;C</td></tr>";
 }
 
+// ---- USB port role card ----
+// The switch exists only on OTG-capable boards. Capability and the live role
+// come from /run/usbmode.state, which S07usbmode writes at boot and after
+// every apply; when the file is missing we run the script's status once (it
+// (re)writes the file), and if even that fails, detect by hand the same way
+// the script does: CVITEK's /proc/cviusb/otg_role, else a Pi Zero 2 W model,
+// with an optional /etc/rnsbox/board.conf usb_otg=yes|no pin winning.
+struct UsbState {
+    bool capable = false;
+    std::string mode = "device";   // configured (usb.conf)
+    std::string active;            // what the controller does now
+    std::string platform;          // cvi | rpi | other
+};
+
+static std::string usb_pin() {
+    return util::trim(util::conf_get("/etc/rnsbox/board.conf", "usb_otg"));
+}
+
+static bool usb_capable_fallback() {
+    std::string pin = usb_pin();
+    if (pin == "yes") return true;
+    if (pin == "no") return false;
+    // The CVITEK dwc2 glue always provides the proc role switch.
+    if (!util::read_file("/proc/cviusb/otg_role", 16).empty()) return true;
+    std::string model = util::read_file("/proc/device-tree/model", 128);
+    return model.find("Zero 2") != std::string::npos;
+}
+
+static UsbState usb_state() {
+    UsbState s;
+    s.mode = store::read_usb().mode;
+    std::string cap = util::trim(util::conf_get(store::USB_STATE_FILE, "capable"));
+    if (cap.empty()) {
+        util::run({"/etc/init.d/S07usbmode", "status"}, "", 5);
+        cap = util::trim(util::conf_get(store::USB_STATE_FILE, "capable"));
+    }
+    s.capable = (cap == "yes") || (cap.empty() && usb_capable_fallback());
+    s.active = util::trim(util::conf_get(store::USB_STATE_FILE, "active"));
+    if (s.active.empty()) s.active = s.mode;
+    s.platform = util::trim(util::conf_get(store::USB_STATE_FILE, "platform"));
+    return s;
+}
+
+static std::string usb_mode_badge(const std::string& role) {
+    if (role == "host")
+        return "<span class=\"badge warn\">host</span> <span class=\"muted\">USB devices "
+               "(OTG adapter); no gadget LAN</span>";
+    if (role == "device")
+        return "<span class=\"badge ok\">device</span> <span class=\"muted\">CDC-NCM gadget "
+               "&mdash; the LAN: portal at 10.42.0.1</span>";
+    return "<span class=\"badge\">unknown</span>";
+}
+
+static std::string usb_section_html(const UsbState& s) {
+    if (!s.capable) return std::string();   // Pi 3/4/5, Orange Pi R1, ...: no switch at all
+    bool host = s.mode == "host";
+    std::string note;
+    if (s.platform == "rpi")
+        note = "Takes effect at the next reboot (the driver reads the role once at boot). "
+               "In host mode the USB network link is gone &mdash; make sure the WiFi hotspot "
+               "or another access path works first.";
+    else
+        note = "Applies as soon as you save (the controller switches roles at runtime). "
+               "Switching to host cuts the USB network link &mdash; keep the WiFi hotspot or "
+               "SSH reachable first.";
+    std::string h;
+    h += "<section class=\"card\">\n  <h3>USB port role</h3>\n";
+    h += "  <p>Running now: " + usb_mode_badge(s.active) +
+         "<br>Configured: <strong>" + std::string(host ? "host" : "device (gadget)") + "</strong>" +
+         std::string(s.active == s.mode ? "" : " <span class=\"badge warn\">pending</span>") +
+         "</p>\n";
+    h += "  <form method=\"post\" action=\"" + web::base() + "/settings/usb\">\n";
+    h += "    <label><input type=\"radio\" name=\"mode\" value=\"device\"" +
+         std::string(host ? "" : " checked") + "> Device (gadget) &mdash; the port is the box's "
+         "LAN: <code>10.42.0.1</code> over the cable</label>\n";
+    h += "    <label><input type=\"radio\" name=\"mode\" value=\"host\"" +
+         std::string(host ? " checked" : "") + "> Host &mdash; the port drives USB devices "
+         "(flash drives, Huawei modems, RNode) through an OTG adapter; the gadget LAN goes away</label>\n";
+    h += "    <button type=\"submit\" class=\"btn-primary\">Save USB mode</button>\n  </form>\n";
+    h += "  <p class=\"muted\">" + note + "</p>\n</section>\n";
+    return h;
+}
+
 // ---- GET render ----
 
 void settings_page(const Request& req, Response& res) {
@@ -118,6 +201,8 @@ void settings_page(const Request& req, Response& res) {
     h = R(std::move(h), "__NTP_SERVERS__", E(ntp_joined));
     h = R(std::move(h), "__HOSTNAME__", E(host));
     h = R(std::move(h), "__WAN__", E(wan));
+    // USB role card (empty unless the board is OTG-capable — see usb_state()).
+    h = R(std::move(h), "__USB_SECTION__", usb_section_html(usb_state()));
 
     res.body = render::layout(req, res, "Settings", "settings", h);
 }
@@ -329,6 +414,51 @@ void time_browser(const Request& req, Response& res) {
         msg += ". No hardware clock (RTC) fitted, so it is lost at the next reboot.";
     }
     render::redirect_flash(res, settings_redirect(), cat, msg);
+}
+
+void usb_mode_set(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, false)) return;
+    // Whitelist the value; anything else (or a missing field) refuses the save.
+    std::string mode = req.f("mode");
+    if (mode != "device" && mode != "host") {
+        render::redirect_flash(res, settings_redirect(), "error", "Invalid USB mode.");
+        return;
+    }
+    UsbState s = usb_state();
+    if (!s.capable) {
+        render::redirect_flash(res, settings_redirect(), "error",
+            "This board has no OTG USB port; the USB mode is fixed to device.");
+        return;
+    }
+    store::UsbConfig c;
+    c.mode = mode;
+    std::string err;
+    if (!store::write_usb(c, err)) {
+        render::redirect_flash(res, settings_redirect(), "error", "Could not save the USB mode (" + err + ").");
+        return;
+    }
+    // S07usbmode live: syncs the boot artifacts (cvi: /boot/usb.host|usb.dev,
+    // rpi: flags + config.txt dr_mode) and on CVITEK applies the role right
+    // away via S08usbdev. First output word is the verdict:
+    // applied | reboot | error. 30 s: the device-mode path waits for the UDC.
+    util::RunResult r = util::run({"/etc/init.d/S07usbmode", "live"}, "", 30);
+    std::string out = util::trim(r.out);
+    size_t nl = out.find('\n');
+    std::string line = util::trim(out.substr(0, nl == std::string::npos ? out.size() : nl));
+    std::string msg = line.substr(0, 200);
+    if (msg.rfind("applied", 0) == 0) {
+        render::redirect_flash(res, settings_redirect(), "success",
+            "USB mode saved and applied: " + msg.substr(7) + " Mode: " + mode + ".");
+    } else if (msg.rfind("reboot", 0) == 0) {
+        render::redirect_flash(res, settings_redirect(), "warn",
+            "USB mode saved (" + mode + "). " + (msg.size() > 6 ? msg.substr(7) : "Reboot to apply."));
+    } else {
+        std::string why = r.timed_out ? std::string("the apply timed out")
+                                      : (msg.empty() ? std::string("no response from S07usbmode") : msg);
+        render::redirect_flash(res, settings_redirect(), "warn",
+            "USB mode saved (" + mode + "), but applying it now failed (" + why +
+            "); it will apply at the next reboot.");
+    }
 }
 
 }  // namespace routes

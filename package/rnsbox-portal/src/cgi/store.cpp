@@ -417,6 +417,32 @@ bool write_slip(const SlipConfig& c, std::string& err) {
     return true;
 }
 
+// ---- USB role of the OTG port ----
+// mode=device (default, the CDC-NCM gadget LAN on 10.42.0.1) | host. The file
+// only exists once the portal has saved it; before that S07usbmode stays out
+// of the way of the shipped defaults. Applied by S07usbmode.
+UsbConfig read_usb() {
+    UsbConfig c;
+    std::string m = util::conf_get(USB_FILE, "mode");
+    if (m == "host") c.mode = "host";   // anything else (missing/empty/typo) = device
+    return c;
+}
+
+bool write_usb(const UsbConfig& c, std::string& err) {
+    if (c.mode != "device" && c.mode != "host") { err = "bad mode"; return false; }
+    std::string o =
+        "# RNSBox USB role of the OTG port.\n"
+        "#   mode=device — the port is a CDC-NCM gadget: the box's LAN\n"
+        "#                (portal at http://10.42.0.1, see S08usbdev/S10usbdev).\n"
+        "#   mode=host   — the port drives USB devices (sticks, modems, RNode)\n"
+        "#                through an OTG adapter; the gadget LAN disappears.\n"
+        "# Managed by the portal Settings tab; applied by S07usbmode (at boot,\n"
+        "# and live on the CVITEK boards).\n";
+    o += "mode=" + c.mode + "\n";
+    if (!util::write_file_atomic(USB_FILE, o, 0644)) { err = "write failed"; return false; }
+    return true;
+}
+
 // ---- add HaLow modem as a TCPClientInterface in the reticulum config ----
 static std::string sanitize_iface_name(const std::string& in) {
     std::string n;

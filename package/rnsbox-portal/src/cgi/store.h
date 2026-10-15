@@ -15,6 +15,8 @@ constexpr const char* CRON_FILE = "/etc/rnsbox/cron.conf";
 constexpr const char* RETICULUM_CONFIG = "/etc/reticulum/config";
 constexpr const char* NTP_FILE  = "/etc/ntp.conf";
 constexpr const char* SLIP_FILE = "/etc/rnsbox/slip.conf";
+constexpr const char* USB_FILE  = "/etc/rnsbox/usb.conf";
+constexpr const char* USB_STATE_FILE = "/run/usbmode.state";   // written by S07usbmode
 
 struct PortForward {
     std::string proto;      // "tcp" | "udp"
@@ -87,6 +89,18 @@ bool write_slip(const SlipConfig& c, std::string& err);   // baud 1..SLIP_MAX_BA
 // 4 M: headroom for the reclocked arm64 boards (exact 2 Mbaud from
 // the 96 MHz uart clock); 25 MHz-clocked boards top out at 1562500.
 constexpr int SLIP_MAX_BAUD = 4000000;
+
+// --- USB role of the OTG port (device = CDC-NCM gadget | host) ---
+// Stored in /etc/rnsbox/usb.conf, applied by /etc/init.d/S07usbmode (at
+// boot; live too on the CVITEK boards). The portal shows the switch only
+// when the board is OTG-capable: S07usbmode records that in
+// /run/usbmode.state ("capable=yes|no"), honoring an optional
+// /etc/rnsbox/board.conf "usb_otg=yes|no" pin.
+struct UsbConfig {
+    std::string mode = "device";
+};
+UsbConfig read_usb();
+bool write_usb(const UsbConfig& c, std::string& err);
 
 // Append a TCPClientInterface for the HaLow modem to the reticulum config.
 // Returns true + sets msg to the interface name; false + msg="already" if the
