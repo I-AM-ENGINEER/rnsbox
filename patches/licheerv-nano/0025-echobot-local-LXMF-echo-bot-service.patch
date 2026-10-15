@@ -1,35 +1,35 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: echobot-agent <echobot@rnsbox.local>
-Date: Thu, 15 Oct 2026 22:48:16 +0300
+Date: Fri, 16 Oct 2026 00:43:18 +0300
 Subject: [PATCH] echobot: local LXMF echo bot service (opt-out, on by default)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
 
 The box's built-in LXMF presence, like lxmd's init script but simpler: the
-daemon (/usr/bin/rnsbox-echobot, shipped by this overlay, like every board file) attaches
-to rnsd's shared instance, announces its LXMF destination once a day by
-default and echoes every message back — the fastest reachability check from
-any LXMF client (NomadNet: Conversations -> the address on the portal's Echo
-bot tab). Unlike lxmd/nomadnet it ships enabled: one announce a day, a small
-python process, no message store; the min_free_mb floor turns 'tight box'
-into 'bot off', never 'rnsd OOM-killed'. The daemon polls /proc for rnsd's
-shared socket itself, so nothing needs to change in S46wanwatch.
+daemon (/usr/bin/rnsbox-echobot, shipped by this overlay, like every board
+file) attaches to rnsd's shared instance, announces its LXMF destination once
+a day by default and echoes every message back — the fastest reachability
+check from any LXMF client (NomadNet: Conversations -> the address on the
+portal's Echo bot tab). Unlike lxmd/nomadnet it ships enabled: one announce a
+day, a small python process, no message store; the min_free_mb floor turns
+'tight box' into 'bot off', never 'rnsd OOM-killed'. The daemon polls /proc
+for rnsd's shared socket itself, so nothing needs to change in S46wanwatch.
 ---
- .../SG200X/overlay/etc/init.d/S87echobot      | 344 ++++++++++++++
+ .../SG200X/overlay/etc/init.d/S87echobot      | 355 +++++++++++++++
  .../SG200X/overlay/etc/rnsbox/echobot.conf    |  33 ++
  .../SG200X/overlay/usr/bin/rnsbox-echobot     | 425 ++++++++++++++++++
- 3 files changed, 802 insertions(+)
+ 3 files changed, 813 insertions(+)
  create mode 100755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/S87echobot
  create mode 100644 buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/echobot.conf
  create mode 100755 buildroot/board/cvitek/SG200X/overlay/usr/bin/rnsbox-echobot
 
 diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S87echobot b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S87echobot
 new file mode 100755
-index 0000000..2779711
+index 0000000..5989eae
 --- /dev/null
 +++ b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S87echobot
-@@ -0,0 +1,344 @@
+@@ -0,0 +1,355 @@
 +#!/bin/sh
 +# S87echobot — the RNSBox local LXMF echo bot (/usr/bin/rnsbox-echobot).
 +#
@@ -96,6 +96,17 @@ index 0000000..2779711
 +
 +mem_available_mb() {
 +	awk '/^MemAvailable:/{print int($2/1024); found=1} END{if(!found) print 0}' /proc/meminfo 2>/dev/null
++}
++
++# rnsd_running — true while an rnsd process exists. A /proc cmdline scan, not
++# `pidof rnsd`: rnsd is a python console-script (argv "/usr/bin/python
++# /usr/bin/rnsd ..."), and pidof is not present on every buildroot image this
++# script ships on; the scan matches what S82rnsd's own is_rnsd() matches.
++rnsd_running() {
++	for _d in /proc/[0-9]*/cmdline; do
++		tr '\0' '\n' <"$_d" 2>/dev/null | head -n 2 | grep -qE '(^|/)rnsd$' && return 0
++	done
++	return 1
 +}
 +
 +# pidfile_pid FILE — print the pid FILE holds; false if none (or not a pid).
@@ -251,7 +262,7 @@ index 0000000..2779711
 +	# The daemon attaches to rnsd's shared instance — no rnsd, nothing to
 +	# attach to. (It waits for the shared socket itself; this only catches
 +	# rnsd being disabled/stopped entirely.)
-+	if [ -z "$(pidof rnsd)" ]; then
++	if ! rnsd_running; then
 +		echo "S87echobot: refusing to start - rnsd (S82rnsd) is not running"
 +		echo "           the echo bot shares rnsd's Reticulum instance; start rnsd first"
 +		return 1

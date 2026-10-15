@@ -66,6 +66,17 @@ mem_available_mb() {
 	awk '/^MemAvailable:/{print int($2/1024); found=1} END{if(!found) print 0}' /proc/meminfo 2>/dev/null
 }
 
+# rnsd_running — true while an rnsd process exists. A /proc cmdline scan, not
+# `pidof rnsd`: rnsd is a python console-script (argv "/usr/bin/python
+# /usr/bin/rnsd ..."), and pidof is not present on every buildroot image this
+# script ships on; the scan matches what S82rnsd's own is_rnsd() matches.
+rnsd_running() {
+	for _d in /proc/[0-9]*/cmdline; do
+		tr '\0' '\n' <"$_d" 2>/dev/null | head -n 2 | grep -qE '(^|/)rnsd$' && return 0
+	done
+	return 1
+}
+
 # pidfile_pid FILE — print the pid FILE holds; false if none (or not a pid).
 pidfile_pid() {
 	_p=
@@ -219,7 +230,7 @@ start() {
 	# The daemon attaches to rnsd's shared instance — no rnsd, nothing to
 	# attach to. (It waits for the shared socket itself; this only catches
 	# rnsd being disabled/stopped entirely.)
-	if [ -z "$(pidof rnsd)" ]; then
+	if ! rnsd_running; then
 		echo "S87echobot: refusing to start - rnsd (S82rnsd) is not running"
 		echo "           the echo bot shares rnsd's Reticulum instance; start rnsd first"
 		return 1
