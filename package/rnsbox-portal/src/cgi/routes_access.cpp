@@ -168,14 +168,16 @@ struct KeyMaterial {
 };
 
 bool b64_ok(const std::string& s) {
-    // 64 bytes => 44 chars, standard alphabet, "==" padding
-    if (s.size() != 44 || s.substr(42) != "==") return false;
-    return s.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/") == std::string::npos;
+    // 64 bytes => 88 chars of standard base64, "==" padding ("=" is part of
+    // the allowed set: the padding chars sit inside the string).
+    if (s.size() != 88 || s.substr(86) != "==") return false;
+    return s.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=") == std::string::npos;
 }
 
-KeyMaterial run_issue_helper() {
+KeyMaterial run_issue_helper(std::string* raw_out) {
     KeyMaterial km;
-    util::RunResult rr = util::run({"/usr/bin/python3", HELPER, "issue"}, "", 30);
+    if (raw_out) raw_out->clear();
+    util::RunResult rr = util::run({"/usr/bin/python3", HELPER, "issue"}, "", 60);
     size_t b = rr.out.find(MARK);
     if (b == std::string::npos) return km;
     b += strlen(MARK);
@@ -196,6 +198,7 @@ KeyMaterial run_issue_helper() {
     }
     km.ok = is_hex(km.hash) && km.hash.size() == 32 &&
             is_hex(km.dest) && km.dest.size() == 32 && b64_ok(km.keyb64);
+    if (raw_out) *raw_out = rr.out;
     return km;
 }
 
@@ -266,10 +269,18 @@ bool conf_drop_id(RnshConf& c, const std::string& hash) {
 // Issue one access: helper -> conf -> journal -> restart -> file response.
 // Returns false (after a flash redirect) on failure.
 bool issue_access(Response& res) {
-    KeyMaterial km = run_issue_helper();
+    std::string raw;
+    KeyMaterial km = run_issue_helper(&raw);
     if (!km.ok) {
+        // Include a short tail of the helper output: the useful failure reason
+        // (a python traceback, OOM kill, timeout) is at the end of the capture.
+        std::string tail = util::trim(raw);
+        for (char& ch : tail) if ((unsigned char)ch < 0x20 || ch == 0x7f) ch = ' ';
+        if (tail.size() > 140) tail = tail.substr(tail.size() - 140);
         render::redirect_flash(res, access_redirect(), "error",
-            "rnsh: key generation failed — is the rns package installed?");
+            "rnsh: key generation failed" +
+            (tail.empty() ? std::string(" — no helper output (timeout or spawn failure).")
+                          : ": " + tail));
         return false;
     }
     RnshConf c = read_rnsh_conf();
