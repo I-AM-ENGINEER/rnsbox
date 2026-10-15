@@ -1,30 +1,20 @@
-From 8a7b4f5900834a2f767f1c75cdf4993aae5a6ad4 Mon Sep 17 00:00:00 2001
+From c373f84a258154ca713e6415707f42501a275dce Mon Sep 17 00:00:00 2001
 From: rnsbox <rnsbox@localhost>
-Date: Thu, 15 Oct 2026 04:08:51 +0300
-Subject: [PATCH 2/2] buildroot: target ISA rv64gc - a rootfs every riscv64
- runs
+Date: Thu, 15 Oct 2026 05:16:38 +0300
+Subject: [PATCH] buildroot: disable ccache - it serves stale objects across
+ ISA changes
 
-The CVITEK musl cross-gcc defaults to rv64gc + T-Head extras (v0p7,
-zfh, xtheadc); every target binary was silently tagged for a C906-with-
-thead core, so the rootfs ran on CVITEK silicon only - qemu-system-
-riscv64 -M virt (plain RV64GC) took an illegal instruction in /init.
-The prebuilt musl libc itself is clean rv64gc and the toolchain ships
-the matching ld-musl-riscv64.so.1, so pinning the compile flags is all
-it takes:
-
-  BR2_TARGET_OPTIMIZATION="-march=rv64gc -mabi=lp64d"
-
-Same package set, same scripts; C906 boards lose nothing but unused
-T-Head ISA tags and gain an image that boots under QEMU and any future
-riscv64 board - which is the point of the universal family image.
-Kernel configs are untouched (per-board, and the C906 thead features
-there are selected by the vendor Kconfig, not by this flag).
+The toolchain wrapper injects BR2_TARGET_OPTIMIZATION *after* ccache
+hashes the command line, so flipping the target ISA does not change the
+cache key: the -march=rv64gc rebuild kept pulling default-thead objects
+out of the cache and the rootfs stayed C906-thead-only. Disable ccache
+for the universal image recipe; correct beats fast here.
 ---
- buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig | 2 +-
- 1 file changed, 1 insertion(+), 1 deletion(-)
+ buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
 
 diff --git a/buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig b/buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig
-index 7634161a1..e59b1b6d9 100644
+index 7634161a1..c8f18042b 100644
 --- a/buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig
 +++ b/buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig
 @@ -215,7 +215,7 @@ BR2_TOOLCHAIN_HAS_UCONTEXT=y
@@ -36,6 +26,15 @@ index 7634161a1..e59b1b6d9 100644
  BR2_TARGET_LDFLAGS="-mcpu=c906fdv -march=rv64imafdcv0p7xthead -mcmodel=medany -mabi=lp64d"
  BR2_TOOLCHAIN_HEADERS_AT_LEAST_3_0=y
  BR2_TOOLCHAIN_HEADERS_AT_LEAST_3_1=y
+@@ -327,7 +327,7 @@ BR2_GNU_MIRROR="http://ftpmirror.gnu.org"
+ BR2_LUAROCKS_MIRROR="http://rocks.moonscript.org"
+ BR2_CPAN_MIRROR="https://cpan.metacpan.org"
+ BR2_JLEVEL=0
+-BR2_CCACHE=y
++# BR2_CCACHE is not set
+ BR2_CCACHE_DIR="$(HOME)/.buildroot-ccache"
+ BR2_CCACHE_INITIAL_SETUP=""
+ BR2_CCACHE_USE_BASEDIR=y
 -- 
 2.43.0
 
