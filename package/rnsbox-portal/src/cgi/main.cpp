@@ -216,6 +216,15 @@ static void r_login(const http::Request& req, http::Response& res) {
         std::string next = req.f("next");
         bool next_ok = web::is_local_next(next);   // local portal path only (no open redirect)
         if (session::verify_password(user, pass)) {
+            // LAN-only while the factory password is still active: the WAN
+            // must not be able to log in with admin/admin.
+            if (!from_lan(req) && session::default_password_active()) {
+                ::sleep(1);
+                render::redirect_flash(res, web::base() + "/login", "error",
+                    "The factory password may only be used from the LAN (10.42.0.x / USB). "
+                    "Change it in Settings, then WAN access works.");
+                return;
+            }
             res.set_cookie(session::start(user));
             // default: the dashboard. base() and base()+"/" both reach it (an empty
             // PATH_INFO is read as "/"; the nav's Dashboard link uses the slash form)
