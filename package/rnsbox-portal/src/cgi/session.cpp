@@ -134,6 +134,16 @@ void ensure_default_auth() {
     util::write_file_atomic(AUTH_FILE, serialize_auth(m), 0600);
 }
 
+bool default_password_active() {
+    auto m = parse_auth(util::read_file(AUTH_FILE));
+    auto it = m.find("admin");
+    if (it == m.end()) return false;
+    // The stored record is the werkzeug-format pbkdf2 hash; verify it against
+    // the factory password. Salted per install, so this is exact (never true
+    // for a user-chosen password except by a 1/16^16 chance coincidence).
+    return verify_werkzeug(it->second, "admin");
+}
+
 bool set_password(const std::string& user, const std::string& newpass) {
     if (!valid_username(user) || newpass.empty() || newpass.size() > 512) return false;
     auto m = parse_auth(util::read_file(AUTH_FILE));

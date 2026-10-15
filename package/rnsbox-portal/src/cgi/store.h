@@ -15,6 +15,7 @@ constexpr const char* CRON_FILE = "/etc/rnsbox/cron.conf";
 constexpr const char* RETICULUM_CONFIG = "/etc/reticulum/config";
 constexpr const char* NTP_FILE  = "/etc/ntp.conf";
 constexpr const char* SLIP_FILE = "/etc/rnsbox/slip.conf";
+constexpr const char* SSH_FILE  = "/etc/rnsbox/ssh.conf";
 
 struct PortForward {
     std::string proto;      // "tcp" | "udp"
@@ -87,6 +88,16 @@ bool write_slip(const SlipConfig& c, std::string& err);   // baud 1..SLIP_MAX_BA
 // 4 M: headroom for the reclocked arm64 boards (exact 2 Mbaud from
 // the 96 MHz uart clock); 25 MHz-clocked boards top out at 1562500.
 constexpr int SLIP_MAX_BAUD = 4000000;
+
+// --- SSH server gate (/etc/rnsbox/ssh.conf, read by init.d/S50sshd) ---
+// SSH is OFF unless enabled=yes: shipped off, turned on from the portal
+// (Settings -> SSH), which also sets the `admin` user's password and
+// restarts the gated S50sshd.
+struct SshConfig {
+    bool enabled = false;
+};
+SshConfig read_ssh();
+bool write_ssh(bool enabled, std::string& err);
 
 // Append a TCPClientInterface for the HaLow modem to the reticulum config.
 // Returns true + sets msg to the interface name; false + msg="already" if the
