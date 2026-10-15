@@ -63,7 +63,7 @@
 1. `xz -d rnsbox-rpi0-2w.img.xz` (или записывайте xz сразу).
 2. Записать на карту от 1 ГБ: `dd if=rnsbox-rpi0-2w.img of=/dev/sdX bs=4M oflag=direct status=progress` (или Raspberry Pi Imager/Etcher).
 3. Вставить карту в любую плату из матрицы и включить.
-4. Доступ: root/admin по SSH; портал — `http://10.42.0.1/`; сеть: USB-C-гаджет (NCM, `10.42.0.1`) — **только Zero 2 W**; на остальных платах — WiFi-точка и/или Ethernet (3B/3B+/3A+ и 4/400/CM4 — Ethernet, 5/500/CM5 — Ethernet по GENET); консоль HDMI `tty1`, у Pi 5 — отладочный UART (JST-SH, 115200).
+4. Доступ: портал — `http://10.42.0.1/` (login admin/admin — смените пароль; на дашборде будет красный баннер, пока пароль заводской); SSH выключен по умолчанию и включается в портале (Settings → SSH, пароль для пользователя `admin`; root закрыт) — см. docs/SSH-HARDENING.md; сеть: USB-C-гаджет (Zero 2 W, 4B/400/CM4 — NCM, 10.42.0.1), WiFi-точка или Ethernet (3B/3B+/3A+, 5/500/CM5 — Ethernet по GENET), HDMI-консоль `tty1` (login `admin`), у Pi 5 — отладочный UART (JST-SH, 115200).
 
 ## Известные особенности по моделям
 

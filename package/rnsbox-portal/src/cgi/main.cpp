@@ -59,6 +59,7 @@ static const char* const POST_ONLY[] = {
     "/settings/time/browser",
     "/settings/ntp",
     "/settings/ntp/restart",
+    "/settings/ssh",
 };
 
 static bool is_post_only(const std::string& p) {
@@ -340,7 +341,7 @@ int main(int argc, char** argv) {
                 std::string url = http::html_escape(origin_on_port(req, MODEM_PORT) + web::base() + "/modem/");
                 res.body = "<!doctype html><title>HaLow modem page</title><p>The HaLow modem page is served on "
                            "port 8081 of the box, which this address (an SSH tunnel or port mapping) doesn't reach. "
-                           "Through SSH, also forward it: <code>ssh -L 8081:127.0.0.1:8081 root@&lt;box&gt;</code>, "
+                           "Through SSH, also forward it: <code>ssh -L 8081:127.0.0.1:8081 admin@&lt;box&gt;</code>, "
                            "then open <a href=\"" + url + "\">" + url + "</a> (adjust the port if you mapped it elsewhere). "
                            "From the WAN, open tcp 8081 (Network -&gt; Open ports) on the address that reaches the box's port 8081.</p>\n";
             } else {
@@ -420,6 +421,7 @@ int main(int argc, char** argv) {
     else if (p == "/settings/time/browser")      routes::time_browser(req, res);
     else if (p == "/settings/ntp")               routes::ntp_set(req, res);
     else if (p == "/settings/ntp/restart")       routes::ntp_restart(req, res);
+    else if (p == "/settings/ssh")               routes::ssh_set(req, res);
     else if (p == "/donate")                     routes::donate_page(req, res);
     else if (p == "/modem" || p == "/modem/")    routes::modem_ui(req, res);
     else if (p.rfind("/modem/api/", 0) == 0)     routes::modem_api(req, res);

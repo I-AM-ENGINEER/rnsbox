@@ -16,7 +16,12 @@ BR2_JLEVEL=4
 BR2_ROOTFS_DEVICE_TABLE="system/device_table_dev.txt system/device_table.txt"
 BR2_TARGET_GENERIC_HOSTNAME="rnsbox"
 BR2_TARGET_GENERIC_ISSUE="RNSBox - Reticulum router (Raspberry Pi, 64-bit universal)"
-BR2_TARGET_GENERIC_ROOT_PASSWD="admin"
+# root login closed: the root password is locked ('*') at build time; the
+# operator account is `admin` (locked too, until the user sets a password in
+# the portal — see board/raspberrypi/rnsbox-0-2w/users.txt and
+# docs/SSH-HARDENING.md).
+# BR2_TARGET_ENABLE_ROOT_LOGIN is not set
+BR2_ROOTFS_USERS_TABLES="$(BR2_EXTERNAL_RNSBOX_PATH)/board/raspberrypi/rnsbox-0-2w/users.txt"
 BR2_ROOTFS_POST_BUILD_SCRIPT="$(BR2_EXTERNAL_RNSBOX_PATH)/board/raspberrypi/rnsbox-0-2w/post-build.sh"
 BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_RNSBOX_PATH)/board/raspberrypi/rnsbox-0-2w/post-image.sh"
 BR2_LINUX_KERNEL=y

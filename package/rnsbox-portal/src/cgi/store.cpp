@@ -770,6 +770,24 @@ bool rnode_ble_stack_present() {
     if (!daemon) return false;
     return ::access("/run/dbus/system_bus_socket", F_OK) == 0 ||
            ::access("/var/run/dbus/system_bus_socket", F_OK) == 0;
+// ---- SSH server gate ----
+SshConfig read_ssh() {
+    SshConfig c;
+    std::string v = util::conf_get(SSH_FILE, "enabled");
+    for (auto& ch : v) ch = (char)tolower((unsigned char)ch);
+    c.enabled = !(v == "no" || v == "0" || v == "false" || v == "off" || v.empty());
+    return c;
+}
+
+bool write_ssh(bool enabled, std::string& err) {
+    (void)err;
+    std::string o =
+        "# SSH server (sshd) gate — read by /etc/init.d/S50sshd at boot and\n"
+        "# rewritten by the rnsbox-portal Settings -> SSH card. SSH is OFF\n"
+        "# unless enabled=yes. The WAN side additionally stays closed unless\n"
+        "# tcp 22 is opened under Network -> Open ports.\n";
+    o += std::string("enabled=") + (enabled ? "yes" : "no") + "\n";
+    return util::write_file_atomic(SSH_FILE, o, 0644);
 }
 
 }  // namespace store
