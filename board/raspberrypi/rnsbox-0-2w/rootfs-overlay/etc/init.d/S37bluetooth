@@ -1,0 +1,75 @@
+#!/bin/sh
+# S37bluetooth — HCI bring-up for the Bluetooth LE transport (BLEInterface).
+#
+# Runs after S35wifi (radio families in order) and BEFORE S40bluetoothd, the
+# BlueZ daemon buildroot installs. bluetoothd talks to adapters through the
+# kernel's mgmt interface and picks hci0 up whenever it appears — even after
+# bluetoothd already started — so this script only has to make sure the
+# drivers are loaded and the controller had a fair chance to come up before
+# rnsd (S82rnsd) and the portal's Bluetooth card look at it.
+#
+# What brings hci0 up here:
+#   - Raspberry Pi boards: the onboard BT controller sits on a UART. The
+#     firmware-side wiring lives in config.txt (dtoverlay=miniuart-bt on the
+#     Zero 2 W: BT on the mini-uart, PL011 left to S31slip's HaLow link).
+#     `modprobe hci_uart` registers the serdev "bcm" client, which requests
+#     /lib/firmware/brcm/BCM43430A1.hcd (BCM4345C0/C5 on 3B+/4B/5, shipped by
+#     the rnsbox-bt-firmware package), toggles BT_REG_ON and registers hci0.
+#   - USB BLE dongles: btusb binds by USB ID. The kernel autoloads it via
+#     modprobe on hotplug; loading it here just makes a cold-plugged dongle
+#     deterministic (and costs nothing when none is present).
+#
+# When no adapter appears the script logs why it gave up and exits 0: the
+# same image boots on BT-less boards (CM3, CVITEK boards without a dongle).
+# rnsd's BLE interface keeps its own probe (see the ble_reticulum patch) and
+# runs as a logged no-op, re-checking every 30 s so a dongle plugged in
+# later — or one that only finishes firmware load after this timeout — still
+# brings BLE up without a restart.
+#
+# /run/bluetooth-hci records the state for the portal's Bluetooth card:
+#   "hci0" when an adapter is up, else the reason it is not.
+
+case "${1:-start}" in
+	start) ;;
+	stop) echo "S37bluetooth: nothing to stop (kernel owns the HCI)"; exit 0 ;;
+	restart|reload) "$0" start; exit ;;
+	*) echo "Usage: $0 {start|stop|restart|reload}" >&2; exit 1 ;;
+esac
+
+# The Pi's BT controller hangs off a UART: the serdev bcm client (which loads
+# the .hcd patch and powers the chip) lives in hci_uart. BT_HCIUART_BCM is
+# =y in the rpi kernel defconfig, so hci_uart carries it. btusb covers USB
+# dongles (and CVITEK boards, where BT is built-in and modprobe is a no-op).
+modprobe hci_uart 2>/dev/null
+modprobe btusb 2>/dev/null
+
+# A cold controller needs its firmware patched over the UART before BlueZ
+# sees it; that is a second or two. Wait briefly so a boot-time portal paint
+# (and S82rnsd's BLE probe) usually already sees the adapter — but never
+# block rcS on it: the watchers recover the late case.
+i=0
+while [ $i -lt 12 ]; do
+	for d in /sys/class/bluetooth/hci*; do
+		[ -e "$d" ] && break 2
+	done
+	sleep 0.5
+	i=$((i + 1))
+done
+
+hci=
+for d in /sys/class/bluetooth/hci*; do
+	[ -e "$d" ] && hci=${d##*/} && break
+done
+
+if [ -n "$hci" ]; then
+	echo "$hci" > /run/bluetooth-hci 2>/dev/null
+	logger -t S37bluetooth -p daemon.notice "$hci up" 2>/dev/null
+	echo "S37bluetooth: $hci up"
+else
+	reason="no adapter"
+	[ -d /sys/class/bluetooth ] || reason="no Bluetooth stack in the kernel"
+	echo "$reason" > /run/bluetooth-hci 2>/dev/null
+	logger -t S37bluetooth -p daemon.notice "$reason after 6s - BLE stays a no-op (re-checked by rnsd every 30s)" 2>/dev/null
+	echo "S37bluetooth: $reason; BLE stays a no-op"
+fi
+exit 0

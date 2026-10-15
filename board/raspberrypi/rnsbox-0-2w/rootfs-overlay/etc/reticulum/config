@@ -89,3 +89,32 @@
     enabled = yes
     target_host = 31.129.33.146
     target_port = 4242
+
+  # Bluetooth Low Energy (BLE) transport — short-range mesh radio over the
+  # onboard BT controller (Zero 2 W: dtoverlay=miniuart-bt in config.txt;
+  # Pi 3/4: on by default) or a USB BLE dongle. Both roles at once: the box
+  # scans for nearby Reticulum BLE peers AND accepts inbound connections
+  # over its own GATT server, so phones and other nodes reach it with no
+  # config. The stack under it: BlueZ (experimental) + dbus, brought up by
+  # S37bluetooth + S40bluetoothd; the transport itself is the vendored
+  # torlando-tech/ble-reticulum classes, which RNS loads from
+  # /etc/reticulum/interfaces/.
+  #
+  # Without an adapter this is an honest no-op: rnsd runs, all other
+  # interfaces are unaffected, and the log names the reason ("no Bluetooth
+  # adapter (no hci device)"). The probe re-runs every 30 s, so a dongle
+  # plugged in later brings BLE up on its own (or restart rnsd from the
+  # portal to retry immediately).
+  #
+  # Enabled by default. Toggle here (or in the portal Reticulum tab) and
+  # restart rnsd to apply.
+  [[BLE Interface]]
+    type = BLEInterface
+    enabled = yes
+    # Advertised name — keep it short, BLE ads have a 31-byte budget.
+    # Leave unset to advertise the service UUID only (the peer learns the
+    # node name from the Reticulum announce anyway).
+    device_name = RNSBox
+    # BLE GATT reality is well below the driver 700 kbit/s guess; pacing
+    # announces/routing on ~50 kbit/s keeps RNS honest about this link.
+    bitrate = 50000

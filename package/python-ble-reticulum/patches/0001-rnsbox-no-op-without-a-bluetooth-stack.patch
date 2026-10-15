@@ -1,0 +1,128 @@
+--- a/ble_reticulum/BLEInterface.py
++++ b/ble_reticulum/BLEInterface.py
+@@ -473,11 +473,83 @@
+         self.cleanup_timer = None
+         self._start_cleanup_timer()
+ 
++        # RNSBox no-op bookkeeping: probe_scheduled marks the stack-watcher
++        # path (rnstatus / the portal can see the interface is down on
++        # purpose); noop_reason carries the probe verdict for logging.
++        self._rnsbox_probe_scheduled = False
++        self.rnsbox_noop_reason = ""
++
+         # Start the interface
+         self.start()
+ 
++    # ---- RNSBox: honest no-op without a Bluetooth stack -------------------
++    # Upstream start() assumes a working BlueZ adapter. On a router without
++    # one (no hci device, or no system D-Bus) the driver would sit in its
++    # scan loop logging an exception every discovery_interval, forever.
++    # Instead: probe the stack; when absent, log the reason once, leave the
++    # interface offline (rnsd runs, every other interface is unaffected) and
++    # re-probe in the background so a USB dongle plugged in later brings BLE
++    # up without a restart (the portal restart button works too). The probe
++    # is a sysfs listing + a socket existence check: no D-Bus traffic, so a
++    # no-op board pays nothing.
++    _RNSBOX_PROBE_INTERVAL = 30.0
++
++    @staticmethod
++    def _rnsbox_stack_reason():
++        """Return None when BLE can run, else a human-readable reason."""
++        try:
++            adapters = [n for n in os.listdir("/sys/class/bluetooth")
++                        if n.startswith("hci")]
++        except OSError:
++            return "no Bluetooth stack (/sys/class/bluetooth is missing)"
++        if not adapters:
++            return "no Bluetooth adapter (no hci device)"
++        if not os.path.exists("/run/dbus/system_bus_socket"):
++            return "no system D-Bus (/run/dbus/system_bus_socket is missing)"
++        return None
++
++    def _rnsbox_start_when_ready(self):
++        # Watcher thread for the no-op case: become a real interface as soon
++        # as the stack shows up (USB dongle plugged in, bluetoothd fixed).
++        while True:
++            time.sleep(self._RNSBOX_PROBE_INTERVAL)
++            if self._rnsbox_stack_reason() is None:
++                break
++        RNS.log(f"{self} Bluetooth stack appeared - starting BLE operations",
++                RNS.LOG_NOTICE)
++        self.start()
++
+     def start(self):
+-        """Start the BLE interface operations."""
++        """Start the BLE interface operations (no-op without a stack)."""
++        reason = self._rnsbox_stack_reason()
++        if reason is not None:
++            self.rnsbox_noop_reason = reason
++            RNS.log(f"{self} DISABLED - running as a no-op: {reason}. "
++                    f"Re-probing every {int(self._RNSBOX_PROBE_INTERVAL)}s; "
++                    f"plug in a USB Bluetooth dongle (or fix the stack) and it "
++                    f"starts on its own, or restart rnsd to retry now.",
++                    RNS.LOG_WARNING)
++            self._rnsbox_probe_scheduled = True
++            try:
++                threading.Thread(target=self._rnsbox_start_when_ready,
++                                 daemon=True, name="BLE-Stack-Watcher").start()
++            except Exception:
++                pass
++            return
++        self._rnsbox_start_operations()
++
++    def _rnsbox_start_when_ready_async(self):
++        # Driver died at start (rare): retry through the watcher so a stack
++        # problem that clears itself still recovers without a restart.
++        self._rnsbox_probe_scheduled = True
++        try:
++            threading.Thread(target=self._rnsbox_start_when_ready,
++                             daemon=True, name="BLE-Stack-Watcher").start()
++        except Exception:
++            pass
++
++    def _start_operations(self):
++        """The upstream start() body."""
+         RNS.log(f"{self} starting BLE operations", RNS.LOG_INFO)
+ 
+         # Start the BLE driver
+@@ -491,6 +563,7 @@
+             RNS.log(f"{self} driver started successfully", RNS.LOG_INFO)
+         except Exception as e:
+             RNS.log(f"{self} failed to start driver: {e}", RNS.LOG_ERROR)
++            self._rnsbox_start_when_ready_async()
+             return
+ 
+         # If central mode is enabled, start scanning for peers
+@@ -521,6 +594,10 @@
+         Use this to start a background thread that waits for Transport.identity to be
+         loaded, then sets it on the driver and starts advertising.
+         """
++        # RNSBox: with no Bluetooth stack the interface is a no-op and the
++        # driver is not running - do not spawn the advertising thread at all.
++        if not getattr(self, "online", False):
++            return
+         if self.enable_peripheral:
+             RNS.log(f"{self} Launching driver advertising startup thread (will wait for Transport.identity)", RNS.LOG_DEBUG)
+             startup_thread = threading.Thread(target=self._start_advertising_when_identity_ready, daemon=True, name="BLE-Advertising-Startup")
+@@ -591,6 +668,12 @@
+         start_time = time.time()
+         timeout = 60.0  # 60 second timeout
+ 
++        # RNSBox: the no-op path never starts the driver; advertising would
++        # just wait out the identity timeout and log a spurious error.
++        if not getattr(self.driver, "_running", False):
++            RNS.log(f"{self} driver not running - not advertising", RNS.LOG_DEBUG)
++            return
++
+         RNS.log(f"{self} Waiting for Transport.identity to be loaded...", RNS.LOG_DEBUG)
+ 
+         # Poll until Transport.identity is available (with 60s timeout)
+@@ -605,6 +688,8 @@
+                         RNS.log(f"{self} Transport.identity available after {elapsed:.1f}s", RNS.LOG_INFO)
+ 
+                         # Set identity on driver
++                        if not getattr(self.driver, "_running", False):
++                            return
+                         self.driver.set_identity(identity_hash)
+ 
+                         # Start advertising

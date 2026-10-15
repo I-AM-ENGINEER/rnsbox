@@ -549,7 +549,7 @@ export PATH="$WORKDIR/bin:$PATH"
 # them (its last patch deletes the copies the early series added); copy the
 # current shared versions into the BSP buildroot before configuring.
 echo ">> syncing shared packages from $HERE/package"
-for p in rnsbox-portal python-rns python-lxmf python-nomadnet; do
+for p in rnsbox-portal python-rns python-lxmf python-nomadnet python-ble-reticulum rnsbox-python-bluezero; do
     rm -rf "$WORKDIR/buildroot/package/$p"
     cp -a "$HERE/package/$p" "$WORKDIR/buildroot/package/$p"
 done
@@ -559,7 +559,7 @@ done
 # PYTHON_NOMADNET / RNSBOX_PORTAL and the rootfs ships without rnsd and
 # the portal. Restore the lines so the synced dirs are visible.
 BR_PKG_CONFIG="$WORKDIR/buildroot/package/Config.in"
-for p in rnsbox-portal python-rns python-lxmf python-nomadnet; do
+for p in rnsbox-portal python-rns python-lxmf python-nomadnet python-ble-reticulum rnsbox-python-bluezero; do
     grep -q "source \"package/$p/Config.in\"" "$BR_PKG_CONFIG" || \
         printf 'source "package/%s/Config.in"\n' "$p" >> "$BR_PKG_CONFIG"
 done

@@ -1,0 +1,28 @@
+config BR2_PACKAGE_PYTHON_BLE_RETICULUM
+	bool "python-ble-reticulum"
+	depends on BR2_PACKAGE_BLUEZ5_UTILS # D-Bus Bluetooth API (bluetoothd)
+	depends on BR2_PACKAGE_DBUS         # system bus for BlueZ
+	select BR2_PACKAGE_PYTHON_BLEAK     # central mode (scan + connect)
+	select BR2_PACKAGE_RNSBOX_PYTHON_BLUEZERO # peripheral mode (GATT server)
+	select BR2_PACKAGE_DBUS_PYTHON      # bluezero + the pairing agent
+	help
+	  Bluetooth Low Energy (BLE) interface for Reticulum, based on
+	  https://github.com/torlando-tech/ble-reticulum (MIT).
+
+	  Ships the upstream classes as the site-packages package
+	  ble_reticulum plus the /etc/reticulum/interfaces/BLEInterface.py
+	  shim that rnsd exec()s to instantiate `[[BLE Interface]]` stanzas.
+
+	  Auto-discovers nearby Reticulum BLE peers (central mode via
+	  bleak) and accepts inbound connections (peripheral mode via
+	  bluezero/BlueZ GATT). Degrades to a logged no-op when no
+	  Bluetooth adapter is present (USB dongle boards) and starts by
+	  itself once a stack appears.
+
+	  Needs BlueZ with experimental features enabled (the RNSBox
+	  /etc/default/bluetoothd ships -E) and dbus-daemon running.
+
+	  https://github.com/torlando-tech/ble-reticulum
+
+comment "python-ble-reticulum needs BlueZ and D-Bus"
+	depends on !BR2_PACKAGE_BLUEZ5_UTILS || !BR2_PACKAGE_DBUS

@@ -15,14 +15,23 @@ enable_uart=1
 # Pi 5 has no act_led dtparam and just ignores this line)
 dtparam=act_led_trigger=heartbeat
 
-# Zero 2 W: headless — USB-C = NCM gadget LAN, PL011 = SLIP (BT off).
+# Zero 2 W: headless — USB-C = NCM gadget LAN, PL011 = SLIP, BT on mini-uart.
 # start_cd: cut-down firmware — the full start.elf silently enforces a
 # ~128 MB GPU floor (ARM sees only 384 MB); the HDMI console still works.
+#
+# miniuart-bt (was: disable-bt): the onboard BT controller (CYW43430) moves
+# to the mini-uart and the PL011 — the reliable, fixed-clock UART — stays on
+# the GPIO header for the SLIP HaLow link (S31slip / /dev/serial0). BT HCI
+# traffic tops out at the 460800 this overlay allows — well within what the
+# mini-uart does reliably. S37bluetooth modprobes hci_uart; the serdev bcm
+# client then loads BCM43430A1.hcd (rnsbox-bt-firmware) and registers hci0
+# for the Reticulum BLE transport. With disable-bt there is no hci0 and the
+# BLE interface runs as a logged no-op instead.
 [pi02]
 start_file=start_cd.elf
 fixup_file=fixup_cd.dat
 gpu_mem=16
-dtoverlay=disable-bt
+dtoverlay=miniuart-bt
 dtoverlay=dwc2,dr_mode=peripheral
 # Optional DS3231 RTC: SDA=GPIO2 (pin 3), SCL=GPIO3 (pin 5), 3.3 V
 dtoverlay=i2c-rtc,ds3231

@@ -1,0 +1,211 @@
+From b3ec30aa3f08ddbcc3f6eb59dde18b620ea53c62 Mon Sep 17 00:00:00 2001
+From: rnsbox <rnsbox@localhost>
+Date: Thu, 15 Oct 2026 22:39:22 +0300
+Subject: [PATCH] ble: BlueZ + Reticulum BLE transport (dongle no-op without an
+ adapter)
+
+---
+ .../linux/sg2002_licheervnano_sd_defconfig    |  9 ++-
+ .../SG200X/overlay/etc/bluetooth/main.conf    | 17 ++++++
+ .../SG200X/overlay/etc/default/bluetoothd     | 10 ++++
+ .../SG200X/overlay/etc/init.d/S37bluetooth    | 58 +++++++++++++++++++
+ .../SG200X/overlay/etc/reticulum/config       | 28 +++++++++
+ .../cvitek_SG200X_musl_riscv64_defconfig      | 14 +++++
+ 6 files changed, 134 insertions(+), 2 deletions(-)
+ create mode 100644 buildroot/board/cvitek/SG200X/overlay/etc/bluetooth/main.conf
+ create mode 100644 buildroot/board/cvitek/SG200X/overlay/etc/default/bluetoothd
+ create mode 100755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/S37bluetooth
+
+diff --git a/build/boards/sg200x/sg2002_licheervnano_sd/linux/sg2002_licheervnano_sd_defconfig b/build/boards/sg200x/sg2002_licheervnano_sd/linux/sg2002_licheervnano_sd_defconfig
+index c7ae88c20..5d4592aa0 100644
+--- a/build/boards/sg200x/sg2002_licheervnano_sd/linux/sg2002_licheervnano_sd_defconfig
++++ b/build/boards/sg200x/sg2002_licheervnano_sd/linux/sg2002_licheervnano_sd_defconfig
+@@ -512,14 +512,19 @@ CONFIG_TIMERFD=y
+ # CONFIG_FB_SIMPLE is not set
+ CONFIG_IP_MULTICAST=y
+ # CONFIG_SND_PROC_FS is not set
+-# CONFIG_BT is not set
+ # CONFIG_BT_RFCOMM is not set
+ # CONFIG_BT_RFCOMM_TTY is not set
+ # CONFIG_BT_BREDR is not set
+ # CONFIG_BT_BNEP is not set
+ # CONFIG_BT_HIDP is not set
+ # CONFIG_BT_HS is not set
+-# CONFIG_BT_LE is not set
++# RNSBox: Bluetooth LE for the [[BLE Interface]] transport. LE-only, no
++# classic profiles; the adapter is a USB dongle (btusb) - this board has no
++# onboard BT controller. ble_reticulum probes /sys/class/bluetooth and runs
++# as a logged no-op until one appears.
++CONFIG_BT=y
++CONFIG_BT_LE=y
++CONFIG_BT_HCIBTUSB=y
+ # CONFIG_BT_HCIUART is not set
+ # CONFIG_BT_HCIUART_BCSP is not set
+ # CONFIG_BT_HCIUART_H4 is not set
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/bluetooth/main.conf b/buildroot/board/cvitek/SG200X/overlay/etc/bluetooth/main.conf
+new file mode 100644
+index 000000000..c09d0b2dd
+--- /dev/null
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/bluetooth/main.conf
+@@ -0,0 +1,17 @@
++# BlueZ daemon configuration — minimal, RNSBox.
++#
++# Only what the Reticulum BLE transport needs; everything else stays at the
++# upstream defaults (see `bluetoothd --help` and the bluez docs). bluetoothd
++# reads this at start; apply changes with
++# `/etc/init.d/S40bluetoothd restart` (rnsd reconnects to BlueZ on its own).
++#
++# Experimental: enable BlueZ experimental interfaces. The BLE GATT server /
++# LE advertising APIs ble-reticulum (via bluezero) registers need them on
++# several BlueZ 5.x releases; /etc/default/bluetoothd passes -E too, so this
++# is the second belt on the same braces.
++[General]
++Experimental = true
++
++# ControllerMode: leave at "dual" (default). BLE is what we use, but
++# restricting to "le" buys nothing here and would break dongles that only
++# implement BR/EDR discovery quirks.
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/default/bluetoothd b/buildroot/board/cvitek/SG200X/overlay/etc/default/bluetoothd
+new file mode 100644
+index 000000000..51bf28115
+--- /dev/null
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/default/bluetoothd
+@@ -0,0 +1,10 @@
++# Arguments for bluetoothd (buildroot's S40bluetoothd reads this file).
++#
++# -n: stay in the foreground (S40bluetoothd backgrounds it itself).
++# -E: enable BlueZ experimental features. ble-reticulum's install.sh treats
++#     this as required for proper BLE connectivity (the GATT-server /
++#     advertising APIs blezero registers behave differently without it on
++#     some BlueZ releases); harmless on releases where the same APIs are
++#     already stable. main.conf sets Experimental=true as well — belt and
++#     braces, one of the two is what bluetoothd ends up reading.
++BLUETOOTHD_ARGS="-n -E"
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S37bluetooth b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S37bluetooth
+new file mode 100755
+index 000000000..8a83da2c9
+--- /dev/null
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S37bluetooth
+@@ -0,0 +1,58 @@
++#!/bin/sh
++# S37bluetooth — HCI bring-up for the Bluetooth LE transport (BLEInterface).
++#
++# Runs before S40bluetoothd (the BlueZ daemon buildroot installs), which
++# picks adapters up whenever they appear, so this script only has to make
++# the drivers ready and give a dongle a fair chance to register before rnsd
++# (S82rnsd) and the portal look at it.
++#
++# This board family has NO onboard BT controller: the only adapter is a USB
++# BLE dongle (CONFIG_BT_HCIBTUSB=y is built-in, so hotplug needs no
++# modprobe; loading it here covers cold-plugged dongles and costs nothing
++# when none is present).
++#
++# When no adapter appears the script logs why and exits 0 — the same image
++# boots dongle-less. rnsd's BLE interface keeps its own probe (see the
++# ble_reticulum package patch) and runs as a logged no-op, re-checking
++# every 30 s, so a dongle plugged in later brings BLE up without a restart.
++#
++# /run/bluetooth-hci records the state for the portal's Bluetooth card:
++# "hci0" when an adapter is up, else the reason it is not.
++
++case "${1:-start}" in
++	start) ;;
++	stop) echo "S37bluetooth: nothing to stop (kernel owns the HCI)"; exit 0 ;;
++	restart|reload) "$0" start; exit ;;
++	*) echo "Usage: $0 {start|stop|restart|reload}" >&2; exit 1 ;;
++esac
++
++modprobe btusb 2>/dev/null
++
++# Firmware-loading dongles need a moment after bind; never block rcS on it —
++# the rnsd/portal watchers recover the late case.
++i=0
++while [ $i -lt 12 ]; do
++	for d in /sys/class/bluetooth/hci*; do
++		[ -e "$d" ] && break 2
++	done
++	sleep 0.5
++	i=$((i + 1))
++done
++
++hci=
++for d in /sys/class/bluetooth/hci*; do
++	[ -e "$d" ] && hci=${d##*/} && break
++done
++
++if [ -n "$hci" ]; then
++	echo "$hci" > /run/bluetooth-hci 2>/dev/null
++	logger -t S37bluetooth -p daemon.notice "$hci up" 2>/dev/null
++	echo "S37bluetooth: $hci up"
++else
++	reason="no adapter"
++	[ -d /sys/class/bluetooth ] || reason="no Bluetooth stack in the kernel"
++	echo "$reason" > /run/bluetooth-hci 2>/dev/null
++	logger -t S37bluetooth -p daemon.notice "$reason after 6s - BLE stays a no-op (re-checked by rnsd every 30s)" 2>/dev/null
++	echo "S37bluetooth: $reason; BLE stays a no-op"
++fi
++exit 0
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/reticulum/config b/buildroot/board/cvitek/SG200X/overlay/etc/reticulum/config
+index 75382cabd..5ba73a31a 100644
+--- a/buildroot/board/cvitek/SG200X/overlay/etc/reticulum/config
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/reticulum/config
+@@ -64,3 +64,31 @@
+     enabled = yes
+     target_host = 31.129.33.146
+     target_port = 4242
++
++  # Bluetooth Low Energy (BLE) transport — short-range mesh radio over a
++  # USB BLE dongle (this board has no onboard BT controller). Both roles at
++  # once: the box scans for nearby Reticulum BLE peers AND accepts inbound
++  # connections over its own GATT server, so phones and other nodes reach
++  # it with no config. The stack under it: BlueZ (experimental) + dbus,
++  # brought up by S37bluetooth + S40bluetoothd; the transport itself is the
++  # vendored torlando-tech/ble-reticulum classes, which RNS loads from
++  # /etc/reticulum/interfaces/.
++  #
++  # Without a dongle this is an honest no-op: rnsd runs, all other
++  # interfaces are unaffected, and the log names the reason ("no Bluetooth
++  # adapter (no hci device)"). The probe re-runs every 30 s, so a dongle
++  # plugged in later brings BLE up on its own (or restart rnsd from the
++  # portal to retry immediately).
++  #
++  # Enabled by default. Toggle here (or in the portal Reticulum tab) and
++  # restart rnsd to apply.
++  [[BLE Interface]]
++    type = BLEInterface
++    enabled = yes
++    # Advertised name — keep it short, BLE ads have a 31-byte budget.
++    # Leave unset to advertise the service UUID only (the peer learns the
++    # node name from the Reticulum announce anyway).
++    device_name = RNSBox
++    # BLE GATT reality is well below the driver 700 kbit/s guess; pacing
++    # announces/routing on ~50 kbit/s keeps RNS honest about this link.
++    bitrate = 50000
+diff --git a/buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig b/buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig
+index 7634161a1..3cb2a2d75 100644
+--- a/buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig
++++ b/buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig
+@@ -4724,6 +4724,20 @@ BR2_PACKAGE_PYTHON_RNS=y
+ BR2_PACKAGE_PYTHON_LXMF=y
+ BR2_PACKAGE_PYTHON_NOMADNET=y
+ BR2_PACKAGE_RNSBOX_PORTAL=y
++# RNSBox Bluetooth LE transport ([[BLE Interface]]): BlueZ + D-Bus
++# (bluetoothd runs from S40bluetoothd with -E, see /etc/default/bluetoothd)
++# and the BLE python stack - python-bleak/dbus-fast for central mode,
++# python-ble-reticulum (vendored torlando-tech classes; selects bluezero +
++# dbus-python) for peripheral mode. No onboard BT controller on this board:
++# with no USB dongle the interface degrades into a logged no-op and picks a
++# dongle up within 30 s of it appearing.
++BR2_PACKAGE_BLUEZ5_UTILS=y
++BR2_PACKAGE_BLUEZ5_UTILS_CLIENT=y
++BR2_PACKAGE_BLUEZ5_UTILS_TOOLS=y
++BR2_PACKAGE_BLUEZ5_UTILS_DEPRECATED=y
++BR2_PACKAGE_BLUEZ5_UTILS_MONITOR=y
++BR2_PACKAGE_PYTHON_BLEAK=y
++BR2_PACKAGE_PYTHON_BLE_RETICULUM=y
+ 
+ # === RNSBox W variant: AIC8800 WiFi userspace stack ===
+ # Firmware blobs (lxowalle repo) install to /usr/lib/firmware/aic8800_sdio/,
+-- 
+2.43.0
+

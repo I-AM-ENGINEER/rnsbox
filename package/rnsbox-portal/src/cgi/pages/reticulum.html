@@ -97,6 +97,25 @@
 </section>
 
 <section class="card">
+  <h3>Bluetooth (BLE)</h3>
+  <p class="muted">Short-range radio transport (typically tens of metres): the box
+  scans for nearby Reticulum BLE peers <em>and</em> accepts inbound connections
+  over its own GATT server, so phones and other nodes reach it with no setup.
+  Runs on the onboard BT controller where the board has one (Zero 2 W via the
+  <code>miniuart-bt</code> firmware overlay; Pi 3/4/5 by default) or any USB BLE
+  dongle. With no adapter it degrades into a logged no-op — rnsd keeps running,
+  everything else is unaffected, and a dongle plugged in later is picked up
+  within 30 seconds. Runs over BlueZ + D-Bus; the BLE link itself is far slower
+  than WiFi (announce pacing adapts automatically).</p>
+
+  <table class="kv">
+    <tr><th>Adapter</th><td>__BT_STACK_STATUS__</td></tr>
+  </table>
+
+  __BT_FORM_BLOCK__
+</section>
+
+<section class="card">
   <h3>RNS Shell (rnsh)</h3>
   <p class="muted">A root shell reachable from anywhere on the Reticulum network.
   Client: <code>pip install rnsh</code>, <code>rnsh -p</code> prints your identity
