@@ -11,12 +11,15 @@ set -e
 BOARD_DIR="$(dirname "$0")"
 GENIMAGE_TMP="${BUILD_DIR}/genimage.tmp"
 MKIMAGE="${HOST_DIR}/bin/mkimage"
+# mkimage shells out to dtc for the ITS; make sure the buildroot host
+# tools dir (host-dtc) is on its PATH
+export PATH="${HOST_DIR}/bin:${PATH}"
 GENIMAGE="${HOST_DIR}/bin/genimage"
 
 # fip.bin — provenance-pinned vendor blob (README.fip.md). RNSBOX_FIP_SRC
 # overrides the source for a newer blob (then refresh fip.bin.sha256).
 FIP_SRC="${RNSBOX_FIP_SRC:-${BOARD_DIR}/fip.bin}"
-echo "$(cut -d' ' -f1 "${BOARD_DIR}/fip.bin.sha256")  ${FIP_SRC}" | sha256sum -c - -q
+echo "$(cut -d' ' -f1 "${BOARD_DIR}/fip.bin.sha256")  ${FIP_SRC}" | sha256sum -c -
 cp -f "${FIP_SRC}" "${BINARIES_DIR}/fip.bin"
 
 # FIT payload: gzip the Image (u-boot gunzips to 0x80200000) + the DTB
