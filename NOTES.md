@@ -65,3 +65,50 @@ owner's tree; a private workdir copy keeps both trees safe, same lock).
 ## Build/live status
 
 (updated below as work progresses)
+
+## Build (DONE)
+
+- Standalone module build OK (aarch64, vermagic 5.10.4-rnsbox): fdrv with
+  btsdio (btsdio_init strings present, bluedroid /dev/aicbt_dev compiled
+  out), bsp unchanged-behaviour rebuild, btlpm 34 KB. fdrv grew 744->797 KB
+  unstripped.
+- Full image: flock ~/rnsbox/.build.lock; cd ~/bt-fix && RNSBOX_NPROC=8
+  ./build.sh sg2000-arm64 lite -> BUILD-EXIT=0 (image
+  2026-10-17-02-50-00b767-lite.img). Note: copied workdir needed
+  'rm -rf freertos/cvitek/build' once — the warm CMakeCache.txt embeds
+  absolute paths of the source workspace.
+- assert-image.sh cvitek: 0 failures, incl. the new BT asserts
+  (fmacfwbt.bin/fw_adid/fw_patch/fw_patch_table shipped; btsdio transport
+  in fdrv; btlpm.ko present).
+- Image copied to ~/bt-fix-artifacts/rnsbox-sg2000-arm64-aic8800bt-00b767-lite.img
+  (owner will place it on D:).
+
+## LIVE on the flashed board (2026-10-17, image 01:21 c778e3, merged main)
+
+Board: admin@192.168.88.230 works (password rnsbox-test1). Findings:
+
+1. ROOT: sudo NOT present; busybox carries the setuid bit but drops
+   privileges (FEATURE_SUID: '/usr/bin/busybox id' -> uid=103); /bin/su is
+   there but root is locked. => ko insmod / /mnt/system/ko/3rd writes are
+   impossible over SSH as admin. Escalated to the owner (serial-console
+   root per the 0012 policy is the natural path).
+2. RADIO IS NOT ANSWERING (independent of my BT work):
+   - mmc1 SDHCI 4320000.wifi-sd up, /sys/bus/mmc/devices = mmc0:aaaa only
+     (SD card), /sys/bus/sdio/devices EMPTY — no SDIO function on the bus;
+   - dmesg: aic8800_bsp loads, then 'aicbsp_set_subsys AIC_WIFI fail to
+     set power state to 1' twice, 'rwnx_mod_init, set power on fail!' —
+     the stock WiFi-only fdrv already fails the same way;
+   - /var/log/wifi.log: 'no wlan0 after module load — non-W board or
+     driver fault; exiting'; /run/bluetooth-hci = 'no adapter';
+   - cvi_wifi_pin driver bound, wifi-sd dtb node okay — sequencing is in
+     place, the chip never shows up on CMD5.
+   => Either the module is radio-less (not a -W) or the radio HW path is
+   dead. SOFT-FAILURE VERIFIED: board fully usable (eth0/usb0/portal/ssh),
+   S35wifi/S37bluetooth exit 0, bluetoothd runs, no boot delays/crashes.
+3. BlueZ userspace on the image confirmed: bluetoothctl, hciconfig,
+   /usr/libexec/bluetooth/bluetoothd -n -E running; S40bluetoothd present.
+
+Conclusion: the software path is complete and shipped in the branch (driver
+patch + firmware already in every -W image + asserts + image artifact).
+The live hci0 proof is gated on (a) root for insmod and (b) a radio that
+answers on the SDIO bus; both escalated to the owner.
