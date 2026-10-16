@@ -112,3 +112,19 @@ Conclusion: the software path is complete and shipped in the branch (driver
 patch + firmware already in every -W image + asserts + image artifact).
 The live hci0 proof is gated on (a) root for insmod and (b) a radio that
 answers on the SDIO bus; both escalated to the owner.
+
+## Delivery decision (coordinator, 2026-10-17)
+
+- Live insmod tests on the currently flashed board are CANCELLED: no root on
+  the board, and the SDIO bus is empty anyway (radio absent or dead — owner
+  asked whether the module is a -W at all).
+- The DELIVERABLE is this branch's image:
+  ~/bt-fix-artifacts/rnsbox-sg2000-arm64-aic8800bt-00b767-lite.img
+  (owner copies to D:\Downloads as rnsbox-sg2000-arm64-aic8800bt*.img and
+  flashes). It carries the BT-capable kos + btlpm + fmacfwbt firmware and
+  passes assert-image 0/0.
+- After the owner flashes it: verify via portal http://10.42.0.1
+  (admin/admin over the USB network) -> POST settings/ssh -> ssh
+  admin@192.168.88.230 -> dmesg | grep -iE 'aic|btsdio' -> ls
+  /sys/class/bluetooth -> bluetoothctl show. If the module is genuinely
+  radio-less, everything stays a logged no-op (verified above).
