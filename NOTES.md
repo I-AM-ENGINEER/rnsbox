@@ -34,6 +34,39 @@ Branch: sg2000-mainline2 (push only this). NEVER touch C: worktree or main.
   (exit 126 "Permission denied"); chmod + re-committed the mode on the branch.
 - [t7] Pushed sg2000-mainline2 to https://github.com/I-AM-ENGINEER/rnsbox.git.
 
+## Stage 2 (SD cap + USB gadget, per owner's request)
+- [s1] Commits: 74f0a0b (sdhci0 min 400 kHz / max 25 MHz cap — fdf8a18 lesson:
+  50 MHz HS re-init desyncs the card on this EVB), 63b5b62 (verbatim copy of
+  cv1800b 0002 dwc2->generic-PHY dr_mode propagation — without it the cv1800-class
+  usb2-phy stays in host state in peripheral mode: no session, no pull-up, no usb0/
+  10.42.0.1 portal). 0002 apply-checked against a PRISTINE v7.3-rc7 (extracted the
+  single file from dl/linux/git mirror; the owner's build tree already carries it).
+  Kernel gadget stack was already complete in the allowlist: DWC2_DUAL_ROLE,
+  USB_GADGET, USB_CONFIGFS(+NCM), USB_U_ETHER, USB_F_NCM.
+- [s2] LESSON: buildroot does NOT detect changed contents of BR2_LINUX_KERNEL_PATCH
+  on incremental builds — first rebuild shipped the stale kernel. Fix:
+  `make ... linux-dirclean` then rebuild. Recorded here for every future kernel-patch edit.
+- [s3] Rebuild BUILD-EXIT=0 (clean kernel): dts lines 117-118 caps in tree,
+  dwc2 patch applied (grep=1), decompiled DTB has min-frequency=<0x61a80>
+  max-frequency=<0x17d7840>.
+- [s4] SHIPPED for the live test:
+  - D:\Downloads\rnsbox-sg2000-duomodule01-mainline.img
+    sha256 20964f1a8af2155a18baedba5d42b98df2f9c332e6ca6443624a0f2d68d71ab3 (553648640 B)
+  - built from branch sg2000-mainline2 (74f0a0b+63b5b62), boot.sd FIT
+    default=config-sg2000_duomodule01_sd.
+
+## Live-test expectations (EVB, switch = RV, UART0 115200)
+1. OpenSBI banner -> vendor u-boot 2021.10 (soph# prompt not shown, bootdelay=0)
+   -> "Boot from SD dev 0" -> FIT bootm -> mainline.
+2. Console SILENT for ~2 s after kernel start (vendor bootargs loglevel=0) — then
+   S02klog (dmesg -n 7) reopens the spigot; earlycon prints before that regardless.
+3. SD must stay at 25 MHz (mmc clock prints) and mount root=/dev/mmcblk0p2.
+4. Portal: S10usbdev composes the CDC-NCM gadget (usb.ncm flags on p1) ->
+   S30gadget_nic bridges usb0 into br-lan = 10.42.0.1/24; host gets
+   http://10.42.0.1/ (dnsmasq answers rnsbox.local/setup.rnsbox on the NIC too).
+5. Watch: "Can't set block device" in u-boot = cap lost (should be gone at 25 MHz);
+   kernel "dwc2 ... gadget" register messages = 0002 working; getty on ttyS0 for login.
+
 ## Vendor sg2000_duomodule01_sd facts (WSL ~/rnsbox/LicheeRV-Nano-Build-duo01)
 - memmap.py: DRAM 0x80000000 size 512MB; OPENSBI 512K @0x80000000 (FDT @0x80080000);
   UIMAG_ADDR = DRAM+24MB = 0x81800000 (u-boot fatload buffer for boot.sd, 16MB);
