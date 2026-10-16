@@ -1,0 +1,99 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: rnsbox <rnsbox@localhost>
+Date: Thu, 16 Oct 2026 21:30:00 +0300
+Subject: [PATCH 12/12] sg200x-arm64: cap &sd at 25 MHz, align the u-boot
+ defconfigs with the vendor
+
+The board bring-up died at the u-boot prompt: loadenvcmd (no "mmc dev")
+read the boot FAT fine, but both sdboot and sdbootauto died with
+"Can't set block device" right after "mmc dev 0". Root cause chain:
+
+  - the arm64 board dts inherited soph_base.dtsi's &sd verbatim - no
+    max-frequency, so the card trains to 50 MHz HS ("Bus Speed: 50000000
+    Mode: SD High Speed (50MHz)" in the boot log). Every vendor sg200x
+    board dir caps &sd at 25 MHz (50 is commented out as unstable), and
+    the RV sg2000_duomodule01_sd dir shipped the 25 MHz cap from day one
+    - only the two arm64 dirs missed it;
+  - the sdboot/sdbootauto env run "mmc dev 0" before fatloading
+    boot.sd, and cmd/mmc.c forces a FULL re-init there. A re-handshake
+    at 50 MHz on these pads desyncs the card; the next part_init inside
+    fatload reads garbage, finds no partition table, falls back to the
+    whole device, and the FAT probe on the MBR fails -> "Can't set
+    block device". The same read via an already-initialized link
+    (loadenvcmd) works, which is why uEnv.txt handling looked healthy.
+
+Cap &sd at 25 MHz on both arm64 boards, and while in here align the
+u-boot defconfigs with the vendor ARM64 reference
+(sg2002_licheea53nano_sd): explicit CONFIG_DM_MMC/CONFIG_MMC,
+CONFIG_CMD_CVI_SD_UPDATE, CONFIG_ENV_IS_NOWHERE.
+---
+diff --git a/build/boards/sg200x/sg2000_duo01evb_arm64_sd/dts_arm64/sg2000_duo01evb_arm64_sd.dts b/build/boards/sg200x/sg2000_duo01evb_arm64_sd/dts_arm64/sg2000_duo01evb_arm64_sd.dts
+index 74ee3a2..f3cd8a2 100644
+--- a/build/boards/sg200x/sg2000_duo01evb_arm64_sd/dts_arm64/sg2000_duo01evb_arm64_sd.dts
++++ b/build/boards/sg200x/sg2000_duo01evb_arm64_sd/dts_arm64/sg2000_duo01evb_arm64_sd.dts
+@@ -35,3 +35,14 @@
+ / {
+ 	model = "Milk-V Duo Module 01 Evaluation Board (ARM64)";
+ };
++
++// RNSBox: cap the SD interface at 25 MHz. The vendor sg200x board dirs
++// all do (and so does the RV sg2000_duomodule01_sd dir): these pads are
++// only 25 MHz-stable. Without the cap the card trains to 50 MHz HS, and
++// the sdboot env's forced re-init ("mmc dev") desyncs it - the following
++// fatload's part_init reads garbage and every boot dies with
++// "Can't set block device" at the soph# prompt.
++&sd {
++	min-frequency = <400000>; // 400Khz
++	max-frequency = <25000000>; // 25Mhz
++};
+diff --git a/build/boards/sg200x/sg2000_duo01evb_arm64_sd/u-boot/sg2000_duo01evb_arm64_sd_defconfig b/build/boards/sg200x/sg2000_duo01evb_arm64_sd/u-boot/sg2000_duo01evb_arm64_sd_defconfig
+index 0408b74..6ea6eda 100644
+--- a/build/boards/sg200x/sg2000_duo01evb_arm64_sd/u-boot/sg2000_duo01evb_arm64_sd_defconfig
++++ b/build/boards/sg200x/sg2000_duo01evb_arm64_sd/u-boot/sg2000_duo01evb_arm64_sd_defconfig
+@@ -48,3 +48,10 @@ CONFIG_BMP_32BPP=y
+ CONFIG_LZ4=y
+ CONFIG_LZMA=y
+ # CONFIG_TOOLS_LIBCRYPTO is not set
++# RNSBox: align with the vendor ARM64 reference (sg2002_licheea53nano_sd):
++# explicit MMC driver-model wiring, the cvi_sd_update command, and the
++# env-in-nowhere storage the SD-only boot actually uses.
++CONFIG_DM_MMC=y
++CONFIG_MMC=y
++CONFIG_CMD_CVI_SD_UPDATE=y
++CONFIG_ENV_IS_NOWHERE=y
+diff --git a/build/boards/sg200x/sg2002_duo_arm64_sd/dts_arm64/sg2002_duo_arm64_sd.dts b/build/boards/sg200x/sg2002_duo_arm64_sd/dts_arm64/sg2002_duo_arm64_sd.dts
+index f7126cd..15622bf 100644
+--- a/build/boards/sg200x/sg2002_duo_arm64_sd/dts_arm64/sg2002_duo_arm64_sd.dts
++++ b/build/boards/sg200x/sg2002_duo_arm64_sd/dts_arm64/sg2002_duo_arm64_sd.dts
+@@ -38,3 +38,14 @@
+ / {
+ 	model = "Milk-V Duo (SG2002, ARM64)";
+ };
++
++// RNSBox: cap the SD interface at 25 MHz. The vendor sg200x board dirs
++// all do (and so does the RV sg2000_duomodule01_sd dir): these pads are
++// only 25 MHz-stable. Without the cap the card trains to 50 MHz HS, and
++// the sdboot env's forced re-init ("mmc dev") desyncs it - the following
++// fatload's part_init reads garbage and every boot dies with
++// "Can't set block device" at the soph# prompt.
++&sd {
++	min-frequency = <400000>; // 400Khz
++	max-frequency = <25000000>; // 25Mhz
++};
+diff --git a/build/boards/sg200x/sg2002_duo_arm64_sd/u-boot/sg2002_duo_arm64_sd_defconfig b/build/boards/sg200x/sg2002_duo_arm64_sd/u-boot/sg2002_duo_arm64_sd_defconfig
+index 0408b74..6ea6eda 100644
+--- a/build/boards/sg200x/sg2002_duo_arm64_sd/u-boot/sg2002_duo_arm64_sd_defconfig
++++ b/build/boards/sg200x/sg2002_duo_arm64_sd/u-boot/sg2002_duo_arm64_sd_defconfig
+@@ -48,3 +48,10 @@ CONFIG_BMP_32BPP=y
+ CONFIG_LZ4=y
+ CONFIG_LZMA=y
+ # CONFIG_TOOLS_LIBCRYPTO is not set
++# RNSBox: align with the vendor ARM64 reference (sg2002_licheea53nano_sd):
++# explicit MMC driver-model wiring, the cvi_sd_update command, and the
++# env-in-nowhere storage the SD-only boot actually uses.
++CONFIG_DM_MMC=y
++CONFIG_MMC=y
++CONFIG_CMD_CVI_SD_UPDATE=y
++CONFIG_ENV_IS_NOWHERE=y
+2.43.0
+
