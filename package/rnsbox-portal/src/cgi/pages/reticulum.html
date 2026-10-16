@@ -89,10 +89,11 @@
     <code>/dev/serial0</code>; rnsbox CVITEK boards: UART1 = <code>ttyS1</code> on
     <code>XGPIOA[28]</code>/<code>[29]</code>); see the board README.
     <strong>Baud must match the modem</strong> &mdash; the factory 2&nbsp;Mbaud is
-    generated exactly on the rnsbox arm64 boards (96&nbsp;MHz UART clock); a
-    25&nbsp;MHz-clocked board (LicheeRV Nano-e, ceiling 1562500) needs
-    1500000. The IPs must match the modem's SLIP config (defaults
-    <code>192.168.7.2</code> modem / <code>192.168.7.1</code> box).</p>
+    generated exactly on every rnsbox board (96&nbsp;MHz UART clock). The one
+    exception is the classic LicheeRV Nano-e: its 25&nbsp;MHz UART clock tops
+    out below 2&nbsp;Mbaud, use 1500000 there. The IPs must match the modem's
+    SLIP config (defaults <code>192.168.7.2</code> modem /
+    <code>192.168.7.1</code> box).</p>
   </form>
 </section>
 
