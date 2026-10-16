@@ -108,6 +108,8 @@ static bool admin_unix_password_set() {
         return !(hash.empty() || hash == "!" || hash[0] == '!' || hash == "*");
     }
     return false;
+}
+
 // ---- USB port role card ----
 // The switch exists only on OTG-capable boards. Capability and the live role
 // come from /run/usbmode.state, which S07usbmode writes at boot and after

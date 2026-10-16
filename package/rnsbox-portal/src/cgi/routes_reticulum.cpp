@@ -869,8 +869,7 @@ void reticulum_bluetooth_raise(const Request& req, Response& res) {
         "Bluetooth stack and rnsd restarted. Check the Adapter line above: hci0 present + dbus + bluetoothd "
         "all green is a healthy stack; a missing adapter means no onboard radio and no dongle.");
 }
-}  // namespace routes
-=======
+
 // ===================== RNode (USB serial / BLE) =====================
 // /etc/rnsbox/rnode.conf is the single source of truth (store::read_rnode /
 // write_rnode); S81rnode regenerates the managed [[RNode ...]] section of

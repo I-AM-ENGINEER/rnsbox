@@ -445,6 +445,9 @@ bool write_usb(const UsbConfig& c, std::string& err) {
         "# and live on the CVITEK boards).\n";
     o += "mode=" + c.mode + "\n";
     if (!util::write_file_atomic(USB_FILE, o, 0644)) { err = "write failed"; return false; }
+    return true;
+}
+
 // ---- system (OS image) update config ----
 UpdateConfig read_update_config() {
     UpdateConfig d;
@@ -651,6 +654,10 @@ BleConfig read_ble() {
         for (auto& ch : k) ch = (char)tolower((unsigned char)ch);
         if (k == "enabled") c.enabled = v.empty() ? "no" : v;
         else if (k == "device_name") c.device_name = v;
+    }
+    return c;
+}
+
 // ---- RNode LoRa modem (USB serial / BLE), see store.h ----
 // Ranges mirror RNS/Interfaces/RNodeInterface.py __init__: an out-of-range
 // radio value raises inside rnsd's interface loop and ends in RNS.panic(),
@@ -894,6 +901,8 @@ bool rnode_ble_stack_present() {
     if (!daemon) return false;
     return ::access("/run/dbus/system_bus_socket", F_OK) == 0 ||
            ::access("/var/run/dbus/system_bus_socket", F_OK) == 0;
+}
+
 // ---- SSH server gate ----
 SshConfig read_ssh() {
     SshConfig c;
