@@ -137,6 +137,24 @@ if [ "$FLAVOR" = cvitek ]; then
     # rest (S35wifi exits 0 when no wlan appears — "no WiFi" must stay soft)
     if ls "$T"/mnt/system/ko/3rd/aic8800_bsp.ko >/dev/null 2>&1; then
         ok "aic8800_bsp.ko shipped"
+        # The bsp compiles CONFIG_SDIO_BT=y (vendor stock): it boots the
+        # combined WiFi+BT firmware and loads the BT patch files, so the
+        # fmacfwbt set MUST be on every -W image even when the HCI transport
+        # is absent (rv64 kernels keep CONFIG_BT off).
+        FWD="$T/usr/lib/firmware/aic8800_sdio/aic8800_and_aic8800D80"
+        for fw in fmacfwbt.bin fw_adid.bin fw_patch.bin fw_patch_table.bin; do
+            [ -e "$FWD/$fw" ] && ok "aic8800 BT firmware $fw shipped"                 || bad "aic8800 BT firmware $fw missing (bsp boots fmacfwbt)"
+        done
+        # The BlueZ transport is arm64-only for now: the rv64/cv1800b kernels
+        # ship CONFIG_BT off, btsdio.o would not link there.
+        if [ -e "$T/lib/ld-linux-aarch64.so.1" ]; then
+            if strings "$T"/mnt/system/ko/3rd/aic8800_fdrv.ko 2>/dev/null | grep -q 'btsdio_init'; then
+                ok "aic8800_fdrv.ko carries the btsdio (BlueZ HCI) transport"
+            else
+                bad "aic8800_fdrv.ko has no btsdio transport (BT stays dead on -W arm64)"
+            fi
+            [ -e "$T"/mnt/system/ko/3rd/aic8800_btlpm.ko ]                 && ok "aic8800_btlpm.ko shipped (optional LPM/rfkill, not auto-loaded)"                 || bad "aic8800_btlpm.ko missing"
+        fi
     else
         warn "aic8800_bsp.ko absent (non-W image — acceptable, error stays soft)"
     fi
