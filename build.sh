@@ -120,6 +120,10 @@ case "$BOARD" in
         HOST_TOOLS_URL="${HOST_TOOLS_URL:-https://github.com/sophgo/host-tools}"
         WORKDIR="${WORKDIR:-LicheeRV-Nano-Build-duo01}"
         RNSBOX_IMAGES_DIR="install/soc_sg2000_duomodule01_sd/images"
+        # the BSP series - until now every duo-01-rv build reused a
+        # pre-patched workspace, so a COLD build (CI, a wiped workdir)
+        # applied no patches and had no sg2000_duomodule01_sd board dir
+        RNSBOX_PATCH_SERIES="milkv-duo-01"
         export RNSBOX_BSP_BOARD=sg2000_duomodule01_sd
         ;;
     milkv-duo-cv1800b)
@@ -226,6 +230,10 @@ rnsbox_slim_bsp() {
     mkdir -p buildroot/board/common
     cp -f "$HERE/board/common/slim-target.sh" buildroot/board/common/slim-target.sh
     chmod 0755 buildroot/board/common/slim-target.sh
+    #    - the users table: the unprivileged `admin` operator account,
+    #      password LOCKED at build time - the portal sets it when SSH is
+    #      enabled (wired into every cvitek defconfig below).
+    cp -f "$HERE/board/common/users.txt" buildroot/board/common/users.txt
     # 2. every cvitek defconfig in the tree:
     #    - python3 py-only: the .pyc payload is as big as the .py sources it
     #      duplicates (measured: 61 MB of pyc next to ~55 MB of sources) —
@@ -239,6 +247,25 @@ rnsbox_slim_bsp() {
         sed -i 's/^BR2_PACKAGE_PYTHON3_PYC_ONLY=y/# BR2_PACKAGE_PYTHON3_PYC_ONLY is not set\nBR2_PACKAGE_PYTHON3_PY_ONLY=y/' "$dc"
         sed -i 's/^BR2_TARGET_ROOTFS_EXT2_RESBLKS=.*/BR2_TARGET_ROOTFS_EXT2_RESBLKS=1/' "$dc"
         sed -i 's#^BR2_ROOTFS_POST_BUILD_SCRIPT=.*#BR2_ROOTFS_POST_BUILD_SCRIPT="board/common/slim-target.sh"#' "$dc"
+        # - SSH hardening, mirroring the rpi-universal defconfig: root
+        #   login closed + root password locked ('*'), the admin users
+        #   table, and openssh as THE ssh daemon (the overlay S50sshd from
+        #   the ssh-gate patch keeps it off until the portal enables it;
+        #   dropbear must never come back as a second daemon - the two
+        #   sshd lines are already the upstream state, kept as seds so an
+        #   upstream flip cannot quietly reintroduce it).
+        sed -i 's/^BR2_TARGET_ENABLE_ROOT_LOGIN=y/# BR2_TARGET_ENABLE_ROOT_LOGIN is not set/' "$dc"
+        sed -i 's/^BR2_TARGET_GENERIC_ROOT_PASSWD=.*/BR2_TARGET_GENERIC_ROOT_PASSWD="*"/' "$dc"
+        sed -i 's#^BR2_ROOTFS_USERS_TABLES=.*#BR2_ROOTFS_USERS_TABLES="board/common/users.txt"#' "$dc"
+        sed -i 's/^BR2_PACKAGE_DROPBEAR=y/# BR2_PACKAGE_DROPBEAR is not set/' "$dc"
+        sed -i 's/^# BR2_PACKAGE_OPENSSH_SERVER is not set/BR2_PACKAGE_OPENSSH_SERVER=y/' "$dc"
+        #   - kill the stale "# BR2_PACKAGE_PYTHON3_PY_ONLY is not set"
+        #     the PY_PYC flip leaves BELOW its inserted PY_ONLY=y line:
+        #     kconfig takes the LAST assignment of a symbol, so without
+        #     this the py-only knob silently cancels itself (a plain
+        #     comment leaves the symbol at its default n - identical to
+        #     an explicit "not set").
+        sed -i 's/^# BR2_PACKAGE_PYTHON3_PY_ONLY is not set$/# py-only selected at build time (rnsbox_slim_bsp)/' "$dc"
     done
     # first-boot bytecode warm-up (see the script): backgrounded, never
     # blocks rcS, so the py-only rootfs keeps its fast first rnsd start
