@@ -179,9 +179,23 @@ static std::string rnsdmon_fill(std::string h) {
 
     // Live outage state: /run/rnsd-down-since holds the uptime second at
     // which the current continuous outage began (tmpfs, wanwatch-owned).
+    // The marker alone is not proof of an outage: wanwatch's liveness test
+    // is the pidfile's kill -0 plus `pidof -x rnsd` (busybox pidof has no
+    // -x), so a stale pidfile can leave the marker counting down while
+    // rnsd actually runs — and the portal, which finds rnsd with a /proc
+    // cmdline scan, painted "DOWN n min" right above a green RUNNING
+    // state row. Cross-check real liveness first and clear a stale marker
+    // (best effort) so the contradiction self-heals instead of ending in
+    // a needless reboot.
     std::string state;
+    bool rnsd_up = sysinfo::rnsd_status().running;
     if (!c.enabled) {
         state = "<span class=\"badge\">off</span> rnsd outages never trigger a reboot";
+    } else if (rnsd_up) {
+        state = "<span class=\"badge ok\">watching</span> rnsd healthy";
+        std::string since = util::trim(util::read_file("/run/rnsd-down-since", 32));
+        if (!since.empty() && since.find_first_not_of("0123456789") == std::string::npos)
+            ::unlink("/run/rnsd-down-since");   // stale: rnsd is alive
     } else {
         std::string since = util::trim(util::read_file("/run/rnsd-down-since", 32));
         if (since.empty() || since.find_first_not_of("0123456789") != std::string::npos) {
