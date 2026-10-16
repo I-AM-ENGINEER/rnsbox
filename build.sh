@@ -17,17 +17,20 @@
 #                         deltas) and the boot blobs are the vendor fip.bin
 #                         repacked with a mainline FIT
 #                         (board/milkv-duo/README.fip.md).
-#   licheerv-nano       — vendor BSP; the git-am series under
-#                         patches/licheerv-nano/ is applied onto the pinned
-#                         upstream clone.
-#   milkv-duo-01-arm    — same vendor BSP (same pin, same host-tools), but
-#                         boots Linux on the SG2000's Cortex-A53: the shared
-#                         licheerv-nano series is applied first, then the
-#                         ARM64 board delta under patches/milkv-duo-01-arm/
-#                         (board dir sg2000_duo01evb_arm64_sd, aarch64
-#                         buildroot defconfig, 64bit ramdisk overlay).
+#   sg2002-rv64         — vendor BSP (LicheeRV Nano-e); the git-am series
+#                         under patches/licheerv-nano/ is applied onto the
+#                         pinned upstream clone.
+#   sg2000-rv64         — same BSP, the Duo Module 01 / EVB board dir
+#                         (sg2000_duomodule01_sd) in the C906 RISC-V boot.
+#   sg2000-arm64 /      — same vendor BSP (same pin, same host-tools), booting
+#   sg2002-arm64          Linux on the Cortex-A53: the shared licheerv-nano
+#                         series is applied first, then the ARM64 board delta
+#                         under patches/milkv-duo-01-arm/ (board dirs
+#                         sg2000_duo01evb_arm64_sd / sg2002_duo_arm64_sd,
+#                         aarch64 buildroot defconfig, 64bit ramdisk overlay);
+#                         one board per build via RNSBOX_PACKER_BOARDS.
 #
-#   ./build.sh [board] [lite|dvd]     (default board: licheerv-nano, lite)
+#   ./build.sh [board] [lite|dvd]     (default board: sg2002-rv64, lite)
 #   ./build.sh all lite               — every board sequentially
 #
 # Env overrides: UPSTREAM_URL, UPSTREAM_COMMIT, HOST_TOOLS_URL, WORKDIR
@@ -41,7 +44,13 @@
 set -e
 
 HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
-BOARDS="licheerv-nano milkv-duo-01-rv milkv-duo-01-arm milkv-duo-cv1800b rpi-universal pc-x86_64 milkv-duo-cv1800b-mainline"
+# Board keys = SoC-arch pairs for the CVITEK family (the SG2000/SG2002
+# boot core is picked by the board's rv/arm switch, so the IMAGE must say
+# which core it boots — evb, duomodule01, licheervnano and duo are the
+# same SoCs, not different boards): sg2000-rv64 = Duo Module 01 (EVB),
+# sg2000-arm64 = same on the A53, sg2002-rv64 = LicheeRV Nano-e,
+# sg2002-arm64 = same on the A53. cv1800b (Duo 64M) is RV-only.
+BOARDS="sg2000-rv64 sg2000-arm64 sg2002-rv64 sg2002-arm64 milkv-duo-cv1800b rpi-universal pc-x86_64 milkv-duo-cv1800b-mainline"
 
 # ---- image version stamp (read by rnsbox-sysupdate for update decisions) ----
 # Same formula as the CI release job's tag: r<UTC date>-<short sha>. On CI,
@@ -65,7 +74,7 @@ for a in "$@"; do
     esac
 done
 VARIANT="${VARIANT:-lite}"
-BOARD="${BOARD:-licheerv-nano}"
+BOARD="${BOARD:-sg2002-rv64}"
 
 if [ "$BOARD" = all ]; then
     for b in $BOARDS; do
@@ -82,7 +91,7 @@ export RNSBOX_BOARD="$BOARD"
 
 # ---- per-board settings ----------------------------------------------------
 case "$BOARD" in
-    licheerv-nano)
+    sg2002-rv64)
         BUILD_STYLE=patches
         UPSTREAM_URL="${UPSTREAM_URL:-https://github.com/sipeed/LicheeRV-Nano-Build.git}"
         UPSTREAM_COMMIT="${UPSTREAM_COMMIT:-d4003f15b35d43ad4842f427050ab2bba0114fa5}"
@@ -95,26 +104,34 @@ case "$BOARD" in
         RNSBOX_BR_DEFCONFIG=cvitek_SG200X_musl_riscv64_defconfig
         RNSBOX_PACKER=build-rnsbox.sh
         ;;
-    milkv-duo-01-arm)
+    sg2000-arm64|sg2002-arm64)
+        # One arm64 board per build: the family shares an identical kernel
+        # defconfig and aarch64 rootfs, so a single-board run packs its own
+        # boot.sd/fip only (the other board's image is the sibling job's).
+        # NB: if/fi, not an AND-list — under set -e a false test here would
+        # kill the script (same lesson as the packer copy below).
+        if [ "$BOARD" = sg2000-arm64 ]; then
+            local_board=sg2000_duo01evb_arm64_sd
+        else
+            local_board=sg2002_duo_arm64_sd
+        fi
         BUILD_STYLE=patches
         UPSTREAM_URL="${UPSTREAM_URL:-https://github.com/sipeed/LicheeRV-Nano-Build.git}"
         UPSTREAM_COMMIT="${UPSTREAM_COMMIT:-d4003f15b35d43ad4842f427050ab2bba0114fa5}"
         HOST_TOOLS_URL="${HOST_TOOLS_URL:-https://github.com/sophgo/host-tools}"
         WORKDIR="${WORKDIR:-milkv-duo-01-arm}"
-        RNSBOX_IMAGES_DIR="install/soc_sg2000_duo01evb_arm64_sd/images install/soc_sg2002_duo_arm64_sd/images"
+        RNSBOX_IMAGES_DIR="install/soc_${local_board}/images"
         # the shared BSP series, then the ARM64 board delta on top
         RNSBOX_PATCH_SERIES="licheerv-nano milkv-duo-01-arm"
-        # the arm64 family: ONE arm64 kernel superset (identical defconfigs,
-        # per-board DTBs) + ONE aarch64 buildroot rootfs, consumed by every
-        # board in the list; partition shapes live in each board dir
-        RNSBOX_DEFCONFIG_BOARDS="sg2000_duo01evb_arm64_sd sg2002_duo_arm64_sd"
+        RNSBOX_DEFCONFIG_BOARDS="$local_board"
         RNSBOX_BR_DEFCONFIG=cvitek_SG200X_64bit_defconfig
         # buildroot userspace toolchain (Arm GNU 11.3, glibc) inside host-tools;
         # kernel/u-boot/fsbl keep the vendor-pinned linaro 6.3.1 via SDK env
         RNSBOX_BR_TOOLCHAIN_SUBPATH=gcc/arm-gnu-toolchain-11.3.rel1-x86_64-aarch64-none-linux-gnu
         RNSBOX_PACKER=build-rnsbox-arm.sh
+        RNSBOX_PACKER_BOARDS="$local_board"
         ;;
-    milkv-duo-01-rv)
+    sg2000-rv64)
         # Milk-V Duo Module 01 (Evaluation Board) — SG2000, C906B RISC-V boot.
         # Same vendor BSP + patch-series flow as the licheerv-nano; a
         # sibling board dir (sg2000_duomodule01_sd) carries the SG2000
@@ -382,7 +399,7 @@ rnsbox_build_bsp_generic() {
         ./fetch-clients.sh
     fi
     echo ">> packaging [$VARIANT] image"
-    "./$RNSBOX_PACKER" "$VARIANT"
+    "./$RNSBOX_PACKER" "$VARIANT" ${RNSBOX_PACKER_BOARDS:-}
 }
 
 rnsbox_build_licheerv_nano() {
@@ -621,9 +638,9 @@ rnsbox_build_milkv_duo_cv1800b_mainline() {
 
 rnsbox_build() {
     case "$BOARD" in
-        licheerv-nano)    rnsbox_build_licheerv_nano ;;
-        milkv-duo-01-arm) rnsbox_build_milkv_duo_01_arm ;;
-        milkv-duo-01-rv)  rnsbox_build_milkv_duo_01 ;;
+        sg2002-rv64)      rnsbox_build_licheerv_nano ;;
+        sg2000-arm64|sg2002-arm64) rnsbox_build_milkv_duo_01_arm ;;
+        sg2000-rv64)      rnsbox_build_milkv_duo_01 ;;
         milkv-duo-cv1800b)     rnsbox_build_milkv_duo_cv1800b ;;
         rpi-universal)    rnsbox_build_rpi_universal ;;
         pc-x86_64)        rnsbox_build_pc_x86_64 ;;

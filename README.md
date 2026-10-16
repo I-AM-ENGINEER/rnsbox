@@ -22,11 +22,21 @@ One command clones the pinned upstream base and builds:
 ```bash
 git clone https://github.com/Smit1237/rnsbox
 cd rnsbox
-./build.sh licheerv-nano lite   # Sipeed LicheeRV Nano-e image (~217 MB)
+./build.sh sg2002-rv64 lite      # LicheeRV Nano-e (SG2002, C906 boot)
+./build.sh sg2000-rv64 lite      # Duo Module 01 on the EVB (SG2000, C906 boot)
+./build.sh sg2000-arm64 lite     # same board on the A53 (the rv/arm switch)
+./build.sh sg2002-arm64 lite     # SG2002 on the A53
 ./build.sh rpi-universal lite    # Raspberry Pi — Zero 2 W / 3 / 4 / 5 (~433 MB)
 ./build.sh all lite             # every board, sequentially
 # dvd instead of lite adds a read-only disc of the latest Reticulum clients
 ```
+
+CVITEK image names are SoC-arch pairs, not board names: the SG2000/SG2002
+boot core (C906 RISC-V or A53) is picked by the physical rv/arm switch on
+the board, so flash the image whose suffix matches the switch position.
+EVB, Duo Module 01, LicheeRV Nano-e and Duo are the same two SoCs — the
+`sg2000-*` images drive the Duo Module 01 (its EVB), the `sg2002-*` ones
+the LicheeRV Nano-e / Duo form factor.
 
 The finished image lands under `LicheeRV-Nano-Build/install/soc_sg2002_licheervnano_sd/images/`
 (LicheeRV) or `~/rnsbox-work/upstream/out/rpi-universal/images/` (Pi). Flash it with

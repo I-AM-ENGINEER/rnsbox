@@ -7,7 +7,7 @@ the manifest URL. Schema (see providers README):
     {
       "version": "r2026.10.15-abc1234",
       "files": [
-        {"board": "licheerv-nano", "url": "rnsbox-licheerv-nano.img.xz",
+        {"board": "sg2002-rv64", "url": "rnsbox-sg2002-rv64.img.xz",
          "sha256": "<64 hex>"}
       ]
     }

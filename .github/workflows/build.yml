@@ -52,13 +52,17 @@ jobs:
           # patch series over the vendor BSP: build.sh clones the BSP into
           # $WORKDIR and the packer leaves <board>-<variant>.img under
           # install/soc_*/images — one directory level up, because the
-          # universal flows (cv1800b, duo-01-arm) pack SEVERAL boards per
-          # run; the packaging step finds every image recursively.
-          - board: licheerv-nano
+          # universal flows (cv1800b) pack SEVERAL boards per run; the
+          # packaging step finds every image recursively. The SG boards are
+          # SoC-arch pairs (the boot core is the board's rv/arm switch):
+          # one image each, named via PRODUCT_NAMES below.
+          - board: sg2002-rv64
             imgdir: /mnt/rnsbox/lichee/install
-          - board: milkv-duo-01-rv
+          - board: sg2000-rv64
             imgdir: /mnt/rnsbox/lichee/install
-          - board: milkv-duo-01-arm
+          - board: sg2000-arm64
+            imgdir: /mnt/rnsbox/lichee/install
+          - board: sg2002-arm64
             imgdir: /mnt/rnsbox/lichee/install
           # cv1800b: cold-build bring-up pending (the vendor initramfs is
           # not populated from a fresh workdir — busybox/blkid missing at
@@ -69,6 +73,11 @@ jobs:
     env:
       BOARD: ${{ matrix.board }}
       VARIANT: ${{ github.event.inputs.variant || 'lite' }}
+      # BSP-internal soc_<board> dir -> product name. The release assets are
+      # SoC-arch pairs (what the rv/arm boot switch needs to match), not
+      # board-dir names: Duo Module 01 on the EVB = sg2000-*, LicheeRV
+      # Nano-e = sg2002-*, and the suffix is the core the switch selects.
+      PRODUCT_NAMES: sg2000_duomodule01_sd=sg2000-rv64 sg2000_duo01evb_arm64_sd=sg2000-arm64 sg2002_licheervnano_sd=sg2002-rv64 sg2002_duo_arm64_sd=sg2002-arm64 cv1800b_sophpi_duo_sd=cv1800b-rv64
     steps:
       - name: Free up disk space
         uses: jlumbroso/free-disk-space@main
@@ -199,7 +208,10 @@ jobs:
             # flows that pack the same SoC.
             if [[ "$(basename "$f")" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}- ]] && [[ "$f" =~ soc_([^/]+)/ ]]; then
               SOC="${BASH_REMATCH[1]}"
-              SOC="${SOC//_/-}"; SOC="${SOC%-sd}"; SOC="${SOC%-sd}"
+              for pair in $PRODUCT_NAMES; do
+                [ "${pair%%=*}" = "$SOC" ] && SOC="${pair#*=}" && break
+              done
+              case "$SOC" in *_*) SOC="${SOC//_/-}"; SOC="${SOC%-sd}"; SOC="${SOC%-sd}";; esac
               BASE="rnsbox-$SOC"
               [ -f "$STAGE/$BASE.img" ] && BASE="rnsbox-$SOC.$BOARD"
             fi

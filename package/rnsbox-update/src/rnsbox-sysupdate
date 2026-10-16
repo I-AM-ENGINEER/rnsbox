@@ -1118,21 +1118,45 @@ def do_tick(conf):
 
 
 def detect_board():
-    """Best-effort board id for release-asset selection."""
+    """Best-effort board id for release-asset selection.
+
+    Assets are SoC-arch pairs: sg2000-rv64 (Duo Module 01 on the EVB),
+    sg2000-arm64, sg2002-rv64 (LicheeRV Nano-e), sg2002-arm64 — the boot
+    core is the board's rv/arm switch, so the running arch picks the
+    suffix; cv1800b (Milk-V Duo 64M) is RV-only."""
     try:
         with open("/proc/device-tree/model") as f:
             model = f.read().strip("\x00").lower()
-        if "raspberry pi" in model:
-            return "rpi-universal"
-        if "lichee" in model or "sg2002" in model:
-            return "licheerv-nano"
-        if "duo" in model or "sg2000" in model or "cv1800" in model:
-            return "licheerv-nano"
     except OSError:
-        pass
+        model = ""
+    try:
+        compat = open("/proc/device-tree/compatible").read().strip("\x00").lower()
+    except OSError:
+        compat = ""
+    if "aarch64" == _uname_machine():
+        suffix = "arm64"
+    elif "riscv64" == _uname_machine():
+        suffix = "rv64"
+    else:
+        suffix = "rv64"
+    if "raspberry pi" in model:
+        return "rpi-universal"
+    if "duo module" in model or "sg2000" in model or "duo01evb" in model:
+        return "sg2000-" + suffix
+    if "lichee" in model or "sg2002" in model:
+        return "sg2002-" + suffix
+    if "cv1800" in model or "cv1800" in compat or "duo" in model:
+        return "cv1800b-rv64"
     if os.path.exists("/boot/boot.sd"):
-        return "licheerv-nano"
+        return "sg2002-rv64"
     return "rpi-universal"
+
+
+def _uname_machine():
+    try:
+        return os.uname().machine
+    except (AttributeError, OSError):
+        return ""
 
 
 # ------------------------------------------------------------------- main ---
