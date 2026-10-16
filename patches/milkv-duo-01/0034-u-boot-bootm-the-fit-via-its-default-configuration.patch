@@ -1,0 +1,47 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: rnsbox <rnsbox@localhost>
+Date: Fri, 17 Oct 2026 00:20:00 +0300
+Subject: [PATCH 0034] u-boot: bootm the FIT via its default configuration,
+ not #config-FDT_NO
+
+Same change as the licheerv-nano series carries: the sdboot env ends in
+"bootm ${uImage_addr}#config-${FDT_NO}" where FDT_NO is
+__stringify(CVICHIP) "_" __stringify(CVIBOARD) - but CVICHIP is not
+defined anywhere in this SDK's u-boot build, so the requested config
+name does not match the one the ramdisk FIT actually carries
+(config-<board>, mkimage's own substitution). Even with a readable SD
+the boot would then die at the very last step.
+
+Every RNSBox FIT carries exactly ONE configuration (the board's), and
+u-boot's fit_find_config falls back to the first entry when no #config
+is named - so drop the suffix and let the default configuration boot.
+
+---
+diff --git a/u-boot-2021.10/include/configs/mars-asic.h b/u-boot-2021.10/include/configs/mars-asic.h
+index 0d8661d..531b469 100644
+--- a/u-boot-2021.10/include/configs/mars-asic.h
++++ b/u-boot-2021.10/include/configs/mars-asic.h
+@@ -271,7 +271,7 @@
+ 					"  bootm ${uImage_addr}#config-" FDT_NO ";" \
+ 					"fi;"
+ 	#else
+-		#define UBOOT_VBOOT_BOOTM_COMMAND "bootm ${uImage_addr}#config-" FDT_NO ";"
++		#define UBOOT_VBOOT_BOOTM_COMMAND "bootm ${uImage_addr};"
+ 	#endif
+ 
+ 	/* BOOTLOGO */
+diff --git a/u-boot-2021.10/include/configs/phobos-asic.h b/u-boot-2021.10/include/configs/phobos-asic.h
+index f18f8f1..6a92014 100644
+--- a/u-boot-2021.10/include/configs/phobos-asic.h
++++ b/u-boot-2021.10/include/configs/phobos-asic.h
+@@ -265,7 +265,7 @@
+ 					"  bootm ${uImage_addr}#config-" FDT_NO ";" \
+ 					"fi;"
+ 	#else
+-		#define UBOOT_VBOOT_BOOTM_COMMAND "bootm ${uImage_addr}#config-" FDT_NO ";"
++		#define UBOOT_VBOOT_BOOTM_COMMAND "bootm ${uImage_addr};"
+ 	#endif
+ 
+ 	/* BOOTLOGO */
+2.43.0
+
