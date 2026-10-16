@@ -140,6 +140,24 @@ bool write_usb(const UsbConfig& c, std::string& err);
 // it is written into a [[section]] header line).
 bool add_halow_interface(const std::string& name, const std::string& host, int port, std::string& msg);
 
+// --- TCP client interfaces ([[...]] stanzas with type = TCPClientInterface)
+// Managed IN PLACE inside /etc/reticulum/config (the same model as the BLE
+// stanza and the HaLow quick-add): comments and unrelated stanzas stay
+// byte-identical, so the raw config editor keeps showing the whole truth.
+// idx is the position in read_tcp_clients()'s order. A save is applied by
+// restarting rnsd (S82rnsd).
+struct TcpClientIface {
+    std::string name;   // the [[section]] name
+    std::string host;   // target_host (IP or resolver name)
+    std::string port;   // target_port
+};
+std::vector<TcpClientIface> read_tcp_clients();
+bool add_tcp_client(const std::string& name, const std::string& host,
+                    const std::string& port, std::string& err);
+bool update_tcp_client(int idx, const std::string& name, const std::string& host,
+                       const std::string& port, std::string& err);
+bool delete_tcp_client(int idx, std::string& err);
+
 // --- Bluetooth LE transport (the [[BLE Interface]] stanza) ---
 // Edits the stanza IN PLACE inside /etc/reticulum/config (comments and the
 // rest of the file untouched), so the raw editor keeps showing the truth.

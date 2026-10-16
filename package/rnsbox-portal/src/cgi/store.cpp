@@ -626,6 +626,211 @@ bool add_halow_interface(const std::string& name_in, const std::string& host, in
 }
 
 
+// ---- TCP client interfaces (see store.h) ---------------------------------
+// A stanza is one [[name]] header .. the next '[' header / EOF. "type" is
+// matched case-sensitively against TCPClientInterface (the RNS class name,
+// like the HaLow scan above) but keys are compared lowercased.
+
+namespace {
+
+struct TcpStanza {
+    std::string type, name, host, port;
+    size_t header_line = 0;   // index of the [[name]] line (update/delete)
+};
+
+// Parse one key line inside a stanza; k is lowercased, v comment-stripped.
+static void tcp_stanza_key(const std::string& ln, std::string& k, std::string& v) {
+    size_t eq = ln.find('=');
+    if (eq == std::string::npos) { k.clear(); v.clear(); return; }
+    k = util::trim(ln.substr(0, eq));
+    v = ln.substr(eq + 1);
+    size_t h = v.find('#');
+    if (h != std::string::npos) v = v.substr(0, h);
+    v = util::trim(v);
+    for (auto& ch : k) ch = (char)tolower((unsigned char)ch);
+}
+
+static bool is_stanza_header(const std::string& s) {
+    return !s.empty() && s[0] == '[';
+}
+
+static std::vector<TcpStanza> tcp_stanzas() {
+    std::vector<TcpStanza> out;
+    TcpStanza cur;
+    bool in_stanza = false;
+    auto flush = [&]() {
+        if (in_stanza && cur.type == "TCPClientInterface" && !cur.host.empty())
+            out.push_back(cur);
+        cur = TcpStanza();
+        in_stanza = false;
+    };
+    const auto lines = read_lines(RETICULUM_CONFIG);
+    for (size_t i = 0; i < lines.size(); ++i) {
+        std::string s = util::trim(lines[i]);
+        if (is_stanza_header(s)) {
+            flush();
+            in_stanza = true;
+            cur.header_line = i;
+            if (s.rfind("[[", 0) == 0 && s.rfind("[[[", 0) != 0 &&
+                s.size() >= 4 && s.substr(s.size() - 2) == "]]")
+                cur.name = util::trim(s.substr(2, s.size() - 4));
+            continue;
+        }
+        if (!in_stanza || s.empty() || s[0] == '#') continue;
+        std::string k, v;
+        tcp_stanza_key(s, k, v);
+        if (k == "type") cur.type = v;
+        else if (k == "target_host") cur.host = v;
+        else if (k == "target_port") cur.port = v;
+    }
+    flush();
+    return out;
+}
+
+// Fields of one add/update, validated. err set on refusal.
+static bool tcp_client_fields(std::string name, const std::string& host,
+                              const std::string& port, std::string& err) {
+    if (!conf_value_ok(name) || !conf_value_ok(host) || !conf_value_ok(port)) {
+        err = "fields must not contain line breaks or control characters";
+        return false;
+    }
+    name = sanitize_iface_name(name);
+    if (name.empty()) name = "TCP Client";
+    if (host.empty() || host.size() > 253) { err = "bad target host"; return false; }
+    for (char c : host)
+        if (!(isalnum((unsigned char)c) || c == '.' || c == '-' || c == '_' || c == ':')) {
+            err = "target host may only contain letters, digits, . - _ :"; return false;
+        }
+    if (host.find("..") != std::string::npos) { err = "bad target host"; return false; }
+    if (!all_digits(port) || port.size() > 5) { err = "bad port"; return false; }
+    long p = strtol(port.c_str(), nullptr, 10);
+    if (p < 1 || p > 65535) { err = "port out of range"; return false; }
+    return true;
+}
+
+static std::string tcp_client_name(std::string name, const std::string& keep) {
+    name = sanitize_iface_name(name);
+    if (name.empty()) name = "TCP Client";
+    // unique [[section]] names: RNS keys interfaces by name. `keep` is the
+    // name a stanza being updated already carries — renaming it to its own
+    // current name must not trip the dedupe.
+    auto existing = reticulum_iface_names();
+    auto has = [&](const std::string& n) {
+        if (n == keep) return false;
+        for (const auto& e : existing) if (e == n) return true;
+        return false;
+    };
+    if (!has(name)) return name;
+    std::string base = name;
+    for (int i = 2; has(name); ++i) name = base + " " + std::to_string(i);
+    return name;
+}
+
+}  // namespace
+
+std::vector<TcpClientIface> read_tcp_clients() {
+    std::vector<TcpClientIface> out;
+    for (const auto& s : tcp_stanzas())
+        out.push_back({s.name, s.host, s.port});
+    return out;
+}
+
+bool add_tcp_client(const std::string& name_in, const std::string& host,
+                    const std::string& port, std::string& err) {
+    if (!tcp_client_fields(name_in, host, port, err)) return false;
+    auto lines = read_lines(RETICULUM_CONFIG);
+    if (lines.empty()) { err = "no reticulum config"; return false; }
+    std::string name = tcp_client_name(name_in, "");
+    while (!lines.empty() && util::trim(lines.back()).empty()) lines.pop_back();
+    lines.push_back("");
+    lines.push_back("  [[" + name + "]]");
+    lines.push_back("    type = TCPClientInterface");
+    lines.push_back("    enabled = yes");
+    lines.push_back("    target_host = " + host);
+    lines.push_back("    target_port = " + std::to_string(strtol(port.c_str(), nullptr, 10)));
+    std::string o;
+    for (const auto& l : lines) o += l + "\n";
+    if (!util::write_file_atomic(RETICULUM_CONFIG, o, 0600)) { err = "write failed"; return false; }  // see write_reticulum_config
+    err.clear();
+    return true;
+}
+
+// The stanza's line range: from its [[name]] header to the next header /
+// EOF, trailing blank lines of the stanza dropped (they belong to nobody).
+static bool tcp_stanza_range(const std::vector<std::string>& lines, int idx,
+                             size_t& begin, size_t& end) {
+    const auto stanzas = tcp_stanzas();
+    if (idx < 0 || idx >= (int)stanzas.size()) return false;
+    begin = stanzas[idx].header_line;
+    end = lines.size();
+    for (size_t i = begin + 1; i < lines.size(); ++i)
+        if (is_stanza_header(util::trim(lines[i]))) { end = i; break; }
+    while (end > begin + 1 && util::trim(lines[end - 1]).empty()) --end;
+    return true;
+}
+
+bool update_tcp_client(int idx, const std::string& name_in, const std::string& host,
+                       const std::string& port, std::string& err) {
+    if (!tcp_client_fields(name_in, host, port, err)) return false;
+    auto stanzas = tcp_stanzas();
+    if (idx < 0 || idx >= (int)stanzas.size()) { err = "no such interface"; return false; }
+    auto lines = read_lines(RETICULUM_CONFIG);
+    size_t begin = 0, end = 0;
+    if (!tcp_stanza_range(lines, idx, begin, end)) { err = "no such interface"; return false; }
+    std::string name = tcp_client_name(name_in, stanzas[idx].name);
+    // Header keeps its own indent; keys keep the stanza's key indent.
+    std::string hind;
+    for (char ch : lines[begin]) { if (ch == ' ' || ch == '\t') hind += ch; else break; }
+    lines[begin] = hind + "[[" + name + "]]";
+    std::string kind = "    ";
+    bool have_host = false, have_port = false;
+    size_t type_line = std::string::npos;
+    for (size_t i = begin + 1; i < end; ++i) {
+        std::string s = util::trim(lines[i]);
+        if (s.empty() || s[0] == '#') continue;
+        std::string ind;
+        for (char ch : lines[i]) { if (ch == ' ' || ch == '\t') ind += ch; else break; }
+        if (!ind.empty()) kind = ind;
+        std::string k, v;
+        tcp_stanza_key(s, k, v);
+        if (k == "type") type_line = i;
+        else if (k == "target_host") { lines[i] = ind + "target_host = " + host; have_host = true; }
+        else if (k == "target_port") { lines[i] = ind + "target_port = " + std::to_string(strtol(port.c_str(), nullptr, 10)); have_port = true; }
+    }
+    // Missing keys are inserted after the type line (so a hand-trimmed
+    // stanza still ends up valid), or at the stanza's end without one.
+    size_t insert_at = (type_line != std::string::npos) ? type_line + 1 : end;
+    if (!have_host) {
+        lines.insert(lines.begin() + insert_at, kind + "target_host = " + host);
+        ++insert_at;
+    }
+    if (!have_port)
+        lines.insert(lines.begin() + insert_at,
+                     kind + "target_port = " + std::to_string(strtol(port.c_str(), nullptr, 10)));
+    std::string o;
+    for (const auto& l : lines) o += l + "\n";
+    if (!util::write_file_atomic(RETICULUM_CONFIG, o, 0600)) { err = "write failed"; return false; }  // see write_reticulum_config
+    err.clear();
+    return true;
+}
+
+bool delete_tcp_client(int idx, std::string& err) {
+    auto lines = read_lines(RETICULUM_CONFIG);
+    size_t begin = 0, end = 0;
+    if (!tcp_stanza_range(lines, idx, begin, end)) { err = "no such interface"; return false; }
+    // One blank separator above the stanza is ours too — drop it so repeated
+    // add/delete cycles never grow the file.
+    size_t from = begin;
+    if (from > 0 && util::trim(lines[from - 1]).empty()) --from;
+    lines.erase(lines.begin() + from, lines.begin() + end);
+    std::string o;
+    for (const auto& l : lines) o += l + "\n";
+    if (!util::write_file_atomic(RETICULUM_CONFIG, o, 0600)) { err = "write failed"; return false; }  // see write_reticulum_config
+    err.clear();
+    return true;
+}
+
+
 // ---- Bluetooth LE transport ([[BLE Interface]] stanza in reticulum config)
 // The stanza ships in /etc/reticulum/config (enabled by default). The portal
 // edits it IN PLACE - comments, key order and the rest of the file stay

@@ -98,3 +98,17 @@ Added (minimal honest UX on the Bluetooth card):
   pairing would need an interactive agent wired into rnode.py pair.
   What is missing in the backend for full PIN UX: a bluetoothctl agent
   (PIN callback) in the pair helper + BlueZ agent registration.
+
+## 11. No TCP Client Interface editor
+Added a "TCP client interfaces" card to the Reticulum tab (before the raw
+config editor): one editable row per [[...]] stanza with
+type = TCPClientInterface (name/host/port), Save & apply + Delete per row,
+an Add & apply form for new ones. Storage: the stanzas are edited IN PLACE
+in /etc/reticulum/config (same model as the BLE stanza + HaLow quick-add —
+the raw editor keeps showing the whole truth; no extra rnsd.conf sidecar
+that could drift from the file rnsd actually parses). New routes
+POST /reticulum/tcpclient/{add,update,delete} (POST_ONLY) restart rnsd on
+success. Unit-tested on an x86 build against a fixture config: add dedupe
+(name 2), default name, refusals (bad host chars, port range), in-place
+update incl. rename-to-self, delete exactness ( neighbouring stanzas and
+comments untouched, no file growth on repeated cycles).

@@ -37,6 +37,10 @@ void reticulum_applyupdate(const http::Request&, http::Response&); // POST PRG (
 void reticulum_slip(const http::Request&, http::Response&);        // POST PRG
 void reticulum_rnsh_save(const http::Request&, http::Response&);   // POST PRG
 void reticulum_halow_add(const http::Request&, http::Response&);   // POST PRG
+// TCP client interface editor ([[...]] type = TCPClientInterface stanzas)
+void reticulum_tcpclient_add(const http::Request&, http::Response&);    // POST PRG
+void reticulum_tcpclient_update(const http::Request&, http::Response&); // POST PRG
+void reticulum_tcpclient_delete(const http::Request&, http::Response&); // POST PRG
 void reticulum_bluetooth(const http::Request&, http::Response&);        // POST PRG
 void reticulum_bluetooth_raise(const http::Request&, http::Response&);  // POST PRG
 void reticulum_bluetooth_scan(const http::Request&, http::Response&);   // GET  JSON (BLE discovery, rnode.py scan-any)

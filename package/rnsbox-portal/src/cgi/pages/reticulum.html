@@ -377,6 +377,26 @@ function btPair(btn, addr){
 </section>
 
 <section class="card">
+  <h3>TCP client interfaces</h3>
+  <p class="muted">Outbound Reticulum TCP links (<code>TCPClientInterface</code>): another
+  Reticulum router, a public connection server, or the HaLow modem's TCP radio bridge. They are
+  declared in <code>/etc/reticulum/config</code> and edited in place here — the raw editor below
+  keeps showing the truth. Adding, saving or deleting restarts rnsd.</p>
+  <table class="data">
+    <thead><tr><th>Name</th><th>Host</th><th>Port</th><th></th></tr></thead>
+    <tbody>
+      __TCP_CLIENTS_ROWS__
+    </tbody>
+  </table>
+  <form method="post" action="__BASE__/reticulum/tcpclient/add" class="row-form">
+    <input type="text" name="name" placeholder="name (e.g. Remote Router)" maxlength="48">
+    <input type="text" name="host" placeholder="host (IP or name)" maxlength="253" required>
+    <input type="number" name="port" placeholder="port" min="1" max="65535" required>
+    <button type="submit" class="btn-primary">Add &amp; apply</button>
+  </form>
+</section>
+
+<section class="card">
   <h3>/etc/reticulum/config</h3>
   <p class="muted">Hand-edit the rnsd configuration. Comments and interface declarations are passed verbatim to Reticulum. Click <em>Save</em> then <em>Restart rnsd</em> to apply.</p>
   <form method="post" action="__BASE__/reticulum/config">

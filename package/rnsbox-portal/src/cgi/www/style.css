@@ -147,6 +147,12 @@ table.data td {
   vertical-align: middle;
 }
 table.data tr:hover td { background: #fafbfc; }
+/* TCP client interface editor: compact inputs inside table cells (tied to
+   the row's update form through the HTML form= attribute). */
+table.data td input[type=text], table.data td input[type=number] {
+  max-width: 180px;
+  margin: 0;
+}
 
 /* ---- Badges ---- */
 .badge {

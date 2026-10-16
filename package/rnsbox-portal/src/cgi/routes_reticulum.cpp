@@ -351,6 +351,38 @@ static std::string bt_status_html(const BtState& b) {
     return o;
 }
 
+// Rows of the TCP client interface editor: one editable line per
+// [[...]] type = TCPClientInterface stanza (inputs tied to the row's update
+// form through the HTML form= attribute).
+static std::string tcp_clients_rows(const std::string& base) {
+    auto list = store::read_tcp_clients();
+    if (list.empty())
+        return "<tr><td colspan=\"4\" class=\"muted\">None declared — add one below "
+               "(the HaLow quick-add and the raw config editor write here too).</td></tr>";
+    std::string rows;
+    for (size_t i = 0; i < list.size(); ++i) {
+        const auto& t = list[i];
+        std::string fid = "tcpe" + std::to_string(i);
+        rows +=
+            "<tr>"
+            "<td><input form=\"" + fid + "\" type=\"text\" name=\"name\" value=\"" + E(t.name) +
+            "\" maxlength=\"48\" title=\"the [[section]] name in the rnsd config\"></td>"
+            "<td><input form=\"" + fid + "\" type=\"text\" name=\"host\" value=\"" + E(t.host) +
+            "\" maxlength=\"253\"></td>"
+            "<td><input form=\"" + fid + "\" type=\"number\" name=\"port\" value=\"" + E(t.port) +
+            "\" min=\"1\" max=\"65535\"></td>"
+            "<td>"
+            "<form id=\"" + fid + "\" method=\"post\" action=\"" + base + "/reticulum/tcpclient/update\" class=\"inline\">"
+            "<input type=\"hidden\" name=\"idx\" value=\"" + std::to_string(i) + "\">"
+            "<button type=\"submit\" class=\"btn\">Save &amp; apply</button></form> "
+            "<form method=\"post\" action=\"" + base + "/reticulum/tcpclient/delete\" class=\"inline\">"
+            "<input type=\"hidden\" name=\"idx\" value=\"" + std::to_string(i) + "\">"
+            "<button type=\"submit\" class=\"btn-danger\">Delete</button></form>"
+            "</td></tr>";
+    }
+    return rows;
+}
+
 // ===================== GET render =====================
 
 void reticulum_page(const Request& req, Response& res) {
@@ -536,6 +568,7 @@ void reticulum_page(const Request& req, Response& res) {
     h = rnode_fill(std::move(h));
     h = rnsh_fill(std::move(h));
     h = rnsdmon_fill(std::move(h));
+    h = R(std::move(h), "__TCP_CLIENTS_ROWS__", tcp_clients_rows(base));
     h = R(std::move(h), "__CONFIG__",        E(cfg));
 
     res.body = render::layout(req, res, "Reticulum", "reticulum", h);
@@ -766,6 +799,46 @@ void reticulum_rnsh_save(const Request& req, Response& res) {
     render::redirect_flash(res, ret_redirect(), "success",
         "RNS Shell saved. Destination: " +
         (dest.empty() ? std::string("(not started — see the status line)") : dest) + ".");
+}
+
+// ---- TCP client interfaces (the editor card) ------------------------------
+// add/update/delete a [[...]] type = TCPClientInterface stanza in
+// /etc/reticulum/config (store::), then restart rnsd — the interface only
+// exists while rnsd parses its config.
+
+static void tcp_client_apply_msg(Response& res, bool ok, const std::string& err,
+                                 const char* what) {
+    if (!ok) {
+        render::redirect_flash(res, ret_redirect(), "error",
+            std::string("TCP interface: ") + (err.empty() ? "could not write the config" : err) + ".");
+        return;
+    }
+    web::run_init("S82rnsd");
+    render::redirect_flash(res, ret_redirect(), "success",
+        std::string(what) + " — rnsd restarted to apply.");
+}
+
+void reticulum_tcpclient_add(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, false)) return;
+    std::string err;
+    bool ok = store::add_tcp_client(util::trim(req.f("name")), util::trim(req.f("host")),
+                                    util::trim(req.f("port")), err);
+    tcp_client_apply_msg(res, ok, err, "TCP client interface added");
+}
+
+void reticulum_tcpclient_update(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, false)) return;
+    std::string err;
+    bool ok = store::update_tcp_client(atoi(req.f("idx").c_str()), util::trim(req.f("name")),
+                                       util::trim(req.f("host")), util::trim(req.f("port")), err);
+    tcp_client_apply_msg(res, ok, err, "TCP client interface saved");
+}
+
+void reticulum_tcpclient_delete(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, false)) return;
+    std::string err;
+    bool ok = store::delete_tcp_client(atoi(req.f("idx").c_str()), err);
+    tcp_client_apply_msg(res, ok, err, "TCP client interface deleted");
 }
 
 void reticulum_halow_add(const Request& req, Response& res) {
