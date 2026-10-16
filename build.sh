@@ -11,6 +11,12 @@
 #                         x86_64 BIOS disk (grub in the MBR + one ext4 root)
 #                         for QEMU/VirtualBox/VMware — the full router stack
 #                         with no hardware attached.
+#   milkv-duo-cv1800b-mainline (external) — same external shape, but the
+#                         kernel is MAINLINE Linux (pinned kernel.org stable
+#                         tag + the board/milkv-duo/linux-patches DTS/driver
+#                         deltas) and the boot blobs are the vendor fip.bin
+#                         repacked with a mainline FIT
+#                         (board/milkv-duo/README.fip.md).
 #   licheerv-nano       — vendor BSP; the git-am series under
 #                         patches/licheerv-nano/ is applied onto the pinned
 #                         upstream clone.
@@ -35,7 +41,7 @@
 set -e
 
 HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
-BOARDS="licheerv-nano milkv-duo-01-rv milkv-duo-01-arm milkv-duo-cv1800b rpi-universal pc-x86_64"
+BOARDS="licheerv-nano milkv-duo-01-rv milkv-duo-01-arm milkv-duo-cv1800b rpi-universal pc-x86_64 milkv-duo-cv1800b-mainline"
 
 # ---- image version stamp (read by rnsbox-sysupdate for update decisions) ----
 # Same formula as the CI release job's tag: r<UTC date>-<short sha>. On CI,
@@ -161,6 +167,18 @@ case "$BOARD" in
         UPSTREAM_URL="${UPSTREAM_URL:-https://github.com/buildroot/buildroot.git}"
         UPSTREAM_COMMIT="${UPSTREAM_COMMIT:-679b9ead7620bbf193620d1ebf56f53c1764d37a}"  # 2026.02.3
         DEFCONFIG=rnsbox_pc_x86_64_defconfig
+        ;;
+    milkv-duo-cv1800b-mainline)
+        # Milk-V Duo 64M (CV1800B, C906) on MAINLINE Linux. External build
+        # (shared buildroot clone + dl cache with rpi0-2w); the kernel comes
+        # from the pinned kernel.org stable tag with board/milkv-duo patches;
+        # the first-stage boot chain stays vendor (fip.bin, see
+        # board/milkv-duo/README.fip.md) and only the boot.sd FIT content is
+        # ours. RNSBOX_FIP_SRC overrides the boot-blob source.
+        BUILD_STYLE=external
+        UPSTREAM_URL="${UPSTREAM_URL:-https://github.com/buildroot/buildroot.git}"
+        UPSTREAM_COMMIT="${UPSTREAM_COMMIT:-679b9ead7620bbf193620d1ebf56f53c1764d37a}"  # 2026.02.3
+        DEFCONFIG=rnsbox_milkv_duo_cv1800b_mainline_defconfig
         ;;
 esac
 
@@ -544,8 +562,7 @@ rnsbox_build_milkv_duo_cv1800b() {
 }
 
 
-rnsbox_build_rpi_universal() {
-    # Set up by the external flow below: $UPSTREAM (pristine clone at the
+rnsbox_build_rpi_universal() {    # Set up by the external flow below: $UPSTREAM (pristine clone at the
     # pin), $EXT (this repo, WSL-local copy when run from /mnt), $ODIR.
     # WSL note: Windows PATH interop appends /mnt/c entries (some with
     # spaces) that buildroot rejects — strip them.
@@ -583,6 +600,25 @@ rnsbox_build_pc_x86_64() {
     make -C "$UPSTREAM" O="$ODIR" BR2_EXTERNAL="$EXT"
 }
 
+rnsbox_build_milkv_duo_cv1800b_mainline() {
+    # Same external flow as the pc-x86_64 (defconfig + make; the image is
+    # assembled by board/milkv-duo/post-image.sh inside make: vendor fip.bin
+    # + our boot.sd FIT around the mainline Image/DTB). No dvd variant: no
+    # USB clients LUN, and the gadget role itself is still being mainlined.
+    export PATH=$(echo "$PATH" | tr ':' '\n' | grep -v '^/mnt/[a-z]/' | paste -sd:)
+    export PATH=/usr/sbin:/sbin:$PATH
+    if [ "$VARIANT" != lite ]; then
+        echo ">> milkv-duo-cv1800b-mainline: the '$VARIANT' variant needs the USB gadget - building lite"
+        VARIANT=lite
+    fi
+    export RNSBOX_VARIANT="$VARIANT"
+
+    echo ">> configuring ($DEFCONFIG) + building (first run compiles everything; be patient)"
+    make -C "$UPSTREAM" O="$ODIR" BR2_EXTERNAL="$EXT" "$DEFCONFIG"
+    rnsbox_pin_dl
+    make -C "$UPSTREAM" O="$ODIR" BR2_EXTERNAL="$EXT"
+}
+
 rnsbox_build() {
     case "$BOARD" in
         licheerv-nano)    rnsbox_build_licheerv_nano ;;
@@ -591,6 +627,7 @@ rnsbox_build() {
         milkv-duo-cv1800b)     rnsbox_build_milkv_duo_cv1800b ;;
         rpi-universal)    rnsbox_build_rpi_universal ;;
         pc-x86_64)        rnsbox_build_pc_x86_64 ;;
+        milkv-duo-cv1800b-mainline) rnsbox_build_milkv_duo_cv1800b_mainline ;;
     esac
 }
 
