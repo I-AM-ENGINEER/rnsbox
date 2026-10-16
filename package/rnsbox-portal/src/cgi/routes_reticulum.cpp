@@ -494,7 +494,7 @@ void reticulum_page(const Request& req, Response& res) {
             "        <input type=\"text\" name=\"device_name\" value=\"__BT_NAME__\" maxlength=\"16\" "
             "title=\"Keep it short: BLE advertisement payloads are 31 bytes total. Blank = advertise the service UUID only\"></label>\n"
             "    </div>\n"
-            "    <button type=\"submit\" class=\"btn-primary\" style=\"margin-top:10px\">Save &amp; restart rnsd</button>\n"
+            "    <button type=\"submit\" class=\"btn-primary\" style=\"margin-top:10px\">Save &amp; apply</button>\n"
             "    <span class=\"muted\">saving restarts rnsd — active links reconnect on their own</span>\n"
             "  </form>\n"
             "  <form method=\"post\" action=\"" + base + "/reticulum/bluetooth/raise\" class=\"row-form\">\n"

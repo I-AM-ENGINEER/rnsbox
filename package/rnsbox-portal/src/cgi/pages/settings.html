@@ -36,7 +36,8 @@
       <textarea name="servers" class="ntp-servers" rows="3" spellcheck="false">__NTP_SERVERS__</textarea>
     </label>
     <div class="time-actions">
-      <button type="submit" class="btn-primary">Save servers</button>
+      <button type="submit" class="btn-primary">Save</button>
+      <span class="muted">persisted only — "Restart NTP" below applies them</span>
     </div>
   </form>
   <form method="post" action="__BASE__/settings/ntp/restart" class="ntp-restart">
@@ -91,7 +92,7 @@
       <input type="password" name="sshpass2" autocomplete="new-password" minlength="6">
     </label>
     __SSH_PASS_NOTE__
-    <button type="submit" class="btn-primary">Save SSH setting</button>
+    <button type="submit" class="btn-primary">Save &amp; apply</button>
   </form>
 </section>
 
@@ -101,7 +102,7 @@
     <label>New hostname
       <input type="text" name="hostname" value="__HOSTNAME__" maxlength="63" required>
     </label>
-    <button type="submit" class="btn-primary">Apply</button>
+    <button type="submit" class="btn-primary">Save &amp; apply</button>
     <p class="muted">Alphanumerics, dashes, underscores. Effective immediately for new connections; reboot for SSH banners + log file naming.</p>
   </form>
 </section>

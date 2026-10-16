@@ -40,8 +40,8 @@
       <select name="interval">__ECHOBOT_INTERVAL_OPTS__
       </select>
     </label>
-    <button type="submit" class="btn-primary">Save</button>
-    <p class="muted">Saving restarts the bot (or stops it when disabled). A start is refused while free RAM is below
+    <button type="submit" class="btn-primary">Save &amp; apply</button>
+    <p class="muted">Saving applies at once by restarting the bot (or stopping it when disabled). A start is refused while free RAM is below
     <code>min_free_mb</code> (40 MB) in <code>/etc/rnsbox/echobot.conf</code> — that floor protects rnsd from the OOM killer;
     free RAM first (or lower the floor if you know your budget) and start again.</p>
   </form>
