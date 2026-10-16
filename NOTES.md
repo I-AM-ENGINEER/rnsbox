@@ -128,3 +128,14 @@ TODO(owners-decision) comment so the decision is greppable), and the
 same TODO sits at the /updates dispatch in main.cpp. All /updates
 routes and POST handlers stay fully functional by direct link, per the
 owner instruction ("не удалять код... оставить по прямой ссылке").
+
+## 3. "Remote access (rnsh)" tab merged into the RNS Shell card
+The tab duplicated the server state (status/destination/announce) the
+RNS Shell card already shows. access.html now carries only the unique
+content — the issue/download form, the issued-grants table and the
+manual-hashes table — reworded to point "above" instead of "on the
+Reticulum tab"; the duplicated status table is dropped. routes_access
+renders them through access_cards() into the Reticulum page directly
+under the RNS Shell card (__RNSH_ACCESS_CARDS__, anchor #rnsh-access).
+Nav entry removed; /access stays a working bookmark redirecting to
+/reticulum#rnsh; all issue/revoke/reissue POSTs redirect there too.

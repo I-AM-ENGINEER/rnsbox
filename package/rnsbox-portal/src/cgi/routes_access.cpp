@@ -1,9 +1,12 @@
-// routes_access.cpp — "Remote access (rnsh)" tab: issue/revoke downloadable
-// rnsh client access files.
+// routes_access.cpp — "Remote access" cards on the Reticulum tab: issue /
+// revoke downloadable rnsh client access files. The cards render inside the
+// Reticulum page, directly under the RNS Shell card (access_cards()); the
+// old /access URL stays a working bookmark and redirects to
+// /reticulum#rnsh.
 //
 // The rnsh server itself (S86rnsh + /etc/rnsbox/rnsh.conf) ships with the
-// images and is also manually editable on the Reticulum tab. This tab
-// automates the client side: minting a FRESH Reticulum Identity per access,
+// images and is configured on the RNS Shell card just above. These cards
+// automate the client side: minting a FRESH Reticulum Identity per access,
 // adding its public hash to the allow-list, and handing the user a one-time
 // plain-text file with the private key + copy-paste connect instructions.
 // Key model: the private key is never persisted on the box — it exists once,
@@ -31,7 +34,6 @@ namespace {
 constexpr const char* RNSH_CONF    = "/etc/rnsbox/rnsh.conf";       // shared with routes_reticulum.cpp
 constexpr const char* ACCESS_LOG   = "/etc/rnsbox/rnsh_access.conf"; // issuance journal
 constexpr const char* HELPER       = "/usr/lib/rnsbox/rnshaccess.py";
-constexpr const char* PIDFILE      = "/var/run/rnsh.pid";
 constexpr const char* HOSTNAME_SRC = "/proc/sys/kernel/hostname";
 constexpr const char* MARK         = "RNSBOX-ACCESS/8";
 constexpr const char* END_MARK     = "RNSBOX-ACCESS-END";
@@ -40,7 +42,9 @@ constexpr int  MAX_GRANTS = 256;
 
 std::string R(std::string s, const std::string& a, const std::string& b) { return web::replace_all(std::move(s), a, b); }
 std::string E(const std::string& s) { return render::esc(s); }
-std::string access_redirect() { return web::base() + "/access"; }
+// The cards live on the Reticulum tab, under the RNS Shell card (anchor
+// #rnsh); all PRG forms and the old tab URL land there.
+std::string access_redirect() { return web::base() + "/reticulum#rnsh"; }
 
 std::string lower(std::string s) {
     for (char& c : s) c = (char)tolower((unsigned char)c);
@@ -141,13 +145,6 @@ bool write_grants(const std::vector<Grant>& gs) {
         o += "grant=" + g.hash + " issued=" + std::to_string(g.issued) +
              " revoked=" + std::to_string(g.revoked) + "\n";
     return util::write_file_atomic(ACCESS_LOG, o, 0600);
-}
-
-bool rnsh_running() {
-    std::string pid = util::trim(util::read_file(PIDFILE, 32));
-    if (pid.empty() || pid.find_first_not_of("0123456789") != std::string::npos) return false;
-    std::string comm = util::trim(util::read_file("/proc/" + pid + "/comm", 64));
-    return comm == "rnsh" || comm.rfind("python", 0) == 0;
 }
 
 std::string utc_date(long long epoch) {
@@ -316,18 +313,13 @@ bool issue_access(Response& res) {
 
 }  // namespace
 
-void access_page(const Request& req, Response& res) {
-    if (!web::require_auth(req, res, false)) return;
+// The three cards (issue + grants + manual hashes), rendered for embedding
+// into the Reticulum page (routes_reticulum.cpp fills __RNSH_ACCESS_CARDS__).
+// Server status/destination are not repeated here: the RNS Shell card right
+// above shows them.
+std::string access_cards(const std::string& base) {
     RnshConf c = read_rnsh_conf();
     std::vector<Grant> gs = read_grants();
-    std::string dest = util::trim(util::read_file("/run/rnsh-dest", 128));
-
-    // Status line
-    std::string status;
-    if (rnsh_running()) status = "<span class=\"badge ok\">running</span>";
-    else if (c.enabled) status = "<span class=\"badge warn\">enabled, not running</span> "
-                                 "<span class=\"muted\">(starts with rnsd; see the Reticulum tab)</span>";
-    else status = "<span class=\"badge\">off</span> <span class=\"muted\">issue an access to enable it</span>";
 
     // Grants table rows (newest first)
     std::string rows, manual_rows;
@@ -350,10 +342,10 @@ void access_page(const Request& req, Response& res) {
                 "<td>" + acts + "</td></tr>";
     }
     if (rows.empty())
-        rows = "<tr><td colspan=\"4\" class=\"muted\">No issued accesses yet — issue one below.</td></tr>";
+        rows = "<tr><td colspan=\"4\" class=\"muted\">No issued accesses yet — issue one above.</td></tr>";
 
-    // Manual allow-list entries: in conf but never issued here (e.g. typed on
-    // the Reticulum tab from the user's own `rnsh -p`).
+    // Manual allow-list entries: in conf but never issued here (e.g. typed in
+    // the RNS Shell card from the user's own `rnsh -p`).
     for (const auto& h : c.ids) {
         bool granted = false;
         for (const auto& g : gs) if (g.hash == h) { granted = true; break; }
@@ -370,13 +362,16 @@ void access_page(const Request& req, Response& res) {
         manual_rows = "<tr><td class=\"muted\">none</td></tr>";
 
     std::string h = render::page_file("access");
-    h = R(std::move(h), "__BASE__", web::base());
-    h = R(std::move(h), "__A_STATUS__", status);
-    h = R(std::move(h), "__A_DEST__", E(dest.empty() ? "(not started)" : dest));
-    h = R(std::move(h), "__A_ANNOUNCE__", E(c.announce));
+    h = R(std::move(h), "__BASE__", base);
     h = R(std::move(h), "__A_GRANTS__", rows);
     h = R(std::move(h), "__A_MANUAL__", manual_rows);
-    res.body = render::layout(req, res, "Remote access", "access", h);
+    return h;
+}
+
+// Old bookmark route: the cards live on the Reticulum tab now.
+void access_page(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, false)) return;
+    res.redirect(access_redirect());
 }
 
 void access_issue(const Request& req, Response& res) {

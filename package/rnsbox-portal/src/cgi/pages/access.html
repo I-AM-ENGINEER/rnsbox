@@ -1,20 +1,16 @@
-<section class="card">
-  <h3>Remote access (rnsh) — Удалённый доступ</h3>
-  <p class="muted">A root shell on this box, reachable from anywhere on the Reticulum
-  network. Issuing an access mints a <em>fresh client identity</em>, adds its public hash
-  to the rnsh allow-list and downloads a plain-text file with the private key and
+<!-- Remote access (rnsh): rendered as cards inside the Reticulum tab,
+     directly under the RNS Shell card (routes_access.cpp access_cards());
+     the id anchors the old /access bookmark redirect. The server status and
+     destination live in the RNS Shell card right above. -->
+<section class="card" id="rnsh-access">
+  <h3>Remote access — issued key files</h3>
+  <p class="muted">Issuing an access mints a <em>fresh client identity</em>, adds its public hash
+  to the rnsh allow-list above and downloads a plain-text file with the private key and
   ready-to-paste Linux instructions (<code>pip install rns</code>, then
   <code>rnsh&nbsp;-i &lt;key&gt; &lt;destination&gt;</code>).</p>
   <p class="muted"><strong>The private key is never stored on the box</strong> — the downloaded
   file is its only copy. Save it immediately; a lost file cannot be re-downloaded, use
-  <em>Revoke &amp; re-issue</em>. Revoking makes the old file useless. The allow-list itself
-  is shared with the manual <em>RNS Shell</em> card on the Reticulum tab.</p>
-
-  <table class="kv">
-    <tr><th>Server</th><td>__A_STATUS__</td></tr>
-    <tr><th>Destination</th><td class="mono">__A_DEST__</td></tr>
-    <tr><th>Announce period</th><td>__A_ANNOUNCE__ s <span class="muted">(change on the Reticulum tab)</span></td></tr>
-  </table>
+  <em>Revoke &amp; re-issue</em>. Revoking makes the old file useless.</p>
 
   <form method="post" action="__BASE__/access/issue" style="margin-top:12px">
     <button type="submit" class="btn-primary">Выдать доступ и скачать файл &nbsp;(issue &amp; download)</button>
@@ -34,7 +30,7 @@
 
 <section class="card">
   <h3>Manually added client hashes</h3>
-  <p class="muted">Hashes typed by hand on the Reticulum tab (<code>rnsh -p</code> output) —
+  <p class="muted">Hashes typed by hand in the RNS Shell card above (<code>rnsh -p</code> output) —
   no key file was issued for these.</p>
   <table class="kv" style="width:100%">
     <tr><th style="width:25%">Hash</th><th>Actions</th></tr>

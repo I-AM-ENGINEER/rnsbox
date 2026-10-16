@@ -569,6 +569,7 @@ void reticulum_page(const Request& req, Response& res) {
     h = rnsh_fill(std::move(h));
     h = rnsdmon_fill(std::move(h));
     h = R(std::move(h), "__ECHOBOT_CARDS__", echobot_cards(base));
+    h = R(std::move(h), "__RNSH_ACCESS_CARDS__", access_cards(base));
     h = R(std::move(h), "__TCP_CLIENTS_ROWS__", tcp_clients_rows(base));
     h = R(std::move(h), "__CONFIG__",        E(cfg));
 

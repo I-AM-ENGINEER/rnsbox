@@ -60,8 +60,9 @@ void updates_check(const http::Request&, http::Response&);        // POST PRG
 void updates_apply(const http::Request&, http::Response&);        // POST PRG
 void updates_auto(const http::Request&, http::Response&);         // POST PRG
 
-// access tab (rnsh remote access — issued key files)
-void access_page(const http::Request&, http::Response&);           // GET  render
+// remote access (rnsh issued key files — cards on the Reticulum tab)
+std::string access_cards(const std::string& base);                 // cards HTML for the Reticulum page
+void access_page(const http::Request&, http::Response&);           // GET  -> redirect to the cards
 void access_issue(const http::Request&, http::Response&);          // POST -> text/plain download
 void access_revoke(const http::Request&, http::Response&);         // POST PRG
 void access_reissue(const http::Request&, http::Response&);        // POST -> text/plain download
