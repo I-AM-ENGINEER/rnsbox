@@ -20,8 +20,19 @@ Branch: sg2000-mainline2 (push only this). NEVER touch C: worktree or main.
     allowlist is hermetic (0 symbols default-on beyond the file);
   - buildroot defconfig parses into ~/rnsbox-work/upstream/out/sg2000-duomodule01-mainline/.config;
   - boot.its FIT assembles + dumps via host mkimage (default config set, Image.gz 3.87 MiB).
-- [t4] WAITING for owner's build BUILD-EXIT in /mnt/d/Downloads/rnsbox-debug/local-build-rv.log
-  (still compiling rustc, load ~13) before the full image build.
+- [t4] Owner build finished (BUILD-EXIT=0 at ~00:45). Full image build started.
+- [t5] **FULL BUILD SUCCESS: BUILD-EXIT=0, first try.** ~45 min end-to-end in a clean
+  ODIR (~/rnsbox-work/upstream/out/sg2000-duomodule01-mainline), BR2_JLEVEL=3.
+  Verified artifacts in images/:
+  - rnsbox-sg2000-duomodule01-mainline-lite.img (553 MB = 16MB FAT + 512MB ext4)
+  - Image 7.76 MB / Image.gz 3.88 MiB (fits the 16 MB UIMAG fatload buffer)
+  - sg2000-duomodule01-evb.dtb: model "Milk-V Duo Module 01 Evaluation Board",
+    uart0/sdhci0 pinmux, OpenSBI region@80000000 no-map present
+  - boot.sd FIT: Default Configuration = config-sg2000_duomodule01_sd, kernel+fdt
+  - built kernel .config: ARCH_SOPHGO=y, PINCTRL_SOPHGO_SG2000=y, CLK_SOPHGO_CV1800=y
+- [t6] Fixed en route: the drvfs-source clone lost the +x bit on build.sh
+  (exit 126 "Permission denied"); chmod + re-committed the mode on the branch.
+- [t7] Pushed sg2000-mainline2 to https://github.com/I-AM-ENGINEER/rnsbox.git.
 
 ## Vendor sg2000_duomodule01_sd facts (WSL ~/rnsbox/LicheeRV-Nano-Build-duo01)
 - memmap.py: DRAM 0x80000000 size 512MB; OPENSBI 512K @0x80000000 (FDT @0x80080000);
