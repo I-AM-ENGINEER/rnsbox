@@ -216,7 +216,7 @@ index 000000000..107f4ca18
 +
 +PYTHON_RNS_VERSION = 1.5.2
 +PYTHON_RNS_SOURCE = rns-$(PYTHON_RNS_VERSION).tar.gz
-+PYTHON_RNS_SITE = https://files.pythonhosted.org/packages/7e/fb/d7b0b67c0e369b8533fe14688cb2b65bff21c669b0c776759015ad3d1830
++PYTHON_RNS_SITE = https://files.pythonhosted.org/packages/7e/fb/ec929e1a614e0d9f5266f816d73a060eb6b0c89f6684e9ef0b7bedcac17d
 +PYTHON_RNS_SETUP_TYPE = setuptools
 +PYTHON_RNS_LICENSE = Reticulum License
 +PYTHON_RNS_LICENSE_FILES = LICENSE

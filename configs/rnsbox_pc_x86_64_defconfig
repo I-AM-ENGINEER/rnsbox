@@ -83,3 +83,5 @@ BR2_TARGET_ROOTFS_EXT2_4=y
 BR2_TARGET_ROOTFS_EXT2_SIZE="400M"
 # BR2_TARGET_ROOTFS_TAR is not set
 BR2_PACKAGE_HOST_GENIMAGE=y
+# portal is C++ — the toolchain needs g++ (run 37: g++ missing at rnsbox-portal build)
+BR2_TOOLCHAIN_BUILDROOT_CXX=y
