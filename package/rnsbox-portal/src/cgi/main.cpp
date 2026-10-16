@@ -442,6 +442,10 @@ int main(int argc, char** argv) {
     else if (p == "/reticulum/rnode/status")     routes::reticulum_rnode_status(req, res);
     else if (p == "/reticulum/rnode/scan")       routes::reticulum_rnode_scan(req, res);
     else if (p == "/reticulum/rnode/pair")       routes::reticulum_rnode_pair(req, res);
+    // TODO(owners-decision): the Updates tab is hidden from the nav
+    // (pages/base.html) as raw/unfinished, but the routes stay live so a
+    // direct link still works. Decide its fate (finish vs. remove) — do
+    // NOT delete these lines as part of a cleanup without that decision.
     else if (p == "/updates")                    routes::updates_page(req, res);
     else if (p == "/updates/data")               routes::updates_data(req, res);
     else if (p == "/updates/config")             routes::updates_config(req, res);

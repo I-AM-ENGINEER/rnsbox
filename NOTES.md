@@ -121,3 +121,10 @@ routes_echobot.cpp renders them through echobot_cards() which the
 Reticulum page fills into __ECHOBOT_CARDS__. The old /echobot URL stays
 a working bookmark: echobot_page() redirects to /reticulum#echobot, and
 every PRG form already redirects there. Nav entry removed.
+
+## 2. Updates tab is raw — hide from nav
+The nav link is now `hidden` (kept in the markup with a
+TODO(owners-decision) comment so the decision is greppable), and the
+same TODO sits at the /updates dispatch in main.cpp. All /updates
+routes and POST handlers stay fully functional by direct link, per the
+owner instruction ("не удалять код... оставить по прямой ссылке").
