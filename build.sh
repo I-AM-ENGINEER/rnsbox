@@ -258,17 +258,114 @@ rnsbox_track_latest_rns() {
 # size/format knobs into every BSP (patches-style) tree; the external
 # rpi-universal flow gets the same treatment straight in
 # configs/rnsbox_rpi_universal_defconfig + board/raspberrypi.
+#
+# The exact knob set the rootfs policy depends on (the admin users table,
+# locked root, openssh-only). Every cvitek defconfig must carry each knob
+# EXACTLY; rnsbox_slim_bsp enforces it and rnsbox_assert_bsp_policy fails
+# the build loudly otherwise. build5 shipped images without the admin user
+# because a non-application here used to be silent.
+RNSBOX_POLICY_KNOBS=(
+    'BR2_PACKAGE_PYTHON3_PY_ONLY=y'
+    '# BR2_PACKAGE_PYTHON3_PY_PYC is not set'
+    'BR2_TARGET_ROOTFS_EXT2_RESBLKS=1'
+    'BR2_ROOTFS_POST_BUILD_SCRIPT="board/common/slim-target.sh"'
+    '# BR2_TARGET_ENABLE_ROOT_LOGIN is not set'
+    'BR2_TARGET_GENERIC_ROOT_PASSWD="*"'
+    'BR2_ROOTFS_USERS_TABLES="board/common/users.txt"'
+    '# BR2_PACKAGE_DROPBEAR is not set'
+    'BR2_PACKAGE_OPENSSH_SERVER=y'
+)
+
+# Stamp the same policy into a LIVE buildroot .config (the cvitek BSP keeps
+# buildroot's .config IN THE SOURCE TREE — there is no output/.config to
+# sed, and an incremental build never re-imports the defconfig). Idempotent.
+rnsbox_stamp_live_config() {
+    local live="$1"
+    [ -f "$live" ] || return 0
+    sed -i \
+        -e 's/^BR2_PACKAGE_PYTHON3_PY_PYC=y/# BR2_PACKAGE_PYTHON3_PY_PYC is not set/' \
+        -e 's/^BR2_PACKAGE_PYTHON3_PYC_ONLY=y/# BR2_PACKAGE_PYTHON3_PYC_ONLY is not set/' \
+        -e 's/^BR2_TARGET_ROOTFS_EXT2_RESBLKS=.*/BR2_TARGET_ROOTFS_EXT2_RESBLKS=1/' \
+        -e 's#^BR2_ROOTFS_POST_BUILD_SCRIPT=.*#BR2_ROOTFS_POST_BUILD_SCRIPT="board/common/slim-target.sh"#' \
+        -e 's/^BR2_TARGET_ENABLE_ROOT_LOGIN=y/# BR2_TARGET_ENABLE_ROOT_LOGIN is not set/' \
+        -e 's/^BR2_TARGET_GENERIC_ROOT_PASSWD=.*/BR2_TARGET_GENERIC_ROOT_PASSWD="*"/' \
+        -e 's#^BR2_ROOTFS_USERS_TABLES=.*#BR2_ROOTFS_USERS_TABLES="board/common/users.txt"#' \
+        -e 's/^BR2_PACKAGE_DROPBEAR=y/# BR2_PACKAGE_DROPBEAR is not set/' \
+        -e 's/^# BR2_PACKAGE_OPENSSH_SERVER is not set/BR2_PACKAGE_OPENSSH_SERVER=y/' \
+        -e 's/^# BR2_PACKAGE_PYTHON3_PY_ONLY is not set$/# py-only selected at build time (rnsbox_slim_bsp)/' \
+        "$live"
+    # PY_ONLY has no line of its own to sed when the file never mentioned
+    # the py knobs — append the selection at EOF (kconfig takes the last
+    # assignment).
+    grep -q '^BR2_PACKAGE_PYTHON3_PY_ONLY=y' "$live" || \
+        echo 'BR2_PACKAGE_PYTHON3_PY_ONLY=y' >> "$live"
+}
+
+# Verify every policy knob landed in every cvitek defconfig; self-heal a
+# knob that is MISSING entirely (append at EOF — kconfig is last-wins), but
+# FAIL the build on any value that is present-but-wrong after the seds.
+rnsbox_assert_bsp_policy() {
+    local bsp="$1" dc k bad
+    local matched=0
+    # NB: the upstream files are named cvitek_SG200X_64bit_defconfig —
+    # UNDERSCORE before defconfig. The historical glob here said
+    # cvitek_*.defconfig (dot), never matched a single file, and the
+    # `[ -f ] || continue` guard silently ate the miss: every build
+    # shipped without the users table / ssh policy (the build5 bug).
+    for dc in "$bsp"/buildroot/configs/cvitek_*_defconfig; do
+        [ -f "$dc" ] || continue
+        matched=1
+        bad=0
+        for k in "${RNSBOX_POLICY_KNOBS[@]}"; do
+            # -xF: the knobs contain regex metacharacters ('*', '"') — a
+            # plain -x would never match the wanted line and fail forever.
+            if ! grep -qxF "$k" "$dc"; then
+                sym="${k%%=*}"
+                if [ "${k:0:1}" = "#" ] || ! grep -q "^$sym=" "$dc"; then
+                    # an entirely absent symbol (or a not-set comment) is
+                    # self-healed by appending at EOF — kconfig takes the
+                    # LAST assignment, so the appended value wins.
+                    echo "$k" >> "$dc"
+                    grep -qxF "$k" "$dc" || { echo "FATAL: $dc: cannot realize policy knob '$k'" >&2; bad=1; }
+                    echo ">> $(basename "$dc"): appended missing policy knob: $k"
+                else
+                    # the symbol IS assigned in this defconfig but the sed
+                    # did not make it the wanted value (duplicate assigns,
+                    # trailing whitespace, upstream churn) — fail loudly,
+                    # this is exactly the silent policy hole build5 shipped.
+                    echo "FATAL: $dc: policy knob did not land: wanted '$k', have '$(grep "^$sym=" "$dc" | tail -1)'" >&2
+                    bad=1
+                fi
+            fi
+        done
+        [ "$bad" = 0 ] || exit 1
+    done
+    [ "$matched" = 1 ] || {
+        echo "FATAL: rnsbox_slim_bsp: no cvitek_*_defconfig found under $bsp/buildroot/configs" >&2
+        exit 1
+    }
+    echo ">> policy knobs verified in every cvitek defconfig (py-only, slim hook, users table, locked root, openssh-only)"
+}
+
 rnsbox_slim_bsp() {
+    # Anchor everything to the BSP workdir. The caller has cd'd into it, but
+    # a step that silently depends on cwd is exactly what once ate the sids
+    # (a relative glob matching nothing skips the whole policy unnoticed).
+    local bsp="$1"
+    if [ -z "$bsp" ] || [ ! -d "$bsp/buildroot" ]; then
+        echo "FATAL: rnsbox_slim_bsp: '$bsp' is not a BSP tree (no buildroot/)" >&2
+        exit 1
+    fi
     # 1. the shared post-build slimmer (idempotent, deletes only provably
     #    unused content — see board/common/slim-target.sh for the keep-list
     #    reasoning: pip/setuptools stay, the portal Update button stays).
-    mkdir -p buildroot/board/common
-    cp -f "$HERE/board/common/slim-target.sh" buildroot/board/common/slim-target.sh
-    chmod 0755 buildroot/board/common/slim-target.sh
+    mkdir -p "$bsp/buildroot/board/common"
+    cp -f "$HERE/board/common/slim-target.sh" "$bsp/buildroot/board/common/slim-target.sh"
+    chmod 0755 "$bsp/buildroot/board/common/slim-target.sh"
     #    - the users table: the unprivileged `admin` operator account,
     #      password LOCKED at build time - the portal sets it when SSH is
     #      enabled (wired into every cvitek defconfig below).
-    cp -f "$HERE/board/common/users.txt" buildroot/board/common/users.txt
+    cp -f "$HERE/board/common/users.txt" "$bsp/buildroot/board/common/users.txt"
     # 2. every cvitek defconfig in the tree:
     #    - python3 py-only: the .pyc payload is as big as the .py sources it
     #      duplicates (measured: 61 MB of pyc next to ~55 MB of sources) —
@@ -276,7 +373,9 @@ rnsbox_slim_bsp() {
     #      whatever is actually imported, in the background, on first boot;
     #    - ext4 root reservation 5% -> 1% (first-boot resize makes it moot);
     #    - hook the slimmer as the buildroot post-build script.
-    for dc in buildroot/configs/cvitek_*.defconfig; do
+    local dc
+    # NB: cvitek_*_defconfig — underscore suffix (see rnsbox_assert_bsp_policy).
+    for dc in "$bsp"/buildroot/configs/cvitek_*_defconfig; do
         [ -f "$dc" ] || continue
         sed -i 's/^BR2_PACKAGE_PYTHON3_PY_PYC=y/# BR2_PACKAGE_PYTHON3_PY_PYC is not set\nBR2_PACKAGE_PYTHON3_PY_ONLY=y/' "$dc"
         sed -i 's/^BR2_PACKAGE_PYTHON3_PYC_ONLY=y/# BR2_PACKAGE_PYTHON3_PYC_ONLY is not set\nBR2_PACKAGE_PYTHON3_PY_ONLY=y/' "$dc"
@@ -302,11 +401,18 @@ rnsbox_slim_bsp() {
         #     an explicit "not set").
         sed -i 's/^# BR2_PACKAGE_PYTHON3_PY_ONLY is not set$/# py-only selected at build time (rnsbox_slim_bsp)/' "$dc"
     done
+    rnsbox_assert_bsp_policy "$bsp"
+    # live config(s): the cvitek BSP keeps buildroot's .config in the source
+    # tree (no O= dir), and a reused workspace builds incrementally without
+    # re-importing the defconfig — stamp the policy into it so a warm build
+    # picks the knobs up even if the re-import were skipped.
+    rnsbox_stamp_live_config "$bsp/buildroot/.config"
+    rnsbox_stamp_live_config "$bsp/buildroot/output/.config"
     # first-boot bytecode warm-up (see the script): backgrounded, never
     # blocks rcS, so the py-only rootfs keeps its fast first rnsd start
-    if [ -d buildroot/board/cvitek/SG200X/overlay/etc/init.d ]; then
-        cp -f "$HERE/board/common/S51pycompile" buildroot/board/cvitek/SG200X/overlay/etc/init.d/S51pycompile
-        chmod 0755 buildroot/board/cvitek/SG200X/overlay/etc/init.d/S51pycompile
+    if [ -d "$bsp/buildroot/board/cvitek/SG200X/overlay/etc/init.d" ]; then
+        cp -f "$HERE/board/common/S51pycompile" "$bsp/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S51pycompile"
+        chmod 0755 "$bsp/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S51pycompile"
     fi
     # 3. lite rootfs fixed size: the pack scripts re-stamp this literal at
     #    pack time (their restore() resets the DVD shape), so the pack
@@ -316,7 +422,8 @@ rnsbox_slim_bsp() {
     #    grows it on the card anyway. buildroot fails the fs step only if
     #    content outgrows. The arm64 family packs through build-rnsbox-arm.sh
     #    (same shape, own copy of the literal).
-    for packer in build-rnsbox.sh build-rnsbox-arm.sh; do
+    local packer
+    for packer in "$bsp/build-rnsbox.sh" "$bsp/build-rnsbox-arm.sh"; do
         # NB: `if`, not `[ -f ] &&` — under set -e a false test in an AND-list
         # kills the script (this ate the duo flows on CI: only the arm64 flow
         # carries build-rnsbox-arm.sh).
@@ -357,7 +464,17 @@ rnsbox_build_bsp_generic() {
     sed -i 's/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE="512M"/' \
         "buildroot/configs/$RNSBOX_BR_DEFCONFIG"
     # incremental builds never re-import the defconfig: stamp the live
-    # .config too, or the fs step keeps whatever size a previous era set
+    # .config too, or the fs step keeps whatever size a previous era set.
+    # The cvitek BSP keeps buildroot's .config IN THE SOURCE TREE; the
+    # output/.config path below is a legacy no-op kept for external flows.
+    if [ -f buildroot/.config ]; then
+        sed -i 's/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE="512M"/' \
+            buildroot/.config
+    fi
+    if [ -f buildroot/.config ]; then
+        sed -i 's/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE="512M"/' \
+            buildroot/.config
+    fi
     if [ -f buildroot/output/.config ]; then
         sed -i 's/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE="512M"/' \
             buildroot/output/.config
@@ -426,6 +543,10 @@ rnsbox_build_milkv_duo_01() {
     export PATH=/usr/sbin:/sbin:$PATH
     sed -i 's/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE="512M"/' \
         buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig
+    if [ -f buildroot/.config ]; then
+        sed -i 's/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE="512M"/' \
+            buildroot/.config
+    fi
     if [ -f buildroot/output/.config ]; then
         sed -i 's/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE="512M"/' \
             buildroot/output/.config
@@ -482,6 +603,10 @@ rnsbox_univ_stage() {
     # 1.6G partition (S99resizefs grows it on first boot), NCM-only gadget.
     sed -i 's/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE="512M"/' \
         buildroot/configs/cvitek_SG200X_musl_riscv64_defconfig
+    if [ -f buildroot/.config ]; then
+        sed -i 's/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE="512M"/' \
+            buildroot/.config
+    fi
     if [ -f buildroot/output/.config ]; then
         sed -i 's/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE="512M"/' \
             buildroot/output/.config
@@ -768,7 +893,7 @@ done
 # rootfs slimming: sync the slimmer + flip the size/format knobs (see the
 # rnsbox_slim_bsp comment block above for what and why)
 echo ">> slimming knobs: py-only python, 1% ext4 reservation, 512M lite rootfs, slim-target hook"
-rnsbox_slim_bsp
+rnsbox_slim_bsp "$WORKDIR"
 
 rnsbox_track_latest_rns "$PWD"
 rnsbox_build

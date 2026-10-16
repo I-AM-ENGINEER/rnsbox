@@ -403,8 +403,11 @@ bool write_slip(const SlipConfig& c, std::string& err) {
     std::string dev = c.device.empty() ? "/dev/serial0" : c.device;
     if (!valid_tty(dev)) { err = "bad device path"; return false; }
     // Digits only (atoi would take "2000000<junk>"); the cap is a sanity
-    // bound, the real ceiling is per board (see the board README: 2 Mbaud
-    // exact on the reclocked arm64 boards, 1562500 on 25 MHz-clocked ones).
+    // bound, the real ceiling is per board: every rnsbox CVITEK board
+    // reclocks its UART clock to 96 MHz, where the modem's factory
+    // 2 Mbaud is generated exactly. The one exception is the classic
+    // LicheeRV Nano-e, whose 25 MHz UART clock tops out below 2 Mbaud —
+    // use 1500000 there.
     int baud = 0;
     if (all_digits(c.baud) && c.baud.size() <= 8) baud = atoi(c.baud.c_str());
     if (baud < 1 || baud > SLIP_MAX_BAUD) { err = "baud out of range (1-" + std::to_string(SLIP_MAX_BAUD) + ")"; return false; }
@@ -414,7 +417,8 @@ bool write_slip(const SlipConfig& c, std::string& err) {
     std::string o =
         "# SLIP-over-UART link to an external WiFi-HaLow (RNode) modem.\n"
         "# Managed by the rnsbox-portal Reticulum tab; applied by S31slip. OFF\n"
-        "# by default. baud must match the modem (Nano max 1562500);\n"
+        "# by default. baud must match the modem (2 Mbaud on every rnsbox\n"
+        "# board except the classic LicheeRV Nano-e: use 1500000 there);\n"
         "# local_ip/peer_ip must match the modem's SLIP config.\n";
     o += "enabled=" + en + "\ndevice=" + dev + "\nbaud=" + std::to_string(baud) +
          "\nlocal_ip=" + lip + "\npeer_ip=" + pip + "\n";

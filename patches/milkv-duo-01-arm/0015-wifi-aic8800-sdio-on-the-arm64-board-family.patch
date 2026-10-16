@@ -1,0 +1,137 @@
+From de28e30a49e44206f3a34649fdc1131ce5347b82 Mon Sep 17 00:00:00 2001
+From: rnsbox <rnsbox@localhost>
+Date: Sat, 17 Oct 2026 00:30:00 +0300
+Subject: [PATCH] wifi: AIC8800 SDIO on the arm64 board family
+
+The arm64 board dts only inherited the wifisd LABEL STUB from
+soph_base_arm.dtsi (interrupt line, no compatible/reg/clocks), so the
+cvitek sdio driver never probed the AIC8800 of the -W modules and the
+portal showed "No WiFi radio detected" on boards that have the radio.
+Add the full node (same properties as the vendor sg2002_licheea53nano
+arm board) plus the wifi_pin power/wakeup node and CONFIG_CVI_WIFI_PIN.
+The plain (non-W) Module 01 has no radio: S35wifi already degrades to a
+logged no-op, so the absence stays soft.
+---
+ .../dts_arm64/sg2000_duo01evb_arm64_sd.dts    | 35 +++++++++++++++++++
+ .../linux/sg2000_duo01evb_arm64_sd_defconfig  |  3 ++
+ .../dts_arm64/sg2002_duo_arm64_sd.dts         | 35 +++++++++++++++++++
+ .../linux/sg2002_duo_arm64_sd_defconfig       |  3 ++
+ 4 files changed, 76 insertions(+)
+
+diff --git a/build/boards/sg200x/sg2000_duo01evb_arm64_sd/dts_arm64/sg2000_duo01evb_arm64_sd.dts b/build/boards/sg200x/sg2000_duo01evb_arm64_sd/dts_arm64/sg2000_duo01evb_arm64_sd.dts
+index f3cd8a2..67bd83a 100644
+--- a/build/boards/sg200x/sg2000_duo01evb_arm64_sd/dts_arm64/sg2000_duo01evb_arm64_sd.dts
++++ b/build/boards/sg200x/sg2000_duo01evb_arm64_sd/dts_arm64/sg2000_duo01evb_arm64_sd.dts
+@@ -46,3 +46,38 @@
+ 	min-frequency = <400000>; // 400Khz
+ 	max-frequency = <25000000>; // 25Mhz
+ };
++
++// Duo Module 01-W only: AIC8800 over SDIO (the -W module carries the
++// radio; the plain Module 01 has none and the absence stays soft —
++// S35wifi exits 0 when no wlanN appears, the portal shows "No WiFi
++// radio detected"). Full node (the base dtsi only stubs the label with
++// the interrupt): same properties the vendor sg2002_licheea53nano_sd
++// arm board carries. Power/wakeup pins per the Milk-V Duo S reference
++// design; the cvi_wifi_pin driver (CONFIG_CVI_WIFI_PIN below) owns the
++// WL_REG_ON / WL_HOST_WAKE sequencing for the aic8800_bsp probe.
++&wifisd {
++	compatible = "cvitek,cv181x-sdio";
++	bus-width = <4>;
++	reg = <0x0 0x4320000 0x0 0x1000>;
++	reg_names = "core_mem";
++	src-frequency = <375000000>;
++	min-frequency = <400000>; // 400Khz
++	max-frequency = <25000000>; // 25Mhz
++	64_addressing;
++	reset_tx_rx_phy;
++	non-removable;
++	pll_index = <0x7>;
++	pll_reg = <0x300207C>;
++	no-mmc;
++	no-sd;
++	status = "okay";
++	interrupts = <GIC_SPI 22 IRQ_TYPE_LEVEL_HIGH>;
++};
++
++/ {
++	wifi_pin {
++		compatible = "cvitek,wifi-pin";
++		poweron-gpio = <&porta 15 GPIO_ACTIVE_HIGH>;
++		wakeup-gpio = <&porte 7 GPIO_ACTIVE_HIGH>;
++	};
++};
+diff --git a/build/boards/sg200x/sg2000_duo01evb_arm64_sd/linux/sg2000_duo01evb_arm64_sd_defconfig b/build/boards/sg200x/sg2000_duo01evb_arm64_sd/linux/sg2000_duo01evb_arm64_sd_defconfig
+index 5f1a782..43bbe8b 100644
+--- a/build/boards/sg200x/sg2000_duo01evb_arm64_sd/linux/sg2000_duo01evb_arm64_sd_defconfig
++++ b/build/boards/sg200x/sg2000_duo01evb_arm64_sd/linux/sg2000_duo01evb_arm64_sd_defconfig
+@@ -386,6 +386,9 @@ CONFIG_MMC=y
+ CONFIG_MMC_SDHCI=y
+ CONFIG_MMC_SDHCI_PLTFM=y
+ CONFIG_MMC_SDHCI_CVI=y
++# RNSBox: the cvitek,wifi-pin DT driver — WL_REG_ON/HOST_WAKE
++# sequencing for the AIC8800 SDIO radio of the Duo Module 01-W
++CONFIG_CVI_WIFI_PIN=y
+ CONFIG_BLK_CMDLINE_PARSER=y
+ CONFIG_PARTITION_ADVANCED=y
+ CONFIG_CMDLINE_PARTITION=y
+diff --git a/build/boards/sg200x/sg2002_duo_arm64_sd/dts_arm64/sg2002_duo_arm64_sd.dts b/build/boards/sg200x/sg2002_duo_arm64_sd/dts_arm64/sg2002_duo_arm64_sd.dts
+index 15622bf..539c7fc 100755
+--- a/build/boards/sg200x/sg2002_duo_arm64_sd/dts_arm64/sg2002_duo_arm64_sd.dts
++++ b/build/boards/sg200x/sg2002_duo_arm64_sd/dts_arm64/sg2002_duo_arm64_sd.dts
+@@ -49,3 +49,38 @@
+ 	min-frequency = <400000>; // 400Khz
+ 	max-frequency = <25000000>; // 25Mhz
+ };
++
++// Duo Module 01-W only: AIC8800 over SDIO (the -W module carries the
++// radio; the plain Module 01 has none and the absence stays soft —
++// S35wifi exits 0 when no wlanN appears, the portal shows "No WiFi
++// radio detected"). Full node (the base dtsi only stubs the label with
++// the interrupt): same properties the vendor sg2002_licheea53nano_sd
++// arm board carries. Power/wakeup pins per the Milk-V Duo S reference
++// design; the cvi_wifi_pin driver (CONFIG_CVI_WIFI_PIN below) owns the
++// WL_REG_ON / WL_HOST_WAKE sequencing for the aic8800_bsp probe.
++&wifisd {
++	compatible = "cvitek,cv181x-sdio";
++	bus-width = <4>;
++	reg = <0x0 0x4320000 0x0 0x1000>;
++	reg_names = "core_mem";
++	src-frequency = <375000000>;
++	min-frequency = <400000>; // 400Khz
++	max-frequency = <25000000>; // 25Mhz
++	64_addressing;
++	reset_tx_rx_phy;
++	non-removable;
++	pll_index = <0x7>;
++	pll_reg = <0x300207C>;
++	no-mmc;
++	no-sd;
++	status = "okay";
++	interrupts = <GIC_SPI 22 IRQ_TYPE_LEVEL_HIGH>;
++};
++
++/ {
++	wifi_pin {
++		compatible = "cvitek,wifi-pin";
++		poweron-gpio = <&porta 15 GPIO_ACTIVE_HIGH>;
++		wakeup-gpio = <&porte 7 GPIO_ACTIVE_HIGH>;
++	};
++};
+diff --git a/build/boards/sg200x/sg2002_duo_arm64_sd/linux/sg2002_duo_arm64_sd_defconfig b/build/boards/sg200x/sg2002_duo_arm64_sd/linux/sg2002_duo_arm64_sd_defconfig
+index 5f1a782..43bbe8b 100644
+--- a/build/boards/sg200x/sg2002_duo_arm64_sd/linux/sg2002_duo_arm64_sd_defconfig
++++ b/build/boards/sg200x/sg2002_duo_arm64_sd/linux/sg2002_duo_arm64_sd_defconfig
+@@ -386,6 +386,9 @@ CONFIG_MMC=y
+ CONFIG_MMC_SDHCI=y
+ CONFIG_MMC_SDHCI_PLTFM=y
+ CONFIG_MMC_SDHCI_CVI=y
++# RNSBox: the cvitek,wifi-pin DT driver — WL_REG_ON/HOST_WAKE
++# sequencing for the AIC8800 SDIO radio of the Duo Module 01-W
++CONFIG_CVI_WIFI_PIN=y
+ CONFIG_BLK_CMDLINE_PARSER=y
+ CONFIG_PARTITION_ADVANCED=y
+ CONFIG_CMDLINE_PARTITION=y
+-- 
+2.43.0
+
