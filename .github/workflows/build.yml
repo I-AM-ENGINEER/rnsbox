@@ -24,6 +24,7 @@ on:
       - 'board/**'
       - 'configs/**'
       - 'scripts/**'
+      - 'patches/**'
       - 'build.sh'
       - '.github/workflows/build.yml'
 
