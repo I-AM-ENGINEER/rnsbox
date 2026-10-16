@@ -139,3 +139,57 @@ renders them through access_cards() into the Reticulum page directly
 under the RNS Shell card (__RNSH_ACCESS_CARDS__, anchor #rnsh-access).
 Nav entry removed; /access stays a working bookmark redirecting to
 /reticulum#rnsh; all issue/revoke/reissue POSTs redirect there too.
+
+## Verification (local, x86-64)
+- Full CGI builds clean with the shipped .mk flags and with -Wall -Wextra
+  (one pre-existing benign warning in routes_updates.cpp only).
+- /tmp/portal-smoke.sh (WSL root, disposable /etc/rnsbox + /run): drives the
+  real CGI with faked uhttpd env (REQUEST_METHOD/PATH_INFO/REMOTE_ADDR/
+  HTTP_HOST/SCRIPT_NAME/HTTP_COOKIE + stdin POSTs, RNSBOX_PAGES override).
+  50 assertions, all green:
+  login -> session; dashboard; settings "not synced" without clock state,
+  "synced"/NTP after touching /run/clock-synced, dashboard JSON
+  clock_source=ntp; reticulum page carries the echo bot cards (#echobot),
+  the Remote access cards, the rnsh card, the TCP client editor, unified
+  "Save & apply" buttons, no "Save & restart rnsd"/"(restarts rnsd)"/
+  "Save schedule", the announce unit out of the input, the RNode card
+  wrapper restored, plain BLE/USB transport options without board names,
+  the BLE scan button + honest "not implemented yet" passkey scaffold;
+  nav has no Echo bot/Access entries, Updates link hidden + carries
+  TODO(owners-decision); /echobot and /access 302 to their cards; /updates
+  works by direct link; bt scan JSON fails soft, bt pair is 405 on GET and
+  fails soft without a stack; tcp client add/update/delete verified against
+  a fixture /etc/reticulum/config (stanza written, listed, rewritten in
+  place, deleted, neighbours intact, bad host refused with nothing
+  written); echo bot default name "<hostname> echo bot" (saved conf still
+  wins); BLE advert prefilled with the hostname; rnsdmon banner reads
+  "rnsd DOWN" with a stale marker and flips to "watching" + unlinks the
+  marker once a process matching rnsd is alive (faked via exec -a).
+- store tcp-client unit test (separate binary): name dedupe, defaults,
+  refusals, in-place update incl. rename-to-self, delete exactness,
+  no file growth on repeated cycles.
+- usbmode helper: 4-case smoke (proc role "host" + usb0 carrier 1 ->
+  device; role device; role host; carrier 0 + garbage role -> unknown).
+
+## Live checks once the board is reflashed (SSH admin@192.168.88.230)
+1. Settings: System time shows synced + source NTP right after boot
+   (ntp-step.log "clock stepped from NTP").
+2. Reticulum: rnsd-watchdog line shows "watching / rnsd healthy" with a
+   green RUNNING state row (stale /run/rnsd-down-since self-clears).
+3. Settings USB card: "Running now: device (gadget)" while plugged into
+   the laptop; no "pending" badge.
+4. Nav: Dashboard / Network / WiFi / Reticulum / Settings / Donate;
+   /updates still opens by direct link; /echobot and /access redirect
+   into the Reticulum tab.
+5. Reticulum: TCP client interfaces editor round-trip; BLE card scan
+   button lists nearby adverts once the dongle/onboard BT is up.
+
+## 7. Button terminology inventory (unified)
+Save & apply: BLE form, RNode form (+muted "saving restarts rnsd"), SLIP
+form, rnsh form (+muted restarts-the-service note), auto-update toggle
+(noscript), auto-restart schedule, watchdog form, echo bot settings
+(restarts the bot, noted), SSH, hostname, USB mode, hotspot, Updates
+repo config. Plain Save: NTP servers (persist-only, note points to
+"Restart NTP") and the raw /etc/reticulum/config editor ("Save" then
+"Restart rnsd"). Action buttons (Restart rnsd/NTP, Announce now, Add,
+Connect, Set mode/TX power, Apply update now) are actions, not saves.
