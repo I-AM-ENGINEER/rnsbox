@@ -26,3 +26,45 @@ from the richer board/milkv-duo/rootfs-overlay versions:
   "rnsbox"), else generates <board>-<keyhash>. The echobot ships the default
   display name "rnsbox echo bot" (patch 0027 echobot.conf) — same "rnsbox"
   base prefix already.
+
+## 9. RNode card: layout, transport labels, device list
+Cause: the <section class="card"> opener was lost, so the RNode content
+rendered glued to the Bluetooth card; the Transport options carried
+board names (T-Echo, RAK4631) and device paths in the option text; the
+USB device datalist was server-rendered once (no hot-plug, no way to
+tell several modems apart without a reload).
+Fix: restore the wrapper; options are Off / USB serial / BLE with the
+details in the select title; the datalist refreshes from
+/reticulum/rnode/status (devices[]) on every 15 s status poll.
+
+## 5. rnsd watchdog banner "DOWN 3 min — reboots after 60 min" at State RUNNING
+Cause: the banner trusted /run/rnsd-down-since alone. The writer
+(deployed S46wanwatch, patches 0004+0024) removes it only when its own
+liveness test passes: pidfile kill -0, else `pidof -x rnsd` — busybox
+pidof has no -x, and a stale pidfile (dead pid, S82rnsd stop only waits
+5 s for the python process) passes neither, while the portal finds the
+live rnsd via a /proc cmdline scan. Contradiction, and the false streak
+ends in a real reboot after down_limit.
+Fix: rnsdmon_fill cross-checks sysinfo::rnsd_status().running first; if
+rnsd is up the banner reads healthy and a stale numeric marker is
+unlinked (best effort). The DOWN countdown still renders when rnsd is
+really gone.
+
+## 4. "System time … not synced" although the boot log says Stepping clock from NTP: OK
+Cause: the portal reads /run/clock-source; the deployed duo-01 S45ntpsync
+(patch 0004) only touches /run/clock-synced after a successful step and
+never writes clock-source, so the indicator could never leave "not
+synced" (until a browser sync).
+Fix: sysinfo::clock_source() falls back to "ntp" when /run/clock-synced
+exists and the wall clock is past the 2020 floor. The marker is removed
+before each step attempt (never lies across boots), a browser sync still
+writes clock-source=browser, and ntp keeps precedence for the browser
+button + TLS clock gating (same call sites).
+
+## 6. USB widget: "Running now: host" while the owner is on the gadget LAN
+Cause: helpers/usbmode active_role() trusted /proc/cviusb/otg_role, which
+reads "host" whenever the ID-pin override was not written this boot.
+Fix: usb0 with carrier is ground truth — checked first on cvi and other
+platforms, and required (plus a UDC) on rpi. RNSBOX_USB_NET_DIR test hook
+added; smoke-tested 4 cases (host+carrier->device, device, host,
+carrier0+bogus->unknown).
