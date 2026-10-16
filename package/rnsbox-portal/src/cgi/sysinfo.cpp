@@ -405,7 +405,18 @@ Slip slip_status() {
 
 std::string clock_source() {
     std::string s = util::trim(util::read_file("/run/clock-source", 64));
-    return (s == "rtc" || s == "ntp" || s == "browser") ? s : std::string();
+    if (s == "rtc" || s == "ntp" || s == "browser") return s;
+    // Some images' NTP stepper records only the derived marker: the shipped
+    // duo-01 S45ntpsync touches /run/clock-synced on a successful step and
+    // never writes /run/clock-source, so the portal kept saying "not synced"
+    // while the boot log read "Stepping clock from NTP: OK". The marker is
+    // removed before each attempt and only recreated once the clock was
+    // stepped (a browser sync always writes clock-source too), so an
+    // existing marker means the wall clock was set this boot — report ntp
+    // once the system time is plausible, the same floor the settings page
+    // applies to a recorded source.
+    if (exists("/run/clock-synced") && ::time(nullptr) >= CLOCK_FLOOR) return "ntp";
+    return std::string();
 }
 
 Rtc rtc_status() {
