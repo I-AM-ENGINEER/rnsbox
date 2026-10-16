@@ -492,7 +492,7 @@ void reticulum_page(const Request& req, Response& res) {
             "    <div class=\"row-form\" style=\"margin-top:10px\">\n"
             "      <label style=\"margin:0\">Advertised name\n"
             "        <input type=\"text\" name=\"device_name\" value=\"__BT_NAME__\" maxlength=\"16\" "
-            "title=\"Keep it short: BLE advertisement payloads are 31 bytes total. Blank = advertise the service UUID only\"></label>\n"
+            "title=\"Prefilled with the box hostname, so hostname, echo bot and BLE advert share one base prefix. Keep it short: BLE advertisement payloads are 31 bytes total. Clear the field to advertise the service UUID only\"></label>\n"
             "    </div>\n"
             "    <button type=\"submit\" class=\"btn-primary\" style=\"margin-top:10px\">Save &amp; apply</button>\n"
             "    <span class=\"muted\">saving restarts rnsd — active links reconnect on their own</span>\n"
@@ -505,7 +505,18 @@ void reticulum_page(const Request& req, Response& res) {
     h = R(std::move(h), "__BT_FORM_BLOCK__", bt_form);
     h = R(std::move(h), "__BT_STACK_STATUS__", bt_status_html(bt));
     h = R(std::move(h), "__BT_ENABLED_CHECKED__", (bt_on && bt_installed()) ? "checked" : "");
-    h = R(std::move(h), "__BT_NAME__", E(bl.device_name));
+    // Advertised name defaults to the box hostname, so the node carries one
+    // base prefix everywhere: the hostname itself (S10uuid reads
+    // /boot/hostname, pinned to "rnsbox" by the build), the echo bot's
+    // "<hostname> echo bot" and this BLE advert. Clearing the field still
+    // means the UUID-only advertisement the driver defaults to.
+    {
+        std::string btn = util::trim(bl.device_name);
+        if (btn.empty()) btn = util::trim(util::read_file("/proc/sys/kernel/hostname", 128));
+        if (btn == "localhost") btn.clear();
+        if (btn.size() > 16) btn = btn.substr(0, 16);   // write_ble's own bound
+        h = R(std::move(h), "__BT_NAME__", E(btn));
+    }
     h = rnode_fill(std::move(h));
     h = rnsh_fill(std::move(h));
     h = rnsdmon_fill(std::move(h));

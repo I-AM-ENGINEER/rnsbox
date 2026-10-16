@@ -29,8 +29,21 @@ constexpr const char* ECHOBOT_PID   = "/var/run/echobot.pid";
 struct EchobotConf {
     bool enabled = true;
     long interval = 86400;
-    std::string name = "rnsbox echo bot";
+    std::string name;   // empty = the derived default (echobot_default_name)
 };
+
+// The bot's default display name shares the box's base prefix: the image
+// pins the hostname to "rnsbox" (S10uuid applies /boot/hostname; the build
+// writes "rnsbox" there), so "<hostname> echo bot" announces the bot as the
+// same node the operator sees in the portal header — and the BLE advert is
+// defaulted to the hostname too (see routes_reticulum.cpp).
+static std::string echobot_default_name() {
+    std::string h = util::trim(util::read_file("/proc/sys/kernel/hostname", 128));
+    if (h.empty() || h == "localhost") h = "rnsbox";
+    std::string n = h + " echo bot";
+    if (n.size() > 48) n = n.substr(0, 48);
+    return n;
+}
 
 // Same parsing rules as the daemon's read_conf() and S87echobot's read_conf():
 // first `key=value` wins, '#' comments out nothing (values are single-line
@@ -144,6 +157,7 @@ void echobot_page(const Request& req, Response& res) {
     std::string base = web::base();
 
     EchobotConf c = echobot_read_conf();
+    if (c.name.empty()) c.name = echobot_default_name();
     std::string state = util::read_file(ECHOBOT_STATE, 65536);
     bool running = echobot_running();
 
@@ -220,7 +234,7 @@ void echobot_save(const Request& req, Response& res) {
     bool enabled = req.f("enabled") == "on";
 
     std::string name = util::trim(req.f("name"));
-    if (name.empty() || !util::is_single_line_clean(name)) name = "rnsbox echo bot";
+    if (name.empty() || !util::is_single_line_clean(name)) name = echobot_default_name();
     if (name.size() > 48) name = name.substr(0, 48);
 
     long interval = strtol(req.f("interval").c_str(), nullptr, 10);

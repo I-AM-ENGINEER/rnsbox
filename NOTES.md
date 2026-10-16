@@ -68,3 +68,15 @@ Fix: usb0 with carrier is ground truth — checked first on cvi and other
 platforms, and required (plus a UDC) on rpi. RNSBOX_USB_NET_DIR test hook
 added; smoke-tested 4 cases (host+carrier->device, device, host,
 carrier0+bogus->unknown).
+
+## 12. Hostname / echo bot / BLE name share one base prefix
+Found: hostname default = "rnsbox" (vendor S10uuid applies /boot/hostname;
+the build pins it there, patch 0003). Echo bot shipped default display name
+"rnsbox echo bot" (patch 0027) — same prefix by luck, but hardcoded, so a
+renamed box drifted. BLE advert defaulted to blank (UUID-only).
+Fix (portal side; the hostname generation itself is the vendor script):
+- echo bot: default name is now "<hostname> echo bot" (fallback "rnsbox
+  echo bot"), applied at render + save.
+- BLE: the Advertised-name field prefills with the hostname (trimmed to
+  the 16-char BLE bound); clearing it still means UUID-only. Title
+  documents the convention.
