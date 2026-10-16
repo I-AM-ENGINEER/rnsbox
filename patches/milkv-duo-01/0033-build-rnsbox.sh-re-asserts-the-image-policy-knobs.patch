@@ -1,0 +1,64 @@
+From 264f56ffc827d6da948a1b26cf5ef6580b2eb6fa Mon Sep 17 00:00:00 2001
+From: rnsbox <rnsbox@localhost>
+Date: Fri, 16 Oct 2026 04:19:24 +0300
+Subject: [PATCH] build: build-rnsbox.sh re-asserts the image-policy knobs at
+ pack time
+
+The vendor build phases rewrite the buildroot defconfig from the
+committed state between the series-apply step (where build.sh stamps
+the knobs) and the rootfs pass - so the py-only/SSH/users-table knobs
+never reached buildroot's config import and the image shipped
+root/admin with a fat .pyc python. The packer is the last writer
+before br-rootfs-pack imports the defconfig, so stamp the knobs here:
+py-only (+ stale-line neutralizer), 1% ext4 reservation, the
+slim-target.sh post-build hook, root login closed, root password
+locked, the admin users table, dropbear out, openssh-server in.
+---
+ build-rnsbox.sh | 31 +++++++++++++++++++++++++++++++
+ 1 file changed, 31 insertions(+)
+
+diff --git a/build-rnsbox.sh b/build-rnsbox.sh
+index 0aa0aea63..0b8db0cf8 100755
+--- a/build-rnsbox.sh
++++ b/build-rnsbox.sh
+@@ -44,6 +44,37 @@ if [ -n "${RNSBOX_NPROC:-}" ]; then
+ 	export MAKEFLAGS
+ fi
+ 
++# RNSBox: re-assert the image-policy knobs on the defconfig at pack time.
++# build.sh stamps them into the tree right after the BSP series is applied
++# (rnsbox_slim_bsp), but the vendor build phases rewrite this defconfig
++# from the committed state on the way to the rootfs pass - so the knobs
++# are (re)stamped HERE: the packer is the last writer before buildroot
++# imports the file (br-rootfs-pack: make <defconfig> reads it verbatim).
++# Idempotent; mirrors rnsbox_slim_bsp in the repo's build.sh.
++#   - python3 py-only (sources ship; S51pycompile rebuilds bytecode on
++#     first boot) + kill the stale "PY_ONLY is not set" the flip leaves
++#     BELOW the inserted =y: kconfig takes the LAST assignment, so the
++#     stale line would cancel the selection silently;
++#   - ext4 root reservation 5% -> 1% (first-boot resize makes it moot);
++#   - the shared slim-target.sh as the post-build hook (see the script
++#     for the keep-list; pip/setuptools and the portal Update button stay);
++#   - SSH hardening: root login closed + root password locked ("*"), the
++#     admin users table (buildroot/board/common/users.txt), and openssh
++#     as THE ssh daemon (the overlay S50sshd gate keeps it off until the
++#     portal enables it; dropbear must never return as a second daemon).
++sed -i 's/^BR2_PACKAGE_PYTHON3_PY_PYC=y/# BR2_PACKAGE_PYTHON3_PY_PYC is not set
++BR2_PACKAGE_PYTHON3_PY_ONLY=y/' "$DEFCONFIG"
++sed -i 's/^BR2_PACKAGE_PYTHON3_PYC_ONLY=y/# BR2_PACKAGE_PYTHON3_PYC_ONLY is not set
++BR2_PACKAGE_PYTHON3_PY_ONLY=y/' "$DEFCONFIG"
++sed -i 's/^# BR2_PACKAGE_PYTHON3_PY_ONLY is not set$/# py-only selected at pack time (build-rnsbox.sh)/' "$DEFCONFIG"
++sed -i 's/^BR2_TARGET_ROOTFS_EXT2_RESBLKS=.*/BR2_TARGET_ROOTFS_EXT2_RESBLKS=1/' "$DEFCONFIG"
++sed -i 's#^BR2_ROOTFS_POST_BUILD_SCRIPT=.*#BR2_ROOTFS_POST_BUILD_SCRIPT="board/common/slim-target.sh"#' "$DEFCONFIG"
++sed -i 's/^BR2_TARGET_ENABLE_ROOT_LOGIN=y/# BR2_TARGET_ENABLE_ROOT_LOGIN is not set/' "$DEFCONFIG"
++sed -i 's/^BR2_TARGET_GENERIC_ROOT_PASSWD=.*/BR2_TARGET_GENERIC_ROOT_PASSWD="*"/' "$DEFCONFIG"
++sed -i 's#^BR2_ROOTFS_USERS_TABLES=.*#BR2_ROOTFS_USERS_TABLES="board/common/users.txt"#' "$DEFCONFIG"
++sed -i 's/^BR2_PACKAGE_DROPBEAR=y/# BR2_PACKAGE_DROPBEAR is not set/' "$DEFCONFIG"
++sed -i 's/^# BR2_PACKAGE_OPENSSH_SERVER is not set/BR2_PACKAGE_OPENSSH_SERVER=y/' "$DEFCONFIG"
++
+ restore() {
+ 	# put the tree back to the committed DVD-shaped state
+ 	sed -i 's/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE="2800M"/' "$DEFCONFIG"
+-- 
+2.43.0
+
