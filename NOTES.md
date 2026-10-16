@@ -80,3 +80,21 @@ Fix (portal side; the hostname generation itself is the vendor script):
 - BLE: the Advertised-name field prefills with the hostname (trimmed to
   the 16-char BLE bound); clearing it still means UUID-only. Title
   documents the convention.
+
+## 10. BLE transport: no pairing UX
+Backend reality: the [[BLE Interface]] transport scans/accepts inside rnsd;
+the only portal-facing BLE tooling was rnode.py scan/pair, filtered to
+RNode adverts (NUS UUID + name prefix), and pairing is BlueZ JustWorks —
+no user key exists anywhere in that flow.
+Added (minimal honest UX on the Bluetooth card):
+- rnode.py scan-any: every advertising device (name/address/bonded),
+  no filter; GET /reticulum/bluetooth/scan serves it with a 15 s cache
+  + single-flight lock (same pattern as the RNode scan).
+- POST /reticulum/bluetooth/pair: alias over the existing generic
+  bluetoothctl pair+trust (POST_ONLY updated). Scan table renders
+  Name/Address/Bonded with a Pair button; paired rows say so.
+- Pairing key field: rendered DISABLED with an honest "not implemented
+  yet" note — RNS BLE takes no user key; a passkey/numeric-compare
+  pairing would need an interactive agent wired into rnode.py pair.
+  What is missing in the backend for full PIN UX: a bluetoothctl agent
+  (PIN callback) in the pair helper + BlueZ agent registration.

@@ -53,6 +53,7 @@ static const char* const POST_ONLY[] = {
     "/reticulum/halow/add",
     "/reticulum/bluetooth",
     "/reticulum/bluetooth/raise",
+    "/reticulum/bluetooth/pair",
     "/reticulum/rnode",
     "/reticulum/rnode/pair",
     "/settings/password",
@@ -429,6 +430,8 @@ int main(int argc, char** argv) {
     else if (p == "/reticulum/halow/add")        routes::reticulum_halow_add(req, res);
     else if (p == "/reticulum/bluetooth")        routes::reticulum_bluetooth(req, res);
     else if (p == "/reticulum/bluetooth/raise")  routes::reticulum_bluetooth_raise(req, res);
+    else if (p == "/reticulum/bluetooth/scan")   routes::reticulum_bluetooth_scan(req, res);
+    else if (p == "/reticulum/bluetooth/pair")   routes::reticulum_bluetooth_pair(req, res);
     else if (p == "/reticulum/rnode")            routes::reticulum_rnode(req, res);
     else if (p == "/reticulum/rnode/status")     routes::reticulum_rnode_status(req, res);
     else if (p == "/reticulum/rnode/scan")       routes::reticulum_rnode_scan(req, res);

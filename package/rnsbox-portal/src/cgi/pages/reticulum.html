@@ -292,6 +292,61 @@ document.addEventListener('DOMContentLoaded', rnodeStatusRefresh);
 setInterval(rnodeStatusRefresh, 15000);
 </script>
 
+<script>
+// Bluetooth card: generic BLE discovery (rnode.py scan-any) + one-time BlueZ
+// bonding — RNS attaches to bonded devices only. Same flow as the RNode
+// card's scan/pair, just unfiltered.
+function btScan(btn){
+  var msg = document.getElementById('bt-scan-msg');
+  var list = document.getElementById('bt-scan-list');
+  btn.disabled = true;
+  msg.textContent = ' scanning (up to ~10 s)…';
+  msg.style.color = 'var(--muted)';
+  fetch('__BASE__/reticulum/bluetooth/scan').then(function(r){
+    if (r.status === 401) throw new Error('session expired — please log in again');
+    return r.json();
+  }).then(function(d){
+    btn.disabled = false; msg.textContent = '';
+    if (d.error && (!d.devices || !d.devices.length)) {
+      msg.textContent = ' ' + d.error; msg.style.color = 'var(--err)'; return;
+    }
+    if (!d.devices || !d.devices.length) {
+      msg.textContent = ' nothing advertising nearby (adapter up? peer in range?)';
+      msg.style.color = 'var(--muted)'; return;
+    }
+    list.innerHTML = '<table class="data"><tr><th>Name</th><th>Address</th><th>Bonded</th><th></th></tr>' +
+      d.devices.map(function(x){
+        return '<tr><td>' + escH(x.name || '?') + '</td><td class="mono">' + escH(x.address) + '</td>' +
+          '<td>' + (x.bonded ? '<span class="badge ok">yes</span>' : '<span class="badge warn">no</span>') + '</td>' +
+          '<td>' + (x.bonded
+            ? '<span class="muted">paired</span>'
+            : '<button type="button" class="btn" onclick="btPair(this,\'' + escH(x.address) + '\')">Pair</button>') +
+          '</td></tr>';
+      }).join('') + '</table>';
+  }).catch(function(e){
+    btn.disabled = false; msg.textContent = ' ' + (e.message || 'scan failed');
+    msg.style.color = 'var(--err)';
+  });
+}
+function btPair(btn, addr){
+  btn.disabled = true; btn.textContent = 'Pairing…';
+  var body = 'address=' + encodeURIComponent(addr);
+  fetch('__BASE__/reticulum/bluetooth/pair', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: body})
+    .then(function(r){ if (r.status === 401) throw new Error('session expired — please log in again'); return r.json(); })
+    .then(function(d){
+      btn.disabled = false; btn.textContent = d.ok ? 'Pair again' : 'Pair';
+      var msg = document.getElementById('bt-scan-msg');
+      if (msg) { msg.textContent = ' ' + (d.message || (d.ok ? 'paired' : 'pairing failed'));
+                 msg.style.color = d.ok ? 'var(--ok)' : 'var(--err)'; }
+    })
+    .catch(function(e){
+      btn.disabled = false; btn.textContent = 'Pair';
+      var msg = document.getElementById('bt-scan-msg');
+      if (msg) { msg.textContent = ' ' + (e.message || 'pairing failed'); msg.style.color = 'var(--err)'; }
+    });
+}
+</script>
+
 <section class="card">
   <h3>RNS Shell (rnsh)</h3>
   <p class="muted">A root shell reachable from anywhere on the Reticulum network.

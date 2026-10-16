@@ -13,6 +13,9 @@ attaches to bonded devices exclusively (its device_filter checks the BlueZ
 left to rnsd, which scans for the (now bonded) advert on its own.
 
     rnode.py scan        — list advertising RNodes (NUS service UUID present)
+    rnode.py scan-any    — list EVERY advertising BLE device (the generic
+                           Bluetooth card's discovery: peers and adapters
+                           worth pairing, RNode or not)
     rnode.py pair <addr> — bluetoothctl pair + trust <addr>, best-effort
 """
 import json
@@ -90,6 +93,39 @@ def scan() -> dict:
     return {"devices": devices, "error": ""}
 
 
+def scan_any() -> dict:
+    """Every advertising BLE device in range, no name/UUID filter — the
+    generic Bluetooth (BLE transport) card's discovery. The RNS BLE
+    transport itself keeps its own scan inside rnsd; this list is what the
+    operator can see and pair from the portal (a phone, a T-Echo, a dongle
+    — anything BlueZ hears)."""
+    bleak = _bleak()
+    if bleak is None:
+        return {"error": "bleak is not installed (no BLE stack in this image)", "devices": []}
+    import asyncio
+
+    async def _scan():
+        found = []
+        devices = await bleak.BleakScanner.discovery(timeout=SCAN_TIMEOUT)
+        for d in devices:
+            name = d.name or "(unnamed)"
+            found.append({"name": name, "address": d.address,
+                          "bonded": _bonded(d)})
+        # de-dupe by address (a device can appear once per adv payload)
+        uniq = {}
+        for f in found:
+            uniq.setdefault(f["address"], f)
+        return sorted(uniq.values(), key=lambda x: (x["name"] == "(unnamed)",
+                                                    x["name"].lower(),
+                                                    x["address"]))
+
+    try:
+        devices = asyncio.run(_scan())
+    except Exception as e:  # noqa: BLE001 - BlueZ down, no adapter, dbus error
+        return {"error": "BLE scan failed: %s" % e, "devices": []}
+    return {"devices": devices, "error": ""}
+
+
 def pair(address: str) -> dict:
     """bluetoothctl one-shot pair + trust. JustWorks pairing (what RNode
     firmware uses) needs no interactive agent; a numeric-compare modem would
@@ -129,8 +165,10 @@ if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
     if cmd == "scan":
         print(json.dumps(scan()))
+    elif cmd == "scan-any":
+        print(json.dumps(scan_any()))
     elif cmd == "pair" and len(sys.argv) > 2:
         print(json.dumps(pair(sys.argv[2])))
     else:
-        print(json.dumps({"error": "usage: rnode.py scan | pair <addr>"}))
+        print(json.dumps({"error": "usage: rnode.py scan | scan-any | pair <addr>"}))
         sys.exit(2)

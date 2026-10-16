@@ -500,7 +500,23 @@ void reticulum_page(const Request& req, Response& res) {
             "  <form method=\"post\" action=\"" + base + "/reticulum/bluetooth/raise\" class=\"row-form\">\n"
             "    <button type=\"submit\" class=\"btn\">Re-raise the stack</button>\n"
             "    <span class=\"muted\">restarts bluetoothd + rnsd — for a wedged adapter or a dongle plugged in and not picked up</span>\n"
-            "  </form>";
+            "  </form>\n"
+            "  <h4>Pair a BLE peer</h4>\n"
+            "  <p class=\"muted\" style=\"margin:6px 0 0\">RNS attaches to <strong>bonded</strong> devices only: find the peer below,\n"
+            "  pair it once (BlueZ JustWorks — accept the prompt on the peer if it shows one), then Save &amp; apply above.\n"
+            "  A phone pairable from its own Bluetooth settings will offer this box once the stack is up.</p>\n"
+            "  <div class=\"row-form\" style=\"margin-top:8px\">\n"
+            "    <button type=\"button\" class=\"btn\" id=\"btn-bt-scan\" onclick=\"btScan(this)\">Scan BLE devices</button>\n"
+            "    <span id=\"bt-scan-msg\" class=\"msg\"></span>\n"
+            "  </div>\n"
+            "  <div id=\"bt-scan-list\"></div>\n"
+            "  <div class=\"row-form\" style=\"margin-top:8px\">\n"
+            "    <label style=\"margin:0\">Pairing key / PIN\n"
+            "      <input type=\"text\" value=\"\" disabled placeholder=\"not implemented yet\"></label>\n"
+            "    <span class=\"muted\">RNS's BLE transport takes no user-supplied key — security is the BlueZ bonding above. "
+            "A passkey (numeric-compare) pairing needs an interactive agent wired into the pair helper: "
+            "<strong>not implemented yet</strong>; devices that pair JustWorks work today.</span>\n"
+            "  </div>\n";
     }
     h = R(std::move(h), "__BT_FORM_BLOCK__", bt_form);
     h = R(std::move(h), "__BT_STACK_STATUS__", bt_status_html(bt));
@@ -893,6 +909,63 @@ void reticulum_bluetooth_raise(const Request& req, Response& res) {
     render::redirect_flash(res, ret_redirect(), "success",
         "Bluetooth stack and rnsd restarted. Check the Adapter line above: hci0 present + dbus + bluetoothd "
         "all green is a healthy stack; a missing adapter means no onboard radio and no dongle.");
+}
+
+// ---- Bluetooth card: generic BLE discovery + pairing ----------------------
+// The BLE transport itself scans/accepts inside rnsd; these endpoints give
+// the operator eyes (who is advertising?) and the one-time BlueZ bonding
+// RNS requires (it attaches to bonded devices only). Same helper as the
+// RNode card's pair (a stack-level operation), a wider scan (scan-any).
+
+// Short-TTL cache for rnode.py scan-any (a discovery cycle costs ~6 s of
+// CPU+radio on the target); same pattern as the RNode scan cache.
+constexpr const char* BT_SCAN_CACHE = "/run/rnsbox-btscan.json";
+constexpr const char* BT_SCAN_LOCK  = "/run/rnsbox-btscan.lock";
+constexpr int BT_SCAN_TTL = 15;   // seconds
+
+static bool bt_scan_fresh(std::string& out) {
+    struct stat st;
+    if (::stat(BT_SCAN_CACHE, &st) != 0) return false;
+    time_t now = ::time(nullptr);
+    if (st.st_mtime > now || now - st.st_mtime >= BT_SCAN_TTL) return false;
+    out = util::read_file(BT_SCAN_CACHE, 256 * 1024);
+    std::string t = util::trim(out);
+    return !t.empty() && t[0] == '{';
+}
+
+// GET /reticulum/bluetooth/scan — every advertising BLE device (rnode.py
+// scan-any), fails soft with a JSON error the page renders.
+void reticulum_bluetooth_scan(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, true)) return;
+    res.content_type = "application/json";
+    std::string cached;
+    if (bt_scan_fresh(cached)) { res.body = cached; return; }
+
+    int lfd = ::open(BT_SCAN_LOCK, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (lfd >= 0) ::flock(lfd, LOCK_EX);
+    struct LockGuard { int fd; ~LockGuard() { if (fd >= 0) ::close(fd); } } guard{lfd};
+    if (bt_scan_fresh(cached)) { res.body = cached; return; }
+
+    if (!store::rnode_ble_stack_present()) {
+        res.body = "{\"error\":\"no BLE stack in this image (bluez/dbus + bleak needed)\",\"devices\":[]}";
+        return;
+    }
+    util::RunResult rr = util::run({"/usr/bin/python3", "/usr/lib/rnsbox/rnode.py", "scan-any"}, "", 20);
+    std::string out = util::trim(rr.out);
+    if (rr.exit_code == 0 && !out.empty() && out[0] == '{') {
+        util::write_file_atomic(BT_SCAN_CACHE, rr.out, 0600);
+        res.body = rr.out;
+        return;
+    }
+    res.body = "{\"error\":\"scan failed\",\"devices\":[]}";
+}
+
+// POST /reticulum/bluetooth/pair — same generic bluetoothctl pair + trust as
+// the RNode card's endpoint (pairing is a BlueZ-level operation, not an
+// RNode-specific one); the strict address check comes with it.
+void reticulum_bluetooth_pair(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, true)) return;
+    reticulum_rnode_pair(req, res);
 }
 
 // ===================== RNode (USB serial / BLE) =====================
