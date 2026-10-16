@@ -35,12 +35,31 @@ warn() { printf '  [warn] %s\n' "$1"; }
 echo "== assert-image: $T (flavor: $FLAVOR)"
 
 # ---- users ----------------------------------------------------------------
+# NB: the users TABLE (admin) is applied by buildroot's fakeroot step at
+# IMAGE creation (fs/common.mk), NOT in output/target — so the passwd and
+# shadow checks read the built rootfs.ext2/4 (debugfs) when it sits next
+# to the target dir, and fall back to the plain files otherwise.
+IMG=""
+for cand in "$T/../images/rootfs.ext2" "$T/../images/rootfs.ext4" \
+            "$T/images/rootfs.ext2" "$T/images/rootfs.ext4"; do
+    [ -e "$cand" ] && IMG="$cand" && break
+done
+get_file() { # $1 = path inside the image/target
+    if [ -n "$IMG" ] && command -v debugfs >/dev/null 2>&1; then
+        debugfs -R "cat $1" "$IMG" 2>/dev/null
+    else
+        [ -n "$IMG" ] && warn "debugfs not found — passwd/shadow checks read the staging tree" 
+        cat "$T$1" 2>/dev/null
+    fi
+}
+passwd_file=$(get_file /etc/passwd)
+shadow_file=$(get_file /etc/shadow)
 # The portal sets the admin password with `passwd -a sha512 admin` (Settings
 # -> SSH); without the user the SSH enable path fails with "passwd failed".
-if grep -qE '^admin:' "$T/etc/passwd"; then
+if grep -qE '^admin:' <<<"$passwd_file"; then
     ok "admin user present in /etc/passwd"
-    home=$(grep -E '^admin:' "$T/etc/passwd" | cut -d: -f6)
-    shell=$(grep -E '^admin:' "$T/etc/passwd" | cut -d: -f7)
+    home=$(grep -E '^admin:' <<<"$passwd_file" | cut -d: -f6)
+    shell=$(grep -E '^admin:' <<<"$passwd_file" | cut -d: -f7)
     [ "$shell" != "/bin/false" ] || bad "admin shell is /bin/false"
     [ -n "$home" ] || bad "admin has no home dir field"
 else
@@ -48,7 +67,7 @@ else
 fi
 # admin must be password-LOCKED at build time ('!' in shadow field 2) — the
 # password is set on-device, never baked.
-shadow_admin=$(grep -E '^admin:' "$T/etc/shadow" 2>/dev/null | cut -d: -f2)
+shadow_admin=$(grep -E '^admin:' <<<"$shadow_file" | cut -d: -f2)
 case "$shadow_admin" in
     '!'|'!!') ok "admin password locked in /etc/shadow" ;;
     '')       bad "admin missing from /etc/shadow" ;;
@@ -57,7 +76,7 @@ case "$shadow_admin" in
 esac
 # root must carry NO usable password: buildroot locks it '*' when
 # BR2_TARGET_ENABLE_ROOT_LOGIN is off.
-shadow_root=$(grep -E '^root:' "$T/etc/shadow" 2>/dev/null | cut -d: -f2)
+shadow_root=$(grep -E '^root:' <<<"$shadow_file" | cut -d: -f2)
 case "$shadow_root" in
     '*'|'!'|'!!') ok "root password locked in /etc/shadow" ;;
     '')           warn "root missing from shadow" ;;

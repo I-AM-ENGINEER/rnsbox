@@ -890,6 +890,17 @@ for p in rnsbox-update rnsbox-portal python-rns python-lxmf python-nomadnet pyth
         printf 'source "package/%s/Config.in"\n' "$p" >> "$BR_PKG_CONFIG"
 done
 
+# These are SITE_METHOD=local packages: buildroot rsyncs them into
+# output/build/<pkg>-<ver> ONCE at extract time and never again — an
+# incremental build happily recompiles a STALE copy (this shipped a
+# portal binary with week-old sources). The synced sources above are the
+# single source of truth, so drop the extracted copies and their stamps;
+# the next make re-extracts and rebuilds exactly what this repo carries.
+# Small packages (portal C++, pure-python wheels): seconds on a warm host.
+for p in rnsbox-update rnsbox-portal python-rns python-lxmf python-nomadnet python-ble-reticulum rnsbox-python-bluezero; do
+    rm -rf "$WORKDIR"/buildroot/output/build/"$p"-* 2>/dev/null || :
+done
+
 # rootfs slimming: sync the slimmer + flip the size/format knobs (see the
 # rnsbox_slim_bsp comment block above for what and why)
 echo ">> slimming knobs: py-only python, 1% ext4 reservation, 512M lite rootfs, slim-target hook"
