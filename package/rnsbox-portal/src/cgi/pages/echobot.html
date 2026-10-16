@@ -1,7 +1,7 @@
-<h2>Echo bot</h2>
-
-<section class="card">
-  <h3>Status</h3>
+<!-- Echo bot: rendered as cards inside the Reticulum tab (routes_echobot.cpp
+     echobot_cards()); the id anchors the old /echobot bookmark redirect. -->
+<section class="card" id="echobot">
+  <h3>Echo bot</h3>
   <table class="kv">
     <tr><th>Service</th><td>__ECHOBOT_STATUS__</td></tr>
     <tr><th>LXMF address</th><td>__ECHOBOT_ADDR__</td></tr>
@@ -27,7 +27,7 @@
 </section>
 
 <section class="card">
-  <h3>Settings</h3>
+  <h3>Echo bot settings</h3>
   <form method="post" action="__BASE__/echobot/save">
     <label>Enable echo bot
       <input type="checkbox" name="enabled" __ECHOBOT_CHECKED__>

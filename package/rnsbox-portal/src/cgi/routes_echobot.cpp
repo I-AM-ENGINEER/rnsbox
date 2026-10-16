@@ -1,6 +1,8 @@
-// routes_echobot.cpp — Echo bot tab: the box's local LXMF echo bot
-// (/usr/bin/rnsbox-echobot, started by S87echobot). Server-rendered page +
-// PRG forms, like every other tab. The daemon keeps its own state in
+// routes_echobot.cpp — Echo bot card on the Reticulum tab: the box's local
+// LXMF echo bot (/usr/bin/rnsbox-echobot, started by S87echobot). The cards
+// render inside the Reticulum page (echobot_cards()); the old /echobot URL
+// stays a working bookmark and redirects to the card. PRG forms, like every
+// other card. The daemon keeps its own state in
 // /var/lib/rnsbox-echobot/state.json (atomic rewrites); the pidfile/comm test
 // mirrors S87echobot's own liveness check, so the badge never lies about a
 // dead daemon whose pidfile was left behind.
@@ -20,7 +22,9 @@ namespace routes {
 
 static std::string R(std::string s, const std::string& a, const std::string& b) { return web::replace_all(std::move(s), a, b); }
 static std::string E(const std::string& s) { return render::esc(s); }
-static std::string eb_redirect() { return web::base() + "/echobot"; }
+// The card lives on the Reticulum tab (anchor #echobot); all PRG forms and
+// the old tab URL land there.
+static std::string eb_redirect() { return web::base() + "/reticulum#echobot"; }
 
 constexpr const char* ECHOBOT_CONF  = "/etc/rnsbox/echobot.conf";
 constexpr const char* ECHOBOT_STATE = "/var/lib/rnsbox-echobot/state.json";
@@ -152,10 +156,11 @@ static std::string fmt_utc(long epoch) {
 
 // ===================== GET render =====================
 
-void echobot_page(const Request& req, Response& res) {
-    if (!web::require_auth(req, res, false)) return;
-    std::string base = web::base();
-
+// The two cards (status + settings), rendered for embedding into the
+// Reticulum page (routes_reticulum.cpp fills __ECHOBOT_CARDS__). The page
+// shell lives in pages/echobot.html: exactly the card sections, no <h2>/nav
+// of its own.
+std::string echobot_cards(const std::string& base) {
     EchobotConf c = echobot_read_conf();
     if (c.name.empty()) c.name = echobot_default_name();
     std::string state = util::read_file(ECHOBOT_STATE, 65536);
@@ -223,8 +228,13 @@ void echobot_page(const Request& req, Response& res) {
     h = R(std::move(h), "__ECHOBOT_CHECKED__", c.enabled ? "checked" : "");
     h = R(std::move(h), "__ECHOBOT_NAME_VALUE__", E(c.name));
     h = R(std::move(h), "__ECHOBOT_INTERVAL_OPTS__", opts);
+    return h;
+}
 
-    res.body = render::layout(req, res, "Echo bot", "echobot", h);
+// Old bookmark route: the echo bot is a card on the Reticulum tab now.
+void echobot_page(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, false)) return;
+    res.redirect(eb_redirect());
 }
 
 // ===================== PRG POST handlers =====================

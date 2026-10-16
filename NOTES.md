@@ -112,3 +112,12 @@ success. Unit-tested on an x86 build against a fixture config: add dedupe
 (name 2), default name, refusals (bad host chars, port range), in-place
 update incl. rename-to-self, delete exactness ( neighbouring stanzas and
 comments untouched, no file growth on repeated cycles).
+
+## 1. Echo bot lived on its own tab
+Now a card pair (status + settings) inside the Reticulum tab, right
+after the rnsh card (anchor #echobot). pages/echobot.html keeps the two
+card sections (renamed to "Echo bot"/"Echo bot settings", no page h2);
+routes_echobot.cpp renders them through echobot_cards() which the
+Reticulum page fills into __ECHOBOT_CARDS__. The old /echobot URL stays
+a working bookmark: echobot_page() redirects to /reticulum#echobot, and
+every PRG form already redirects there. Nav entry removed.
