@@ -294,9 +294,9 @@ setInterval(rnodeStatusRefresh, 15000);
     <label style="margin:8px 0 0"><input type="checkbox" name="enabled"
       __RNSH_CHECKED__> Enable RNS Shell</label>
     <div class="row-form" style="margin-top:10px">
-      <label style="margin:0">Announce every
+      <label style="margin:0">Announce every (seconds; 0 = once at startup)
         <input type="number" name="announce" value="__RNSH_ANNOUNCE__" min="0"
-          max="86400" title="seconds between network announces; 0 = once at startup"> s</label>
+          max="86400"></label>
     </div>
     <label style="display:block;margin:10px 0 4px">Allowed client identities
       (one <code>rnsh -p</code> hash per line)</label>
