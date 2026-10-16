@@ -38,3 +38,8 @@ null::sysinit:/bin/ln -sf /proc/self/fd/2 /dev/stderr
 ::shutdown:/bin/umount -a -r
 # HDMI console only - UART0 (ttyAMA0) is reserved for the SLIP link
 tty1::respawn:/sbin/getty -L tty1 0 vt100 # HDMI console
+# CV1800B: no HDMI - the serial console (UART0, ttyS0, 115200) IS the
+# debug/login console. SLIP on this port stays available as an opt-in
+# (S31slip, disabled by default in /etc/rnsbox/slip.conf): disable this
+# getty line first if you ever enable it.
+ttyS0::respawn:/sbin/getty -L ttyS0 115200 vt100
