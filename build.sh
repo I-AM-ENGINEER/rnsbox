@@ -50,7 +50,7 @@ HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 # same SoCs, not different boards): sg2000-rv64 = Duo Module 01 (EVB),
 # sg2000-arm64 = same on the A53, sg2002-rv64 = LicheeRV Nano-e,
 # sg2002-arm64 = same on the A53. cv1800b (Duo 64M) is RV-only.
-BOARDS="sg2000-rv64 sg2000-arm64 sg2002-rv64 sg2002-arm64 milkv-duo-cv1800b rpi-universal pc-x86_64 milkv-duo-cv1800b-mainline"
+BOARDS="sg2000-rv64 sg2000-arm64 sg2002-rv64 sg2002-arm64 milkv-duo-cv1800b rpi-universal pc-x86_64 milkv-duo-cv1800b-mainline sg2000-duomodule01-mainline"
 
 # ---- image version stamp (read by rnsbox-sysupdate for update decisions) ----
 # Same formula as the CI release job's tag: r<UTC date>-<short sha>. On CI,
@@ -196,6 +196,19 @@ case "$BOARD" in
         UPSTREAM_URL="${UPSTREAM_URL:-https://github.com/buildroot/buildroot.git}"
         UPSTREAM_COMMIT="${UPSTREAM_COMMIT:-679b9ead7620bbf193620d1ebf56f53c1764d37a}"  # 2026.02.3
         DEFCONFIG=rnsbox_milkv_duo_cv1800b_mainline_defconfig
+        ;;
+    sg2000-duomodule01-mainline)
+        # Milk-V Duo Module 01 EVB (SG2000, C906, 512 MB) on MAINLINE
+        # Linux. Same external shape as the cv1800b-mainline one (shared
+        # buildroot clone + dl cache; kernel from the pinned kernel.org
+        # tag with board/sg2000-mainline patches; vendor fip.bin first
+        # stage, see board/sg2000-mainline/README.fip.md). Mainline has
+        # the full SG2000 SoC support — only the board DTS is ours.
+        # NOT in the CI matrix yet: bring-up board.
+        BUILD_STYLE=external
+        UPSTREAM_URL="${UPSTREAM_URL:-https://github.com/buildroot/buildroot.git}"
+        UPSTREAM_COMMIT="${UPSTREAM_COMMIT:-679b9ead7620bbf193620d1ebf56f53c1764d37a}"  # 2026.02.3
+        DEFCONFIG=rnsbox_sg2000_duomodule01_mainline_defconfig
         ;;
 esac
 
@@ -636,6 +649,26 @@ rnsbox_build_milkv_duo_cv1800b_mainline() {
     make -C "$UPSTREAM" O="$ODIR" BR2_EXTERNAL="$EXT"
 }
 
+rnsbox_build_sg2000_duomodule01_mainline() {
+    # Same external flow as the milkv-duo-cv1800b-mainline (defconfig +
+    # make; the image is assembled by board/sg2000-mainline/post-image.sh
+    # inside make: vendor fip.bin + our boot.sd FIT around the mainline
+    # Image/DTB). No dvd variant: no USB clients LUN, and the gadget role
+    # itself is still being mainlined.
+    export PATH=$(echo "$PATH" | tr ':' '\n' | grep -v '^/mnt/[a-z]/' | paste -sd:)
+    export PATH=/usr/sbin:/sbin:$PATH
+    if [ "$VARIANT" != lite ]; then
+        echo ">> sg2000-duomodule01-mainline: the '$VARIANT' variant needs the USB gadget - building lite"
+        VARIANT=lite
+    fi
+    export RNSBOX_VARIANT="$VARIANT"
+
+    echo ">> configuring ($DEFCONFIG) + building (first run compiles everything; be patient)"
+    make -C "$UPSTREAM" O="$ODIR" BR2_EXTERNAL="$EXT" "$DEFCONFIG"
+    rnsbox_pin_dl
+    make -C "$UPSTREAM" O="$ODIR" BR2_EXTERNAL="$EXT"
+}
+
 rnsbox_build() {
     case "$BOARD" in
         sg2002-rv64)      rnsbox_build_licheerv_nano ;;
@@ -645,6 +678,7 @@ rnsbox_build() {
         rpi-universal)    rnsbox_build_rpi_universal ;;
         pc-x86_64)        rnsbox_build_pc_x86_64 ;;
         milkv-duo-cv1800b-mainline) rnsbox_build_milkv_duo_cv1800b_mainline ;;
+        sg2000-duomodule01-mainline) rnsbox_build_sg2000_duomodule01_mainline ;;
     esac
 }
 

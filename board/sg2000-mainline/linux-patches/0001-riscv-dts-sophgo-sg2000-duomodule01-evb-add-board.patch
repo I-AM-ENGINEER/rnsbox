@@ -1,0 +1,154 @@
+diff --git a/arch/riscv/boot/dts/sophgo/Makefile b/arch/riscv/boot/dts/sophgo/Makefile
+index d5c80d4..e248940 100644
+--- a/arch/riscv/boot/dts/sophgo/Makefile
++++ b/arch/riscv/boot/dts/sophgo/Makefile
+@@ -2,6 +2,7 @@
+ dtb-$(CONFIG_ARCH_SOPHGO) += cv1800b-milkv-duo.dtb
+ dtb-$(CONFIG_ARCH_SOPHGO) += cv1812h-huashan-pi.dtb
+ dtb-$(CONFIG_ARCH_SOPHGO) += sg2000-milkv-duo-s.dtb
++dtb-$(CONFIG_ARCH_SOPHGO) += sg2000-duomodule01-evb.dtb
+ dtb-$(CONFIG_ARCH_SOPHGO) += sg2002-licheerv-nano-b.dtb
+ dtb-$(CONFIG_ARCH_SOPHGO) += sg2002-milkv-duo256m.dtb
+ dtb-$(CONFIG_ARCH_SOPHGO) += sg2042-milkv-pioneer.dtb
+diff --git a/arch/riscv/boot/dts/sophgo/sg2000-duomodule01-evb.dts b/arch/riscv/boot/dts/sophgo/sg2000-duomodule01-evb.dts
+new file mode 100644
+index 0000000..bc85f41
+--- /dev/null
++++ b/arch/riscv/boot/dts/sophgo/sg2000-duomodule01-evb.dts
+@@ -0,0 +1,136 @@
++// SPDX-License-Identifier: (GPL-2.0 OR MIT)
++
++/dts-v1/;
++
++#include <dt-bindings/pinctrl/pinctrl-sg2000.h>
++#include "sg2000.dtsi"
++
++/*
++ * Milk-V Duo Module 01 Evaluation Board (SG2000, C906, 512 MB DDR3, SD boot).
++ *
++ * Minimal RNSBox headless shape: uart0 console + SD (sdhci0) + internal
++ * GbE PHY + DWC2 gadget on the OTG port. The module's optional -W variant
++ * (AIC8800 SDIO wifi) and the Duo-S-specific eMMC / uart4 / sdhci1 wiring
++ * are left disabled - the EVB does not wire them the same way.
++ */
++
++/ {
++	model = "Milk-V Duo Module 01 Evaluation Board";
++	compatible = "milkv,duo-module-01-evb", "sophgo,sg2000";
++
++	aliases {
++		mmc0 = &sdhci0;
++		serial0 = &uart0;
++	};
++
++	chosen {
++		stdout-path = "serial0:115200n8";
++	};
++
++	reserved-memory {
++		#address-cells = <1>;
++		#size-cells = <1>;
++		ranges;
++
++		/*
++		 * The vendor OpenSBI in fip.bin lives here and does not
++		 * reserve itself through the FDT (the vendor kernel parses
++		 * the riscv.fwsz bootarg instead, which mainline ignores):
++		 * hide the firmware region from the allocator explicitly.
++		 */
++		opensbi: region@80000000 {
++			reg = <0x80000000 0x80000>;
++			no-map;
++		};
++	};
++};
++
++&osc {
++	clock-frequency = <25000000>;
++};
++
++&pinctrl {
++	sdhci0_cfg: sdhci0-cfg {
++		sdhci0-cd-pins {
++			pinmux = <PINMUX(PIN_SD0_CD, 0)>;
++			bias-pull-up;
++			drive-strength-microamp = <10800>;
++			power-source = <3300>;
++		};
++
++		sdhci0-clk-pins {
++			pinmux = <PINMUX(PIN_SD0_CLK, 0)>;
++			bias-pull-up;
++			drive-strength-microamp = <16100>;
++			power-source = <3300>;
++		};
++
++		sdhci0-cmd-pins {
++			pinmux = <PINMUX(PIN_SD0_CMD, 0)>;
++			bias-pull-up;
++			drive-strength-microamp = <10800>;
++			power-source = <3300>;
++		};
++
++		sdhci0-data-pins {
++			pinmux = <PINMUX(PIN_SD0_D0, 0)>,
++				 <PINMUX(PIN_SD0_D1, 0)>,
++				 <PINMUX(PIN_SD0_D2, 0)>,
++				 <PINMUX(PIN_SD0_D3, 0)>;
++			bias-pull-up;
++			drive-strength-microamp = <10800>;
++			power-source = <3300>;
++		};
++	};
++
++	uart0_cfg: uart0-cfg {
++		uart0-pins {
++			pinmux = <PINMUX(PIN_UART0_TX, 0)>,
++				 <PINMUX(PIN_UART0_RX, 0)>;
++			bias-pull-up;
++			drive-strength-microamp = <10800>;
++			power-source = <3300>;
++		};
++	};
++};
++
++&dmac {
++	status = "okay";
++};
++
++&gmac0 {
++	status = "okay";
++};
++
++&mdio {
++	status = "okay";
++};
++
++&saradc {
++	status = "okay";
++};
++
++&sdhci0 {
++	bus-width = <4>;
++	disable-wp;
++	no-1-8-v;
++	pinctrl-0 = <&sdhci0_cfg>;
++	pinctrl-names = "default";
++	status = "okay";
++};
++
++&uart0 {
++	pinctrl-0 = <&uart0_cfg>;
++	pinctrl-names = "default";
++	status = "okay";
++};
++
++&usb {
++	/*
++	 * RNSBox talks to the world through the DWC2 gadget (CDC-NCM portal
++	 * on the USB-C port); needs the dwc2 -> generic-PHY mode propagation
++	 * patch (phy-cv1800-usb2 gates VBUS/ID-override on set_mode).
++	 */
++	dr_mode = "peripheral";
++	status = "okay";
++};

@@ -1,0 +1,12 @@
+#!/bin/sh
+# The vendor fip.bin's u-boot boots with `release loglevel=0` baked into
+# the bootargs (RELEASE defined in the SDK build) and CONFIG_ENV_IS_NOWHERE
+# — no uEnv.txt can override them. Re-open the kernel console spigot from
+# userspace: everything after this point (probe failures, mmc tuning,
+# gadget state) is visible on the serial console again. earlycon already
+# printed the pre-init log regardless of loglevel.
+case "$1" in
+	start|reload)
+		dmesg -n 7
+		;;
+esac
