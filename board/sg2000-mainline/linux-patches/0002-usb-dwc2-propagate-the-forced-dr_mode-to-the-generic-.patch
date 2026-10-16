@@ -1,0 +1,29 @@
+diff --git a/drivers/usb/dwc2/platform.c b/drivers/usb/dwc2/platform.c
+index ef0d73077..79354dba1 100644
+--- a/drivers/usb/dwc2/platform.c
++++ b/drivers/usb/dwc2/platform.c
+@@ -536,6 +536,24 @@ static int dwc2_driver_probe(struct platform_device *dev)
+ 	 */
+ 	dwc2_force_dr_mode(hsotg);
+ 
++	/*
++	 * Propagate the forced mode to the generic PHY. PHYs like the
++	 * Sophgo CV1800B usb2-phy gate their ID-override/VBUS wiring on
++	 * set_mode() and stay in the power-on (host) state otherwise,
++	 * which leaves the gadget path dead (no session, no pull-up).
++	 * Best effort: cores without a set_mode op return -ENOSYS.
++	 */
++	if (hsotg->phy) {
++		enum phy_mode phy_mode = PHY_MODE_USB_OTG;
++
++		if (hsotg->dr_mode == USB_DR_MODE_HOST)
++			phy_mode = PHY_MODE_USB_HOST;
++		else if (hsotg->dr_mode == USB_DR_MODE_PERIPHERAL)
++			phy_mode = PHY_MODE_USB_DEVICE;
++
++		phy_set_mode(hsotg->phy, phy_mode);
++	}
++
+ 	retval = dwc2_init_params(hsotg);
+ 	if (retval)
+ 		goto error;
