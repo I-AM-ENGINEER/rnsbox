@@ -100,12 +100,19 @@ cvitek-sdio драйвер никогда не зондирует AIC8800 → wl
 S35wifi мягко выходит, портал пишет «No WiFi radio detected». У RV-борды
 sg2000_duomodule01_sd полный узел есть — отсюда разница.
 
-**Фикс:** `patches/milkv-duo-01-arm/0015-wifi-aic8800-sdio-...patch`:
-полный узел `&wifisd` (те же свойства, что у вендорского
-sg2002_licheea53nano arm-борда) + узел `wifi_pin` (poweron porta15 /
-wakeup porte7, референс Milk-V Duo S) в ОБОИХ arm64 dts +
-`CONFIG_CVI_WIFI_PIN=y` в оба linux defconfig (драйвер
-`cvitek,wifi-pin` — sequencing WL_REG_ON/HOST_WAKE).
+**Фикс:** `patches/milkv-duo-01-arm/0015-wifi-aic8800-sdio-...patch`,
+по-пакетно:
+- sg2000_duo01evb (BGA): полный `&wifisd` (свойства как у вендорских arm
+  борд) + `wifi_pin` porta15/porte7 (референс Milk-V Duo S, как у RV
+  duomodule01);
+- sg2002_duo (QFN): ВАЖНО — soph_asic_qfn.dtsi ДЕЛИТИТ узел
+  (`/delete-node/ wifi-sd@4320000`) и несёт свой wifi_pin (porte2/porte6),
+  поэтому узел пересоздаётся ЦЕЛИКОМ в board dts (ровно то же делает
+  вендорский sg2002_licheea53nano arm-борд), wifi_pin не трогаем;
+- `CONFIG_CVI_WIFI_PIN=y` в оба linux defconfig (драйвер `cvitek,wifi-pin`
+  — sequencing WL_REG_ON/HOST_WAKE).
+Первая версия патча с `&wifisd` на sg2002 падала на dtc («Label or path
+wifisd not found») — поймано сборкой, переделано.
 
 **Проверено:** apply-check/am-check; dts пересобирается при сборке (эта
 сборка). На Module 01 без радио (не -W) отсутствие остаётся мягким:
@@ -113,15 +120,21 @@ S35wifi детектит «no wlanN» и выходит 0.
 
 ## 6. BLE на модуле — документирую (не включаю)
 
-AIC8800 — комбочип; BT-половина работает через FMAC-прошивки
-(`fmacfwbt*.bin` ЕСТЬ в пакете aic8800-sdio-firmware), но транспортного
-драйвера BT в вендорском наборе ko НЕТ (только aic8800_bsp + aic8800_fdrv;
-нет ни aic8800_bt, ни rwnx-hci/USB-варианта). Ядро же у нас собрано с
-BT=USB-донгл (CONFIG_BT_HCIBTUSB, патч 0014 arm-серии) — донгл-путь уже
-работает, блютус-стек BlueZ + ble_reticulum в рутfs есть и деградирует в
-no-op без адаптера. Включение SDIO-BT потребует портировать вендорский
-aic8800_bt-модуль — вне рамок этого фикса. Итог: на -W модуле BT-железо
-есть, программного пути пока нет; задокументировано, ничего не сломано.
+- Прошивки для BT есть: пакет aic8800-sdio-firmware возит `fmacfwbt*.bin`.
+- Пин-драйвер в ядре есть: `cvitek,bt-pin` (drivers/soc/cvitek/bt_pin/),
+  узел `bt_pin` уже в базовом dtsi (poweron porte9) и попадает в собранный dtb.
+- НО BT-транспорт в собранных ko ОТСУТСТВУЕТ: в стоковом aic8800_fdrv.ko
+  нет ни символов/строк btsdio/hci, ни запроса fmacfwbt (он грузит только
+  fmacfw.bin — WiFi-only прошивку). В вендорских исходниках транспорт ЕСТЬ
+  (osdrv/extdrv/wireless/aic8800/aic8800_fdrv/aic_btsdio.c + отдельный
+  aic8800_btlpm), просто не собран в поставляемые ko.
+- Ядро собрано под USB-донгл (CONFIG_BT_HCIBTUSB, патч 0014 arm-серии) —
+  донгл-путь работает, BlueZ + ble_reticulum в rootfs есть и без адаптера
+  деградируют в no-op.
+
+Итог: BT-железо на -W кремнии есть, программного пути в текущих ko нет.
+Включение = пересборка вендорского aic8800-драйвера с BT-конфигом
+(aic_btsdio + fmacfwbt + btlpm) и проверка на железе — отдельная задача.
 
 ## 7. SLIP-подсказка в портале
 
@@ -144,8 +157,13 @@ S20zram в licheerv/arm серии отдельным шагом (помечен
 собранному rootfs: admin в passwd + '!' в shadow, root locked, dropbear
 отсутствует, sshd есть, S50sshd — гейт-вариант, ssh.conf enabled=no,
 PermitRootLogin no, хост-ключей нет в образе, S82rnsd/S60routing/S35wifi/
-S31slip на месте, py-only (нет .pyc), slimmer-эффект (ensurepip удалён).На ТЕКУЩЕМ (сломанном) таргете воркспейса поймал все 5 реальных дыр —
-негативный тест пройден. Гнать после каждой сборки.
+S31slip на месте, py-only (нет .pyc), slimmer-эффект (ensurepip удалён).
+Важно: admin/passwd-проверки читают СОБРАННЫЙ rootfs.ext2/4 через debugfs —
+users-таблица применяется на fakeroot-шаге при создании ОБРАЗА, а не в
+output/target (стейджинг-дерево admin не содержит, и это норма).
+На ТЕКУЩЕМ (сломанном) таргете воркспейса скрипт поймал все 5 реальных дыр —
+негативный тест пройден. На свежесобранном — 0 failures. Гнать после каждой
+сборки.
 
 ## 10. Прочее из списка
 
@@ -178,3 +196,14 @@ S31slip на месте, py-only (нет .pyc), slimmer-эффект (ensurepip 
   история воркспейса не тронута); git-am-валидация всей пятёрки — в
   throwaway-клоне (/tmp/ws-am-check), все 5 AM-OK.
 - Юнит-тесты build.sh: `tests/slim-fns-test.sh`, `tests/slim-pristine-test.sh`.
+
+## 11. Найдено попутно и починено: stale local-site пакеты
+
+Пакеты с SITE_METHOD=local (rnsbox-portal, python-rns, lxmf, nomadnet,
+ble-reticulum, bluezero, rnsbox-update) buildroot rsync'ит в
+output/build/<pkg>-<ver> ОДИН раз при extract; инкрементальная сборка
+радостно пересобирает УСТАРЕВШУЮ копию — свежесобранный образ нёс бинарник
+портала недельной давности при уже обновлённых исходниках. build.sh теперь
+после синка пакетов сносит их output/build копии (пакеты мелкие: C++ портал
+и pure-python колёса — секунды на тёплом хосте). Проверено: после фикса
+портал в образе несёт новый SLIP-текст.

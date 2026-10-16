@@ -38,7 +38,7 @@ git -C "$SCRATCH/tree" config user.email rnsbox@localhost
 
 ############################################################################
 # Patch A: defer the boot-time first dnsmasq start to S80dnsmasq
-# (lickeerv 0031 / milkv-duo-01 0036)
+# (licheerv 0031 / milkv-duo-01 0036)
 ############################################################################
 F=buildroot/board/cvitek/SG200X/overlay/etc/init.d/S60routing
 seed "$F"
