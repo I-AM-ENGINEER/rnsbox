@@ -25,7 +25,7 @@
   <form method="post" action="__BASE__/reticulum/autoupdate" class="row-form" style="margin-top:10px">
     <label style="margin:0"><input type="checkbox" name="auto_update"
       __AUTO_UPDATE_CHECKED__ onchange="this.form.submit()"> check for updates daily</label>
-    <noscript><button type="submit" class="btn">Save</button></noscript>
+    <noscript><button type="submit" class="btn">Save &amp; apply</button></noscript>
     <span class="muted">in-place update replaces only the rnsd package (pure-Python); your config is untouched and it rolls back if rnsd fails to restart</span>
   </form>
 
@@ -34,7 +34,7 @@
     <select id="rnsd_days" name="days">
       __RESTART_DAYS_OPTIONS__
     </select>
-    <button type="submit" class="btn">Save schedule</button>
+    <button type="submit" class="btn">Save &amp; apply</button>
     <span class="muted">restarts at 04:00 — bounds rnsd's announce-cache RAM growth</span>
   </form>
 
@@ -44,7 +44,7 @@
     <select name="limit">
       __RNSDMON_OPTIONS__
     </select>
-    <button type="submit" class="btn">Save</button>
+    <button type="submit" class="btn">Save &amp; apply</button>
     <span class="muted">last resort — a background watcher restarts rnsd within 10&nbsp;s; if it still
     hasn't stayed up for this long, the box syncs and reboots</span>
     <div style="margin-top:6px" class="muted">__RNSDMON_STATE__</div>
@@ -115,6 +115,7 @@
   __BT_FORM_BLOCK__
 </section>
 
+<section class="card">
   <h3>RNode LoRa modem (USB / BLE)</h3>
   <p class="muted">A local RNode LoRa modem attached to this box — over a USB
   serial port (<code>/dev/ttyACM*</code>, <code>/dev/ttyUSB*</code>; the usual
@@ -129,7 +130,8 @@
   <form method="post" action="__BASE__/reticulum/rnode">
     <div class="row-form" style="margin-top:10px">
       <label style="margin:0">Transport
-        <select name="transport" id="rnode-transport" onchange="rnodeTransportChanged()">
+        <select name="transport" id="rnode-transport" onchange="rnodeTransportChanged()"
+          title="USB serial: a locally attached RNode over /dev/ttyACM* or /dev/ttyUSB*. BLE: an RNode advertising over Bluetooth (nRF52 boards), paired once below.">
           __RNODE_TRANSPORT_OPTIONS__
         </select></label>
       <label style="margin:0">Interface name
@@ -181,7 +183,8 @@
         <input type="number" name="codingrate" value="__RNODE_CR__" min="5" max="8" title="5..8"></label>
       <label style="margin:0"><input type="checkbox" name="flow_control" __RNODE_FLOW_CHECKED__> flow control</label>
     </div>
-    <button type="submit" class="btn-primary" style="margin-top:10px">Save &amp; apply (restarts rnsd)</button>
+    <button type="submit" class="btn-primary" style="margin-top:10px">Save &amp; apply</button>
+    <span class="muted">saving restarts rnsd — the modem may be plugged in at any time, rnsd retries the port every 5 s</span>
   </form>
 </section>
 
@@ -202,6 +205,18 @@ function rnodeStatusRefresh(){
     return r.json();
   }).then(function(d){
     var row = document.getElementById('rnode-live-status'); if (!row) return;
+    // Keep the USB device datalist current: a modem plugged in after the page
+    // loaded (or several attached — pick exactly one) shows up here without a
+    // reload. The server-rendered options stay as the no-JS fallback.
+    var dl = document.getElementById('rnode-device-list');
+    if (dl && Array.isArray(d.devices) && d.devices.length) {
+      var cur = (document.querySelector('#rnode-usb-fields input[name=device]') || {}).value || '';
+      var opts = '<option value="auto">auto (first found)</option>';
+      d.devices.forEach(function(p){
+        opts += '<option value="' + escH(p) + '"' + (p === cur ? ' selected' : '') + '></option>';
+      });
+      dl.innerHTML = opts;
+    }
     var b;
     if (d.transport !== 'usb' && d.transport !== 'ble') b = '<span class="badge">off</span>';
     else if (d.state === 'ok' && d.port) b = '<span class="badge ok">ready</span> <span class="mono">' + escH(d.port) + '</span>';
@@ -277,6 +292,61 @@ document.addEventListener('DOMContentLoaded', rnodeStatusRefresh);
 setInterval(rnodeStatusRefresh, 15000);
 </script>
 
+<script>
+// Bluetooth card: generic BLE discovery (rnode.py scan-any) + one-time BlueZ
+// bonding — RNS attaches to bonded devices only. Same flow as the RNode
+// card's scan/pair, just unfiltered.
+function btScan(btn){
+  var msg = document.getElementById('bt-scan-msg');
+  var list = document.getElementById('bt-scan-list');
+  btn.disabled = true;
+  msg.textContent = ' scanning (up to ~10 s)…';
+  msg.style.color = 'var(--muted)';
+  fetch('__BASE__/reticulum/bluetooth/scan').then(function(r){
+    if (r.status === 401) throw new Error('session expired — please log in again');
+    return r.json();
+  }).then(function(d){
+    btn.disabled = false; msg.textContent = '';
+    if (d.error && (!d.devices || !d.devices.length)) {
+      msg.textContent = ' ' + d.error; msg.style.color = 'var(--err)'; return;
+    }
+    if (!d.devices || !d.devices.length) {
+      msg.textContent = ' nothing advertising nearby (adapter up? peer in range?)';
+      msg.style.color = 'var(--muted)'; return;
+    }
+    list.innerHTML = '<table class="data"><tr><th>Name</th><th>Address</th><th>Bonded</th><th></th></tr>' +
+      d.devices.map(function(x){
+        return '<tr><td>' + escH(x.name || '?') + '</td><td class="mono">' + escH(x.address) + '</td>' +
+          '<td>' + (x.bonded ? '<span class="badge ok">yes</span>' : '<span class="badge warn">no</span>') + '</td>' +
+          '<td>' + (x.bonded
+            ? '<span class="muted">paired</span>'
+            : '<button type="button" class="btn" onclick="btPair(this,\'' + escH(x.address) + '\')">Pair</button>') +
+          '</td></tr>';
+      }).join('') + '</table>';
+  }).catch(function(e){
+    btn.disabled = false; msg.textContent = ' ' + (e.message || 'scan failed');
+    msg.style.color = 'var(--err)';
+  });
+}
+function btPair(btn, addr){
+  btn.disabled = true; btn.textContent = 'Pairing…';
+  var body = 'address=' + encodeURIComponent(addr);
+  fetch('__BASE__/reticulum/bluetooth/pair', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: body})
+    .then(function(r){ if (r.status === 401) throw new Error('session expired — please log in again'); return r.json(); })
+    .then(function(d){
+      btn.disabled = false; btn.textContent = d.ok ? 'Pair again' : 'Pair';
+      var msg = document.getElementById('bt-scan-msg');
+      if (msg) { msg.textContent = ' ' + (d.message || (d.ok ? 'paired' : 'pairing failed'));
+                 msg.style.color = d.ok ? 'var(--ok)' : 'var(--err)'; }
+    })
+    .catch(function(e){
+      btn.disabled = false; btn.textContent = 'Pair';
+      var msg = document.getElementById('bt-scan-msg');
+      if (msg) { msg.textContent = ' ' + (e.message || 'pairing failed'); msg.style.color = 'var(--err)'; }
+    });
+}
+</script>
+
 <section class="card">
   <h3>RNS Shell (rnsh)</h3>
   <p class="muted">A root shell reachable from anywhere on the Reticulum network.
@@ -294,14 +364,39 @@ setInterval(rnodeStatusRefresh, 15000);
     <label style="margin:8px 0 0"><input type="checkbox" name="enabled"
       __RNSH_CHECKED__> Enable RNS Shell</label>
     <div class="row-form" style="margin-top:10px">
-      <label style="margin:0">Announce every
+      <label style="margin:0">Announce every (seconds; 0 = once at startup)
         <input type="number" name="announce" value="__RNSH_ANNOUNCE__" min="0"
-          max="86400" title="seconds between network announces; 0 = once at startup"> s</label>
+          max="86400"></label>
     </div>
     <label style="display:block;margin:10px 0 4px">Allowed client identities
       (one <code>rnsh -p</code> hash per line)</label>
     <textarea name="allowed" rows="4" spellcheck="false" class="mono">__RNSH_ALLOWED__</textarea>
     <button type="submit" class="btn-primary" style="margin-top:10px">Save &amp; apply</button>
+    <span class="muted">saving restarts the RNS Shell service</span>
+  </form>
+</section>
+
+__RNSH_ACCESS_CARDS__
+
+__ECHOBOT_CARDS__
+
+<section class="card">
+  <h3>TCP client interfaces</h3>
+  <p class="muted">Outbound Reticulum TCP links (<code>TCPClientInterface</code>): another
+  Reticulum router, a public connection server, or the HaLow modem's TCP radio bridge. They are
+  declared in <code>/etc/reticulum/config</code> and edited in place here — the raw editor below
+  keeps showing the truth. Adding, saving or deleting restarts rnsd.</p>
+  <table class="data">
+    <thead><tr><th>Name</th><th>Host</th><th>Port</th><th></th></tr></thead>
+    <tbody>
+      __TCP_CLIENTS_ROWS__
+    </tbody>
+  </table>
+  <form method="post" action="__BASE__/reticulum/tcpclient/add" class="row-form">
+    <input type="text" name="name" placeholder="name (e.g. Remote Router)" maxlength="48">
+    <input type="text" name="host" placeholder="host (IP or name)" maxlength="253" required>
+    <input type="number" name="port" placeholder="port" min="1" max="65535" required>
+    <button type="submit" class="btn-primary">Add &amp; apply</button>
   </form>
 </section>
 

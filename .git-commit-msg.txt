@@ -1,0 +1,9 @@
+reticulum: merge the Remote access tab into the RNS Shell card
+
+The tab had no content the RNS Shell card did not already show better:
+its status table duplicated the card's status/destination. Keep only
+the unique content as three cards directly under the RNS Shell card
+(issue/download, issued grants, manual hashes), reworded for the new
+position; drop the duplicated status table. The Access nav entry is
+gone, /access redirects to /reticulum#rnsh like the rest of the form
+POSTs already do.

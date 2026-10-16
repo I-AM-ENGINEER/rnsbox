@@ -188,7 +188,7 @@ static std::string usb_section_html(const UsbState& s) {
     h += "    <label><input type=\"radio\" name=\"mode\" value=\"host\"" +
          std::string(host ? " checked" : "") + "> Host &mdash; the port drives USB devices "
          "(flash drives, Huawei modems, RNode) through an OTG adapter; the gadget LAN goes away</label>\n";
-    h += "    <button type=\"submit\" class=\"btn-primary\">Save USB mode</button>\n  </form>\n";
+    h += "    <button type=\"submit\" class=\"btn-primary\">Save &amp; apply</button>\n  </form>\n";
     h += "  <p class=\"muted\">" + note + "</p>\n</section>\n";
     return h;
 }

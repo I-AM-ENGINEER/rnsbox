@@ -179,9 +179,23 @@ static std::string rnsdmon_fill(std::string h) {
 
     // Live outage state: /run/rnsd-down-since holds the uptime second at
     // which the current continuous outage began (tmpfs, wanwatch-owned).
+    // The marker alone is not proof of an outage: wanwatch's liveness test
+    // is the pidfile's kill -0 plus `pidof -x rnsd` (busybox pidof has no
+    // -x), so a stale pidfile can leave the marker counting down while
+    // rnsd actually runs — and the portal, which finds rnsd with a /proc
+    // cmdline scan, painted "DOWN n min" right above a green RUNNING
+    // state row. Cross-check real liveness first and clear a stale marker
+    // (best effort) so the contradiction self-heals instead of ending in
+    // a needless reboot.
     std::string state;
+    bool rnsd_up = sysinfo::rnsd_status().running;
     if (!c.enabled) {
         state = "<span class=\"badge\">off</span> rnsd outages never trigger a reboot";
+    } else if (rnsd_up) {
+        state = "<span class=\"badge ok\">watching</span> rnsd healthy";
+        std::string since = util::trim(util::read_file("/run/rnsd-down-since", 32));
+        if (!since.empty() && since.find_first_not_of("0123456789") == std::string::npos)
+            ::unlink("/run/rnsd-down-since");   // stale: rnsd is alive
     } else {
         std::string since = util::trim(util::read_file("/run/rnsd-down-since", 32));
         if (since.empty() || since.find_first_not_of("0123456789") != std::string::npos) {
@@ -337,6 +351,38 @@ static std::string bt_status_html(const BtState& b) {
     return o;
 }
 
+// Rows of the TCP client interface editor: one editable line per
+// [[...]] type = TCPClientInterface stanza (inputs tied to the row's update
+// form through the HTML form= attribute).
+static std::string tcp_clients_rows(const std::string& base) {
+    auto list = store::read_tcp_clients();
+    if (list.empty())
+        return "<tr><td colspan=\"4\" class=\"muted\">None declared — add one below "
+               "(the HaLow quick-add and the raw config editor write here too).</td></tr>";
+    std::string rows;
+    for (size_t i = 0; i < list.size(); ++i) {
+        const auto& t = list[i];
+        std::string fid = "tcpe" + std::to_string(i);
+        rows +=
+            "<tr>"
+            "<td><input form=\"" + fid + "\" type=\"text\" name=\"name\" value=\"" + E(t.name) +
+            "\" maxlength=\"48\" title=\"the [[section]] name in the rnsd config\"></td>"
+            "<td><input form=\"" + fid + "\" type=\"text\" name=\"host\" value=\"" + E(t.host) +
+            "\" maxlength=\"253\"></td>"
+            "<td><input form=\"" + fid + "\" type=\"number\" name=\"port\" value=\"" + E(t.port) +
+            "\" min=\"1\" max=\"65535\"></td>"
+            "<td>"
+            "<form id=\"" + fid + "\" method=\"post\" action=\"" + base + "/reticulum/tcpclient/update\" class=\"inline\">"
+            "<input type=\"hidden\" name=\"idx\" value=\"" + std::to_string(i) + "\">"
+            "<button type=\"submit\" class=\"btn\">Save &amp; apply</button></form> "
+            "<form method=\"post\" action=\"" + base + "/reticulum/tcpclient/delete\" class=\"inline\">"
+            "<input type=\"hidden\" name=\"idx\" value=\"" + std::to_string(i) + "\">"
+            "<button type=\"submit\" class=\"btn-danger\">Delete</button></form>"
+            "</td></tr>";
+    }
+    return rows;
+}
+
 // ===================== GET render =====================
 
 void reticulum_page(const Request& req, Response& res) {
@@ -478,23 +524,53 @@ void reticulum_page(const Request& req, Response& res) {
             "    <div class=\"row-form\" style=\"margin-top:10px\">\n"
             "      <label style=\"margin:0\">Advertised name\n"
             "        <input type=\"text\" name=\"device_name\" value=\"__BT_NAME__\" maxlength=\"16\" "
-            "title=\"Keep it short: BLE advertisement payloads are 31 bytes total. Blank = advertise the service UUID only\"></label>\n"
+            "title=\"Prefilled with the box hostname, so hostname, echo bot and BLE advert share one base prefix. Keep it short: BLE advertisement payloads are 31 bytes total. Clear the field to advertise the service UUID only\"></label>\n"
             "    </div>\n"
-            "    <button type=\"submit\" class=\"btn-primary\" style=\"margin-top:10px\">Save &amp; restart rnsd</button>\n"
+            "    <button type=\"submit\" class=\"btn-primary\" style=\"margin-top:10px\">Save &amp; apply</button>\n"
             "    <span class=\"muted\">saving restarts rnsd — active links reconnect on their own</span>\n"
             "  </form>\n"
             "  <form method=\"post\" action=\"" + base + "/reticulum/bluetooth/raise\" class=\"row-form\">\n"
             "    <button type=\"submit\" class=\"btn\">Re-raise the stack</button>\n"
             "    <span class=\"muted\">restarts bluetoothd + rnsd — for a wedged adapter or a dongle plugged in and not picked up</span>\n"
-            "  </form>";
+            "  </form>\n"
+            "  <h4>Pair a BLE peer</h4>\n"
+            "  <p class=\"muted\" style=\"margin:6px 0 0\">RNS attaches to <strong>bonded</strong> devices only: find the peer below,\n"
+            "  pair it once (BlueZ JustWorks — accept the prompt on the peer if it shows one), then Save &amp; apply above.\n"
+            "  A phone pairable from its own Bluetooth settings will offer this box once the stack is up.</p>\n"
+            "  <div class=\"row-form\" style=\"margin-top:8px\">\n"
+            "    <button type=\"button\" class=\"btn\" id=\"btn-bt-scan\" onclick=\"btScan(this)\">Scan BLE devices</button>\n"
+            "    <span id=\"bt-scan-msg\" class=\"msg\"></span>\n"
+            "  </div>\n"
+            "  <div id=\"bt-scan-list\"></div>\n"
+            "  <div class=\"row-form\" style=\"margin-top:8px\">\n"
+            "    <label style=\"margin:0\">Pairing key / PIN\n"
+            "      <input type=\"text\" value=\"\" disabled placeholder=\"not implemented yet\"></label>\n"
+            "    <span class=\"muted\">RNS's BLE transport takes no user-supplied key — security is the BlueZ bonding above. "
+            "A passkey (numeric-compare) pairing needs an interactive agent wired into the pair helper: "
+            "<strong>not implemented yet</strong>; devices that pair JustWorks work today.</span>\n"
+            "  </div>\n";
     }
     h = R(std::move(h), "__BT_FORM_BLOCK__", bt_form);
     h = R(std::move(h), "__BT_STACK_STATUS__", bt_status_html(bt));
     h = R(std::move(h), "__BT_ENABLED_CHECKED__", (bt_on && bt_installed()) ? "checked" : "");
-    h = R(std::move(h), "__BT_NAME__", E(bl.device_name));
+    // Advertised name defaults to the box hostname, so the node carries one
+    // base prefix everywhere: the hostname itself (S10uuid reads
+    // /boot/hostname, pinned to "rnsbox" by the build), the echo bot's
+    // "<hostname> echo bot" and this BLE advert. Clearing the field still
+    // means the UUID-only advertisement the driver defaults to.
+    {
+        std::string btn = util::trim(bl.device_name);
+        if (btn.empty()) btn = util::trim(util::read_file("/proc/sys/kernel/hostname", 128));
+        if (btn == "localhost") btn.clear();
+        if (btn.size() > 16) btn = btn.substr(0, 16);   // write_ble's own bound
+        h = R(std::move(h), "__BT_NAME__", E(btn));
+    }
     h = rnode_fill(std::move(h));
     h = rnsh_fill(std::move(h));
     h = rnsdmon_fill(std::move(h));
+    h = R(std::move(h), "__ECHOBOT_CARDS__", echobot_cards(base));
+    h = R(std::move(h), "__RNSH_ACCESS_CARDS__", access_cards(base));
+    h = R(std::move(h), "__TCP_CLIENTS_ROWS__", tcp_clients_rows(base));
     h = R(std::move(h), "__CONFIG__",        E(cfg));
 
     res.body = render::layout(req, res, "Reticulum", "reticulum", h);
@@ -727,6 +803,46 @@ void reticulum_rnsh_save(const Request& req, Response& res) {
         (dest.empty() ? std::string("(not started — see the status line)") : dest) + ".");
 }
 
+// ---- TCP client interfaces (the editor card) ------------------------------
+// add/update/delete a [[...]] type = TCPClientInterface stanza in
+// /etc/reticulum/config (store::), then restart rnsd — the interface only
+// exists while rnsd parses its config.
+
+static void tcp_client_apply_msg(Response& res, bool ok, const std::string& err,
+                                 const char* what) {
+    if (!ok) {
+        render::redirect_flash(res, ret_redirect(), "error",
+            std::string("TCP interface: ") + (err.empty() ? "could not write the config" : err) + ".");
+        return;
+    }
+    web::run_init("S82rnsd");
+    render::redirect_flash(res, ret_redirect(), "success",
+        std::string(what) + " — rnsd restarted to apply.");
+}
+
+void reticulum_tcpclient_add(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, false)) return;
+    std::string err;
+    bool ok = store::add_tcp_client(util::trim(req.f("name")), util::trim(req.f("host")),
+                                    util::trim(req.f("port")), err);
+    tcp_client_apply_msg(res, ok, err, "TCP client interface added");
+}
+
+void reticulum_tcpclient_update(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, false)) return;
+    std::string err;
+    bool ok = store::update_tcp_client(atoi(req.f("idx").c_str()), util::trim(req.f("name")),
+                                       util::trim(req.f("host")), util::trim(req.f("port")), err);
+    tcp_client_apply_msg(res, ok, err, "TCP client interface saved");
+}
+
+void reticulum_tcpclient_delete(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, false)) return;
+    std::string err;
+    bool ok = store::delete_tcp_client(atoi(req.f("idx").c_str()), err);
+    tcp_client_apply_msg(res, ok, err, "TCP client interface deleted");
+}
+
 void reticulum_halow_add(const Request& req, Response& res) {
     if (!web::require_auth(req, res, false)) return;
     store::SlipConfig sl = store::read_slip();
@@ -870,6 +986,63 @@ void reticulum_bluetooth_raise(const Request& req, Response& res) {
         "all green is a healthy stack; a missing adapter means no onboard radio and no dongle.");
 }
 
+// ---- Bluetooth card: generic BLE discovery + pairing ----------------------
+// The BLE transport itself scans/accepts inside rnsd; these endpoints give
+// the operator eyes (who is advertising?) and the one-time BlueZ bonding
+// RNS requires (it attaches to bonded devices only). Same helper as the
+// RNode card's pair (a stack-level operation), a wider scan (scan-any).
+
+// Short-TTL cache for rnode.py scan-any (a discovery cycle costs ~6 s of
+// CPU+radio on the target); same pattern as the RNode scan cache.
+constexpr const char* BT_SCAN_CACHE = "/run/rnsbox-btscan.json";
+constexpr const char* BT_SCAN_LOCK  = "/run/rnsbox-btscan.lock";
+constexpr int BT_SCAN_TTL = 15;   // seconds
+
+static bool bt_scan_fresh(std::string& out) {
+    struct stat st;
+    if (::stat(BT_SCAN_CACHE, &st) != 0) return false;
+    time_t now = ::time(nullptr);
+    if (st.st_mtime > now || now - st.st_mtime >= BT_SCAN_TTL) return false;
+    out = util::read_file(BT_SCAN_CACHE, 256 * 1024);
+    std::string t = util::trim(out);
+    return !t.empty() && t[0] == '{';
+}
+
+// GET /reticulum/bluetooth/scan — every advertising BLE device (rnode.py
+// scan-any), fails soft with a JSON error the page renders.
+void reticulum_bluetooth_scan(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, true)) return;
+    res.content_type = "application/json";
+    std::string cached;
+    if (bt_scan_fresh(cached)) { res.body = cached; return; }
+
+    int lfd = ::open(BT_SCAN_LOCK, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (lfd >= 0) ::flock(lfd, LOCK_EX);
+    struct LockGuard { int fd; ~LockGuard() { if (fd >= 0) ::close(fd); } } guard{lfd};
+    if (bt_scan_fresh(cached)) { res.body = cached; return; }
+
+    if (!store::rnode_ble_stack_present()) {
+        res.body = "{\"error\":\"no BLE stack in this image (bluez/dbus + bleak needed)\",\"devices\":[]}";
+        return;
+    }
+    util::RunResult rr = util::run({"/usr/bin/python3", "/usr/lib/rnsbox/rnode.py", "scan-any"}, "", 20);
+    std::string out = util::trim(rr.out);
+    if (rr.exit_code == 0 && !out.empty() && out[0] == '{') {
+        util::write_file_atomic(BT_SCAN_CACHE, rr.out, 0600);
+        res.body = rr.out;
+        return;
+    }
+    res.body = "{\"error\":\"scan failed\",\"devices\":[]}";
+}
+
+// POST /reticulum/bluetooth/pair — same generic bluetoothctl pair + trust as
+// the RNode card's endpoint (pairing is a BlueZ-level operation, not an
+// RNode-specific one); the strict address check comes with it.
+void reticulum_bluetooth_pair(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, true)) return;
+    reticulum_rnode_pair(req, res);
+}
+
 // ===================== RNode (USB serial / BLE) =====================
 // /etc/rnsbox/rnode.conf is the single source of truth (store::read_rnode /
 // write_rnode); S81rnode regenerates the managed [[RNode ...]] section of
@@ -911,10 +1084,12 @@ static std::string rnode_fill(std::string h) {
     std::string sel_off = !usb && !ble ? " selected" : "";
     std::string sel_usb = usb ? " selected" : "";
     std::string sel_ble = ble ? " selected" : "";
+    // Short labels only: board names / device paths live in the select's
+    // title and the per-transport field notes, not in the option text.
     h = R(std::move(h), "__RNODE_TRANSPORT_OPTIONS__",
           "<option value=\"off\"" + sel_off + ">Off (default)</option>\n"
-          "      <option value=\"usb\"" + sel_usb + ">USB serial (/dev/ttyACM*, /dev/ttyUSB*)</option>\n"
-          "      <option value=\"ble\"" + sel_ble + ">BLE (nRF52 RNode: T-Echo, RAK4631)</option>");
+          "      <option value=\"usb\"" + sel_usb + ">USB serial</option>\n"
+          "      <option value=\"ble\"" + sel_ble + ">BLE</option>");
 
     // Device field: a datalist over the USB serial devices present right now,
     // so "auto" and a pinned /dev/ttyACM0 are both one click away.

@@ -37,8 +37,14 @@ void reticulum_applyupdate(const http::Request&, http::Response&); // POST PRG (
 void reticulum_slip(const http::Request&, http::Response&);        // POST PRG
 void reticulum_rnsh_save(const http::Request&, http::Response&);   // POST PRG
 void reticulum_halow_add(const http::Request&, http::Response&);   // POST PRG
+// TCP client interface editor ([[...]] type = TCPClientInterface stanzas)
+void reticulum_tcpclient_add(const http::Request&, http::Response&);    // POST PRG
+void reticulum_tcpclient_update(const http::Request&, http::Response&); // POST PRG
+void reticulum_tcpclient_delete(const http::Request&, http::Response&); // POST PRG
 void reticulum_bluetooth(const http::Request&, http::Response&);        // POST PRG
 void reticulum_bluetooth_raise(const http::Request&, http::Response&);  // POST PRG
+void reticulum_bluetooth_scan(const http::Request&, http::Response&);   // GET  JSON (BLE discovery, rnode.py scan-any)
+void reticulum_bluetooth_pair(const http::Request&, http::Response&);   // POST JSON (bluetoothctl pair, generic)
 // RNode modem over USB serial or BLE
 void reticulum_rnode(const http::Request&, http::Response&);        // POST PRG (save + apply)
 void reticulum_rnode_status(const http::Request&, http::Response&); // GET  JSON (S81rnode state)
@@ -54,8 +60,9 @@ void updates_check(const http::Request&, http::Response&);        // POST PRG
 void updates_apply(const http::Request&, http::Response&);        // POST PRG
 void updates_auto(const http::Request&, http::Response&);         // POST PRG
 
-// access tab (rnsh remote access — issued key files)
-void access_page(const http::Request&, http::Response&);           // GET  render
+// remote access (rnsh issued key files — cards on the Reticulum tab)
+std::string access_cards(const std::string& base);                 // cards HTML for the Reticulum page
+void access_page(const http::Request&, http::Response&);           // GET  -> redirect to the cards
 void access_issue(const http::Request&, http::Response&);          // POST -> text/plain download
 void access_revoke(const http::Request&, http::Response&);         // POST PRG
 void access_reissue(const http::Request&, http::Response&);        // POST -> text/plain download
@@ -70,8 +77,9 @@ void ntp_restart(const http::Request&, http::Response&);           // POST PRG
 void ssh_set(const http::Request&, http::Response&);               // POST PRG
 void usb_mode_set(const http::Request&, http::Response&);          // POST PRG (USB role device|host)
 
-// echo bot tab
-void echobot_page(const http::Request&, http::Response&);        // GET  render
+// echo bot (cards on the Reticulum tab; /echobot redirects to the card)
+std::string echobot_cards(const std::string& base);              // cards HTML for the Reticulum page
+void echobot_page(const http::Request&, http::Response&);        // GET  -> redirect to the card
 void echobot_save(const http::Request&, http::Response&);        // POST PRG
 void echobot_announce(const http::Request&, http::Response&);    // POST PRG
 void echobot_restart(const http::Request&, http::Response&);     // POST PRG

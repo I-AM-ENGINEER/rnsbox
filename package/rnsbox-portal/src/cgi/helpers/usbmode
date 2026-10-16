@@ -49,6 +49,7 @@
 # Test hooks (all default to the real paths; used by the local smoke tests):
 #   RNSBOX_USB_BOOT, RNSBOX_USB_CONF, RNSBOX_USB_STATE, RNSBOX_USB_PROC_ROLE,
 #   RNSBOX_USB_MODEL, RNSBOX_USB_BOARD_CONF, RNSBOX_USB_INIT_DIR, RNSBOX_USB_LOG
+#   RNSBOX_USB_NET_DIR (default /sys/class/net — usb0/carrier ground truth)
 
 CONF=/etc/rnsbox/usb.conf
 BOARD_CONF=/etc/rnsbox/board.conf
@@ -58,6 +59,7 @@ PROC_ROLE=/proc/cviusb/otg_role
 MODEL=/proc/device-tree/model
 INIT_DIR=/etc/init.d
 LOG=/var/log/usbmode.log
+NET_DIR=/sys/class/net
 
 [ -n "$RNSBOX_USB_CONF" ]       && CONF=$RNSBOX_USB_CONF
 [ -n "$RNSBOX_USB_BOARD_CONF" ] && BOARD_CONF=$RNSBOX_USB_BOARD_CONF
@@ -67,6 +69,7 @@ LOG=/var/log/usbmode.log
 [ -n "$RNSBOX_USB_MODEL" ]      && MODEL=$RNSBOX_USB_MODEL
 [ -n "$RNSBOX_USB_INIT_DIR" ]   && INIT_DIR=$RNSBOX_USB_INIT_DIR
 [ -n "$RNSBOX_USB_LOG" ]        && LOG=$RNSBOX_USB_LOG
+[ -n "$RNSBOX_USB_NET_DIR" ]    && NET_DIR=$RNSBOX_USB_NET_DIR
 
 say() { echo "S07usbmode: $*"; }
 log() {
@@ -124,15 +127,29 @@ otg_capable() {
 }
 
 # active_role — what the controller is doing right now (best effort).
+# The gadget NIC is ground truth and is checked first: usb0 with carrier
+# means the port is running device (gadget) at this very moment — the
+# operator may be logged in over that link. The CVITEK proc role switch
+# has been observed reporting "host" while the gadget was up (it reads
+# host whenever the ID-pin override was never written this boot), which
+# made the portal claim "Running now: host … no gadget LAN" to someone
+# literally using the gadget LAN. Only when usb0 is absent or carrierless
+# does the role switch get the final word.
 active_role() {
+	usb0_live() {
+		[ -d "$NET_DIR/usb0" ] && [ "$(cat "$NET_DIR/usb0/carrier" 2>/dev/null)" = "1" ]
+	}
 	case "$(platform)" in
 		cvi)
-			r=$(cat "$PROC_ROLE" 2>/dev/null | tr -d '\r\n')
-			if [ "$r" = host ] || [ "$r" = device ]; then echo "$r"; else echo unknown; fi
+			if usb0_live; then echo device
+			else
+				r=$(cat "$PROC_ROLE" 2>/dev/null | tr -d '\r\n')
+				if [ "$r" = host ] || [ "$r" = device ]; then echo "$r"; else echo unknown; fi
+			fi
 			;;
 		rpi)
 			udc=$(ls /sys/class/udc 2>/dev/null | head -n 1)
-			if [ -d /sys/class/net/usb0 ] && [ -n "$udc" ]; then
+			if [ -n "$udc" ] && usb0_live; then
 				echo device
 			elif grep -q "^dtoverlay=dwc2,dr_mode=host" "$BOOT_DIR/config.txt" 2>/dev/null; then
 				echo host
@@ -140,7 +157,10 @@ active_role() {
 				echo device
 			fi
 			;;
-		*) echo unknown ;;
+		*)
+			# No known role switch here: the gadget NIC is the only evidence.
+			if usb0_live; then echo device; else echo unknown; fi
+			;;
 	esac
 }
 

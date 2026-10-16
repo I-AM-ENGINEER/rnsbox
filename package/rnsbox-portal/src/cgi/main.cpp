@@ -51,8 +51,12 @@ static const char* const POST_ONLY[] = {
     "/reticulum/rnsh",
     "/access/issue", "/access/revoke", "/access/reissue",
     "/reticulum/halow/add",
+    "/reticulum/tcpclient/add",
+    "/reticulum/tcpclient/update",
+    "/reticulum/tcpclient/delete",
     "/reticulum/bluetooth",
     "/reticulum/bluetooth/raise",
+    "/reticulum/bluetooth/pair",
     "/reticulum/rnode",
     "/reticulum/rnode/pair",
     "/settings/password",
@@ -427,12 +431,21 @@ int main(int argc, char** argv) {
     else if (p == "/reticulum/slip")             routes::reticulum_slip(req, res);
     else if (p == "/reticulum/rnsh")             routes::reticulum_rnsh_save(req, res);
     else if (p == "/reticulum/halow/add")        routes::reticulum_halow_add(req, res);
+    else if (p == "/reticulum/tcpclient/add")    routes::reticulum_tcpclient_add(req, res);
+    else if (p == "/reticulum/tcpclient/update") routes::reticulum_tcpclient_update(req, res);
+    else if (p == "/reticulum/tcpclient/delete") routes::reticulum_tcpclient_delete(req, res);
     else if (p == "/reticulum/bluetooth")        routes::reticulum_bluetooth(req, res);
     else if (p == "/reticulum/bluetooth/raise")  routes::reticulum_bluetooth_raise(req, res);
+    else if (p == "/reticulum/bluetooth/scan")   routes::reticulum_bluetooth_scan(req, res);
+    else if (p == "/reticulum/bluetooth/pair")   routes::reticulum_bluetooth_pair(req, res);
     else if (p == "/reticulum/rnode")            routes::reticulum_rnode(req, res);
     else if (p == "/reticulum/rnode/status")     routes::reticulum_rnode_status(req, res);
     else if (p == "/reticulum/rnode/scan")       routes::reticulum_rnode_scan(req, res);
     else if (p == "/reticulum/rnode/pair")       routes::reticulum_rnode_pair(req, res);
+    // TODO(owners-decision): the Updates tab is hidden from the nav
+    // (pages/base.html) as raw/unfinished, but the routes stay live so a
+    // direct link still works. Decide its fate (finish vs. remove) — do
+    // NOT delete these lines as part of a cleanup without that decision.
     else if (p == "/updates")                    routes::updates_page(req, res);
     else if (p == "/updates/data")               routes::updates_data(req, res);
     else if (p == "/updates/config")             routes::updates_config(req, res);
