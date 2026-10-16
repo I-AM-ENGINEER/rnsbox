@@ -58,3 +58,12 @@ rm -rf "${GENIMAGE_TMP}"
         --config "${BOARD_DIR}/genimage.cfg"
 rm -rf "${ROOTPATH_TMP}"
 trap - EXIT
+
+# Tag the image the house way (the pc-x86_64 post-image does the same;
+# scripts/build-variant.sh only covers the rpi-universal). RNSBOX_BOARD /
+# RNSBOX_VARIANT are exported by build.sh.
+VARIANT="${RNSBOX_VARIANT:-lite}"
+NEW="${BINARIES_DIR}/sdcard.img"
+TAGGED="${BINARIES_DIR}/rnsbox-${RNSBOX_BOARD:-milkv-duo-cv1800b-mainline}-${VARIANT}.img"
+cp -f "$NEW" "$TAGGED"
+echo "=================== IMAGE OK [${VARIANT}] $(date) ==================="

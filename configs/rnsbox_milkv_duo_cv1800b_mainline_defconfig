@@ -1,5 +1,5 @@
 # RNSBox Milk-V Duo 64M (Sophgo CV1800B, C906 rv64gc) — MAINLINE Linux flow.
-# External-tree board like rpi0-2w: buildroot 2026.02.3 userspace (riscv64
+# External-tree board like rpi-universal: buildroot 2026.02.3 userspace (riscv64
 # lp64d GLIBC Bootlin — the portable rv64gc ABI, milkv-duo-cv1800b series
 # 0032 lesson; glibc over musl because buildroot's rust tier lists carry
 # riscv64 only for glibc, and python-rns -> python-cryptography needs
@@ -23,6 +23,7 @@ BR2_TARGET_GENERIC_ISSUE="RNSBox - Reticulum router (Milk-V Duo CV1800B, mainlin
 BR2_ROOTFS_DEVICE_TABLE="system/device_table_dev.txt system/device_table.txt"
 BR2_TARGET_GENERIC_ROOT_PASSWD="admin"
 BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_RNSBOX_PATH)/board/milkv-duo/rootfs-overlay"
+BR2_ROOTFS_POST_BUILD_SCRIPT="$(BR2_EXTERNAL_RNSBOX_PATH)/board/common/slim-target.sh"
 BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_RNSBOX_PATH)/board/milkv-duo/post-image.sh"
 BR2_LINUX_KERNEL=y
 BR2_LINUX_KERNEL_CUSTOM_GIT=y
@@ -57,7 +58,7 @@ BR2_PACKAGE_UTIL_LINUX_BINARIES=y
 BR2_PACKAGE_UTIL_LINUX_PARTX=y
 BR2_TARGET_ROOTFS_EXT2=y
 BR2_TARGET_ROOTFS_EXT2_4=y
-BR2_TARGET_ROOTFS_EXT2_SIZE="350M"
+BR2_TARGET_ROOTFS_EXT2_SIZE="512M"
 # BR2_TARGET_ROOTFS_TAR is not set
 BR2_PACKAGE_HOST_GENIMAGE=y
 BR2_PACKAGE_HOST_MTOOLS=y
