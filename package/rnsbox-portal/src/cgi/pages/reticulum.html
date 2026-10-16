@@ -115,6 +115,7 @@
   __BT_FORM_BLOCK__
 </section>
 
+<section class="card">
   <h3>RNode LoRa modem (USB / BLE)</h3>
   <p class="muted">A local RNode LoRa modem attached to this box — over a USB
   serial port (<code>/dev/ttyACM*</code>, <code>/dev/ttyUSB*</code>; the usual
@@ -129,7 +130,8 @@
   <form method="post" action="__BASE__/reticulum/rnode">
     <div class="row-form" style="margin-top:10px">
       <label style="margin:0">Transport
-        <select name="transport" id="rnode-transport" onchange="rnodeTransportChanged()">
+        <select name="transport" id="rnode-transport" onchange="rnodeTransportChanged()"
+          title="USB serial: a locally attached RNode over /dev/ttyACM* or /dev/ttyUSB*. BLE: an RNode advertising over Bluetooth (nRF52 boards), paired once below.">
           __RNODE_TRANSPORT_OPTIONS__
         </select></label>
       <label style="margin:0">Interface name
@@ -202,6 +204,18 @@ function rnodeStatusRefresh(){
     return r.json();
   }).then(function(d){
     var row = document.getElementById('rnode-live-status'); if (!row) return;
+    // Keep the USB device datalist current: a modem plugged in after the page
+    // loaded (or several attached — pick exactly one) shows up here without a
+    // reload. The server-rendered options stay as the no-JS fallback.
+    var dl = document.getElementById('rnode-device-list');
+    if (dl && Array.isArray(d.devices) && d.devices.length) {
+      var cur = (document.querySelector('#rnode-usb-fields input[name=device]') || {}).value || '';
+      var opts = '<option value="auto">auto (first found)</option>';
+      d.devices.forEach(function(p){
+        opts += '<option value="' + escH(p) + '"' + (p === cur ? ' selected' : '') + '></option>';
+      });
+      dl.innerHTML = opts;
+    }
     var b;
     if (d.transport !== 'usb' && d.transport !== 'ble') b = '<span class="badge">off</span>';
     else if (d.state === 'ok' && d.port) b = '<span class="badge ok">ready</span> <span class="mono">' + escH(d.port) + '</span>';

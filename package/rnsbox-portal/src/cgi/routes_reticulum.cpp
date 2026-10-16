@@ -911,10 +911,12 @@ static std::string rnode_fill(std::string h) {
     std::string sel_off = !usb && !ble ? " selected" : "";
     std::string sel_usb = usb ? " selected" : "";
     std::string sel_ble = ble ? " selected" : "";
+    // Short labels only: board names / device paths live in the select's
+    // title and the per-transport field notes, not in the option text.
     h = R(std::move(h), "__RNODE_TRANSPORT_OPTIONS__",
           "<option value=\"off\"" + sel_off + ">Off (default)</option>\n"
-          "      <option value=\"usb\"" + sel_usb + ">USB serial (/dev/ttyACM*, /dev/ttyUSB*)</option>\n"
-          "      <option value=\"ble\"" + sel_ble + ">BLE (nRF52 RNode: T-Echo, RAK4631)</option>");
+          "      <option value=\"usb\"" + sel_usb + ">USB serial</option>\n"
+          "      <option value=\"ble\"" + sel_ble + ">BLE</option>");
 
     // Device field: a datalist over the USB serial devices present right now,
     // so "auto" and a pinned /dev/ttyACM0 are both one click away.
