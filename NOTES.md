@@ -128,3 +128,63 @@ answers on the SDIO bus; both escalated to the owner.
   admin@192.168.88.230 -> dmesg | grep -iE 'aic|btsdio' -> ls
   /sys/class/bluetooth -> bluetoothctl show. If the module is genuinely
   radio-less, everything stays a logged no-op (verified above).
+
+## LIVE BREAKTHROUGH (2026-10-17, root via u-boot init=/bin/sh)
+
+The radio is an AIC8800D80 (SDIO vid 0xc8a1, did 0x0082, func2 0x0182,
+chip rev bits 7) — NOT the plain 8800 the slim rule assumed. Root
+debugging (devmem + a diagnostic sdio driver dumping func1 regs) found
+why the chip was silent:
+
+1. WL_REG_ON (XGPIOA_15, pad 'SPK_EN' @0x0300103C) was never driven:
+   pad mux was already GPIO(3), but GPIOA DIR bit15 = input. Driving it
+   high + cvi_sdio_rescan() (exported by sdhci-cv181x, no in-tree
+   caller; triggered via a 10-line rescan.ko) enumerates the card:
+   'mmc1: new high speed SDIO card at address 390b'.
+2. With the card up, the bsp still wedged: first 512-byte message stuck
+   at flow-ctrl (Q1 reg 0x03 = 0 forever) -> cmd 1024/1025 timeout.
+   Raw register dump (sdiodiag.ko): INTR_PENDING=0x10, FLOW_CTRL_Q1=0.
+   Root cause: the 32.768 kHz LPO clock is not routed to the module —
+   the chip PMU hangs mid-boot (SDIO regs alive, ring dead). The
+   working DuoS u-boot does PINMUX_CONFIG(CLK32K, PWR_GPIO_10) i.e.
+   pad 0x030010B0 = 3, plus RTC-domain power 0x050250AC=0x2 and
+   0x050260D0=0x7 (wevb reference: set_rtc_register_for_power()).
+3. After devmem(0x050260D0=0x7, 0x050250AC=0x2, CLK32K mux) + fresh
+   WL_REG_ON pulse + rescan: bsp + BT-fdrv load CLEAN, firmware
+   fmacfwbt_8800d80_u02.bin boots, and:
+
+   wlan0: UP, MAC 88:00:33:77:a6:c7 — iw scan sees real networks
+          (MikroTik-29E940, LG A/C, Gorod-118...);
+   hci0:  Type Primary Bus SDIO, BD 0B:3B:22:AC:88:20, UP RUNNING,
+          RX 47k / 1708 events / 0 errors; bluetoothctl: Controller
+          0B:3B:22:AC:88:20 (public), Powered: yes (BlueZ 5.68).
+
+The btsdio transport from 0017 works unchanged (aic_btsdio skb type 4
+events flowing; hci0 registered by fdrv probe).
+
+## Fixes baked into the branch
+
+- patches/milkv-duo-01-arm/0018: u-boot cvi_board_init.c for
+  sg2000_duo01evb_arm64_sd — RTC power, CLK32K LPO mux, SDIO1 pads,
+  WL_REG_ON GPIO drive with reset pulse. (Kernel boot scan then finds
+  the card; no rescan.ko needed at boot.)
+- board/common/slim-target.sh: KEEP the *_8800d80* firmware (the old
+  rule deleted the exact set this radio boots).
+- board/common/assert-image.sh: assert the five D80 firmware files.
+
+Debug helpers (NOT in the tree, kept in ~/bt-fix/{rescan-mod,sdiodiag}):
+rescan.ko calls cvi_sdio_rescan(); sdiodiag.ko dumps func1 regs 0x00-0x12
++ flow-ctrl polling. The D80 firmware for live tests came from the
+aic8800-sdio-firmware tarball already in buildroot/dl.
+
+Open items (documented, not blocking -W arm64):
+- rv64 board dirs (sg2000_duo_sd, licheervnano) lack the same u-boot
+  wifi block — their -W WiFi/BT stays dead until the same lines are
+  ported (different series).
+- sg2002_duo_arm64_sd (QFN carrier) likely needs the SG2002 pad
+  equivalents; untouched.
+- UART2->UART4 BT HCI mux (DuoS) not needed: BT runs over SDIO here;
+  btlpm ships but stays unloaded (rfkill would soft-block).
+- /run/bluetooth-hci still says 'no adapter' until a re-boot with the
+  fixed u-boot (S37bluetooth runs before the radio exists on the old
+  image; rnsd re-checks every 30 s and will pick hci0 up live).
