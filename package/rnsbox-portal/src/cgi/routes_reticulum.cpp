@@ -533,10 +533,11 @@ void reticulum_page(const Request& req, Response& res) {
             "    <button type=\"submit\" class=\"btn\">Re-raise the stack</button>\n"
             "    <span class=\"muted\">restarts bluetoothd + rnsd — for a wedged adapter or a dongle plugged in and not picked up</span>\n"
             "  </form>\n"
-            "  <h4>Pair a BLE peer</h4>\n"
-            "  <p class=\"muted\" style=\"margin:6px 0 0\">RNS attaches to <strong>bonded</strong> devices only: find the peer below,\n"
-            "  pair it once (BlueZ JustWorks — accept the prompt on the peer if it shows one), then Save &amp; apply above.\n"
-            "  A phone pairable from its own Bluetooth settings will offer this box once the stack is up.</p>\n"
+            "  <h4>BLE peers</h4>\n"
+            "  <p class=\"muted\" style=\"margin:6px 0 0\">Connections are <strong>automatic</strong>: the box scans\n"
+            "  for nearby Reticulum peers and connects on its own; the bundled BLE Agent bonds them on connect\n"
+            "  (BlueZ JustWorks — accept the prompt on the peer if it shows one). The list below is for visibility;\n"
+            "  Pair is an optional troubleshooting fallback for a peer whose bonding keeps failing.</p>\n"
             "  <div class=\"row-form\" style=\"margin-top:8px\">\n"
             "    <button type=\"button\" class=\"btn\" id=\"btn-bt-scan\" onclick=\"btScan(this)\">Scan BLE devices</button>\n"
             "    <span id=\"bt-scan-msg\" class=\"msg\"></span>\n"
@@ -545,9 +546,9 @@ void reticulum_page(const Request& req, Response& res) {
             "  <div class=\"row-form\" style=\"margin-top:8px\">\n"
             "    <label style=\"margin:0\">Pairing key / PIN\n"
             "      <input type=\"text\" value=\"\" disabled placeholder=\"not implemented yet\"></label>\n"
-            "    <span class=\"muted\">RNS's BLE transport takes no user-supplied key — security is the BlueZ bonding above. "
-            "A passkey (numeric-compare) pairing needs an interactive agent wired into the pair helper: "
-            "<strong>not implemented yet</strong>; devices that pair JustWorks work today.</span>\n"
+            "    <span class=\"muted\">RNS's BLE transport takes no user-supplied key — security is the BlueZ bonding "
+            "the agent negotiates. A passkey (numeric-compare) pairing needs an interactive agent wired into the "
+            "pair helper: <strong>not implemented yet</strong>; JustWorks peers connect unattended today.</span>\n"
             "  </div>\n";
     }
     h = R(std::move(h), "__BT_FORM_BLOCK__", bt_form);
@@ -987,10 +988,11 @@ void reticulum_bluetooth_raise(const Request& req, Response& res) {
 }
 
 // ---- Bluetooth card: generic BLE discovery + pairing ----------------------
-// The BLE transport itself scans/accepts inside rnsd; these endpoints give
-// the operator eyes (who is advertising?) and the one-time BlueZ bonding
-// RNS requires (it attaches to bonded devices only). Same helper as the
-// RNode card's pair (a stack-level operation), a wider scan (scan-any).
+// The BLE transport itself scans/connects/accepts inside rnsd, and the
+// bundled BLE Agent bonds peers automatically on connect (BlueZ JustWorks).
+// These endpoints give the operator eyes (who is advertising?) and a manual
+// pair as a troubleshooting fallback. Same helper as the RNode card's pair
+// (a stack-level operation), a wider scan (scan-any).
 
 // Short-TTL cache for rnode.py scan-any (a discovery cycle costs ~6 s of
 // CPU+radio on the target); same pattern as the RNode scan cache.
@@ -1051,7 +1053,8 @@ void reticulum_bluetooth_pair(const Request& req, Response& res) {
 // restart (both synchronous web::run_init calls, in that order). There is no
 // daemon of our own to start: RNS >= 1.5.7 opens the serial port itself (and
 // retries it every 5 s until the modem is plugged in) and speaks RNode-over-
-// BLE natively (port = ble://..., bleak + BlueZ, bonded devices only).
+// BLE natively (port = ble://..., bleak + BlueZ, peers bonded on connect by
+// the bundled BLE Agent).
 
 static std::string rnode_fill(std::string h) {
     store::RnodeConfig rc = store::read_rnode();
@@ -1150,8 +1153,8 @@ void reticulum_rnode(const Request& req, Response& res) {
             "within seconds (it retries the port every 5 s).");
     else
         render::redirect_flash(res, ret_redirect(), "success",
-            "RNode over BLE saved" + apply + ". The RNode must be PAIRED with this box first "
-            "(RNS attaches to bonded devices only) — use Scan + Pair above, then restart rnsd.");
+            "RNode over BLE saved" + apply + ". rnsd connects and bonds the peer automatically "
+            "(JustWorks); if the modem does not show up, Scan + Pair above is the manual fallback.");
 }
 
 // Short-TTL cache for rnode.py scan (BLE discovery costs ~6 s of CPU+radio
@@ -1220,8 +1223,9 @@ void reticulum_rnode_scan(const Request& req, Response& res) {
     res.body = "{\"error\":\"scan failed\",\"devices\":[]}";
 }
 
-// POST /reticulum/rnode/pair — one-time bluetoothctl pair (+ trust) so RNS's
-// bonded-only filter lets the RNode attach. Best-effort: needs the BLE stack.
+// POST /reticulum/rnode/pair — manual bluetoothctl pair (+ trust) as a
+// troubleshooting fallback; normal attach bonds automatically on connect.
+// Best-effort: needs the BLE stack.
 void reticulum_rnode_pair(const Request& req, Response& res) {
     if (!web::require_auth(req, res, true)) return;
     res.content_type = "application/json";

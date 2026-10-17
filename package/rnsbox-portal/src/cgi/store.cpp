@@ -1034,8 +1034,8 @@ bool write_rnode(const RnodeConfig& c, std::string& err) {
         "# Managed by the rnsbox-portal Reticulum tab; applied by S81rnode,\n"
         "# which generates the [[RNode ...]] section in /etc/reticulum/config\n"
         "# between its BEGIN/END RNODE markers. BLE needs the BLE stack in the\n"
-        "# image (bluez/dbus + bleak) and a one-time pairing (RNS attaches to\n"
-        "# bonded devices only).\n";
+        "# image (bluez/dbus + bleak); rnsd connects and bonds the peer on its\n"
+        "# own (BlueZ JustWorks via the bundled agent).\n";
     o += "transport=" + transport + "\n";
     o += "device=" + (usb ? dev : std::string("auto")) + "\n";
     o += "ble_address=" + (ble ? ble_addr : std::string("")) + "\n";

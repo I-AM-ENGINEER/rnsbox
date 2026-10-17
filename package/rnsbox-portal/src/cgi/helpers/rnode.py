@@ -7,10 +7,10 @@ It never raises: a missing BLE stack or a shy modem yields {"error": ...} /
 {"ok": false, ...} instead.
 
 RNS >= 1.5.7 speaks RNode-over-BLE natively (RNodeInterface port = ble://...,
-Nordic UART Service) — this helper only finds and PAIRS candidates. RNS
-attaches to bonded devices exclusively (its device_filter checks the BlueZ
-"Bonded" property), so pairing is what makes the modem usable; connecting is
-left to rnsd, which scans for the (now bonded) advert on its own.
+Nordic UART Service) — rnsd scans, connects and bonds peers on its own (the
+bundled BLE Agent handles BlueZ JustWorks during the connect). This helper is
+the operator's eyes plus a manual pair fallback for a peer whose automatic
+bonding keeps failing; it is not part of the normal attach path.
 
     rnode.py scan        — list advertising RNodes (NUS service UUID present)
     rnode.py scan-any    — list EVERY advertising BLE device (the generic
