@@ -18,3 +18,20 @@ RNSBOX_PYTHON_BLUEZERO_LICENSE_FILES = LICENSE
 RNSBOX_PYTHON_BLUEZERO_DEPENDENCIES = dbus-python
 
 $(eval $(python-package))
+
+# GATT-server path: bluezero's async_tools imports gi.repository.GLib, which
+# PyGObject cannot provide on the musl rootfs (gobject-introspection needs
+# glibc). Ship a small ctypes shim instead - it runs the GLib default main
+# context and registers timeouts, which is all bluezero uses; dbus-python's
+# own C extension does the actual D-Bus watch integration against the same
+# libglib-2.0.
+define RNSBOX_PYTHON_BLUEZERO_INSTALL_GI_SHIM
+	$(INSTALL) -d $(TARGET_DIR)/usr/lib/python$(PYTHON3_VERSION_MAJOR).$(PYTHON3_VERSION_MINOR)/site-packages/gi/repository
+	$(INSTALL) -m 0644 $(RNSBOX_PYTHON_BLUEZERO_PKGDIR)/src/gi/__init__.py \
+		$(TARGET_DIR)/usr/lib/python$(PYTHON3_VERSION_MAJOR).$(PYTHON3_VERSION_MINOR)/site-packages/gi/__init__.py
+	$(INSTALL) -m 0644 $(RNSBOX_PYTHON_BLUEZERO_PKGDIR)/src/gi/repository/__init__.py \
+		$(TARGET_DIR)/usr/lib/python$(PYTHON3_VERSION_MAJOR).$(PYTHON3_VERSION_MINOR)/site-packages/gi/repository/__init__.py
+	$(INSTALL) -m 0644 $(RNSBOX_PYTHON_BLUEZERO_PKGDIR)/src/gi/repository/GLib.py \
+		$(TARGET_DIR)/usr/lib/python$(PYTHON3_VERSION_MAJOR).$(PYTHON3_VERSION_MINOR)/site-packages/gi/repository/GLib.py
+endef
+RNSBOX_PYTHON_BLUEZERO_POST_INSTALL_TARGET_HOOKS += RNSBOX_PYTHON_BLUEZERO_INSTALL_GI_SHIM
