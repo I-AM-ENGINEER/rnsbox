@@ -4,4 +4,4 @@
 # portal) and the serial console. The password is LOCKED ('!') at build
 # time; the user sets it in the portal when enabling SSH (the portal's CGI
 # runs `passwd -a sha512 admin`). uid/gid are auto-allocated (1000).
-admin -1 admin -1 ! /home/admin /bin/sh - Admin account
+admin -1 admin -1 ! /home/admin /bin/zsh - Admin account

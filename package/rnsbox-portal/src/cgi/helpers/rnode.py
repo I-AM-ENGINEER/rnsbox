@@ -65,7 +65,7 @@ def scan() -> dict:
             # matcher requires that prefix); keep others out of the list.
             return name.startswith("RNode")
 
-        devices = await bleak.BleakScanner.discovery(timeout=SCAN_TIMEOUT)
+        devices = await bleak.BleakScanner.discover(timeout=SCAN_TIMEOUT)
         for d in devices:
             # discovery() already applied no filter; match here so unknown
             # firmware variants advertising NUS still show with their names.
@@ -106,7 +106,7 @@ def scan_any() -> dict:
 
     async def _scan():
         found = []
-        devices = await bleak.BleakScanner.discovery(timeout=SCAN_TIMEOUT)
+        devices = await bleak.BleakScanner.discover(timeout=SCAN_TIMEOUT)
         for d in devices:
             name = d.name or "(unnamed)"
             found.append({"name": name, "address": d.address,
