@@ -1,46 +1,40 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: rnsbox <rnsbox@localhost>
-Date: Fri, 17 Oct 2026 04:20:00 +0300
-Subject: [PATCH 38/38] sg2000 module: bring the WiFi/BT board init in line
- with the Milk-V Duo S
+Date: Fri, 17 Oct 2026 04:40:00 +0300
+Subject: [PATCH 38/38] sg2000 module: full -W radio bring-up in u-boot
+ (proven live)
 
-Milk-V states the Duo Module 01 EVB runs DuoS software directly, and the
-working DuoS u-boot board init (duo-buildroot-sdk-v2,
-sg2000_milkv_duos_glibc_arm64_sd) carries three things our grafted board
-dir lacked:
+Upgrades the board init with the exact block proven live on the EVB
+carrier by the radio debug session (wlan0 + hci0 came up with this
+exact sequence):
 
-  - PINMUX_CONFIG(CLK32K, PWR_GPIO_10): the 32.768 kHz LPO clock to the
-    module. Without it the AIC8800 power-on handshake over SDIO times
-    out after ~2 s ("fail to set AIC_WIFI power state to 1") and the
-    radio never enumerates;
-  - set_rtc_register_for_power(): mmio 0x050260D0 = 0x7, RTC-domain
-    power for the module WiFi/BT block;
-  - UART2 -> UART4 remux for the module BT HCI UART.
+  - RTC-domain power: 0x050250AC = 0x2 and 0x050260D0 = 0x7;
+  - PWR pad group to defaults;
+  - CLK32K pad -> PWR_GPIO_10 (mmio 0x030010B0 = 0x3): the 32.768 kHz
+    LPO clock — without it the AIC8800D80 PMU answers SDIO register
+    reads but never services the message ring;
+  - SDIO1 pad group to SDIO function (determinism);
+  - WL_REG_ON = XGPIOA_15: mux to GPIO, reset pulse, then HIGH — so
+    the kernel's single boot-time scan of the non-removable wifi-sd
+    host finds the card and S35wifi brings wlan0 + hci0 up.
 
-The Wi-Fi power pins (porta15/porte7) already matched the Duo S.
-Also un-breaks the SLIP UART1 mmio writes: the previous append left
-them dead-coded behind an early 'return 0'.
+Also un-deadens the SLIP UART1 mmio writes (the earlier append left
+them behind an early `return 0`).
 
 ---
 diff --git a/build/boards/sg200x/sg2000_duomodule01_sd/u-boot/cvi_board_init.c b/build/boards/sg200x/sg2000_duomodule01_sd/u-boot/cvi_board_init.c
-index 93c39f4..fa4719e 100644
+index 93c39f4..cf34654 100644
 --- a/build/boards/sg200x/sg2000_duomodule01_sd/u-boot/cvi_board_init.c
 +++ b/build/boards/sg200x/sg2000_duomodule01_sd/u-boot/cvi_board_init.c
-@@ -1,19 +1,36 @@
+@@ -1,19 +1,68 @@
 -// Milk-V Duo Module 01 Evaluation Board — u-boot pinmux.
  //
  // Minimal headless RNSBox config: UART0 and SD run on their reset
  // multiplexing, so the only pins that need explicit setup are the
 -// internal GbE PHY LEDs (same wiring as the Milk-V Duo S reference).
 +// internal GbE PHY LEDs (same wiring as the Milk-V Duo S reference)
-+// plus the module WiFi/BT bring-up (identical to the Milk-V Duo S:
-+// 32k LPO clock to the module, RTC-domain power, BT HCI on UART4).
-+static void set_rtc_register_for_power(void)
-+{
-+	// Milk-V Duo S: RTC-domain power for the module WiFi/BT block.
-+	mmio_write_32(0x050260D0, 0x7);
-+}
-+
++// plus the module WiFi/BT radio bring-up (proven live on the EVB
++// carrier; the power scheme follows the Milk-V Duo S).
  int cvi_board_init(void)
  {
  	// Internal GbE PHY LEDs
@@ -48,21 +42,62 @@ index 93c39f4..fa4719e 100644
  	PINMUX_CONFIG(PWR_BUTTON1, EPHY_SPD_LED);
  
 -	return 0;
-+	// Module WiFi/BT (same as the Milk-V Duo S): 32k LPO clock to the
-+	// module, RTC power register. Without the LPO clock the AIC8800
-+	// power-on handshake times out ("fail to set AIC_WIFI power state").
-+	PINMUX_CONFIG(CLK32K, PWR_GPIO_10);
-+	PINMUX_CONFIG(UART2_RX, UART4_RX);
-+	PINMUX_CONFIG(UART2_TX, UART4_TX);
-+	PINMUX_CONFIG(UART2_CTS, UART4_CTS);
-+	PINMUX_CONFIG(UART2_RTS, UART4_RTS);
-+	set_rtc_register_for_power();
- 
+-
  	// UART1 (SLIP to the HaLow modem): XGPIOA[28] TX / XGPIOA[29] RX,
  	// fmux func=1 — the same encoding the Sipeed SG2002 boards use for
  	// these pads.
  	mmio_write_32(0x03001070, 0x1); // GPIOA 28 UART1 TX
  	mmio_write_32(0x03001074, 0x1); // GPIOA 29 UART1 RX
 +
++	// ---- WiFi/BT radio (AIC8800D80 on the Duo Module 01 -W) ----
++	// Everything below was proven live on the EVB carrier (devmem, root):
++	// without it the radio never answers SDIO and aic8800_bsp times out
++	// ('fail to set AIC_WIFI power state to 1', /sys/bus/sdio/devices empty).
++	//
++	// 1) RTC-domain power for the radio rails (the vendor sg2000_wevb_sd
++	//    board does exactly this in set_rtc_register_for_power(); the Milk-V
++	//    Duo-S v2 SDK writes 0x7 to 0x050260D0 — value proven live).
++	// 2) The 32.768 kHz LPO clock routed out of the CLK32K pad to the
++	//    module: the AIC8800D80 PMU hangs mid-boot without LPO — the ROM
++	//    answers SDIO register reads but never services the message ring
++	//    (flow-ctrl stuck at 0, first block write times out).
++	// 3) SDIO1 pad group to SDIO function (reset default is already 0 on
++	//    this SoC; written for determinism against future pad defaults).
++	// 4) WL_REG_ON = XGPIOA_15 (pad 'SPK_EN', the wifi_pin poweron-gpio of
++	//    the board dts): mux to GPIO, drive output HIGH so the kernel's
++	//    single boot-time scan of the non-removable wifi-sd host finds the
++	//    card; S35wifi's insmod order then brings wlan0 + hci0 up.
++	mmio_write_32(0x050250AC, 0x2);            // RTC: duos-s power enable
++	mmio_write_32(0x050260D0, 0x7);            // RTC: radio power domain
++	mmio_write_32(0x03001090, 0x0);            // PWR_WAKEUP0 default
++	mmio_write_32(0x03001094, 0x0);            // PWR_WAKEUP1 default
++	mmio_write_32(0x03001098, 0x0);            // PWR_BUTTON1 default
++	mmio_write_32(0x0300109C, 0x0);            // PWR_ON default
++	mmio_write_32(0x030010B0, 0x3);            // CLK32K pad -> PWR_GPIO_10 (32k LPO out)
++	mmio_write_32(0x030010D0, 0x0);            // SDIO1 D3
++	mmio_write_32(0x030010D4, 0x0);            // SDIO1 D2
++	mmio_write_32(0x030010D8, 0x0);            // SDIO1 D1
++	mmio_write_32(0x030010DC, 0x0);            // SDIO1 D0
++	mmio_write_32(0x030010E0, 0x0);            // SDIO1 CMD
++	mmio_write_32(0x030010E4, 0x0);            // SDIO1 CLK
++	mmio_write_32(0x0300103C, 0x3);            // XGPIOA_15 pad -> GPIO mode
++	{
++		volatile unsigned int i;
++		unsigned int val;
++		val = mmio_read_32(0x03020004);        // GPIOA direction
++		val |= (1u << 15);                     // pin 15 = output
++		mmio_write_32(0x03020004, val);
++		val = mmio_read_32(0x03020000);        // GPIOA output level
++		val &= ~(1u << 15);                    // WL_REG_ON low (reset)
++		mmio_write_32(0x03020000, val);
++		for (i = 0; i < 2000000; i++) {        // ~30-60 ms reset pulse
++			__asm__ volatile ("nop");
++		}
++		val = mmio_read_32(0x03020000);
++		val |= (1u << 15);                     // WL_REG_ON high = radio on
++		mmio_write_32(0x03020000, val);
++	}
 +	return 0;
  }
+2.43.0
+
