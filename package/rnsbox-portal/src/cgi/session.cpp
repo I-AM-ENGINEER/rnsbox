@@ -137,6 +137,9 @@ void ensure_default_auth() {
     if (!m.empty()) return;
     m["admin"] = make_hash("admin");
     util::write_file_atomic(AUTH_FILE, serialize_auth(m), 0600);
+    // Prime the dashboard banner cache while we already are in a one-off
+    // setup path, so the first dashboard render does not pay the PBKDF2.
+    (void)default_password_active();
 }
 
 bool default_password_active() {
@@ -172,7 +175,11 @@ bool set_password(const std::string& user, const std::string& newpass) {
     if (!valid_username(user) || newpass.empty() || newpass.size() > 512) return false;
     auto m = parse_auth(util::read_file(AUTH_FILE));
     m[user] = make_hash(newpass);
-    return util::write_file_atomic(AUTH_FILE, serialize_auth(m), 0600);
+    bool ok = util::write_file_atomic(AUTH_FILE, serialize_auth(m), 0600);
+    // Rewrite the banner cache now: the next dashboard render would otherwise
+    // pay the full PBKDF2 once because the auth.json mtime changed.
+    if (ok) (void)default_password_active();
+    return ok;
 }
 
 void revoke_all() {
