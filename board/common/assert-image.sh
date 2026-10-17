@@ -1,7 +1,12 @@
 #!/bin/bash
 # assert-image.sh — hard assertions on a built RNSBox rootfs TARGET dir.
 #
-#   ./assert-image.sh <target-dir> [cvitek|rpi|pc]
+#   ./assert-image.sh <target-dir> [cvitek|rpi|pc] [kernel.dtb|images-dir]
+#
+# The optional third argument is the kernel DTB (or a directory to search
+# for one) for the DRAM-map assertions: the DTB memory node must be
+# >= 440 MB on a 512 MB board and the ION reserved-memory carveout must be
+# <= 32 MB (the memmap shrink regression guard).
 #
 # Validates the buildroot OUTPUT (buildroot/output/target, or any unpacked
 # rootfs tree — point it at the mounted/extracted root) against the shipped
@@ -18,6 +23,7 @@ set -u
 
 T="${1:-}"
 FLAVOR="${2:-cvitek}"
+DTB="${3:-}"
 if [ -z "$T" ] || [ ! -d "$T" ]; then
     echo "usage: $0 <target-dir> [cvitek|rpi|pc]" >&2
     exit 1
@@ -155,11 +161,91 @@ else
     warn "no python3 stdlib dir found (non-python image?)"
 fi
 
+# ---- python unicodedata / idna codec (the silent-rnsd-killer guard) -------
+# The 64bit cvitek defconfigs once shipped with BR2_PACKAGE_PYTHON3_UNICODEDATA
+# unset: buildroot configured CPython --disable-unicodedata, the target had
+# no lib-dynload/unicodedata C extension, `import encodings.idna` failed at
+# codec-load time and EVERY socket.getaddrinfo() raised
+# LookupError: unknown encoding: idna. rnsd creates its TCPServerInterface
+# (listen_ip = 0.0.0.0) right after start -> unhandled exception -> RNS
+# os._exit -> empty /var/log/rnsd.log -> wanwatch reboot loop. Shipping an
+# image without this extension ships a dead rnsd.
+if [ -n "$pydir" ]; then
+    if ls "$pydir"/lib-dynload/unicodedata*.so >/dev/null 2>&1; then
+        ok "python unicodedata extension present (idna codec loadable)"
+    else
+        bad "python unicodedata MISSING (encodings.idna unimportable - rnsd dies on its TCPServerInterface)"
+    fi
+    if [ -f "$pydir/encodings/idna.py" ]; then
+        ok "encodings/idna.py present"
+    else
+        bad "encodings/idna.py missing (getaddrinfo cannot resolve anything)"
+    fi
+fi
+
+# ---- /tmp tmpfs shape (the stacked-mount bug) ------------------------------
+# The buildroot skeleton symlinks /var/{log,cache,spool,tmp} -> ../tmp, so
+# the old per-dir /var/* tmpfs fstab entries stacked THREE anonymous mounts
+# onto /tmp and the last one (512k, mode 0755) won: admin could not write
+# /tmp at all and /var/log lived on that same tiny layer.
+if [ -f "$T/etc/fstab" ]; then
+    if grep -qE '^tmpfs[[:space:]]+/tmp[[:space:]]+tmpfs[[:space:]]+.*mode=1777' "$T/etc/fstab" \
+       && ! grep -qE '^tmpfs[[:space:]]+/var/(log|cache|lock|spool|tmp)[[:space:]]' "$T/etc/fstab"; then
+        ok "fstab: single 1777 tmpfs on /tmp, no stacked /var/* tmpfs mounts"
+    else
+        bad "fstab: /tmp tmpfs shape wrong (want one mode=1777 /tmp entry and NO /var/* tmpfs lines - they stack onto /tmp through the skeleton symlinks)"
+    fi
+fi
+
 # ---- slimmer effect (post-build hook ran) ---------------------------------
 if [ -d "$pydir" ] && [ -d "$pydir/ensurepip" ]; then
     bad "slim-target hook did not run (ensurepip still present)"
 else
     ok "slim-target hook effect present (ensurepip stripped)"
+fi
+
+# ---- DRAM map (memmap regression guard) -----------------------------------
+# A 512 MB board must boot with a >= 440 MB kernel memory node, and the ION
+# reserved-memory carveout inside it must stay small (the media pipeline is
+# unused on a headless router). Both facts live in the kernel DTB the boot
+# chain actually ships - the memory node from CVIMMAP_KERNEL_MEMORY_*, the
+# ion-region from CVIMMAP_ION_SIZE - so the decompiled DTB is the ground
+# truth, not the rootfs.
+check_dtb() {
+    local dtb="$1" dtc_txt mem_tok ion_tok mem_mb ion_mb
+    command -v dtc >/dev/null 2>&1 || { warn "dtc not on PATH - DTB RAM assertions skipped"; return 0; }
+    if [ -d "$dtb" ]; then
+        dtb="$(find "$dtb" -name '*.dtb' | head -1)"
+        [ -n "$dtb" ] || { warn "no .dtb under the given dir - DTB RAM assertions skipped"; return 0; }
+    fi
+    dtc_txt="$(dtc -I dtb -O dts -q "$dtb" 2>/dev/null)" || { bad "kernel DTB '$dtb' does not decompile"; return 0; }
+    mem_tok="$(awk '/device_type = "memory";/{f=1} f && /reg = </{print; exit}' <<<"$dtc_txt" | grep -oE '0x[0-9a-fA-F]+' | tail -1)"
+    ion_tok="$(awk '/ion-region/{f=1} f && /size = </{print; exit}' <<<"$dtc_txt" | grep -oE '0x[0-9a-fA-F]+' | tail -1)"
+    if [ -n "$mem_tok" ]; then
+        mem_mb=$(( mem_tok / 1024 / 1024 ))
+        if [ "$mem_mb" -ge 440 ]; then
+            ok "DTB memory node: ${mem_mb} MB (>= 440 MB)"
+        else
+            bad "DTB memory node: only ${mem_mb} MB (expected >= 440 MB on a 512 MB board - memmap regression?)"
+        fi
+    else
+        bad "DTB has no parseable memory node reg"
+    fi
+    if [ -n "$ion_tok" ]; then
+        ion_mb=$(( ion_tok / 1024 / 1024 ))
+        if [ "$ion_mb" -le 32 ]; then
+            ok "DTB ion reserved-memory: ${ion_mb} MB (<= 32 MB, media unused)"
+        else
+            bad "DTB ion reserved-memory: ${ion_mb} MB (> 32 MB - the 170M vendor carveout is back)"
+        fi
+    else
+        warn "DTB has no ion-region (ion absent - fine if intended)"
+    fi
+}
+if [ -n "$DTB" ]; then
+    check_dtb "$DTB"
+else
+    warn "no DTB argument - DRAM-map assertions skipped (pass the kernel .dtb or an images dir)"
 fi
 
 echo "== assert-image: $fails failure(s)"

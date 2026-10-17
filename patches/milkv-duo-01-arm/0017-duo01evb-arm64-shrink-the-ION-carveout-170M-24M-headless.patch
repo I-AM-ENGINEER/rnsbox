@@ -1,0 +1,45 @@
+From 654d3689cdbf69a22b5d820da6a27daaafc0fab4 Mon Sep 17 00:00:00 2001
+From: rnsbox <rnsbox@localhost>
+Date: Sat, 17 Oct 2026 03:26:48 +0300
+Subject: [PATCH 1/4] duo01evb-arm64: shrink the ION carveout 170M -> 24M
+ (headless RAM reclamation)
+
+The vendor memmap reserved 170 MB of DRAM for the ISP/H26x media
+pipeline. On this headless Reticulum router the pipeline is never
+instantiated, so a 512 MB board booted with only ~311 MB free.
+
+24 MB is the conservative floor: still a real reserved-memory region
+(a zero-size ion-region would break the cvitek ion driver
+of_reserved_mem_device_init path) and still fits the fast-image
+buffers the memmap assert requires (2M bitstream + 20M ISP base).
+BOOTLOGO, UIMAG, FREERTOS and OPENSBI/ATF are untouched - u-boot,
+fsbl and the kernel all regenerate cvi_board_memmap.h from this one
+file, so the whole boot chain stays consistent.
+
+Expected dmesg after flash: MemTotal ~457 MB (was ~311 MB).
+---
+ build/boards/sg200x/sg2000_duo01evb_arm64_sd/memmap.py | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/build/boards/sg200x/sg2000_duo01evb_arm64_sd/memmap.py b/build/boards/sg200x/sg2000_duo01evb_arm64_sd/memmap.py
+index 8c572da73..90b160f39 100644
+--- a/build/boards/sg200x/sg2000_duo01evb_arm64_sd/memmap.py
++++ b/build/boards/sg200x/sg2000_duo01evb_arm64_sd/memmap.py
+@@ -40,7 +40,13 @@ class MemoryMap:
+     # =================
+     # Multimedia buffer. Used by u-boot/kernel/FreeRTOS
+     # =================
+-    ION_SIZE = 170 * SIZE_1M
++    # Headless router: the ISP/H26x media pipeline is never instantiated, so
++    # the vendor 170M ION carveout was pure waste (~33% of DRAM - the reason
++    # a 512M board booted with ~311M free). 24M keeps the ion reserved-memory
++    # node real (a zero-size region would break the ion driver's
++    # of_reserved_mem_device_init) and still fits the fast-image buffers the
++    # assert below must hold (2M bitstream + 20M ISP).
++    ION_SIZE = 24 * SIZE_1M
+     H26X_BITSTREAM_SIZE = 2 * SIZE_1M
+     H26X_ENC_BUFF_SIZE = 0
+     ISP_MEM_BASE_SIZE = 20 * SIZE_1M
+-- 
+2.43.0
+
