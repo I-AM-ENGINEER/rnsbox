@@ -1,0 +1,66 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Taixin Reverse <reverse@taixin.local>
+Date: Sat, 17 Oct 2026 16:08:59 +0300
+Subject: [PATCH 1/2] naming: unique per-device hostname (rnsbox-xxxxxx)
+
+Port of the sg2000 naming fix (no S37bluetooth on this series: no
+BLE patch). The image shipped a static /boot/hostname=rnsbox, which
+pinned every board to the generic name; now the hostname is
+rnsbox-<6 hex from the eFuse key>, generated on first boot and
+persisted to /boot/hostname. Also fixes the /boot/eth.mac vs
+/boot/ethmac mismatch.
+---
+ .../cvitek/SG200X/overlay/etc/init.d/S10uuid  | 22 +++++++++++++++----
+ 1 file changed, 18 insertions(+), 4 deletions(-)
+
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S10uuid b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S10uuid
+index 53afed049..0e1acee1e 100755
+--- a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S10uuid
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S10uuid
+@@ -13,17 +13,31 @@ hex2mac() {
+ 
+ if [ "${1}" = start ]
+ then
+-	prefix=licheervnano
++	prefix=rnsbox
+ 	if [ -e /boot/hostname.prefix ]
+ 	then
+ 		prefix=$(cat /boot/hostname.prefix)
+ 	fi
+ 	old_hostname=$(cat /etc/hostname)
+-	new_hostname=${prefix}-$(sha512sum /device_key_legacy | head -c 4)
++	# 6 hex chars from the eFuse device key: unique per board, stable
++	# across reflashes -> rnsbox-cf83d1. The echobot identity both takes
++	# the hostname, so one code names the node everywhere.
++	new_hostname=${prefix}-$(sha512sum /device_key_legacy | head -c 6)
+ 
++	# /boot/hostname is the persistent override. The image ships the
++	# generic default "rnsbox" there: treat that as "not customized
++	# yet", generate the unique name and write it back so it survives
++	# reboots and updates.
++	_persisted=""
+ 	if [ -e /boot/hostname ]
+ 	then
+-		new_hostname=$(cat /boot/hostname)
++		_persisted=$(cat /boot/hostname)
++	fi
++	if [ -n "${_persisted}" ] && [ "${_persisted}" != "rnsbox" ]
++	then
++		new_hostname=${_persisted}
++	else
++		echo ${new_hostname} > /boot/hostname
+ 	fi
+ 
+ 	if [ "${old_hostname}" != "${new_hostname}" ]
+@@ -36,7 +50,7 @@ then
+ 
+ 	if [ -e /boot/eth.mac ]
+ 	then
+-		new_ethmac=$(cat /boot/ethmac)
++		new_ethmac=$(cat /boot/eth.mac)
+ 	else
+ 		new_ethmac=$(hex2mac 48da356f$(sha512sum /device_key_legacy  | head -c 4))
+ 	fi
+-- 
+2.43.0
+
