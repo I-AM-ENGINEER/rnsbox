@@ -41,6 +41,11 @@ html[data-theme="dark"] {
 }
 html[data-theme="dark"] .topbar { box-shadow: 0 1px 0 rgba(0,0,0,0.5); }
 html[data-theme="dark"] .login-box { box-shadow: 0 10px 40px rgba(0,0,0,0.6); }
+html[data-theme="dark"] .flash.success { background: #0c3a2a; color: #a7f3d0; border-color: #065f46; }
+html[data-theme="dark"] .flash.error   { background: #43191e; color: #fecaca; border-color: #7f1d1d; }
+html[data-theme="dark"] .flash.warn    { background: #43351a; color: #fde68a; border-color: #92400e; }
+html[data-theme="dark"] .banner-danger { background: #43191e; color: #fecaca; }
+html[data-theme="dark"] .banner-danger .banner-x:hover { color: #fff; }
 
 * { box-sizing: border-box; }
 html, body {
@@ -272,7 +277,7 @@ form.inline { display: inline; }
   flex-wrap: wrap;
   align-items: center;
   padding: 10px;
-  background: #fafbfc;
+  background: var(--hover);
   border: 1px solid var(--border);
   border-radius: 3px;
 }
@@ -375,7 +380,7 @@ body.login-screen { background: var(--primary); }
 }
 .meter {
   height: 14px;
-  background: #e9edf1;
+  background: var(--code-bg);
   border: 1px solid var(--border);
   border-radius: 7px;
   overflow: hidden;
