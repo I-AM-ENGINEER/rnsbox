@@ -459,3 +459,23 @@ function doUpdate(action, btn, isApply){
   }).catch(function(){ live.className='halow-live'; live.textContent='Could not read modem status.'; });
 })();
 </script>
+<script>
+// Bluetooth card: live list of devices connected to the adapter (BlueZ ACL).
+function btPeersRefresh(){
+  var body = document.getElementById('bt-peers');
+  if (!body) return;
+  fetch('__BASE__/reticulum/bluetooth/peers').then(function(r){
+    if (!r.ok) throw new Error('http ' + r.status);
+    return r.json();
+  }).then(function(d){
+    var rows = (d.devices || []).map(function(x){
+      return '<tr><td>' + escH(x.name || '?') + '</td><td class="mono">' + escH(x.address) + '</td></tr>';
+    });
+    body.innerHTML = rows.length ? rows.join('') : '<tr><td colspan="2" class="muted">none</td></tr>';
+  }).catch(function(){
+    body.innerHTML = '<tr><td colspan="2" class="muted">status unavailable</td></tr>';
+  });
+}
+document.addEventListener('DOMContentLoaded', btPeersRefresh);
+setInterval(btPeersRefresh, 8000);
+</script>

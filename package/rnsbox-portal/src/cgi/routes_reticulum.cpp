@@ -529,14 +529,9 @@ void reticulum_page(const Request& req, Response& res) {
             "    <button type=\"submit\" class=\"btn-primary\" style=\"margin-top:10px\">Save &amp; apply</button>\n"
             "    <span class=\"muted\">saving restarts rnsd — active links reconnect on their own</span>\n"
             "  </form>\n"
-            "  <form method=\"post\" action=\"" + base + "/reticulum/bluetooth/raise\" class=\"row-form\">\n"
-            "    <button type=\"submit\" class=\"btn\">Re-raise the stack</button>\n"
-            "    <span class=\"muted\">restarts bluetoothd + rnsd — for a wedged adapter or a dongle plugged in and not picked up</span>\n"
-            "  </form>\n"
-            "  <p class=\"muted\" style=\"margin:10px 0 0\">BLE is fully automatic: the box scans for nearby\n"
-            "  Reticulum peers, connects to them and bonds on connect by itself (BlueZ JustWorks, no manual\n"
-            "  step). Nothing to configure here — a peer that speaks the Reticulum BLE service is picked up\n"
-            "  on its own, exactly like two Columba phones finding each other.</p>\n";
+            "  <h4 style=\"margin-top:16px\">Connected devices</h4>\n"
+            "  <table class=\"data\"><thead><tr><th>Name</th><th>Address</th></tr></thead>\n"
+            "  <tbody id=\"bt-peers\"><tr><td colspan=\"2\" class=\"muted\">none</td></tr></tbody></table>\n";
     }
     h = R(std::move(h), "__BT_FORM_BLOCK__", bt_form);
     h = R(std::move(h), "__BT_STACK_STATUS__", bt_status_html(bt));
@@ -1030,6 +1025,37 @@ void reticulum_bluetooth_scan(const Request& req, Response& res) {
 void reticulum_bluetooth_pair(const Request& req, Response& res) {
     if (!web::require_auth(req, res, true)) return;
     reticulum_rnode_pair(req, res);
+}
+
+// GET /reticulum/bluetooth/peers — devices currently connected to the BLE
+// adapter. BlueZ is the authoritative ACL view: it lists our outbound
+// (central) links too. The Bluetooth card polls this every few seconds.
+void reticulum_bluetooth_peers(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, true)) return;
+    res.content_type = "application/json";
+    util::RunResult r = util::run({"/usr/bin/bluetoothctl", "devices", "Connected"}, "", 3);
+    std::string out = "{\"devices\":[";
+    bool first = true;
+    size_t pos = 0;
+    const std::string& s = r.out;
+    while (pos <= s.size()) {
+        size_t e = s.find('\n', pos);
+        if (e == std::string::npos) e = s.size();
+        std::string ln = util::trim(s.substr(pos, e - pos));
+        pos = e + 1;
+        // "Device AA:BB:CC:DD:EE:FF Name with spaces"
+        if (ln.compare(0, 7, "Device ") != 0) continue;
+        std::string rest = ln.substr(7);
+        size_t sp = rest.find(' ');
+        std::string addr = sp == std::string::npos ? rest : rest.substr(0, sp);
+        std::string name = sp == std::string::npos ? std::string() : util::trim(rest.substr(sp + 1));
+        if (!first) out += ",";
+        first = false;
+        out += "{\"address\":\"" + http::json_escape(addr) +
+               "\",\"name\":\"" + http::json_escape(name) + "\"}";
+    }
+    out += "]}";
+    res.body = out;
 }
 
 // ===================== RNode (USB serial / BLE) =====================
