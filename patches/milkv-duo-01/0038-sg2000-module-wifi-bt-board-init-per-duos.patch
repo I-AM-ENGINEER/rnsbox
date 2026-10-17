@@ -1,0 +1,68 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: rnsbox <rnsbox@localhost>
+Date: Fri, 17 Oct 2026 04:20:00 +0300
+Subject: [PATCH 38/38] sg2000 module: bring the WiFi/BT board init in line
+ with the Milk-V Duo S
+
+Milk-V states the Duo Module 01 EVB runs DuoS software directly, and the
+working DuoS u-boot board init (duo-buildroot-sdk-v2,
+sg2000_milkv_duos_glibc_arm64_sd) carries three things our grafted board
+dir lacked:
+
+  - PINMUX_CONFIG(CLK32K, PWR_GPIO_10): the 32.768 kHz LPO clock to the
+    module. Without it the AIC8800 power-on handshake over SDIO times
+    out after ~2 s ("fail to set AIC_WIFI power state to 1") and the
+    radio never enumerates;
+  - set_rtc_register_for_power(): mmio 0x050260D0 = 0x7, RTC-domain
+    power for the module WiFi/BT block;
+  - UART2 -> UART4 remux for the module BT HCI UART.
+
+The Wi-Fi power pins (porta15/porte7) already matched the Duo S.
+Also un-breaks the SLIP UART1 mmio writes: the previous append left
+them dead-coded behind an early 'return 0'.
+
+---
+diff --git a/build/boards/sg200x/sg2000_duomodule01_sd/u-boot/cvi_board_init.c b/build/boards/sg200x/sg2000_duomodule01_sd/u-boot/cvi_board_init.c
+index 93c39f4..fa4719e 100644
+--- a/build/boards/sg200x/sg2000_duomodule01_sd/u-boot/cvi_board_init.c
++++ b/build/boards/sg200x/sg2000_duomodule01_sd/u-boot/cvi_board_init.c
+@@ -1,19 +1,36 @@
+-// Milk-V Duo Module 01 Evaluation Board — u-boot pinmux.
+ //
+ // Minimal headless RNSBox config: UART0 and SD run on their reset
+ // multiplexing, so the only pins that need explicit setup are the
+-// internal GbE PHY LEDs (same wiring as the Milk-V Duo S reference).
++// internal GbE PHY LEDs (same wiring as the Milk-V Duo S reference)
++// plus the module WiFi/BT bring-up (identical to the Milk-V Duo S:
++// 32k LPO clock to the module, RTC-domain power, BT HCI on UART4).
++static void set_rtc_register_for_power(void)
++{
++	// Milk-V Duo S: RTC-domain power for the module WiFi/BT block.
++	mmio_write_32(0x050260D0, 0x7);
++}
++
+ int cvi_board_init(void)
+ {
+ 	// Internal GbE PHY LEDs
+ 	PINMUX_CONFIG(PWR_WAKEUP0, EPHY_LNK_LED);
+ 	PINMUX_CONFIG(PWR_BUTTON1, EPHY_SPD_LED);
+ 
+-	return 0;
++	// Module WiFi/BT (same as the Milk-V Duo S): 32k LPO clock to the
++	// module, RTC power register. Without the LPO clock the AIC8800
++	// power-on handshake times out ("fail to set AIC_WIFI power state").
++	PINMUX_CONFIG(CLK32K, PWR_GPIO_10);
++	PINMUX_CONFIG(UART2_RX, UART4_RX);
++	PINMUX_CONFIG(UART2_TX, UART4_TX);
++	PINMUX_CONFIG(UART2_CTS, UART4_CTS);
++	PINMUX_CONFIG(UART2_RTS, UART4_RTS);
++	set_rtc_register_for_power();
+ 
+ 	// UART1 (SLIP to the HaLow modem): XGPIOA[28] TX / XGPIOA[29] RX,
+ 	// fmux func=1 — the same encoding the Sipeed SG2002 boards use for
+ 	// these pads.
+ 	mmio_write_32(0x03001070, 0x1); // GPIOA 28 UART1 TX
+ 	mmio_write_32(0x03001074, 0x1); // GPIOA 29 UART1 RX
++
++	return 0;
+ }
