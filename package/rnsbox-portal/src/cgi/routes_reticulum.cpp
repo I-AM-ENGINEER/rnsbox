@@ -533,23 +533,10 @@ void reticulum_page(const Request& req, Response& res) {
             "    <button type=\"submit\" class=\"btn\">Re-raise the stack</button>\n"
             "    <span class=\"muted\">restarts bluetoothd + rnsd — for a wedged adapter or a dongle plugged in and not picked up</span>\n"
             "  </form>\n"
-            "  <h4>BLE peers</h4>\n"
-            "  <p class=\"muted\" style=\"margin:6px 0 0\">Connections are <strong>automatic</strong>: the box scans\n"
-            "  for nearby Reticulum peers and connects on its own; the bundled BLE Agent bonds them on connect\n"
-            "  (BlueZ JustWorks — accept the prompt on the peer if it shows one). The list below is for visibility;\n"
-            "  Pair is an optional troubleshooting fallback for a peer whose bonding keeps failing.</p>\n"
-            "  <div class=\"row-form\" style=\"margin-top:8px\">\n"
-            "    <button type=\"button\" class=\"btn\" id=\"btn-bt-scan\" onclick=\"btScan(this)\">Scan BLE devices</button>\n"
-            "    <span id=\"bt-scan-msg\" class=\"msg\"></span>\n"
-            "  </div>\n"
-            "  <div id=\"bt-scan-list\"></div>\n"
-            "  <div class=\"row-form\" style=\"margin-top:8px\">\n"
-            "    <label style=\"margin:0\">Pairing key / PIN\n"
-            "      <input type=\"text\" value=\"\" disabled placeholder=\"not implemented yet\"></label>\n"
-            "    <span class=\"muted\">RNS's BLE transport takes no user-supplied key — security is the BlueZ bonding "
-            "the agent negotiates. A passkey (numeric-compare) pairing needs an interactive agent wired into the "
-            "pair helper: <strong>not implemented yet</strong>; JustWorks peers connect unattended today.</span>\n"
-            "  </div>\n";
+            "  <p class=\"muted\" style=\"margin:10px 0 0\">BLE is fully automatic: the box scans for nearby\n"
+            "  Reticulum peers, connects to them and bonds on connect by itself (BlueZ JustWorks, no manual\n"
+            "  step). Nothing to configure here — a peer that speaks the Reticulum BLE service is picked up\n"
+            "  on its own, exactly like two Columba phones finding each other.</p>\n";
     }
     h = R(std::move(h), "__BT_FORM_BLOCK__", bt_form);
     h = R(std::move(h), "__BT_STACK_STATUS__", bt_status_html(bt));
@@ -1154,7 +1141,7 @@ void reticulum_rnode(const Request& req, Response& res) {
     else
         render::redirect_flash(res, ret_redirect(), "success",
             "RNode over BLE saved" + apply + ". rnsd connects and bonds the peer automatically "
-            "(JustWorks); if the modem does not show up, Scan + Pair above is the manual fallback.");
+            "(JustWorks, fully automatic — no manual pairing needed).");
 }
 
 // Short-TTL cache for rnode.py scan (BLE discovery costs ~6 s of CPU+radio

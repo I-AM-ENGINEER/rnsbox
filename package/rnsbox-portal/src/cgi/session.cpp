@@ -2,7 +2,9 @@
 #include "session.h"
 #include "util.h"
 #include <openssl/evp.h>
+#include <sys/stat.h>
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -138,13 +140,32 @@ void ensure_default_auth() {
 }
 
 bool default_password_active() {
-    auto m = parse_auth(util::read_file(AUTH_FILE));
-    auto it = m.find("admin");
-    if (it == m.end()) return false;
-    // The stored record is the werkzeug-format pbkdf2 hash; verify it against
-    // the factory password. Salted per install, so this is exact (never true
-    // for a user-chosen password except by a 1/16^16 chance coincidence).
-    return verify_werkzeug(it->second, "admin");
+    // This runs on EVERY dashboard render (the factory-password banner).
+    // verify_werkzeug is a full PBKDF2 (werkzeug default ~600k iterations):
+    // ~2.3 s on the RISC-V target — the dashboard's "it probes the system
+    // before answering" stall. Cache the verdict in /run keyed by the
+    // auth.json mtime: set_password() rewrites the file, so the mtime
+    // changes and the next render recomputes exactly once.
+    static const char* CACHE = "/run/rnsbox-defpass.cache";
+    long mtime = 0;
+    struct stat st;
+    if (::stat(AUTH_FILE, &st) == 0) mtime = (long)st.st_mtime;
+    std::string c = util::read_file(CACHE);
+    long cm = -1; int cv = -1;
+    if (sscanf(c.c_str(), "%ld %d", &cm, &cv) == 2 && cm == mtime && (cv == 0 || cv == 1))
+        return cv == 1;
+    int v = 0;
+    {
+        auto m = parse_auth(util::read_file(AUTH_FILE));
+        auto it = m.find("admin");
+        // The stored record is the werkzeug-format pbkdf2 hash; verify it
+        // against the factory password. Salted per install, so this is exact
+        // (never true for a user-chosen password except by a 1/16^16 chance
+        // coincidence).
+        if (it != m.end() && verify_werkzeug(it->second, "admin")) v = 1;
+    }
+    util::write_file_atomic(CACHE, std::to_string(mtime) + " " + std::to_string(v), 0644);
+    return v == 1;
 }
 
 bool set_password(const std::string& user, const std::string& newpass) {
