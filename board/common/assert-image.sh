@@ -145,6 +145,12 @@ if [ "$FLAVOR" = cvitek ]; then
         for fw in fmacfwbt.bin fw_adid.bin fw_patch.bin fw_patch_table.bin; do
             [ -e "$FWD/$fw" ] && ok "aic8800 BT firmware $fw shipped"                 || bad "aic8800 BT firmware $fw missing (bsp boots fmacfwbt)"
         done
+        # The -W SDIO radio is an AIC8800D80 (proven live: vid 0xc8a1 did
+        # 0x0082): it boots the *_8800d80_u02 set — a past slim rule deleted
+        # these as "USB-dongle silicon" and the radio could not boot WiFi.
+        for fw in fmacfwbt_8800d80_u02.bin fw_adid_8800d80_u02.bin                   fw_patch_8800d80_u02.bin fw_patch_table_8800d80_u02.bin                   fw_patch_8800d80_u02_ext0.bin; do
+            [ -e "$FWD/$fw" ] && ok "aic8800D80 firmware $fw shipped"                 || bad "aic8800D80 firmware $fw missing (radio boots this set)"
+        done
         # The BlueZ transport is arm64-only for now: the rv64/cv1800b kernels
         # ship CONFIG_BT off, btsdio.o would not link there.
         if [ -e "$T/lib/ld-linux-aarch64.so.1" ]; then

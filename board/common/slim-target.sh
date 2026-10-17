@@ -40,16 +40,18 @@ rm -f "$T"/usr/lib/python3.*/turtle.py*
 # site-packages test suites (keep the packages themselves)
 find "$T"/usr/lib/python3.*/site-packages -type d -name tests -prune -exec rm -rf {} + 2>/dev/null || true
 
-# ---- aic8800 WiFi firmware: keep only the plain-8800 family ---------------
+# ---- aic8800 WiFi firmware: keep only the chip families the -W radio uses -
 # The aic8800_bsp module compiles in CONFIG_AIC_FW_PATH pointing at
 # aic8800_sdio/aic8800_and_aic8800D80 — the aic8800DC/ and aic8800D80X2/
-# siblings are never referenced, and inside the main folder only the
-# chipid-8800 names (fmacfw*, fw_patch*, fw_adid*, aic_userconfig*) load on
-# the SDIO radio of the -W boards; the *_8800d80* names belong to the D80
-# USB-dongle silicon (different SDIO chipid, absent on RNSBox boards).
+# sibling DIRECTORIES are never referenced. Inside the main folder, the
+# radio of the -W boards is an AIC8800D80 (SDIO vid 0xc8a1 did 0x0082,
+# proven live): it boots the *_8800d80_u02 firmware set (fmacfwbt + BT
+# patches), so those names MUST be kept — an earlier revision of this
+# script deleted them as "USB-dongle silicon" and the radio could not
+# even boot WiFi. The plain-8800 names (fmacfw.bin/fmacfwbt.bin/…) stay
+# too: the same bsp requests them for the AIC8801 chipid.
 FW="$T/usr/lib/firmware/aic8800_sdio"
 rm -rf "$FW/aic8800DC" "$FW/aic8800D80X2"
-rm -f "$FW"/aic8800_and_aic8800D80/*8800d80* "$FW"/aic8800_and_aic8800D80/*8800D80*
 
 # ---- vendor ko stash: modules nothing loads -------------------------------
 # S00kmod insmods soph_* (kernel-built here), S35wifi finds cfg80211/rfkill/
