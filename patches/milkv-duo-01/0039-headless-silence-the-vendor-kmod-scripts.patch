@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Taixin Reverse <reverse@taixin.local>
-Date: Sat, 17 Oct 2026 16:03:29 +0300
-Subject: [PATCH 1/3] headless: silence the vendor S00kmod/S07kmod2 insmod
+Date: Sat, 17 Oct 2026 16:21:43 +0300
+Subject: [PATCH 1/5] headless: silence the vendor S00kmod/S07kmod2 insmod
  noise
 
 Port of licheerv-nano 0033: the sg2000-rv64 series never got the

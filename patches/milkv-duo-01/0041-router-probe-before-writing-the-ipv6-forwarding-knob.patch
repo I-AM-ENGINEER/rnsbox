@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Taixin Reverse <reverse@taixin.local>
-Date: Sat, 17 Oct 2026 16:03:30 +0300
-Subject: [PATCH 3/3] router: probe before writing the ipv6 forwarding knob
+Date: Sat, 17 Oct 2026 16:21:43 +0300
+Subject: [PATCH 3/5] router: probe before writing the ipv6 forwarding knob
 
 'echo 0 > /proc/sys/net/ipv6/... 2>/dev/null || true' still prints
 ash's 'can't create ...: nonexistent directory' when the kernel has
