@@ -47,6 +47,9 @@ void reticulum_bluetooth_raise(const http::Request&, http::Response&);  // POST 
 void reticulum_bluetooth_scan(const http::Request&, http::Response&);   // GET  JSON (BLE discovery, rnode.py scan-any)
 void reticulum_bluetooth_pair(const http::Request&, http::Response&);   // POST JSON (bluetoothctl pair, generic)
 void reticulum_bluetooth_peers(const http::Request&, http::Response&);  // GET  JSON (connected BLE devices)
+// Interface byte counters from the parsed rnstatus cache (pretty strings);
+// false when no cached snapshot matches the needle (e.g. "BLE").
+bool rnstatus_interface_traffic(const char* needle, std::string& tx, std::string& rx);
 // RNode modem over USB serial or BLE
 void reticulum_rnode(const http::Request&, http::Response&);        // POST PRG (save + apply)
 void reticulum_rnode_status(const http::Request&, http::Response&); // GET  JSON (S81rnode state)

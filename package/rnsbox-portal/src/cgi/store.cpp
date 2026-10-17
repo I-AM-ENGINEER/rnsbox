@@ -876,6 +876,7 @@ BleConfig read_ble() {
             if (!v.empty() && v.find_first_not_of("0123456789") == std::string::npos)
                 c.advertise_interval_ms = v;
         }
+        else if (k == "enable_central") c.enable_central = cron_truthy(v) ? "yes" : "no";
     }
     return c;
 }
@@ -929,6 +930,7 @@ RnodeConfig read_rnode() {
 
 bool write_ble(const BleConfig& cfg, std::string& err) {
     std::string en = cron_truthy(cfg.enabled) ? "yes" : "no";
+    std::string ec = cron_truthy(cfg.enable_central) ? "yes" : "no";
     // The name lands inside a config value and is advertised over the air:
     // no line breaks/control chars (conf_value_ok), none of the config
     // syntax chars, bounded length (BLE ad payloads are tiny anyway).
@@ -951,6 +953,7 @@ bool write_ble(const BleConfig& cfg, std::string& err) {
     }
 
     bool in = false, saw_section = false, saw_enabled = false, saw_name = false, saw_interval = false;
+    bool saw_central = false;
     size_t insert_after = std::string::npos;   // line index a missing key goes under
     for (size_t i = 0; i < lines.size(); ++i) {
         std::string& ln = lines[i];
@@ -972,7 +975,7 @@ bool write_ble(const BleConfig& cfg, std::string& err) {
         if (eq == std::string::npos) continue;
         std::string k = util::trim(s.substr(0, eq));
         for (auto& ch : k) ch = (char)tolower((unsigned char)ch);
-        if (k != "enabled" && k != "device_name" && k != "advertise_interval_ms") continue;
+        if (k != "enabled" && k != "device_name" && k != "advertise_interval_ms" && k != "enable_central") continue;
         std::string indent;
         for (char ch : ln) { if (ch == ' ' || ch == '\t') indent += ch; else break; }
         if (k == "enabled") {
@@ -981,6 +984,9 @@ bool write_ble(const BleConfig& cfg, std::string& err) {
         } else if (k == "advertise_interval_ms") {
             ln = indent + "advertise_interval_ms = " + iv;
             saw_interval = true;
+        } else if (k == "enable_central") {
+            ln = indent + "enable_central = " + ec;
+            saw_central = true;
         } else {
             // Blank = advertise the service UUID only, the driver default:
             // drop the key entirely (the form reads back blank).
@@ -998,6 +1004,10 @@ bool write_ble(const BleConfig& cfg, std::string& err) {
     if (!saw_name && !name.empty()) {
         if (insert_after == std::string::npos) { err = "[[BLE Interface]] stanza has no keys to anchor device_name under"; return false; }
         lines.insert(lines.begin() + insert_after + 1, "    device_name = " + name);
+    }
+    if (!saw_central) {
+        if (insert_after == std::string::npos) { err = "[[BLE Interface]] stanza has no keys to anchor enable_central under"; return false; }
+        lines.insert(lines.begin() + insert_after + 1, "    enable_central = " + ec);
     }
     // A cleared device_name left an empty line behind: drop it so a
     // save-toggle-save cycle never grows the file.

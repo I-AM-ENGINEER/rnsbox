@@ -118,6 +118,7 @@ License: MIT
 from __future__ import annotations
 
 import asyncio
+import os
 import threading
 import time
 import logging
@@ -195,15 +196,23 @@ if BLUEZERO_AVAILABLE:
 
         def __init__(self, advert_id, ad_type, interval_ms):
             super().__init__(advert_id, ad_type)
-            self._interval_ms = max(20, min(int(interval_ms), 10000))
+            # BlueZ expresses advertising intervals in 0.625 ms units
+            # (0x0020..0x4000 = 20 ms .. 10.24 s).
+            self._interval_units = max(0x20, min(int(round(interval_ms * 8 / 5)), 0x4000))
 
-        @_dbus_service.method(_bz_constants.LE_ADVERTISEMENT_IFACE,
-                              out_signature='a{sv}')
+        # The base bluezero GetAll lives on org.freedesktop.DBus.Properties
+        # (DBUS_PROP_IFACE) with in_signature='s'; dbus-python dispatches by
+        # the full (interface, member, signature) triple, so registering
+        # this override under the advertisement interface (as the first
+        # attempt did) left the base method answering GetAll and bluetoothd
+        # kept its 1280 ms default. Same interface + signature = shadowed.
+        @_dbus_service.method(_bz_constants.DBUS_PROP_IFACE,
+                              in_signature='s', out_signature='a{sv}')
         def GetAll(self, interface_name):
             response = super().GetAll(interface_name)
             if interface_name == _bz_constants.LE_ADVERTISEMENT_IFACE:
-                response['MinInterval'] = _dbus_types.UInt16(self._interval_ms)
-                response['MaxInterval'] = _dbus_types.UInt16(self._interval_ms)
+                response['MinInterval'] = _dbus_types.UInt16(self._interval_units)
+                response['MaxInterval'] = _dbus_types.UInt16(self._interval_units)
             return response
 else:
     FastAdvertisement = None
@@ -2436,6 +2445,29 @@ class BluezeroGATTServer:
 
         self._log("GATT server stopped")
 
+    def _apply_kernel_adv_interval(self, interval_ms):
+        """Set the controller's default advertising interval (debugfs).
+
+        bluetoothd 5.68 on kernel 5.10 does not pass LEAdvertisement1
+        MinInterval/MaxInterval through mgmt Add Advertising, so the
+        controller keeps hdev->le_adv_min/max_interval (1280 ms default).
+        Writing these per-controller defaults before the advertising
+        instance is registered is what actually makes advertising fast.
+        """
+        units = max(0x20, min(int(round(interval_ms * 8 / 5)), 0x4000))
+        base = "/sys/kernel/debug/bluetooth/hci%d" % self.adapter_index
+        if not os.path.isdir(base):
+            try:
+                os.system("mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null")
+            except Exception:
+                pass
+        for attr in ("adv_min_interval", "adv_max_interval"):
+            try:
+                with open(os.path.join(base, attr), "w") as f:
+                    f.write(str(units))
+            except Exception as e:
+                self._log(f"Could not set kernel {attr}: {e}", "DEBUG")
+
     def _run_server_thread(self, device_name: str):
         """Run GATT server in separate thread."""
         try:
@@ -2495,6 +2527,7 @@ class BluezeroGATTServer:
                     self.peripheral_obj.advert = FastAdvertisement(
                         1, 'peripheral', self.advertise_interval_ms)
                     self._log(f"Advertising interval set to {self.advertise_interval_ms} ms")
+                    self._apply_kernel_adv_interval(self.advertise_interval_ms)
                 except Exception as e:
                     self._log(f"Could not set fast advertising interval: {e}", "WARNING")
 

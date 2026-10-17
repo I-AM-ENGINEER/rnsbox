@@ -79,6 +79,20 @@ std::string page_file(const char* name) {
     return util::read_file(pages_dir() + "/" + name + ".html", 256 * 1024);
 }
 
+// Cache-buster for the /style.css link: derived from this binary's build
+// stamp, so every rebuild gives the URL a new query and browsers pick up
+// new CSS without a hard refresh.
+static const std::string& cssv() {
+    static const std::string v = [] {
+        std::string s = __DATE__ " " __TIME__, o;
+        for (char c : s)
+            if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'))
+                o += c;
+        return o;
+    }();
+    return v;
+}
+
 std::string layout(const http::Request& req, http::Response& res,
                    const std::string& title, const char* active,
                    const std::string& content) {
@@ -93,6 +107,7 @@ std::string layout(const http::Request& req, http::Response& res,
         {"__TITLE__",    esc(title)},
         {"__HOSTNAME__", esc(host)},
         {"__USER__",     esc(s.user)},
+        {"__CSSV__",     cssv()},
     };
     // Active-nav: exactly one id gets "active", the rest collapse to "".
     static const char* ids[] = {"dashboard", "network", "wifi", "reticulum", "updates", "echobot", "settings", "donate", "access"};
@@ -111,6 +126,7 @@ std::string login_layout(const http::Request& req, http::Response& res,
         {"__BASE__",     esc(web::base())},
         {"__HOSTNAME__", esc(host)},
         {"__FLASH__",    take_flash(req, res)},
+        {"__CSSV__",     cssv()},
         {"__CONTENT__",  content},
     };
     return fill(page_file("login_base"), kv);

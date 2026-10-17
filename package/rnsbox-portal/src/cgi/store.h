@@ -167,6 +167,7 @@ struct BleConfig {
     std::string enabled = "yes";
     std::string device_name;   // blank = advertise the service UUID only
     std::string advertise_interval_ms = "100";  // LE advert interval; 0 = BlueZ default
+    std::string enable_central = "no";  // yes = also scan/connect to advertising peers
 };
 BleConfig read_ble();
 bool write_ble(const BleConfig& c, std::string& err);   // name <= 16 chars, no []#= or quotes

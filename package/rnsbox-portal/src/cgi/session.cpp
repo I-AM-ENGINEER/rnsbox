@@ -190,15 +190,11 @@ void revoke_all() {
 }
 
 // ---- session token file: "user\ntoken\nexpiry" ----
-// expiry is on CLOCK_BOOTTIME (seconds since boot), not the wall clock: the board
-// has no RTC and boots at 1970 until NTP (or Settings -> "Sync clock to browser")
-// steps it, and that step must neither kill a live session nor revive a dead one.
-// The file lives on /run (tmpfs), so a boot-relative stamp never outlives its boot.
-static long boot_now() {
-    struct timespec ts;
-    if (clock_gettime(CLOCK_BOOTTIME, &ts) != 0) return -1;
-    return (long)ts.tv_sec;
-}
+// The file lives on /var/lib (persistent), so a reboot does not log anyone
+// out; expiry is wall-clock, one year. The board has no RTC and boots at 1970
+// until NTP steps it, so a login in that pre-sync window stores expiry 0
+// ("never") — a stamp made at 1970 would otherwise already be in the past.
+static long wall_now() { return (long)::time(nullptr); }
 
 static std::string cookie(const std::string& token, long max_age) {
     return std::string(COOKIE_NAME) + "=" + token +
@@ -207,12 +203,16 @@ static std::string cookie(const std::string& token, long max_age) {
 
 static void write_session(const std::string& user, const std::string& token, long expiry) {
     std::string body = user + "\n" + token + "\n" + std::to_string(expiry) + "\n";
+    ::mkdir("/var/lib/rnsbox", 0700);   // EEXIST is fine
     util::write_file_atomic(SESSION_FILE, body, 0600);
 }
 
 std::string start(const std::string& user) {
     std::string token = util::random_hex(24);   // 48 hex chars
-    write_session(user, token, boot_now() + SESSION_TTL);
+    long now = wall_now();
+    // 0 = no expiry (clock was still at 1970); otherwise a year.
+    long expiry = (now >= 1600000000) ? now + SESSION_TTL : 0;
+    write_session(user, token, expiry);
     return cookie(token, SESSION_TTL);
 }
 
@@ -239,11 +239,13 @@ Info check(const std::string& cookie_token) {
     // Token first: a request that doesn't hold the live token never touches the
     // file (no unlink).
     if (!util::const_time_eq(cookie_token, token)) return info;
-    // Fails closed if clock_gettime ever fails. An expiry more than one TTL out
-    // can't have come from start() (e.g. a wall-clock stamp left by an older
-    // portal binary): treat it as expired too.
-    long now = boot_now();
-    if (now < 0 || now >= expiry || expiry > now + SESSION_TTL) { ::unlink(SESSION_FILE); return info; }
+    // expiry 0 = issued before the clock was synced: valid until revoke_all
+    // (password change) or logout. Otherwise wall clock, at most one TTL out —
+    // a further-future stamp can't have come from start().
+    long now = wall_now();
+    if (expiry != 0 && (now < 0 || now >= expiry || expiry > now + SESSION_TTL)) {
+        ::unlink(SESSION_FILE); return info;
+    }
     info.valid = true;
     info.user = user;
     return info;

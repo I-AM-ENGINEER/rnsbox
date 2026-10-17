@@ -135,10 +135,12 @@ static std::string line_value(const std::string& block, const char* prefix) {
     return "";
 }
 
-struct Net { std::string ssid, signal, channel, band, security; };
+struct Net { std::string bssid, ssid, signal, channel, band, security; };
 
 static Net parse_block(const std::string& block) {
     Net n; n.security = "open";
+    size_t bsp = block.find_first_of(" (\n");
+    n.bssid = util::trim(block.substr(0, bsp));   // block starts with "BSS <addr>"
     n.signal = after_token(block, "signal: ");
     if (block.find("RSN:") != std::string::npos || block.find("WPA:") != std::string::npos)
         n.security = "secured";
@@ -198,7 +200,8 @@ std::string scan_json() {
     std::string o = "[";
     for (size_t k = 0; k < list.size(); ++k) {
         if (k) o += ",";
-        o += "{\"ssid\":\"" + http::json_escape(list[k].ssid) +
+        o += "{\"bssid\":\"" + http::json_escape(list[k].bssid) +
+             "\",\"ssid\":\"" + http::json_escape(list[k].ssid) +
              "\",\"signal\":\"" + http::json_escape(list[k].signal) +
              "\",\"channel\":\"" + http::json_escape(list[k].channel) +
              "\",\"band\":\"" + http::json_escape(list[k].band) +

@@ -110,6 +110,11 @@
   # restart rnsd to apply.
   [[BLE Interface]]
     type = BLEInterface
+    # The box is a peripheral-only access point: phones connect to it.
+    # Central scanning made it chase every Reticulum advert (including a
+    # phone's rotating random addresses) and collide with the phone's own
+    # connection attempts.
+    enable_central = no
     enabled = yes
     # Advertised name — keep it short, BLE ads have a 31-byte budget.
     # Leave unset to advertise the service UUID only (the peer learns the

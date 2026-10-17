@@ -536,6 +536,11 @@ void reticulum_page(const Request& req, Response& res) {
             "          <option value=\"1000\" __BT_IV1000__>1 s</option>\n"
             "          <option value=\"0\" __BT_IV0__>BlueZ default (slowest)</option>\n"
             "        </select></label>\n"
+            "      <label style=\"margin:0\">Central mode\n"
+            "        <select name=\"enable_central\" title=\"Central mode makes the box scan for other Reticulum BLE peers and connect to them. Phones connect TO the box (peripheral) without it; leaving it off avoids radio contention with the phone's own connection attempts.\">\n"
+            "          <option value=\"no\" __BT_EC_NO__>No — peripheral only (recommended)</option>\n"
+            "          <option value=\"yes\" __BT_EC_YES__>Yes — also connect to advertising peers</option>\n"
+            "        </select></label>\n"
             "    </div>\n"
             "    <button type=\"submit\" class=\"btn-primary\" style=\"margin-top:10px\">Save &amp; apply</button>\n"
             "    <span class=\"muted\">saving restarts rnsd — active links reconnect on their own</span>\n"
@@ -568,6 +573,12 @@ void reticulum_page(const Request& req, Response& res) {
         h = R(std::move(h), "__BT_IV500__",  iv == "500"  ? "selected" : "");
         h = R(std::move(h), "__BT_IV1000__", iv == "1000" ? "selected" : "");
         h = R(std::move(h), "__BT_IV0__",    iv == "0"    ? "selected" : "");
+    }
+    // Central-mode select marker (absent/unknown = the safe peripheral-only)
+    {
+        bool ec = util::trim(bl.enable_central) == "yes";
+        h = R(std::move(h), "__BT_EC_NO__",  ec ? "" : "selected");
+        h = R(std::move(h), "__BT_EC_YES__", ec ? "selected" : "");
     }
     h = rnode_fill(std::move(h));
     h = rnsh_fill(std::move(h));
@@ -960,6 +971,7 @@ void reticulum_bluetooth(const Request& req, Response& res) {
     c.enabled     = req.f("enabled") == "on" ? "yes" : "no";
     c.device_name = util::trim(req.f("device_name"));
     c.advertise_interval_ms = util::trim(req.f("advertise_interval_ms"));
+    c.enable_central = req.f("enable_central") == "yes" ? "yes" : "no";
     std::string err;
     if (!store::write_ble(c, err)) {
         render::redirect_flash(res, ret_redirect(), "error", "Bluetooth: " + err + ".");
@@ -1154,7 +1166,12 @@ void reticulum_bluetooth_peers(const Request& req, Response& res) {
         out += "{\"address\":\"" + http::json_escape(d.first) +
                "\",\"name\":\"" + http::json_escape(name) + "\"}";
     }
-    out += "]}";
+    out += "]";
+    std::string ttx, trx;
+    if (rnstatus_interface_traffic("BLE", ttx, trx))
+        out += ",\"traffic\":{\"tx\":\"" + http::json_escape(ttx) +
+               "\",\"rx\":\"" + http::json_escape(trx) + "\"}";
+    out += "}";
     util::write_file_atomic(BT_PEERS_CACHE, out, 0600);
     res.body = out;
 }
@@ -1332,15 +1349,12 @@ static std::string rnstatus_collect(bool* ok) {
 
 // GET /reticulum/rnstatus.json — the parsed interface table.
 //
-// rnstatus -a costs a python cold start (seconds on this CPU), so an F5
-// after the cache expired used to stare at "loading…" for that long. The
-// fix is stale-while-revalidate: a cache up to RNSTATUS_STALE seconds old
-// is served IMMEDIATELY, and a detached child refreshes it in the
-// background (non-blocking lock: if a refresher is already running, the
-// child just exits). Only a cache older than that — or none at all —
-// blocks on a synchronous run.
-constexpr int RNSTATUS_STALE = 90;  // seconds a snapshot may be served stale
-
+// rnstatus -a costs a python cold start (5-10 s on this CPU), so a request
+// never waits for it: ANY parseable snapshot is served IMMEDIATELY, no
+// matter how old (the table shows when it was taken), and a detached child
+// refreshes it when it is older than RNSTATUS_TTL (non-blocking lock:
+// concurrent refreshers collapse into one). Only a missing or corrupt
+// cache takes the synchronous path.
 void reticulum_rnstatus(const Request& req, Response& res) {
     if (!web::require_auth(req, res, true)) return;
     res.content_type = "application/json";
@@ -1348,23 +1362,32 @@ void reticulum_rnstatus(const Request& req, Response& res) {
     if (rnstatus_fresh(cached)) { res.body = cached; return; }
 
     long age = rnstatus_age();
-    if (age >= 0 && age < RNSTATUS_STALE) {
+    if (age >= 0) {
         std::string stale = util::read_file(RNSTATUS_CACHE, 256 * 1024);
         std::string t = util::trim(stale);
         if (!t.empty() && t[0] == '{') {
-            pid_t pid = ::fork();
-            if (pid == 0) {
-                // Detached refresher: new session, no inherited descriptors,
-                // non-blocking lock so concurrent refreshers collapse.
-                ::setsid();
-                for (int fd = 0; fd < 3; ++fd) ::close(fd);
-                int lfd = ::open(RNSTATUS_LOCK, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
-                if (lfd >= 0 && ::flock(lfd, LOCK_EX | LOCK_NB) == 0) {
-                    if (rnstatus_age() >= RNSTATUS_TTL)
-                        rnstatus_collect(nullptr);
-                    ::close(lfd);
+            if (age >= RNSTATUS_TTL) {
+                pid_t pid = ::fork();
+                if (pid == 0) {
+                    // Detached refresher: new session; stdio moved to
+                    // /dev/null. Closing 0-2 instead would let util::run's
+                    // pipe() reuse those numbers, and its close(inpipe[1])
+                    // would then close the child's own stdout pipe (empty
+                    // rnstatus output, parse fails, cache never written).
+                    ::setsid();
+                    int nul = ::open("/dev/null", O_RDWR);
+                    if (nul >= 0) {
+                        ::dup2(nul, 0); ::dup2(nul, 1); ::dup2(nul, 2);
+                        if (nul > 2) ::close(nul);
+                    }
+                    int lfd = ::open(RNSTATUS_LOCK, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+                    if (lfd >= 0 && ::flock(lfd, LOCK_EX | LOCK_NB) == 0) {
+                        if (rnstatus_age() >= RNSTATUS_TTL)
+                            rnstatus_collect(nullptr);
+                        ::close(lfd);
+                    }
+                    _exit(0);
                 }
-                _exit(0);
             }
             // Parent: serve the stale snapshot; the poll picks up the fresh
             // one a few seconds later.
@@ -1378,6 +1401,30 @@ void reticulum_rnstatus(const Request& req, Response& res) {
     struct LockGuard { int fd; ~LockGuard() { if (fd >= 0) ::close(fd); } } guard{lfd};
     if (rnstatus_fresh(cached)) { res.body = cached; return; }
     res.body = rnstatus_collect(nullptr);
+}
+
+// Traffic (tx/rx, pretty strings) of one interface out of the parsed rnstatus
+// snapshot, so other pages can show byte counters without running rnstatus
+// themselves. Needle matches anywhere in the interface's JSON object (e.g.
+// "BLE" hits name BLEInterface / details "BLE Interface").
+bool rnstatus_interface_traffic(const char* needle, std::string& tx, std::string& rx) {
+    std::string j = util::read_file(RNSTATUS_CACHE, 256 * 1024);
+    size_t p = 0;
+    while ((p = j.find("{\"name\":", p)) != std::string::npos) {
+        size_t e = j.find('}', p);
+        if (e == std::string::npos) break;
+        std::string obj = j.substr(p, e - p);
+        p = e;
+        if (obj.find(needle) == std::string::npos) continue;
+        size_t a = obj.find("\"tx\":\""), a2 = obj.find("\"rx\":\"");
+        if (a == std::string::npos || a2 == std::string::npos) continue;
+        a += 6;
+        a2 += 6;
+        tx = obj.substr(a, obj.find('"', a) - a);
+        rx = obj.substr(a2, obj.find('"', a2) - a2);
+        return true;
+    }
+    return false;
 }
 
 // ===================== RNode (USB serial / BLE) =====================

@@ -2,9 +2,6 @@ __DEFAULT_PASS_WARN__
 
 <div class="dash-head">
   <h2>Dashboard</h2>
-  <div class="autoref">
-    <span class="muted" id="autoref-status"></span>
-  </div>
 </div>
 
 <div class="cards">
@@ -118,11 +115,7 @@ __HALOW_SCRIPT__
   // slower cadence: its endpoint caches for 10 s and a python helper backs
   // it, so it must not ride the 1 s tick.
   function tick(){
-    setText('autoref-status','updating…');
-    refreshData().then(function(){
-      var t=new Date();
-      setText('autoref-status','updated '+t.toTimeString().slice(0,8));
-    });
+    refreshData();
   }
   tick();
   setInterval(tick, 1000);

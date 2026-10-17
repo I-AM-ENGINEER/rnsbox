@@ -201,10 +201,15 @@ static std::string halow_script_html(const std::string& base) {
 // rides the Reticulum tab's /reticulum/bluetooth/peers endpoint (cached,
 // bluetoothctl never spawns per poll) and refreshes client-side.
 static std::string ble_card_html(const std::string& base) {
+    std::string traffic = "<span class=\"muted\">no data yet</span>";
+    std::string ttx, trx;
+    if (rnstatus_interface_traffic("BLE", ttx, trx))
+        traffic = "&uarr; " + E(ttx) + " &nbsp; &darr; " + E(trx);
     std::string s = R"HTML(<section class="card" id="ble-card">
     <h3>Bluetooth (BLE)</h3>
     <table class="kv">
       <tr><th>Status</th><td id="d-ble-status">__BLE_STATUS__</td></tr>
+      <tr><th>Traffic</th><td id="d-ble-traffic" class="mono">__BLE_TRAFFIC__</td></tr>
     </table>
     <h4>Connected devices</h4>
     <table class="data">
@@ -226,6 +231,10 @@ static std::string ble_card_html(const std::string& base) {
           return '<tr><td>' + esc(x.name || '?') + '</td><td class="mono">' + esc(x.address) + '</td></tr>';
         });
         b.innerHTML = rows.length ? rows.join('') : '<tr><td colspan="2" class="muted">none</td></tr>';
+        var t = document.getElementById('d-ble-traffic');
+        if (t) t.innerHTML = d.traffic
+          ? ('&uarr; ' + esc(d.traffic.tx) + ' &nbsp; &darr; ' + esc(d.traffic.rx))
+          : '<span class="muted">no data yet</span>';
       }).catch(function(){
         b.innerHTML = '<tr><td colspan="2" class="muted">status unavailable</td></tr>';
       });
@@ -234,7 +243,8 @@ static std::string ble_card_html(const std::string& base) {
     setInterval(blePeers, 8000);
   })();
   </script>)HTML";
-    return web::replace_all(std::move(s), "__BASE__", base);
+    s = web::replace_all(std::move(s), "__BASE__", base);
+    return web::replace_all(std::move(s), "__BLE_TRAFFIC__", traffic);
 }
 
 // --- RNode LoRa card: like BLE/HaLow, the modem is a full interface. All

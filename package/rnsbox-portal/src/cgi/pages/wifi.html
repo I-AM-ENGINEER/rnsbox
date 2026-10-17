@@ -32,6 +32,7 @@
   RNSBox's LAN is 10.42.0.0/24, so the box refuses DHCP from such a network
   (its router and DNS would be the box itself).</p>
   <button type="button" class="btn" onclick="doScan()">Scan</button>
+  <button type="button" class="btn" id="scanstop" onclick="stopScan()" style="display:none">Stop scan</button>
   <span id="scanmsg" class="muted"></span>
   <table class="data" id="scantbl" style="margin-top:8px; display:none">
     <thead><tr><th>SSID</th><th>Signal</th><th>Ch</th><th>Band</th><th>Security</th><th></th></tr></thead>
@@ -117,44 +118,87 @@ function togglePw(id, btn){
   if (el.type === 'password'){ el.type = 'text';  btn.textContent = 'Hide'; }
   else                       { el.type = 'password'; btn.textContent = 'Show'; }
 }
+// Continuous scan: re-scans every few seconds for up to 5 minutes (or until
+// "Stop scan" / leaving the page), merging results as APs appear, so weak or
+// intermittent networks are not missed by a single quick sweep.
+var scanTimer=null, scanStopped=false, scanDeadline=0, scanFound={};
+function scanKey(n){ return (n.bssid||'')+'|'+(n.ssid||'')+'|'+(n.band||'')+'|'+(n.channel||''); }
 function doScan(){
-  var msg=document.getElementById('scanmsg'); msg.textContent='scanning…';
+  scanStopped=false; scanFound={}; scanDeadline=Date.now()+5*60*1000;
+  document.getElementById('scanstop').style.display='';
+  var tbl=document.getElementById('scantbl');
+  var tb=tbl.querySelector('tbody');
+  while(tb.firstChild) tb.removeChild(tb.firstChild);
+  tbl.style.display='';
+  document.getElementById('scanmsg').textContent='scanning…';
+  stepScan();
+}
+function stopScan(){
+  scanStopped=true;
+  if(scanTimer){ clearTimeout(scanTimer); scanTimer=null; }
+  document.getElementById('scanstop').style.display='none';
+  document.getElementById('scanmsg').textContent='scan stopped — '+Object.keys(scanFound).length+' found';
+}
+function stepScan(){
+  if(scanStopped) return;
+  var msg=document.getElementById('scanmsg');
+  var left=Math.max(0, Math.ceil((scanDeadline-Date.now())/1000));
+  msg.textContent='scanning… '+left+' s left';
   fetch('__BASE__/wifi/scan').then(function(r){
     if(r.status===401) throw new Error('session expired — please log in again');
     return r.json();
   }).then(function(nets){
-    var tbl=document.getElementById('scantbl'), tb=tbl.querySelector('tbody');
-    while(tb.firstChild) tb.removeChild(tb.firstChild);
-    if(!Array.isArray(nets) || !nets.length){ msg.textContent='no networks found'; return; }
-    msg.textContent=nets.length+' found'; tbl.style.display='';
-    // Built with DOM nodes + textContent ONLY: SSIDs come from anyone in radio
-    // range and iw prints < > " ' verbatim, so no scan field may ever reach
-    // innerHTML.
-    function td(tr, text){ var c=document.createElement('td'); c.textContent=text; tr.appendChild(c); return c; }
-    nets.forEach(function(n){
-      var tr=document.createElement('tr');
-      var band=n.band?(n.band+' GHz'):'';
-      // 5/6 GHz not joinable while concurrent (the STA is pinned to 2.4 GHz)
-      var blockHi=CONCURRENT && (n.band==='5' || n.band==='6');
-      td(tr, n.ssid||'(hidden)');
-      td(tr, (n.signal||'?')+' dBm');
-      td(tr, n.channel||'');
-      td(tr, band);
-      td(tr, n.security||'');
-      var last=td(tr, '');
-      if(blockHi){
-        var s=document.createElement('span');
-        s.className='muted'; s.title='2.4 GHz only in concurrent mode'; s.textContent=band;
-        last.appendChild(s);
-        tr.style.opacity='0.45';
-      } else {
-        var b=document.createElement('button');
-        b.type='button'; b.className='btn'; b.textContent='Use';
-        b.onclick=function(){ document.getElementById('ssid').value=n.ssid||''; };
-        last.appendChild(b);
-      }
-      tb.appendChild(tr);
-    });
-  }).catch(function(e){ msg.textContent=(e && e.message && /session/.test(e.message)) ? e.message : 'scan failed'; });
+    if(!scanStopped){
+      if(Array.isArray(nets)) nets.forEach(function(n){ scanFound[scanKey(n)]=n; });
+      renderScan();
+    }
+    if(scanStopped) return;
+    if(Date.now()>=scanDeadline){
+      document.getElementById('scanstop').style.display='none';
+      msg.textContent='scan finished — '+Object.keys(scanFound).length+' found';
+      return;
+    }
+    scanTimer=setTimeout(stepScan, 2000);
+  }).catch(function(e){
+    msg.textContent=(e && e.message && /session/.test(e.message)) ? e.message : 'scan failed (retrying)';
+    if(!scanStopped) scanTimer=setTimeout(stepScan, 5000);
+  });
+}
+function renderScan(){
+  var tbl=document.getElementById('scantbl'), tb=tbl.querySelector('tbody');
+  while(tb.firstChild) tb.removeChild(tb.firstChild);
+  var msg=document.getElementById('scanmsg');
+  var nets=Object.keys(scanFound).map(function(k){ return scanFound[k]; });
+  if(!nets.length) return;
+  nets.sort(function(a,b){ return (parseInt(b.signal)||-999)-(parseInt(a.signal)||-999); });
+  msg.textContent='scanning… '+nets.length+' found';
+  // Built with DOM nodes + textContent ONLY: SSIDs come from anyone in radio
+  // range and iw prints < > " ' verbatim, so no scan field may ever reach
+  // innerHTML.
+  function td(tr, text){ var c=document.createElement('td'); c.textContent=text; tr.appendChild(c); return c; }
+  nets.forEach(function(n){
+    var tr=document.createElement('tr');
+    var band=n.band?(n.band+' GHz'):'';
+    // 5/6 GHz not joinable while concurrent (the STA is pinned to 2.4 GHz)
+    var blockHi=CONCURRENT && (n.band==='5' || n.band==='6');
+    td(tr, n.ssid||'(hidden)');
+    td(tr, (n.signal||'?')+' dBm');
+    td(tr, n.channel||'');
+    td(tr, band);
+    td(tr, n.security||'');
+    var last=td(tr, '');
+    if(blockHi){
+      var s=document.createElement('span');
+      s.className='muted'; s.title='2.4 GHz only in concurrent mode'; s.textContent=band;
+      last.appendChild(s);
+      tr.style.opacity='0.45';
+    } else {
+      var b=document.createElement('button');
+      b.type='button'; b.className='btn'; b.textContent='Use';
+      b.onclick=function(){ document.getElementById('ssid').value=n.ssid||''; };
+      last.appendChild(b);
+    }
+    tb.appendChild(tr);
+  });
 }
 </script>

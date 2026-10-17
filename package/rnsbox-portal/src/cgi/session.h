@@ -20,9 +20,12 @@
 namespace session {
 
 constexpr const char* AUTH_FILE    = "/etc/rnsbox/auth.json";
-constexpr const char* SESSION_FILE = "/run/rnsbox-portal.session";
+// Persistent storage: a reboot must not log the operator out. The home box is
+// not a high-value target and the password prompt every day is worse than a
+// long-lived token; a password change still revokes it (revoke_all).
+constexpr const char* SESSION_FILE = "/var/lib/rnsbox/portal.session";
 constexpr const char* COOKIE_NAME  = "rnsbox_session";
-constexpr long SESSION_TTL = 24 * 3600;   // session lifetime (seconds)
+constexpr long SESSION_TTL = 365L * 24 * 3600;   // session lifetime (seconds)
 
 struct Info {
     bool valid = false;
