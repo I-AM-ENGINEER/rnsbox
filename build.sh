@@ -266,6 +266,13 @@ rnsbox_track_latest_rns() {
 # because a non-application here used to be silent.
 RNSBOX_POLICY_KNOBS=(
     'BR2_PACKAGE_PYTHON3_PY_ONLY=y'
+    # the idna codec needs the unicodedata C extension; without it EVERY
+    # socket.getaddrinfo() on the board raises LookupError: unknown
+    # encoding: idna and rnsd dies creating its TCPServerInterface
+    # (os._exit, empty /var/log/rnsd.log, wanwatch reboot loop). The
+    # vendor 64bit defconfigs shipped without it; see the BSP patch
+    # 0018-buildroot-enable-python-unicodedata-on-the-64bit-configs.
+    'BR2_PACKAGE_PYTHON3_UNICODEDATA=y'
     '# BR2_PACKAGE_PYTHON3_PY_PYC is not set'
     'BR2_TARGET_ROOTFS_EXT2_RESBLKS=1'
     'BR2_ROOTFS_POST_BUILD_SCRIPT="board/common/slim-target.sh"'
@@ -293,6 +300,7 @@ rnsbox_stamp_live_config() {
         -e 's/^BR2_PACKAGE_DROPBEAR=y/# BR2_PACKAGE_DROPBEAR is not set/' \
         -e 's/^# BR2_PACKAGE_OPENSSH_SERVER is not set/BR2_PACKAGE_OPENSSH_SERVER=y/' \
         -e 's/^# BR2_PACKAGE_PYTHON3_PY_ONLY is not set$/# py-only selected at build time (rnsbox_slim_bsp)/' \
+        -e 's/^# BR2_PACKAGE_PYTHON3_UNICODEDATA is not set$/BR2_PACKAGE_PYTHON3_UNICODEDATA=y/' \
         "$live"
     # PY_ONLY has no line of its own to sed when the file never mentioned
     # the py knobs — append the selection at EOF (kconfig takes the last
@@ -905,6 +913,17 @@ done
 # rnsbox_slim_bsp comment block above for what and why)
 echo ">> slimming knobs: py-only python, 1% ext4 reservation, 512M lite rootfs, slim-target hook"
 rnsbox_slim_bsp "$WORKDIR"
+
+# unicodedata (idna codec) lands only when python3 RE-configures: a warm
+# output/target built before the flip keeps missing lib-dynload/
+# unicodedata.so no matter what .config says - dirclean python3 once, the
+# next make rebuilds it with --enable-unicodedata. No-op once the target
+# carries the extension.
+if grep -q '^BR2_PACKAGE_PYTHON3_UNICODEDATA=y' "$WORKDIR/buildroot/.config" 2>/dev/null \
+   && ! ls "$WORKDIR"/buildroot/output/target/usr/lib/python3.*/lib-dynload/unicodedata*.so >/dev/null 2>&1; then
+    echo ">> python3: unicodedata newly enabled - dircleaning python3 for a rebuild"
+    rm -rf "$WORKDIR"/buildroot/output/build/python3-*
+fi
 
 rnsbox_track_latest_rns "$PWD"
 rnsbox_build
