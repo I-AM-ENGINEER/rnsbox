@@ -34,9 +34,10 @@ void wifi_page(const Request& req, Response& res) {
         std::string h =
             "<h2>WiFi</h2>\n\n"
             "<section class=\"card\">\n"
-            "  <p class=\"muted\">No WiFi radio detected (unexpected on this board &mdash; it has\n"
-            "  onboard WiFi). Check <code>/var/log/wifi.log</code> and\n"
-            "  <code>dmesg | grep brcmfmac</code>.</p>\n"
+            "  <p class=\"muted\">No WiFi radio detected. On the -W variant the AIC8800D80\n"
+            "  (SDIO) radio should surface as wlan0 via S35wifi; non-W boards have no\n"
+            "  radio and stay here. Check <code>/var/log/wifi.log</code> and\n"
+            "  <code>dmesg | grep aic8800</code>.</p>\n"
             "</section>";
         res.body = render::layout(req, res, "WiFi", "wifi", h);
         return;

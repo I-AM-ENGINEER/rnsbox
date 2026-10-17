@@ -1,4 +1,4 @@
-// wifi.h - onboard WiFi (brcmfmac) management: config + `iw` parsing.
+// wifi.h - onboard WiFi (AIC8800D80 over SDIO) management: config + `iw` parsing.
 // Native C++ port of the former wifi.py. No-radio boards: present()==false.
 #ifndef RNSBOX_WIFI_H
 #define RNSBOX_WIFI_H
