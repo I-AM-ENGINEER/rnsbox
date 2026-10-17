@@ -455,9 +455,11 @@ rnsbox_build_bsp_generic() {
     # Shared by every patches-style board: the BSP workdir is already in place
     # (upstream clone + host-tools + series applied + packages synced).
     echo ">> initial full build (first run compiles Rust from source; be patient)"
-    # cap BSP parallelism; point the buildroot userspace at the board's
-    # toolchain when the board overrides it (ARM64: Arm GNU 11.3 from host-tools)
-    export RNSBOX_NPROC="${RNSBOX_NPROC:-4}"
+    # BSP/buildroot parallelism: default to every core the box has. The
+    # old hard -j4 left 12 cores idle on a 16-core build host and was a
+    # major share of the pack-phase wall clock. Overridable for small-RAM
+    # hosts (RNSBOX_NPROC=4 ./build.sh ...).
+    export RNSBOX_NPROC="${RNSBOX_NPROC:-$(nproc)}"
     if [ -n "$RNSBOX_BR_TOOLCHAIN_SUBPATH" ]; then
         export RNSBOX_BR_TOOLCHAIN_PATH="$PWD/host-tools/$RNSBOX_BR_TOOLCHAIN_SUBPATH"
         # buildroot resolves a custom preinstalled external toolchain via
@@ -573,13 +575,20 @@ rnsbox_build_milkv_duo_01() {
     # u-boot/kernel middleware passes every cycle; build-rnsbox.sh below
     # re-runs the buildroot pack phase, the only one that can really
     # change between runs.
-    # The stamp carries a fingerprint (workdir HEAD + the patch series
-    # content): a changed series re-runs the heavy phases AUTOMATICALLY.
-    # A bare touch-stamp shipped a boot.sd with a weeks-old u-boot after
-    # the radio bring-up patch landed - the packed image kept booting
-    # the pre-patch bootloader and nothing warned.
+    # The stamp carries a fingerprint of exactly the sources the heavy
+    # phases consume: u-boot, FSBL, the build driver scripts and the
+    # per-board dts/defconfigs under build/. Rootfs-only changes
+    # (S-scripts, wifi/rnsh conf, portal, zsh) leave the fingerprint
+    # untouched and go straight to the pack stage - minutes instead of
+    # a full kernel round. A changed boot source re-runs the phases
+    # automatically: a bare touch-stamp once shipped a boot.sd with a
+    # weeks-old u-boot after the radio bring-up patch landed.
+    # git ls-tree hashes the INDEX (committed, reproducible) state, not
+    # the untracked build outputs living under build/<board>/.
     local stage fp
-    fp="$(git rev-parse HEAD 2>/dev/null || echo nohead)|$(cat "$HERE"/patches/milkv-duo-01/*.patch 2>/dev/null | sha256sum | cut -d' ' -f1)"
+    fp="$(git ls-tree -r HEAD -- build fsbl u-boot-2021.10 2>/dev/null | sha256sum | cut -d' ' -f1)"
+    [ -n "$fp" ] && [ "$fp" != "$(printf '' | sha256sum | cut -d' ' -f1)" ] || fp="no-sources"
+    echo ">> stage fingerprint: $fp"
     for stage in build_uboot build_kernel build_ramboot build_osdrv \
                  build_3rd_party build_middleware pack_cfg; do
         if [ "$(cat ".rnsbox-done-$stage" 2>/dev/null)" != "$fp" ]; then
@@ -645,11 +654,17 @@ rnsbox_univ_stage() {
         touch ".rnsbox-done-$tag-ramdisk_ws"
     fi
 
+    # Same self-invalidating fingerprint as the sg2000-rv64 flow: stamp
+    # the boot-source state (u-boot, FSBL, build/ board dirs), so rootfs
+    # edits skip the heavy phases while a boot patch re-runs them.
+    local fp
+    fp="$(git ls-tree -r HEAD -- build fsbl u-boot-2021.10 2>/dev/null | sha256sum | cut -d' ' -f1)"
+    [ -n "$fp" ] || fp="no-sources"
     for stage in build_uboot build_kernel build_ramboot build_osdrv \
                  build_3rd_party build_middleware pack_cfg; do
-        [ -e ".rnsbox-done-$tag-$stage" ] && continue
+        [ "$(cat ".rnsbox-done-$tag-$stage" 2>/dev/null)" = "$fp" ] && continue
         "$stage" || return 1
-        touch ".rnsbox-done-$tag-$stage"
+        printf '%s\n' "$fp" > ".rnsbox-done-$tag-$stage"
     done
 }
 
