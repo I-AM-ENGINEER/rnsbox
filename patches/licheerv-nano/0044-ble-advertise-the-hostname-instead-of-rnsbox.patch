@@ -1,0 +1,53 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Taixin Reverse <reverse@taixin.local>
+Date: Sat, 17 Oct 2026 18:15:44 +0300
+Subject: [PATCH] ble: advertise the hostname instead of the static "RNSBox"
+
+The shipped RNS config carried device_name = RNSBox, so every box
+advertised the same generic name. Ship it empty and let S37bluetooth
+fill it from the device hostname once at boot (rnsbox-xxxxxx): the
+hostname, the echo bot name and the BLE advertisement then carry one
+identifying code. An explicit name saved in the portal is respected.
+---
+ .../board/cvitek/SG200X/overlay/etc/init.d/S37bluetooth   | 8 ++++++++
+ .../board/cvitek/SG200X/overlay/etc/reticulum/config      | 5 ++++-
+ 2 files changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S37bluetooth b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S37bluetooth
+index c767723fb..5f14bc8ed 100755
+--- a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S37bluetooth
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S37bluetooth
+@@ -28,6 +28,14 @@ esac
+ 
+ modprobe btusb 2>/dev/null
+ 
++# Advertised BLE name: an empty device_name means "use the hostname"
++# (rnsbox-xxxxxx). Fill it once here, before rnsd reads the config; an
++# explicit portal-saved name is untouched.
++RNS_CFG=/etc/reticulum/config
++if [ -f "$RNS_CFG" ] && grep -qE '^[[:space:]]*device_name[[:space:]]*=[[:space:]]*$' "$RNS_CFG"; then
++	sed -i "s#^\([[:space:]]*device_name[[:space:]]*=[[:space:]]*\)\$#\1$(hostname)#" "$RNS_CFG"
++fi
++
+ # Firmware-loading dongles need a moment after bind; never block rcS on it —
+ # the rnsd/portal watchers recover the late case.
+ i=0
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/reticulum/config b/buildroot/board/cvitek/SG200X/overlay/etc/reticulum/config
+index 5ba73a31a..938b3814c 100644
+--- a/buildroot/board/cvitek/SG200X/overlay/etc/reticulum/config
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/reticulum/config
+@@ -88,7 +88,10 @@
+     # Advertised name — keep it short, BLE ads have a 31-byte budget.
+     # Leave unset to advertise the service UUID only (the peer learns the
+     # node name from the Reticulum announce anyway).
+-    device_name = RNSBox
++    # Empty -> S37bluetooth fills in the device hostname (rnsbox-xxxxxx)
++    # on first boot, so hostname, echo bot and BLE advert share one code.
++    # An explicit value saved in the portal is left alone.
++    device_name =
+     # BLE GATT reality is well below the driver 700 kbit/s guess; pacing
+     # announces/routing on ~50 kbit/s keeps RNS honest about this link.
+     bitrate = 50000
+-- 
+2.43.0
+
