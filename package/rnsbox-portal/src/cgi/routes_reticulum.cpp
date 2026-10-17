@@ -1285,25 +1285,26 @@ static bool rnstatus_fresh(std::string& out) {
     return !t.empty() && t[0] == '{';
 }
 
-// GET /reticulum/rnstatus.json — the parsed interface table.
-void reticulum_rnstatus(const Request& req, Response& res) {
-    if (!web::require_auth(req, res, true)) return;
-    res.content_type = "application/json";
-    std::string cached;
-    if (rnstatus_fresh(cached)) { res.body = cached; return; }
+// Cache age in seconds (-1: no cache file).
+static long rnstatus_age() {
+    struct stat st;
+    if (::stat(RNSTATUS_CACHE, &st) != 0) return -1;
+    time_t now = ::time(nullptr);
+    if (st.st_mtime > now) return 0;
+    return (long)(now - st.st_mtime);
+}
 
-    int lfd = ::open(RNSTATUS_LOCK, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
-    if (lfd >= 0) ::flock(lfd, LOCK_EX);
-    struct LockGuard { int fd; ~LockGuard() { if (fd >= 0) ::close(fd); } } guard{lfd};
-    if (rnstatus_fresh(cached)) { res.body = cached; return; }
-
+// Run `rnstatus -a`, parse, rewrite the cache. Shared by the synchronous
+// path and the stale-while-revalidate child.
+static std::string rnstatus_collect(bool* ok) {
     util::RunResult rr = util::run({"/usr/bin/rnstatus", "-a"}, "", 25);
     std::vector<IfStat> ifs;
     std::string thash, tupt, tstate;
     if (!rnstatus_parse(rr.out, ifs, thash, tupt, tstate)) {
-        res.body = "{\"error\":\"rnstatus returned nothing (is rnsd running?)\"}";
-        return;
+        if (ok) *ok = false;
+        return "{\"error\":\"rnstatus returned nothing (is rnsd running?)\"}";
     }
+    if (ok) *ok = true;
     std::string o = "{\"age\":" + std::to_string(::time(nullptr)) + ",\"interfaces\":[";
     for (size_t i = 0; i < ifs.size(); ++i) {
         const IfStat& f = ifs[i];
@@ -1326,7 +1327,57 @@ void reticulum_rnstatus(const Request& req, Response& res) {
          "\",\"uptime\":\"" + http::json_escape(tupt) +
          "\",\"state\":\"" + http::json_escape(tstate) + "\"}}";
     util::write_file_atomic(RNSTATUS_CACHE, o, 0600);
-    res.body = o;
+    return o;
+}
+
+// GET /reticulum/rnstatus.json — the parsed interface table.
+//
+// rnstatus -a costs a python cold start (seconds on this CPU), so an F5
+// after the cache expired used to stare at "loading…" for that long. The
+// fix is stale-while-revalidate: a cache up to RNSTATUS_STALE seconds old
+// is served IMMEDIATELY, and a detached child refreshes it in the
+// background (non-blocking lock: if a refresher is already running, the
+// child just exits). Only a cache older than that — or none at all —
+// blocks on a synchronous run.
+constexpr int RNSTATUS_STALE = 90;  // seconds a snapshot may be served stale
+
+void reticulum_rnstatus(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, true)) return;
+    res.content_type = "application/json";
+    std::string cached;
+    if (rnstatus_fresh(cached)) { res.body = cached; return; }
+
+    long age = rnstatus_age();
+    if (age >= 0 && age < RNSTATUS_STALE) {
+        std::string stale = util::read_file(RNSTATUS_CACHE, 256 * 1024);
+        std::string t = util::trim(stale);
+        if (!t.empty() && t[0] == '{') {
+            pid_t pid = ::fork();
+            if (pid == 0) {
+                // Detached refresher: new session, no inherited descriptors,
+                // non-blocking lock so concurrent refreshers collapse.
+                ::setsid();
+                for (int fd = 0; fd < 3; ++fd) ::close(fd);
+                int lfd = ::open(RNSTATUS_LOCK, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+                if (lfd >= 0 && ::flock(lfd, LOCK_EX | LOCK_NB) == 0) {
+                    if (rnstatus_age() >= RNSTATUS_TTL)
+                        rnstatus_collect(nullptr);
+                    ::close(lfd);
+                }
+                _exit(0);
+            }
+            // Parent: serve the stale snapshot; the poll picks up the fresh
+            // one a few seconds later.
+            res.body = stale;
+            return;
+        }
+    }
+
+    int lfd = ::open(RNSTATUS_LOCK, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (lfd >= 0) ::flock(lfd, LOCK_EX);
+    struct LockGuard { int fd; ~LockGuard() { if (fd >= 0) ::close(fd); } } guard{lfd};
+    if (rnstatus_fresh(cached)) { res.body = cached; return; }
+    res.body = rnstatus_collect(nullptr);
 }
 
 // ===================== RNode (USB serial / BLE) =====================
