@@ -586,7 +586,7 @@ rnsbox_build_milkv_duo_01() {
     # git ls-tree hashes the INDEX (committed, reproducible) state, not
     # the untracked build outputs living under build/<board>/.
     local stage fp
-    fp="$(git ls-tree -r HEAD -- build fsbl u-boot-2021.10 2>/dev/null | sha256sum | cut -d' ' -f1)"
+    fp="$(git ls-tree -r HEAD -- build fsbl u-boot-2021.10 osdrv linux_5.10 2>/dev/null | sha256sum | cut -d' ' -f1)"
     [ -n "$fp" ] && [ "$fp" != "$(printf '' | sha256sum | cut -d' ' -f1)" ] || fp="no-sources"
     echo ">> stage fingerprint: $fp"
     for stage in build_uboot build_kernel build_ramboot build_osdrv \
@@ -658,7 +658,7 @@ rnsbox_univ_stage() {
     # the boot-source state (u-boot, FSBL, build/ board dirs), so rootfs
     # edits skip the heavy phases while a boot patch re-runs them.
     local fp
-    fp="$(git ls-tree -r HEAD -- build fsbl u-boot-2021.10 2>/dev/null | sha256sum | cut -d' ' -f1)"
+    fp="$(git ls-tree -r HEAD -- build fsbl u-boot-2021.10 osdrv linux_5.10 2>/dev/null | sha256sum | cut -d' ' -f1)"
     [ -n "$fp" ] || fp="no-sources"
     for stage in build_uboot build_kernel build_ramboot build_osdrv \
                  build_3rd_party build_middleware pack_cfg; do
