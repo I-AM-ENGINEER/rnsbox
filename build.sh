@@ -572,14 +572,19 @@ rnsbox_build_milkv_duo_01() {
     # process but not the tree) then resumes instead of redoing the
     # u-boot/kernel middleware passes every cycle; build-rnsbox.sh below
     # re-runs the buildroot pack phase, the only one that can really
-    # change between runs. Delete .rnsbox-done-* to force a phase again
-    # (e.g. after changing this board's patches).
-    local stage
+    # change between runs.
+    # The stamp carries a fingerprint (workdir HEAD + the patch series
+    # content): a changed series re-runs the heavy phases AUTOMATICALLY.
+    # A bare touch-stamp shipped a boot.sd with a weeks-old u-boot after
+    # the radio bring-up patch landed - the packed image kept booting
+    # the pre-patch bootloader and nothing warned.
+    local stage fp
+    fp="$(git rev-parse HEAD 2>/dev/null || echo nohead)|$(cat "$HERE"/patches/milkv-duo-01/*.patch 2>/dev/null | sha256sum | cut -d' ' -f1)"
     for stage in build_uboot build_kernel build_ramboot build_osdrv \
                  build_3rd_party build_middleware pack_cfg; do
-        if [ ! -e ".rnsbox-done-$stage" ]; then
+        if [ "$(cat ".rnsbox-done-$stage" 2>/dev/null)" != "$fp" ]; then
             "$stage" || return 1
-            touch ".rnsbox-done-$stage"
+            printf '%s\n' "$fp" > ".rnsbox-done-$stage"
         fi
     done
 
