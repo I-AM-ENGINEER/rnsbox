@@ -1,0 +1,35 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Taixin Reverse <reverse@taixin.local>
+Date: Sat, 17 Oct 2026 17:17:29 +0300
+Subject: [PATCH] rnsh: enabled by default (allow-list still mandatory)
+
+The shipped config said enabled=no, so the portal RNS Shell card sat
+at off and S86rnsh skipped at boot. Enable it out of the box; the
+service still refuses to serve until at least one allowed_id hash is
+added (an unauthenticated root shell over public Reticulum is not
+something this image exposes), and it announces its destination as
+soon as it runs.
+---
+ .../board/cvitek/SG200X/overlay/etc/rnsbox/rnsh.conf      | 8 +++++---
+ 1 file changed, 5 insertions(+), 3 deletions(-)
+
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/rnsh.conf b/buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/rnsh.conf
+index 081586603..98618408d 100644
+--- a/buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/rnsh.conf
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/rnsh.conf
+@@ -1,7 +1,9 @@
+ # RNS Shell (rnsh) — remote root shell over Reticulum. Portal-managed
+-# (Reticulum tab). The service starts only with at least one allowed_id:
+-# run `rnsh -p` on your client and add its hash here, one per line.
++# (Reticulum tab). Enabled by default; it starts serving once at least
++# one allowed_id is present: run `rnsh -p` on your client and add its
++# hash here, one per line. An unauthenticated root shell is never
++# exposed, so an empty allow-list keeps the listener down by design.
+ 
+-enabled=no
++enabled=yes
+ announce=600
+ allowed_id=
+-- 
+2.43.0
+
