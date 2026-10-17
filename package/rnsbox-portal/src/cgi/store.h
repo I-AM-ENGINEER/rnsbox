@@ -166,6 +166,7 @@ bool delete_tcp_client(int idx, std::string& err);
 struct BleConfig {
     std::string enabled = "yes";
     std::string device_name;   // blank = advertise the service UUID only
+    std::string advertise_interval_ms = "100";  // LE advert interval; 0 = BlueZ default
 };
 BleConfig read_ble();
 bool write_ble(const BleConfig& c, std::string& err);   // name <= 16 chars, no []#= or quotes
@@ -184,11 +185,11 @@ struct RnodeConfig {
     std::string ble_address = "";         // ble: AA:BB:CC:DD:EE:FF, or blank
     std::string ble_name = "";            // ble: exact advert name, or blank
     std::string name = "RNode";           // [[section]] name in the rns config
-    std::string frequency = "867500000";  // Hz (137000000..3000000000)
+    std::string frequency = "868825000";  // Hz (137000000..3000000000); EU868 default
     std::string bandwidth = "125000";     // Hz (7800..1625000)
     std::string txpower = "7";            // dBm (0..37)
     std::string spreadingfactor = "7";    // 5..12
-    std::string codingrate = "5";         // 5..8
+    std::string codingrate = "7";         // 5..8
     std::string flow_control = "no";      // yes|no
 };
 RnodeConfig read_rnode();

@@ -11,9 +11,9 @@
 # box holds its own LXMF delivery destination and they coexist over the ONE
 # shared Reticulum instance (rnsd, S82rnsd). The identity lives at
 # /var/lib/rnsbox-echobot/identity.pem on the persistent rootfs (created on
-# first start, never regenerated), so the bot's LXMF address — and the 6-hex
-# suffix of its announced name (the first 3 bytes of the identity hash) — are
-# stable across reboots and updates.
+# first start, never regenerated), so the bot's LXMF address is
+# stable across reboots and updates. The announced name carries no
+# suffix — the address is identity enough.
 #
 # Shared-instance race: at boot this script may run before rnsd has opened the
 # shared instance. Constructing RNS.Reticulum() then would silently start a
@@ -28,11 +28,12 @@
 # the announce loop picks it up within its 1 s tick.
 #
 # Status for the portal: /var/lib/rnsbox-echobot/state.json (atomic rewrites),
-# read directly by the CGI, plus peers.tsv — one line per peer destination
-# heard or echoed to (per-peer RX/TX message and byte counters, delivery
-# success) for the portal's Traffic table. Announces are logged to stdout ->
-# syslog via the init script's FIFO ("LXMF announced <hash> as <name>"), so
-# `logread | grep echobot` shows the announce history.
+# read directly by the CGI, plus a per-peer traffic snapshot in /run (tmpfs —
+# RAM only, no SD writes): one line per peer destination heard or echoed to
+# (RX/TX message and byte counters, delivery success) for the portal's Traffic
+# table. Announces are logged to stdout -> syslog via the init script's FIFO
+# ("LXMF announced <hash> as <name>"), so `logread | grep echobot` shows the
+# announce history.
 #
 # No propagation node: replies go DIRECT (or OPPORTUNISTIC when a ratchet is
 # known and no link exists — one packet instead of a link setup). Received
@@ -53,7 +54,9 @@ CONF_PATH = "/etc/rnsbox/echobot.conf"
 STATE_DIR = "/var/lib/rnsbox-echobot"
 IDENTITY_PATH = os.path.join(STATE_DIR, "identity.pem")
 STATE_PATH = os.path.join(STATE_DIR, "state.json")
-PEERS_PATH = os.path.join(STATE_DIR, "peers.tsv")
+# Per-peer counters are RAM-only: a couple hundred KB at most, written to
+# tmpfs (never the SD card) and simply gone after a restart.
+PEERS_PATH = "/run/rnsbox-echobot-peers.tsv"
 RNS_CONFIGDIR = "/etc/reticulum"
 
 DEFAULT_NAME = "rnsbox echo bot"  # legacy literal; resolved to <hostname>
@@ -149,7 +152,7 @@ class State:
     # What the portal's Echo bot tab shows. Written atomically; the CGI reads
     # it straight from disk on every page paint. RLock: announce bookkeeping
     # runs while holding the lock and calls bump().
-    FIELDS = ("status", "detail", "lxmf_addr", "dest_hash", "suffix", "name_base",
+    FIELDS = ("status", "detail", "lxmf_addr", "dest_hash", "name_base",
               "display_name", "interval", "started_at", "last_announce",
               "announce_count", "echo_ok", "echo_fail")
 
@@ -192,18 +195,45 @@ class State:
             log("could not write state.json: " + repr(e))
 
 
+# ------------------------------------------------- message size -------------
+
+def _blob_size(v):
+    # Everything the message actually carried: the text body, the title and
+    # every attachment (images/files ride in .fields, NOT in .content — a
+    # photo message can have a 5-byte content and a 400 KB field).
+    if isinstance(v, bytes):
+        return len(v)
+    if isinstance(v, str):
+        return len(v)
+    if isinstance(v, (list, tuple)):
+        return sum(_blob_size(x) for x in v)
+    if isinstance(v, dict):
+        return sum(_blob_size(x) for x in v.values())
+    return 0
+
+
+def message_bytes(lxmessage):
+    try:
+        return (_blob_size(getattr(lxmessage, "content", b""))
+                + _blob_size(getattr(lxmessage, "title", ""))
+                + _blob_size(getattr(lxmessage, "fields", None)))
+    except Exception:
+        return 0
+
+
 # ------------------------------------------------- per-peer traffic ----------
 
-MAX_PEERS = 64          # rows in the portal's Traffic table
-FLUSH_EVERY = 5.0       # s between peers.tsv rewrites (announce-storm damper)
+MAX_PEERS = 64          # rows in the portal's Traffic table (RAM-bounded)
+FLUSH_EVERY = 5.0       # s between /run snapshot rewrites (announce-storm damper)
 
 
 class Peers:
     # Per-destination traffic counters for the portal's Traffic table: one row
     # per LXMF destination heard via announce or exchanged messages with.
-    # In-memory; flushed atomically to peers.tsv (newest first) at most every
-    # FLUSH_EVERY seconds and on clean stop, so an announce storm cannot hammer
-    # the flash. TSV columns: hash, name, rx_msgs, rx_bytes, tx_msgs, tx_bytes,
+    # In-memory only (RAM, capped by MAX_PEERS); snapshotted atomically to
+    # /run (tmpfs — never the SD card) at most every FLUSH_EVERY seconds for
+    # the CGI to read. Nothing survives a restart by design.
+    # TSV columns: hash, name, rx_msgs, rx_bytes, tx_msgs, tx_bytes,
     # tx_ok, tx_fail, last_seen. The name is sanitised to one tab-free ASCII
     # line — the portal's splitter can stay dumb.
 
@@ -212,27 +242,6 @@ class Peers:
         self.peers = {}
         self.dirty = False
         self._next_flush = 0.0
-        try:
-            with open(PEERS_PATH, "r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    parts = line.rstrip("\n").split("\t")
-                    if len(parts) != 9 or len(parts[0]) != 32:
-                        continue
-                    if any(c not in "0123456789abcdef" for c in parts[0]):
-                        continue
-                    try:
-                        nums = [int(x) for x in parts[2:]]
-                    except ValueError:
-                        continue
-                    if any(n < 0 for n in nums):
-                        continue
-                    self.peers[parts[0]] = dict(name=parts[1][:32],
-                                               rx_msgs=nums[0], rx_bytes=nums[1],
-                                               tx_msgs=nums[2], tx_bytes=nums[3],
-                                               tx_ok=nums[4], tx_fail=nums[5],
-                                               last_seen=nums[6])
-        except Exception:
-            pass
 
     @staticmethod
     def _clean_name(raw):
@@ -286,10 +295,9 @@ class Peers:
         try:
             with open(tmp, "w", encoding="utf-8") as f:
                 f.write(body)
-            os.replace(tmp, PEERS_PATH)
-            os.chmod(PEERS_PATH, 0o600)
+            os.replace(tmp, PEERS_PATH)   # /run is tmpfs: a RAM rename
         except Exception as e:
-            log("could not write peers.tsv: " + repr(e))
+            log("could not write the peers snapshot: " + repr(e))
 
 
 # ------------------------------------------------- shared instance probe ----
@@ -386,7 +394,7 @@ def main():
     # Attach to rnsd's shared instance — never a second transport stack.
     RNS.Reticulum(configdir=RNS_CONFIGDIR)
 
-    # ---- identity: persistent, so address + name suffix never change -------
+    # ---- identity: persistent, so the LXMF address never changes ------------
     if os.path.isfile(IDENTITY_PATH) and os.path.getsize(IDENTITY_PATH) > 0:
         identity = RNS.Identity(create_keys=False)
         identity.load(IDENTITY_PATH)
@@ -400,11 +408,12 @@ def main():
         os.replace(tmp, IDENTITY_PATH)
         log("new identity created at " + IDENTITY_PATH)
 
-    suffix = identity.hash[:3].hex()
-    display_name = (effective_name(conf) + " " + suffix).strip()
+    # The announced name is exactly the configured name — no auto-appended
+    # suffix (the LXMF address already tells bots apart).
+    display_name = effective_name(conf)
     state.set(status="waiting", detail="attaching to the shared instance",
-              lxmf_addr=identity.hash.hex(), dest_hash="", suffix=suffix,
-              name_base=effective_name(conf), display_name=display_name,
+              lxmf_addr=identity.hash.hex(), dest_hash="",
+              name_base=display_name, display_name=display_name,
               interval=conf["interval"], started_at=int(time.time()))
     log("LXMF address " + identity.hash.hex() + " (\"" + display_name + "\")")
 
@@ -498,7 +507,7 @@ def main():
                 state.bump("echo_fail")
                 continue
             srchex = src.hex()
-            rx_bytes = len(content)
+            rx_bytes = message_bytes(msg)
             peers.update(srchex, rx_msgs=1, rx_bytes=rx_bytes)
             log("received a message from " + srchex + " (" + str(rx_bytes) + " bytes); echoing back")
             try:
@@ -562,7 +571,7 @@ def main():
 
     state.set(status="running", detail="announcing and echoing",
               lxmf_addr=identity.hash.hex(), dest_hash=delivery.hash.hex(),
-              suffix=suffix, name_base=effective_name(conf), display_name=display_name,
+              name_base=display_name, display_name=display_name,
               interval=conf["interval"], started_at=int(time.time()))
     log("echo bot running: address " + delivery.hash.hex() +
         ", announce interval " + str(conf["interval"]) + "s")

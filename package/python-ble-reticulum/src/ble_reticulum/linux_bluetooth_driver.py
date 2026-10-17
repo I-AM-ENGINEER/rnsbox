@@ -174,9 +174,39 @@ except ImportError:
 # Bluezero (BLE peripheral operations)
 try:
     from bluezero import peripheral, adapter
+    from bluezero import advertisement as _bz_advertisement
+    from bluezero import constants as _bz_constants
+    import dbus.service as _dbus_service
+    import dbus as _dbus_types
     BLUEZERO_AVAILABLE = True
 except ImportError:
     BLUEZERO_AVAILABLE = False
+
+if BLUEZERO_AVAILABLE:
+    class FastAdvertisement(_bz_advertisement.Advertisement):
+        """RNSBox delta: bluezero's Advertisement with BlueZ Min/MaxInterval.
+
+        bluezero 0.9.1 exposes no advertising-interval knobs and BlueZ's
+        default (~1.3 s) makes a scanning phone wait seconds before the box
+        shows up. dbus-python only dispatches methods decorated in a class
+        body, hence the re-decorated GetAll returning the extra properties
+        (uint16 milliseconds, honoured by bluetoothd >= 5.56).
+        """
+
+        def __init__(self, advert_id, ad_type, interval_ms):
+            super().__init__(advert_id, ad_type)
+            self._interval_ms = max(20, min(int(interval_ms), 10000))
+
+        @_dbus_service.method(_bz_constants.LE_ADVERTISEMENT_IFACE,
+                              out_signature='a{sv}')
+        def GetAll(self, interface_name):
+            response = super().GetAll(interface_name)
+            if interface_name == _bz_constants.LE_ADVERTISEMENT_IFACE:
+                response['MinInterval'] = _dbus_types.UInt16(self._interval_ms)
+                response['MaxInterval'] = _dbus_types.UInt16(self._interval_ms)
+            return response
+else:
+    FastAdvertisement = None
 
 # BLE Agent for automatic pairing
 try:
@@ -315,11 +345,12 @@ class LinuxBluetoothDriver(BLEDriverInterface):
     def __init__(
         self,
         discovery_interval: float = 5.0,
-        connection_timeout: float = 10.0,
-        min_rssi: int = -90,
+        connection_timeout: float = 30.0,
+        min_rssi: int = -100,
         service_discovery_delay: float = 1.5,
         max_peers: int = 7,
         adapter_index: int = 0,
+        advertise_interval_ms: int = 100,
         agent_capability: str = "NoInputNoOutput"
     ):
         """
@@ -332,6 +363,9 @@ class LinuxBluetoothDriver(BLEDriverInterface):
             service_discovery_delay: Delay after connection for bluezero D-Bus registration (default: 1.5s)
             max_peers: Maximum simultaneous connections (default: 7)
             adapter_index: Bluetooth adapter index (0 = hci0, 1 = hci1, etc.)
+            advertise_interval_ms: LE advertisement interval in ms (20..10000;
+                RNSBox default 100 — discovery from a phone in a couple of
+                scan windows instead of seconds; 0 keeps BlueZ's own default)
             agent_capability: BLE pairing agent capability (default: "NoInputNoOutput" for Just Works pairing)
         """
         # Validate dependencies
@@ -347,6 +381,11 @@ class LinuxBluetoothDriver(BLEDriverInterface):
         self.adapter_index = adapter_index
         self.adapter_path = f"/org/bluez/hci{adapter_index}"
         self.agent_capability = agent_capability
+        try:
+            self.advertise_interval_ms = int(advertise_interval_ms)
+        except (TypeError, ValueError):
+            self.advertise_interval_ms = 100
+        self.advertise_interval_ms = max(0, min(self.advertise_interval_ms, 10000))
 
         # Service UUIDs (set by start())
         self.service_uuid: Optional[str] = None
@@ -474,7 +513,8 @@ class LinuxBluetoothDriver(BLEDriverInterface):
                     tx_char_uuid=tx_char_uuid,
                     identity_char_uuid=identity_char_uuid,
                     adapter_index=self.adapter_index,
-                    agent_capability=self.agent_capability
+                    agent_capability=self.agent_capability,
+                    advertise_interval_ms=self.advertise_interval_ms
                 )
                 self._log("GATT server initialized")
             except Exception as e:
@@ -1782,7 +1822,8 @@ class BluezeroGATTServer:
         tx_char_uuid: str,
         identity_char_uuid: str,
         adapter_index: int = 0,
-        agent_capability: str = "NoInputNoOutput"
+        agent_capability: str = "NoInputNoOutput",
+        advertise_interval_ms: int = 100
     ):
         """Initialize GATT server."""
         if not BLUEZERO_AVAILABLE:
@@ -1795,6 +1836,10 @@ class BluezeroGATTServer:
         self.identity_char_uuid = identity_char_uuid
         self.adapter_index = adapter_index
         self.agent_capability = agent_capability
+        try:
+            self.advertise_interval_ms = int(advertise_interval_ms)
+        except (TypeError, ValueError):
+            self.advertise_interval_ms = 100
 
         self.log_prefix = "BluezeroGATTServer"
 
@@ -2436,6 +2481,22 @@ class BluezeroGATTServer:
                 )
             else:
                 self.peripheral_obj = peripheral.Peripheral(adapter_address)
+
+            # RNSBox delta: swap in the fast advertisement (Min/MaxInterval)
+            # before publish() registers it with bluetoothd. bluezero's
+            # Advertisement registers its D-Bus object path in __init__, so
+            # the stock one must be unregistered first — same advert id.
+            if self.advertise_interval_ms and FastAdvertisement is not None:
+                try:
+                    try:
+                        self.peripheral_obj.advert.remove_from_connection()
+                    except Exception:
+                        pass
+                    self.peripheral_obj.advert = FastAdvertisement(
+                        1, 'peripheral', self.advertise_interval_ms)
+                    self._log(f"Advertising interval set to {self.advertise_interval_ms} ms")
+                except Exception as e:
+                    self._log(f"Could not set fast advertising interval: {e}", "WARNING")
 
             # Add service
             self.peripheral_obj.add_service(

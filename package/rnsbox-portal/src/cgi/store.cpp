@@ -863,6 +863,10 @@ BleConfig read_ble() {
         for (auto& ch : k) ch = (char)tolower((unsigned char)ch);
         if (k == "enabled") c.enabled = v.empty() ? "no" : v;
         else if (k == "device_name") c.device_name = v;
+        else if (k == "advertise_interval_ms") {
+            if (!v.empty() && v.find_first_not_of("0123456789") == std::string::npos)
+                c.advertise_interval_ms = v;
+        }
     }
     return c;
 }
@@ -928,7 +932,16 @@ bool write_ble(const BleConfig& cfg, std::string& err) {
     auto lines = read_lines(RETICULUM_CONFIG);
     if (lines.empty()) { err = "no reticulum config"; return false; }
 
-    bool in = false, saw_section = false, saw_enabled = false, saw_name = false;
+    // LE advertisement interval: 20..10000 ms, or 0 (BlueZ picks). Same
+    // rules on write as the driver enforces on read.
+    std::string iv = util::trim(cfg.advertise_interval_ms);
+    if (iv.empty() || iv.find_first_not_of("0123456789") != std::string::npos) iv = "100";
+    {
+        long v = strtol(iv.c_str(), nullptr, 10);
+        if (v != 0 && (v < 20 || v > 10000)) { err = "advertising interval must be 20..10000 ms or 0"; return false; }
+    }
+
+    bool in = false, saw_section = false, saw_enabled = false, saw_name = false, saw_interval = false;
     size_t insert_after = std::string::npos;   // line index a missing key goes under
     for (size_t i = 0; i < lines.size(); ++i) {
         std::string& ln = lines[i];
@@ -950,12 +963,15 @@ bool write_ble(const BleConfig& cfg, std::string& err) {
         if (eq == std::string::npos) continue;
         std::string k = util::trim(s.substr(0, eq));
         for (auto& ch : k) ch = (char)tolower((unsigned char)ch);
-        if (k != "enabled" && k != "device_name") continue;
+        if (k != "enabled" && k != "device_name" && k != "advertise_interval_ms") continue;
         std::string indent;
         for (char ch : ln) { if (ch == ' ' || ch == '\t') indent += ch; else break; }
         if (k == "enabled") {
             ln = indent + "enabled = " + en;
             saw_enabled = true;
+        } else if (k == "advertise_interval_ms") {
+            ln = indent + "advertise_interval_ms = " + iv;
+            saw_interval = true;
         } else {
             // Blank = advertise the service UUID only, the driver default:
             // drop the key entirely (the form reads back blank).
@@ -966,6 +982,10 @@ bool write_ble(const BleConfig& cfg, std::string& err) {
     }
     if (!saw_section) { err = "no [[BLE Interface]] stanza in the reticulum config"; return false; }
     if (!saw_enabled) { err = "[[BLE Interface]] stanza is missing the enabled key"; return false; }
+    if (!saw_interval) {
+        if (insert_after == std::string::npos) { err = "[[BLE Interface]] stanza has no keys to anchor advertise_interval_ms under"; return false; }
+        lines.insert(lines.begin() + insert_after + 1, "    advertise_interval_ms = " + iv);
+    }
     if (!saw_name && !name.empty()) {
         if (insert_after == std::string::npos) { err = "[[BLE Interface]] stanza has no keys to anchor device_name under"; return false; }
         lines.insert(lines.begin() + insert_after + 1, "    device_name = " + name);

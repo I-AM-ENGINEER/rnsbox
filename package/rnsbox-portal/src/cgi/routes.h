@@ -81,6 +81,8 @@ void usb_mode_set(const http::Request&, http::Response&);          // POST PRG (
 // echo bot (cards on the Reticulum tab; /echobot redirects to the card)
 std::string echobot_cards(const std::string& base);              // cards HTML for the Reticulum page
 void echobot_page(const http::Request&, http::Response&);        // GET  -> redirect to the card
+void echobot_peers(const http::Request&, http::Response&);       // GET  -> traffic table fragment (AJAX)
+void echobot_toggle(const http::Request&, http::Response&);      // POST PRG (Enable switch)
 void echobot_save(const http::Request&, http::Response&);        // POST PRG
 void echobot_announce(const http::Request&, http::Response&);    // POST PRG
 void echobot_restart(const http::Request&, http::Response&);     // POST PRG

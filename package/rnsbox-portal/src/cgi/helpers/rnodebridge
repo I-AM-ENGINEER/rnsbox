@@ -1,0 +1,328 @@
+#!/usr/bin/python3
+# rnodebridge — KISS-over-WebSocket bridge for the embedded RNode flasher.
+#
+# The flasher page (https://flasher.rns.moscow/, mirrored at /flasher/) has a
+# "WebSocket Configurator" mode: ws://<host>:7634 carrying the same raw KISS
+# bytes the RNode's own WebSocketRemote.h listener serves. This daemon is
+# that listener for an RNode wired to THIS box — over USB serial (pyserial)
+# or over BLE (the Nordic UART Service every RNode firmware exposes), so a
+# display-less RNode can be paired / configured / consoled from the local
+# flasher copy even with no Internet and no secure-context browser.
+#
+# The device link is opened ONLY while a WebSocket client is connected and
+# released on disconnect — rnsd's RNodeInterface (which retries its port
+# every 5 s) reattaches as soon as the session ends.
+#
+# Stdlib only for the WebSocket side; pyserial/bleak are used when present
+# and the transport needs them. Started by /etc/init.d/S88rnodebridge when
+# /etc/rnsbox/rnode.conf names a transport.
+
+import base64
+import hashlib
+import os
+import queue
+import socket
+import sys
+import threading
+import time
+
+CONF_PATH = "/etc/rnsbox/rnode.conf"
+LISTEN_PORT = 7634          # the flasher's fixed WebSocket KISS port
+WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+NUS_SERVICE = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
+NUS_RX = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"   # central writes
+NUS_TX = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"   # peripheral notifies
+
+logq_lock = threading.Lock()
+
+
+def log(msg):
+    try:
+        sys.stdout.write(time.strftime("%Y-%m-%d %H:%M:%S ") + msg + "\n")
+        sys.stdout.flush()
+    except Exception:
+        pass
+
+
+def read_conf(path):
+    c = {"transport": "off", "device": "auto", "ble_address": "",
+         "ble_name": "", "name": "RNode"}
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                k = k.strip().lower()
+                if k in c:
+                    c[k] = v.strip()
+    except OSError:
+        pass
+    return c
+
+
+def first_serial_device():
+    for sub in ("ttyACM", "ttyUSB"):
+        devs = sorted(d for d in os.listdir("/dev") if d.startswith(sub))
+        if devs:
+            return "/dev/" + devs[0]
+    return None
+
+
+# ------------------------------------------------------------- device links --
+
+class SerialLink:
+    """USB serial RNode: raw byte pipe at the flasher's fixed 115200."""
+
+    def __init__(self, device, outgoing):
+        import serial  # pyserial; S88rnode gates on it for usb transport
+        self.dev = device if device and device != "auto" else first_serial_device()
+        if not self.dev:
+            raise IOError("no USB serial device found")
+        self.ser = serial.Serial(self.dev, 115200, timeout=0.2)
+        self.outgoing = outgoing
+        self.alive = True
+        self.thread = threading.Thread(target=self._pump, daemon=True)
+
+    def start(self):
+        self.thread.start()
+
+    def write(self, data):
+        self.ser.write(data)
+
+    def _pump(self):
+        while self.alive:
+            try:
+                chunk = self.ser.read(4096)
+            except Exception:
+                break
+            if chunk:
+                self.outgoing.put(bytes(chunk))
+
+    def close(self):
+        self.alive = False
+        try:
+            self.thread.join(timeout=1)
+        except Exception:
+            pass
+        try:
+            self.ser.close()
+        except Exception:
+            pass
+
+
+class BleLink:
+    """BLE RNode over the Nordic UART Service (the same profile the flasher's
+    Web Bluetooth mode speaks). bleak's loop runs in this bridge's thread;
+    notifications land in the shared outgoing queue."""
+
+    def __init__(self, address, name, outgoing):
+        import asyncio
+        from bleak import BleakClient, BleakScanner
+        self.asyncio = asyncio
+        self.outgoing = outgoing
+        self.alive = True
+        self.loop = asyncio.new_event_loop()
+        self.client = None
+
+        target = address
+        if not target:
+            # No pinned address: use the first advertising "RNode *".
+            async def find():
+                dev = await BleakScanner.find_device_by_filter(
+                    lambda d, ad: (d.name or "").startswith("RNode"), timeout=12.0)
+                return dev
+            target = self.loop.run_until_complete(find())
+        if not target:
+            raise IOError("no advertising RNode found")
+        self.target = target
+        self.client = BleakClient(target)
+
+        async def connect():
+            await self.client.connect(timeout=15.0)
+
+        self.loop.run_until_complete(connect())
+
+        def on_tx(_char, data):
+            self.outgoing.put(bytes(data))
+
+        async def subscribe():
+            await self.client.start_notify(NUS_TX, on_tx)
+
+        self.loop.run_until_complete(subscribe())
+        self.thread = threading.Thread(target=self._run_loop, daemon=True)
+
+    def start(self):
+        self.thread.start()
+
+    def _run_loop(self):
+        self.loop.run_forever()
+
+    def write(self, data):
+        future = self.asyncio.run_coroutine_threadsafe(
+            self.client.write_gatt_char(NUS_RX, bytes(data), response=False),
+            self.loop)
+        try:
+            future.result(timeout=5.0)
+        except Exception as e:
+            log("ble write failed: " + repr(e))
+
+    def close(self):
+        self.alive = False
+        try:
+            futures = [self.asyncio.run_coroutine_threadsafe(
+                self.client.stop_notify(NUS_TX), self.loop),
+                self.asyncio.run_coroutine_threadsafe(
+                self.client.disconnect(), self.loop)]
+            for f in futures:
+                f.result(timeout=5.0)
+        except Exception:
+            pass
+        try:
+            self.loop.call_soon_threadsafe(self.loop.stop)
+        except Exception:
+            pass
+
+
+# ------------------------------------------------------------ websocket side --
+
+def ws_handshake(conn):
+    """Read the HTTP Upgrade, answer 101. Returns True on success."""
+    req = b""
+    while b"\r\n\r\n" not in req and len(req) < 16384:
+        chunk = conn.recv(4096)
+        if not chunk:
+            return False
+        req += chunk
+    key = None
+    for line in req.split(b"\r\n"):
+        if line.lower().startswith(b"sec-websocket-key:"):
+            key = line.split(b":", 1)[1].strip()
+    if not key:
+        return False
+    accept = base64.b64encode(
+        hashlib.sha1(key + WS_GUID.encode()).digest()).decode()
+    conn.sendall((
+        "HTTP/1.1 101 Switching Protocols\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        "Sec-WebSocket-Accept: " + accept + "\r\n\r\n").encode())
+    return True
+
+
+def ws_read_exact(conn, n):
+    buf = b""
+    while len(buf) < n:
+        chunk = conn.recv(n - len(buf))
+        if not chunk:
+            raise ConnectionError("client closed")
+        buf += chunk
+    return buf
+
+
+def ws_read_frame(conn):
+    """One client frame -> (opcode, payload). Client frames are masked."""
+    head = ws_read_exact(conn, 2)
+    opcode = head[0] & 0x0F
+    length = head[1] & 0x7F
+    masked = bool(head[1] & 0x80)
+    if length == 126:
+        length = int.from_bytes(ws_read_exact(conn, 2), "big")
+    elif length == 127:
+        length = int.from_bytes(ws_read_exact(conn, 8), "big")
+    mask = ws_read_exact(conn, 4) if masked else b""
+    payload = ws_read_exact(conn, length) if length else b""
+    if masked:
+        payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+    return opcode, payload
+
+
+def ws_send_frame(conn, payload, opcode=2):
+    header = bytes([0x80 | opcode])
+    n = len(payload)
+    if n < 126:
+        header += bytes([n])
+    elif n < 65536:
+        header += bytes([126]) + n.to_bytes(2, "big")
+    else:
+        header += bytes([127]) + n.to_bytes(8, "big")
+    conn.sendall(header + payload)
+
+
+def serve_once(conn, conf):
+    if not ws_handshake(conn):
+        conn.close()
+        return
+    log("flasher WebSocket client connected")
+    outgoing = queue.Queue()
+
+    link = None
+    try:
+        if conf["transport"] == "usb":
+            link = SerialLink(conf["device"], outgoing)
+        elif conf["transport"] == "ble":
+            link = BleLink(conf["ble_address"], conf["ble_name"], outgoing)
+        else:
+            ws_send_frame(conn, b"rnodebridge: no RNode transport configured in /etc/rnsbox/rnode.conf")
+            return
+        link.start()
+        log("device link up (" + type(link).__name__ + ")")
+        conn.settimeout(0.25)
+        while True:
+            # device -> browser
+            try:
+                while True:
+                    ws_send_frame(conn, outgoing.get_nowait())
+            except queue.Empty:
+                pass
+            # browser -> device
+            try:
+                opcode, payload = ws_read_frame(conn)
+                if opcode == 8:            # close
+                    break
+                if opcode in (9, 10):      # ping/pong
+                    if opcode == 9:
+                        ws_send_frame(conn, payload, opcode=10)
+                    continue
+                if opcode == 2 and link:
+                    link.write(payload)
+            except socket.timeout:
+                continue
+            except (ConnectionError, OSError):
+                break
+    except Exception as e:
+        log("session error: " + repr(e))
+    finally:
+        if link:
+            try:
+                link.close()
+            except Exception:
+                pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+        log("session closed, device link released")
+
+
+def main():
+    conf = read_conf(CONF_PATH)
+    if conf["transport"] not in ("usb", "ble"):
+        log("rnode.conf transport is '" + conf["transport"] + "' — nothing to bridge")
+        return 0
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("0.0.0.0", LISTEN_PORT))
+    srv.listen(2)
+    log("rnodebridge: ws://0.0.0.0:" + str(LISTEN_PORT) +
+        " -> " + conf["transport"] +
+        (" " + conf["device"] if conf["transport"] == "usb" else ""))
+    while True:
+        conn, peer = srv.accept()
+        log("connection from " + str(peer[0]))
+        serve_once(conn, conf)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

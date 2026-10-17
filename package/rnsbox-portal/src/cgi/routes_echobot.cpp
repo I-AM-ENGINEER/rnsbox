@@ -31,7 +31,7 @@ static std::string eb_redirect() { return web::base() + "/reticulum#echobot"; }
 constexpr const char* ECHOBOT_CONF  = "/etc/rnsbox/echobot.conf";
 constexpr const char* ECHOBOT_STATE = "/var/lib/rnsbox-echobot/state.json";
 constexpr const char* ECHOBOT_PID   = "/var/run/echobot.pid";
-constexpr const char* ECHOBOT_PEERS = "/var/lib/rnsbox-echobot/peers.tsv";
+constexpr const char* ECHOBOT_PEERS = "/run/rnsbox-echobot-peers.tsv";
 
 struct EchobotConf {
     bool enabled = true;
@@ -175,8 +175,9 @@ static std::string fmt_bytes(long b) {
 }
 
 // --- per-peer traffic table -------------------------------------------------
-// The daemon appends a line to peers.tsv per peer it heard via announce or
-// echoed to (atomic rewrite, newest first):
+// The daemon snapshots its in-RAM peer counters to /run/rnsbox-echobot-peers
+// .tsv (tmpfs — no SD writes), one line per peer heard via announce or echoed
+// to (newest first):
 //   hash \t name \t rx_msgs \t rx_bytes \t tx_msgs \t tx_bytes \t tx_ok \t tx_fail \t last_seen
 // Names are daemon-sanitised (single line, no tabs), but stay defensive here:
 // a malformed line just doesn't render.
@@ -255,7 +256,6 @@ std::string echobot_cards(const std::string& base) {
     std::string status = json_str(state, "status");
     std::string detail = json_str(state, "detail");
     std::string dest   = json_str(state, "dest_hash");
-    std::string suffix = json_str(state, "suffix");
     std::string dname  = json_str(state, "display_name");
     long last_announce = json_num(state, "last_announce");
     long announces     = json_num(state, "announce_count");
@@ -275,7 +275,7 @@ std::string echobot_cards(const std::string& base) {
     if (running && !detail.empty())
         badge += " <span class=\"muted\">" + E(detail) + "</span>";
     else if (!running && c.enabled)
-        badge += " <span class=\"muted\">start it from here (Save) or <code>/etc/init.d/S87echobot start</code></span>";
+        badge += " <span class=\"muted\">start it from here (the Enable switch) or <code>/etc/init.d/S87echobot start</code></span>";
     if (!running && !status.empty() && status != "running" && status != "stopped")
         badge += " <span class=\"muted\">(last state: " + E(status) + (detail.empty() ? "" : ": " + detail) + ")</span>";
 
@@ -283,9 +283,8 @@ std::string echobot_cards(const std::string& base) {
         ? "<span class=\"muted\">not created yet — the bot makes it on first start</span>"
         : "<code>" + E(dest) + "</code>";
 
-    std::string name = dname.empty()
-        ? E(c.name) + (suffix.empty() ? std::string() : " <span class=\"muted\">+ " + E(suffix) + " on start</span>")
-        : E(dname);
+    // The announced name is exactly the configured name — no auto suffix.
+    std::string name = dname.empty() ? E(c.name) : E(dname);
 
     std::string last = "never";
     if (last_announce > 0) last = E(fmt_utc(last_announce));
@@ -306,7 +305,6 @@ std::string echobot_cards(const std::string& base) {
     h = R(std::move(h), "__ECHOBOT_STATUS__", badge);
     h = R(std::move(h), "__ECHOBOT_ADDR__", addr);
     h = R(std::move(h), "__ECHOBOT_NAME__", name);
-    h = R(std::move(h), "__ECHOBOT_SUFFIX__", suffix.empty() ? "&mdash;" : E(suffix));
     h = R(std::move(h), "__ECHOBOT_ANNOUNCES__", std::to_string(announces));
     h = R(std::move(h), "__ECHOBOT_LAST_ANNOUNCE__", last);
     h = R(std::move(h), "__ECHOBOT_ECHO_OK__", std::to_string(echo_ok));
@@ -323,6 +321,14 @@ std::string echobot_cards(const std::string& base) {
 void echobot_page(const Request& req, Response& res) {
     if (!web::require_auth(req, res, false)) return;
     res.redirect(eb_redirect());
+}
+
+// GET /echobot/peers — just the Traffic table fragment, polled by the card's
+// JS every few seconds so counters move without an F5.
+void echobot_peers(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, true)) return;
+    res.content_type = "text/html; charset=utf-8";
+    res.body = echobot_peers_table();
 }
 
 // ===================== PRG POST handlers =====================
@@ -374,15 +380,50 @@ void echobot_save(const Request& req, Response& res) {
         render::redirect_flash(res, eb_redirect(), "success", "Echo bot disabled.");
 }
 
+// POST /echobot/toggle — the Enable switch at the top of the card. Only the
+// enabled flag changes; name/interval/min_free_mb are preserved as-is.
+void echobot_toggle(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, false)) return;
+    bool enable = req.f("enabled") == "on";
+
+    EchobotConf cur = echobot_read_conf();
+    long min_free_mb = 40;
+    std::string mfb = util::conf_get(ECHOBOT_CONF, "min_free_mb");
+    if (!mfb.empty() && mfb.find_first_not_of("0123456789") == std::string::npos)
+        min_free_mb = strtol(mfb.c_str(), nullptr, 10);
+    std::string raw_name = util::conf_get(ECHOBOT_CONF, "name");
+
+    std::string conf =
+        "# Echo bot config — edited by the portal's Echo bot tab; applies on\n"
+        "# restart (saving here restarts the bot). See the file's own comments\n"
+        "# and local_docs/echo-bot.md.\n"
+        "enabled=" + std::string(enable ? "yes" : "no") + "\n" +
+        "interval=" + std::to_string(cur.interval) + "\n" +
+        "name=" + raw_name + "\n" +
+        "announce_at_start=yes\n" +
+        "min_free_mb=" + std::to_string(min_free_mb) + "\n";
+    if (!util::write_file_atomic(ECHOBOT_CONF, conf, 0644)) {
+        render::redirect_flash(res, eb_redirect(), "error", "Echo bot: could not write the config.");
+        return;
+    }
+    if (!web::run_init("S87echobot", enable ? "restart" : "stop")) {
+        render::redirect_flash(res, eb_redirect(), "warn",
+            std::string("Config saved, but the bot service didn't respond (free RAM below the floor? see /var/log/messages)."));
+        return;
+    }
+    render::redirect_flash(res, eb_redirect(), "success",
+        enable ? "Echo bot enabled." : "Echo bot disabled.");
+}
+
 void echobot_announce(const Request& req, Response& res) {
     if (!web::require_auth(req, res, false)) return;
     if (!web::run_init("S87echobot", "announce")) {
         render::redirect_flash(res, eb_redirect(), "error",
-            "Announce not sent — the bot is not running. Enable it and Save first.");
+            "Announce not sent — the bot is not running. Enable it first.");
         return;
     }
     render::redirect_flash(res, eb_redirect(), "success",
-        "Announce sent — see it in the wild with `logread | grep echobot`, or refresh: the last-announce time updated.");
+        "Announce sent — the last-announce time updates on the next refresh.");
 }
 
 void echobot_restart(const Request& req, Response& res) {

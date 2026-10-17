@@ -320,6 +320,14 @@ class BLEInterface(Interface):
         # Discovery is based on service UUID only. Identity is obtained from the Identity
         # characteristic after connection. If set, keep it short (max 8 chars recommended).
         self.device_name = c.get("device_name", None)
+        # RNSBox delta: LE advertisement interval in ms (20..10000, 0 = BlueZ
+        # default). Default 100 ms — a scanning phone finds this box within a
+        # couple of scan windows instead of seconds.
+        try:
+            self.advertise_interval_ms = int(c.get("advertise_interval_ms", 100))
+        except (TypeError, ValueError):
+            self.advertise_interval_ms = 100
+        self.advertise_interval_ms = max(0, min(self.advertise_interval_ms, 10000))
         self.discovery_interval = float(c.get("discovery_interval", BLEInterface.DISCOVERY_INTERVAL))
         self.max_peers = int(c.get("max_connections", BLEInterface.MAX_PEERS))
         self.min_rssi = int(c.get("min_rssi", BLEInterface.MIN_RSSI))
@@ -426,6 +434,7 @@ class BLEInterface(Interface):
             min_rssi=self.min_rssi,
             service_discovery_delay=self.service_discovery_delay,
             max_peers=self.max_peers,
+            advertise_interval_ms=self.advertise_interval_ms,
             adapter_index=0  # TODO: Make configurable
         )
         RNS.log(f"{self} Using driver: {type(self.driver).__name__}", RNS.LOG_DEBUG)

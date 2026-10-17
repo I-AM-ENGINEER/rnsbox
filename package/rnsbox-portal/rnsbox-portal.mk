@@ -51,6 +51,12 @@ define RNSBOX_PORTAL_INSTALL_TARGET_CMDS
 	$(INSTALL) -D -m 0755 $(@D)/cgi/helpers/rnode.py $(TARGET_DIR)/usr/lib/rnsbox/rnode.py
 	$(INSTALL) -D -m 0755 $(@D)/cgi/helpers/rnshaccess.py $(TARGET_DIR)/usr/lib/rnsbox/rnshaccess.py
 	$(INSTALL) -D -m 0755 $(@D)/cgi/helpers/halow.py $(TARGET_DIR)/usr/lib/rnsbox/halow.py
+	$(INSTALL) -D -m 0755 $(@D)/cgi/helpers/rnodebridge $(TARGET_DIR)/usr/lib/rnsbox/rnodebridge
+	# S88rnodebridge — ws://:7634 KISS bridge for the embedded RNode flasher;
+	# no-op (and no daemon) unless rnode.conf names a transport.
+	$(INSTALL) -D -m 0755 $(@D)/cgi/helpers/S88rnodebridge $(TARGET_DIR)/etc/init.d/S88rnodebridge
+	mkdir -p $(TARGET_DIR)/www/flasher
+	cp -r $(@D)/cgi/www/flasher/. $(TARGET_DIR)/www/flasher/
 	$(INSTALL) -D -m 0755 $(@D)/bin/rnsbox-update-check $(TARGET_DIR)/usr/sbin/rnsbox-update-check
 	# S07usbmode — USB role (device|host) from /etc/rnsbox/usb.conf; sorts
 	# before the gadget scripts on every board (S08usbdev CVITEK, S10usbdev Pi).

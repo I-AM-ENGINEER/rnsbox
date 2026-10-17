@@ -1,19 +1,44 @@
 <!-- Echo bot: ONE card inside the Reticulum tab (routes_echobot.cpp
      echobot_cards()); the id anchors the old /echobot bookmark redirect. -->
 <section class="card" id="echobot">
-  <h3>echo bot __ECHOBOT_HOSTNAME__</h3>
+  <h3>Echo Bot</h3>
+
+  <form method="post" action="__BASE__/echobot/toggle" class="inline"
+        style="display:flex;align-items:center;gap:8px;margin:0 0 10px">
+    <input type="checkbox" name="enabled" id="echobot-enabled" __ECHOBOT_CHECKED__
+           onchange="this.form.submit()">
+    <label for="echobot-enabled" style="margin:0">Enable echo bot
+      <span class="muted">— announces on start, then every interval; echoes messages</span></label>
+  </form>
+
   <table class="kv">
     <tr><th>Service</th><td>__ECHOBOT_STATUS__</td></tr>
     <tr><th>LXMF address</th><td>__ECHOBOT_ADDR__</td></tr>
     <tr><th>Announced name</th><td>__ECHOBOT_NAME__</td></tr>
-    <tr><th>Name suffix</th><td><code>__ECHOBOT_SUFFIX__</code> <span class="muted">— first 3 bytes of the bot identity's hash; generated once, stable across reboots, not editable</span></td></tr>
     <tr><th>Announces sent</th><td>__ECHOBOT_ANNOUNCES__ <span class="muted">· last __ECHOBOT_LAST_ANNOUNCE__</span></td></tr>
     <tr><th>Messages echoed</th><td>__ECHOBOT_ECHO_OK__ ok / __ECHOBOT_ECHO_FAIL__ failed</td></tr>
   </table>
 
   <h4>Traffic — per peer</h4>
-  __ECHOBOT_PEERS__
-  <p class="muted">Every LXMF destination heard via announce gets a row; counters survive restarts.</p>
+  <div id="eb-peers">__ECHOBOT_PEERS__</div>
+  <p class="muted">Every LXMF destination heard via announce gets a row; kept in RAM only — no SD writes, cleared on restart.</p>
+  <script>
+  // Live counters: poll the table fragment every 5 s (same pattern as the
+  // Bluetooth card's connected-devices list).
+  (function(){
+    function ebPeersRefresh(){
+      var el = document.getElementById('eb-peers');
+      if (!el) return;
+      fetch('__BASE__/echobot/peers').then(function(r){
+        if (!r.ok) throw new Error('http ' + r.status);
+        return r.text();
+      }).then(function(t){
+        el.innerHTML = t;
+      }).catch(function(){});
+    }
+    setInterval(ebPeersRefresh, 5000);
+  })();
+  </script>
 
   <div class="time-actions">
     <form method="post" action="__BASE__/echobot/announce" class="inline">
@@ -26,12 +51,8 @@
 
   <h4>Settings</h4>
   <form method="post" action="__BASE__/echobot/save">
-    <label>Enable echo bot
-      <input type="checkbox" name="enabled" __ECHOBOT_CHECKED__>
-      <span class="muted">— announces on start, then every interval; echoes messages</span>
-    </label>
-    <label>Name (a 6-hex suffix is appended automatically)
-      <input type="text" name="name" value="__ECHOBOT_NAME_VALUE__" maxlength="48" required>
+    <label>Name <span class="muted">(empty = <code>echo bot &lt;hostname&gt;</code>)</span>
+      <input type="text" name="name" value="__ECHOBOT_NAME_VALUE__" maxlength="48">
     </label>
     <label>Announce interval
       <select name="interval">__ECHOBOT_INTERVAL_OPTS__
@@ -40,7 +61,7 @@
     <div class="time-actions">
       <button type="submit" class="btn-primary">Save &amp; apply</button>
     </div>
-    <p class="muted">Saving applies at once by restarting the bot (or stopping it when disabled). A start is refused while free RAM is below
+    <p class="muted">Saving applies at once by restarting the bot. A start is refused while free RAM is below
     <code>min_free_mb</code> (40 MB) — that floor protects rnsd from the OOM killer.</p>
   </form>
 </section>

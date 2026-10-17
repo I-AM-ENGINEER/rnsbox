@@ -70,6 +70,7 @@ static const char* const POST_ONLY[] = {
     "/updates/check",
     "/updates/apply",
     "/updates/auto",
+    "/echobot/toggle",
     "/echobot/save",
     "/echobot/announce",
     "/echobot/restart",
@@ -467,6 +468,8 @@ int main(int argc, char** argv) {
     else if (p == "/settings/ssh")               routes::ssh_set(req, res);
     else if (p == "/settings/usb")               routes::usb_mode_set(req, res);
     else if (p == "/echobot")                    routes::echobot_page(req, res);
+    else if (p == "/echobot/peers")              routes::echobot_peers(req, res);
+    else if (p == "/echobot/toggle")             routes::echobot_toggle(req, res);
     else if (p == "/echobot/save")               routes::echobot_save(req, res);
     else if (p == "/echobot/announce")           routes::echobot_announce(req, res);
     else if (p == "/echobot/restart")            routes::echobot_restart(req, res);

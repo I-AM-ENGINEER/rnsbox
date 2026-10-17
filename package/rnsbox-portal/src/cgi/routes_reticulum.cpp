@@ -12,7 +12,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <map>
 #include <string>
+#include <utility>
+#include <vector>
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/file.h>
@@ -525,6 +528,14 @@ void reticulum_page(const Request& req, Response& res) {
             "      <label style=\"margin:0\">Advertised name\n"
             "        <input type=\"text\" name=\"device_name\" value=\"__BT_NAME__\" maxlength=\"16\" "
             "title=\"Prefilled with the box hostname, so hostname, echo bot and BLE advert share one base prefix. Keep it short: BLE advertisement payloads are 31 bytes total. Clear the field to advertise the service UUID only\"></label>\n"
+            "      <label style=\"margin:0\">Advertising interval\n"
+            "        <select name=\"advertise_interval_ms\" title=\"How often the BLE advertisement goes out. Fast = a scanning phone finds the box within a couple of scan windows.\">\n"
+            "          <option value=\"100\" __BT_IV100__>100 ms — fast (default)</option>\n"
+            "          <option value=\"200\" __BT_IV200__>200 ms</option>\n"
+            "          <option value=\"500\" __BT_IV500__>500 ms</option>\n"
+            "          <option value=\"1000\" __BT_IV1000__>1 s</option>\n"
+            "          <option value=\"0\" __BT_IV0__>BlueZ default (slowest)</option>\n"
+            "        </select></label>\n"
             "    </div>\n"
             "    <button type=\"submit\" class=\"btn-primary\" style=\"margin-top:10px\">Save &amp; apply</button>\n"
             "    <span class=\"muted\">saving restarts rnsd — active links reconnect on their own</span>\n"
@@ -547,6 +558,16 @@ void reticulum_page(const Request& req, Response& res) {
         if (btn == "localhost") btn.clear();
         if (btn.size() > 16) btn = btn.substr(0, 16);   // write_ble's own bound
         h = R(std::move(h), "__BT_NAME__", E(btn));
+    }
+    // Advertising interval select marker (unknown values fall back to 100)
+    {
+        std::string iv = util::trim(bl.advertise_interval_ms);
+        if (iv != "0" && iv != "200" && iv != "500" && iv != "1000") iv = "100";
+        h = R(std::move(h), "__BT_IV100__",  iv == "100"  ? "selected" : "");
+        h = R(std::move(h), "__BT_IV200__",  iv == "200"  ? "selected" : "");
+        h = R(std::move(h), "__BT_IV500__",  iv == "500"  ? "selected" : "");
+        h = R(std::move(h), "__BT_IV1000__", iv == "1000" ? "selected" : "");
+        h = R(std::move(h), "__BT_IV0__",    iv == "0"    ? "selected" : "");
     }
     h = rnode_fill(std::move(h));
     h = rnsh_fill(std::move(h));
@@ -938,6 +959,7 @@ void reticulum_bluetooth(const Request& req, Response& res) {
     store::BleConfig c;
     c.enabled     = req.f("enabled") == "on" ? "yes" : "no";
     c.device_name = util::trim(req.f("device_name"));
+    c.advertise_interval_ms = util::trim(req.f("advertise_interval_ms"));
     std::string err;
     if (!store::write_ble(c, err)) {
         render::redirect_flash(res, ret_redirect(), "error", "Bluetooth: " + err + ".");
@@ -1030,12 +1052,70 @@ void reticulum_bluetooth_pair(const Request& req, Response& res) {
 // GET /reticulum/bluetooth/peers — devices currently connected to the BLE
 // adapter. BlueZ is the authoritative ACL view: it lists our outbound
 // (central) links too. The Bluetooth card polls this every few seconds.
+//
+// Reliability: bluetoothctl needs several seconds to come up and print when
+// the box is busy, and on a timeout it exits with NO output — which used to
+// render as an empty "none" flash mid-session. So: serve a /run snapshot
+// while it is <6 s old (the poll cadence reuses it, bluetoothctl is not
+// spawned per request), take a fresh one with a generous timeout otherwise,
+// and fall back to the last good snapshot (up to 60 s) when bluetoothctl
+// comes back empty-handed.
+constexpr const char* BT_PEERS_CACHE = "/run/rnsbox-bt-peers.json";
+constexpr int BT_PEERS_FRESH = 6;    // s a snapshot is served without re-query
+constexpr int BT_PEERS_STALE = 60;   // s an empty result may still fall back
+
+static bool bt_peers_cache_age(time_t& age) {
+    struct stat st;
+    if (::stat(BT_PEERS_CACHE, &st) != 0) return false;
+    time_t now = ::time(nullptr);
+    if (st.st_mtime > now) return false;
+    age = now - st.st_mtime;
+    return true;
+}
+
+// The BLE transport logs "received identity handshake from dev:AA:BB:..:
+// <hash>" (rnsd.log on BSP images, syslog elsewhere) — an unnamed RPA shows
+// up in the table as its Reticulum identity instead of a bare question mark.
+static std::map<std::string, std::string> bt_identity_names() {
+    std::map<std::string, std::string> m;
+    const char* logs[] = {"/var/log/rnsd.log", "/var/log/messages"};
+    for (const char* lg : logs) {
+        std::string s = util::read_file(lg, 192 * 1024);
+        if (s.empty()) continue;
+        const std::string pat = "received identity handshake from dev:";
+        size_t pos = 0;
+        while ((pos = s.find(pat, pos)) != std::string::npos) {
+            pos += pat.size();
+            // "dev:78:37:EC:8A:11:8C: 35e53f845c9cbca3" — a fixed 17-char
+            // address, then ": " and the 16-byte hash (newest entry wins).
+            if (pos + 19 > s.size()) break;
+            std::string addr = s.substr(pos, 17);
+            if (s[pos + 17] != ':') continue;
+            size_t e = s.find('\n', pos);
+            std::string hash = util::trim(s.substr(pos + 19, e == std::string::npos ? std::string::npos : e - pos - 19));
+            size_t c = hash.find_first_not_of("0123456789abcdef");
+            if (c != std::string::npos) hash = hash.substr(0, c);
+            if (addr.size() == 17 && hash.size() >= 8)
+                m[addr] = "RNS " + hash.substr(0, 8);
+        }
+        if (!m.empty()) break;
+    }
+    return m;
+}
+
 void reticulum_bluetooth_peers(const Request& req, Response& res) {
     if (!web::require_auth(req, res, true)) return;
     res.content_type = "application/json";
-    util::RunResult r = util::run({"/usr/bin/bluetoothctl", "devices", "Connected"}, "", 3);
-    std::string out = "{\"devices\":[";
-    bool first = true;
+
+    time_t age = -1;
+    bool have = bt_peers_cache_age(age);
+    if (have && age <= BT_PEERS_FRESH) {
+        std::string cached = util::read_file(BT_PEERS_CACHE, 64 * 1024);
+        if (!cached.empty()) { res.body = cached; return; }
+    }
+
+    util::RunResult r = util::run({"/usr/bin/bluetoothctl", "devices", "Connected"}, "", 8);
+    std::vector<std::pair<std::string, std::string>> found;
     size_t pos = 0;
     const std::string& s = r.out;
     while (pos <= s.size()) {
@@ -1043,18 +1123,39 @@ void reticulum_bluetooth_peers(const Request& req, Response& res) {
         if (e == std::string::npos) e = s.size();
         std::string ln = util::trim(s.substr(pos, e - pos));
         pos = e + 1;
+        if (!ln.empty() && ln.back() == '\r') ln.pop_back();
         // "Device AA:BB:CC:DD:EE:FF Name with spaces"
         if (ln.compare(0, 7, "Device ") != 0) continue;
         std::string rest = ln.substr(7);
         size_t sp = rest.find(' ');
         std::string addr = sp == std::string::npos ? rest : rest.substr(0, sp);
         std::string name = sp == std::string::npos ? std::string() : util::trim(rest.substr(sp + 1));
+        found.push_back({addr, name});
+    }
+    if (found.empty() && have && age <= BT_PEERS_STALE) {
+        // bluetoothctl silent/timeout — the last snapshot beats a false "none"
+        std::string cached = util::read_file(BT_PEERS_CACHE, 64 * 1024);
+        if (!cached.empty()) { res.body = cached; return; }
+    }
+
+    std::map<std::string, std::string> ident;
+    if (!found.empty()) ident = bt_identity_names();
+
+    std::string out = "{\"devices\":[";
+    bool first = true;
+    for (const auto& d : found) {
+        std::string name = d.second;
+        if (name.empty()) {
+            auto it = ident.find(d.first);
+            if (it != ident.end()) name = it->second;
+        }
         if (!first) out += ",";
         first = false;
-        out += "{\"address\":\"" + http::json_escape(addr) +
+        out += "{\"address\":\"" + http::json_escape(d.first) +
                "\",\"name\":\"" + http::json_escape(name) + "\"}";
     }
     out += "]}";
+    util::write_file_atomic(BT_PEERS_CACHE, out, 0600);
     res.body = out;
 }
 

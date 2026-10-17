@@ -1,0 +1,61 @@
+#!/bin/sh
+# S88rnodebridge — KISS-over-WebSocket bridge for the embedded RNode flasher
+# (/flasher/, mirrored from flasher.rns.moscow). Serves ws://<box>:7634 and
+# pipes the bytes to the RNode configured in /etc/rnsbox/rnode.conf — USB
+# serial or BLE. The device link is held only while a flasher session is
+# connected; rnsd's RNodeInterface reattaches between sessions.
+#
+# Enabled only when rnode.conf names a transport (off = no daemon at all).
+
+NAME=rnodebridge
+DAEMON=/usr/lib/rnsbox/rnodebridge
+PIDFILE=/var/run/rnodebridge.pid
+LOGPIPE=/var/run/$NAME.logpipe
+LOGGER_PIDFILE=/var/run/$NAME.logger.pid
+CONF=/etc/rnsbox/rnode.conf
+
+cfg() {
+	awk -F= -v k="$1" '
+		/^#/ {next}
+		tolower($1) ~ trim(k) {gsub(/[ \t]/, "", $2); print $2; exit}
+		function trim(s){gsub(/[ \t]/,"",s);return s}' "$CONF" 2>/dev/null
+}
+
+start() {
+	transport=$(cfg transport)
+	[ "$transport" = usb ] || [ "$transport" = ble ] || {
+		echo "$NAME: rnode.conf transport is '${transport:-unset}' — skipping"; return 0; }
+	if p=$(cat "$PIDFILE" 2>/dev/null) && [ -r "/proc/$p/cmdline" ] \
+		&& tr "\0" "\n" < "/proc/$p/cmdline" | grep -q rnodebridge; then
+		echo "$NAME: already running (pid $p)"; return 0
+	fi
+	rm -f "$LOGPIPE" && mkfifo -m 600 "$LOGPIPE" || return 1
+	logger -t $NAME -p daemon.info < "$LOGPIPE" &
+	echo $! > "$LOGGER_PIDFILE"
+	PYTHONUNBUFFERED=1 "$DAEMON" < /dev/null > "$LOGPIPE" 2>&1 &
+	echo $! > "$PIDFILE"
+	sleep 1
+	if p=$(cat "$PIDFILE" 2>/dev/null) && [ -r "/proc/$p/cmdline" ]; then
+		echo "Starting $NAME: OK (pid $p, ws://:7634 -> $transport)"
+	else
+		echo "Starting $NAME: FAILED (see logread | grep $NAME)"
+		rm -f "$PIDFILE" "$LOGPIPE"
+		return 1
+	fi
+}
+
+stop() {
+	p=$(cat "$PIDFILE" 2>/dev/null)
+	[ -n "$p" ] && kill "$p" 2>/dev/null
+	lp=$(cat "$LOGGER_PIDFILE" 2>/dev/null)
+	[ -n "$lp" ] && kill "$lp" 2>/dev/null
+	rm -f "$PIDFILE" "$LOGGER_PIDFILE" "$LOGPIPE"
+	echo "Stopping $NAME: OK"
+}
+
+case "${1:-start}" in
+	start) start ;;
+	stop) stop ;;
+	restart) stop; sleep 1; start ;;
+	*) echo "Usage: $0 {start|stop|restart}" >&2; exit 1 ;;
+esac

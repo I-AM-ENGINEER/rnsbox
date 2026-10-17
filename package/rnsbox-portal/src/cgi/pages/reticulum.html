@@ -151,18 +151,19 @@
 
     <div id="rnode-ble-fields" style="margin-top:10px">
       <div class="row-form">
-        <label style="margin:0">BLE address
-          <input type="text" name="ble_address" id="rnode-ble-address" value="__RNODE_BLE_ADDRESS__" placeholder="AA:BB:CC:DD:EE:FF"></label>
-        <label style="margin:0">…or exact name
-          <input type="text" name="ble_name" value="__RNODE_BLE_NAME__" maxlength="48" placeholder="RNode d8:3a:…"></label>
-      </div>
-      <p class="muted" style="margin:6px 0 0">Leave both blank to attach to any advertising <code>RNode *</code>.
-      <strong>RNS attaches to bonded devices only</strong> — pair once (below), then Save &amp; apply.</p>
-      <div class="row-form">
         <button type="button" class="btn" id="btn-rnode-scan" onclick="rnodeScan(this)">Scan for RNodes</button>
         <span id="rnode-scan-msg" class="msg"></span>
       </div>
       <div id="rnode-scan-list"></div>
+      <!-- Selection comes from the scan list only (rnodeUse()); the values
+           ride along as hidden inputs so the save handler needs no changes. -->
+      <input type="hidden" name="ble_address" id="rnode-ble-address" value="__RNODE_BLE_ADDRESS__">
+      <input type="hidden" name="ble_name" id="rnode-ble-name" value="__RNODE_BLE_NAME__">
+      <p class="muted" style="margin:6px 0 0" id="rnode-selected-note"></p>
+      <p class="muted" style="margin:6px 0 0">A device is chosen only from the scan above — no manual address entry.
+      <strong>RNS attaches to bonded devices</strong> — pair from the scan list, then Save &amp; apply. An empty selection attaches to any advertising <code>RNode *</code>.
+      For display-less RNodes that need a pairing code, use the <a href="/flasher/" target="_blank" rel="noopener">built-in RNode flasher</a>
+      (WebSocket mode: host <code>10.42.0.1</code>).</p>
       __RNODE_BLE_STACK_NOTE__
     </div>
 
@@ -250,8 +251,9 @@ function rnodeScan(btn){
     }
     list.innerHTML = '<table class="data"><tr><th>Name</th><th>Address</th><th></th></tr>' +
       d.devices.map(function(x){
-        return '<tr><td>' + escH(x.name || '?') + '</td><td class="mono">' + escH(x.address) + '</td>' +
-          '<td><button type="button" class="btn" onclick="rnodeUse(\'' + escH(x.address) + '\')">Use</button></td></tr>';
+        return '<tr id="rnode-row-' + escH(x.address).replace(/:/g,'') + '"><td>' + escH(x.name || '?') + '</td><td class="mono">' + escH(x.address) + '</td>' +
+          '<td><button type="button" class="btn" onclick="rnodeUse(\'' + escH(x.address) + '\',\'' + escH(x.name || '') + '\')">Use</button> ' +
+          '<button type="button" class="btn" onclick="rnodePair(\'' + escH(x.address) + '\', this)">Pair</button></td></tr>';
       }).join('') + '</table>';
   }).catch(function(e){
     btn.disabled = false; msg.textContent = ' ' + (e.message || 'scan failed');
@@ -259,11 +261,33 @@ function rnodeScan(btn){
   });
 }
 
-function rnodeUse(addr){
+function rnodeUse(addr, name){
   var f = document.getElementById('rnode-ble-address');
+  var n = document.getElementById('rnode-ble-name');
+  var note = document.getElementById('rnode-selected-note');
   if (f) f.value = addr;
+  if (n) n.value = name || '';
+  if (note) note.innerHTML = 'Selected from scan: <strong>' + escH(name || addr) + '</strong> <span class="mono">' + escH(addr) + '</span>';
   var t = document.getElementById('rnode-transport');
   if (t && t.value !== 'ble') { t.value = 'ble'; rnodeTransportChanged(); }
+}
+
+function rnodePair(addr, btn){
+  var msg = document.getElementById('rnode-scan-msg');
+  if (btn) btn.disabled = true;
+  if (msg) { msg.textContent = ' pairing ' + addr + '…'; msg.style.color = 'var(--muted)'; }
+  var fd = new FormData();
+  fd.append('address', addr);
+  fetch('__BASE__/reticulum/rnode/pair', {method:'POST', body:fd}).then(function(r){
+    if (r.status === 401) throw new Error('session expired — please log in again');
+    return r.json();
+  }).then(function(d){
+    if (btn) btn.disabled = false;
+    if (msg) { msg.textContent = ' ' + (d.message || (d.ok ? 'paired' : 'pairing failed')); msg.style.color = d.ok ? 'var(--ok)' : 'var(--err)'; }
+  }).catch(function(e){
+    if (btn) btn.disabled = false;
+    if (msg) { msg.textContent = ' ' + (e.message || 'pairing failed'); msg.style.color = 'var(--err)'; }
+  });
 }
 
 document.addEventListener('DOMContentLoaded', rnodeStatusRefresh);
