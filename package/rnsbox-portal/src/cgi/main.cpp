@@ -421,6 +421,7 @@ int main(int argc, char** argv) {
     else if (p == "/wifi/txpower")               routes::wifi_txpower(req, res);
     else if (p == "/reticulum")                  routes::reticulum_page(req, res);
     else if (p == "/reticulum/status")           routes::reticulum_status(req, res);
+    else if (p == "/reticulum/rnstatus.json")    routes::reticulum_rnstatus(req, res);
     else if (p == "/reticulum/halow")            routes::reticulum_halow(req, res);
     else if (p == "/reticulum/config")           routes::reticulum_config_save(req, res);
     else if (p == "/reticulum/restart")          routes::reticulum_restart(req, res);

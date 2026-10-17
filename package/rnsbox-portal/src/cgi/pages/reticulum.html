@@ -50,8 +50,9 @@
     <div style="margin-top:6px" class="muted">__RNSDMON_STATE__</div>
   </form>
 
-  <h4>rnstatus -a</h4>
-  <pre class="log" id="rnstatus"><span class="muted">loading… (querying the rnsd instance, can take a few seconds)</span></pre>
+  <h4>Interfaces (rnstatus)</h4>
+  <div id="rnstatus-ui"><p class="muted">loading… (querying the rnsd instance, the first read can take a few seconds)</p></div>
+  <p class="muted" id="rnstatus-meta"></p>
 </section>
 
 <section class="card">
@@ -360,27 +361,52 @@ __ECHOBOT_CARDS__
 // HTML-escape anything dynamic before it reaches innerHTML.
 function escH(s){ return (''+(s==null?'':s)).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
 function loadRnstatus(){
-  var pre = document.getElementById('rnstatus');
+  var ui  = document.getElementById('rnstatus-ui');
+  var meta = document.getElementById('rnstatus-meta');
   var st  = document.getElementById('rnsd-state');
-  pre.innerHTML = '<span class="muted">loading… (querying the rnsd instance, can take a few seconds)</span>';
-  fetch('__BASE__/reticulum/status?raw=1').then(function(r){
+  if (!ui) return;
+  fetch('__BASE__/reticulum/rnstatus.json').then(function(r){
     if (r.status === 401) throw new Error('session expired — please log in again');
     return r.json();
   }).then(function(d){
+    if (d.error) { ui.innerHTML = '<p class="muted">' + escH(d.error) + '</p>'; meta.textContent=''; return; }
+    var rows = (d.interfaces || []).map(function(f){
+      var stat = f.status === 'Up' ? '<span class="badge ok">Up</span>'
+                                 : '<span class="badge warn">' + escH(f.status || '?') + '</span>';
+      var extra = f.clients ? 'clients ' + escH(f.clients) : '';
+      if (f.peers)  extra += (extra ? ' · ' : '') + escH(f.peers) + ' peers';
+      if (f.serving) extra += (extra ? ' · ' : '') + 'serving ' + escH(f.serving);
+      var link = escH(f.rate || '?') + (f.mtu ? ' <span class="muted">MTU ' + escH(f.mtu) + '</span>' : '');
+      function tr(b, r){ return b ? escH(b) + ' <span class="muted">' + escH(r || '') + '</span>' : '—'; }
+      return '<tr><td><strong>' + escH(f.name) + '</strong><br><span class="muted mono" style="font-size:11.5px">' + escH(f.details) + '</span></td>' +
+        '<td>' + stat + (f.mode ? '<br><span class="muted">' + escH(f.mode) + '</span>' : '') + '</td>' +
+        '<td class="val">' + link + '</td>' +
+        '<td class="val">' + (extra || '—') + '</td>' +
+        '<td class="val">&darr; ' + tr(f.rx, f.rx_rate) + '</td>' +
+        '<td class="val">&uarr; ' + tr(f.tx, f.tx_rate) + '</td></tr>';
+    }).join('');
+    ui.innerHTML = '<table class="data"><thead><tr><th>Interface</th><th>Status</th><th>Link</th><th>Peers / clients</th><th>RX</th><th>TX</th></tr></thead><tbody>' +
+      (rows || '<tr><td colspan="6" class="muted">no interfaces</td></tr>') + '</tbody></table>';
+    var t = d.transport || {};
+    var when = d.age ? ' · updated ' + new Date(d.age * 1000).toTimeString().slice(0, 8) : '';
+    meta.textContent = (t.hash ? 'transport ' + t.hash : '') +
+      (t.uptime ? ' · up ' + t.uptime : '') + when;
     // refresh the state badge too (it's free and may have changed since load)
-    if (d.running) {
-      st.innerHTML = '<span class="badge ok">RUNNING</span> (pid ' + escH(d.pid) + ')' +
-                     (d.rss_mb ? ' · ' + escH(d.rss_mb) + ' MB RSS' : '');
-    } else {
-      st.innerHTML = '<span class="badge err">STOPPED</span>';
-    }
-    pre.textContent = d.raw ? d.raw : (d.running ? '(rnstatus returned nothing)' : 'rnsd is not running.');
+    fetch('__BASE__/reticulum/status').then(function(r){ return r.json(); }).then(function(s){
+      if (s.running) {
+        st.innerHTML = '<span class="badge ok">RUNNING</span> (pid ' + escH(s.pid) + ')' +
+                       (s.rss_mb ? ' · ' + escH(s.rss_mb) + ' MB RSS' : '');
+      } else {
+        st.innerHTML = '<span class="badge err">STOPPED</span>';
+      }
+    }).catch(function(){});
   }).catch(function(e){
-    pre.textContent = (e && e.message && /session/.test(e.message)) ? e.message
-      : 'failed to fetch rnstatus (request timed out or rnsd unreachable).';
+    ui.innerHTML = '<p class="muted">' + ((e && e.message && /session/.test(e.message)) ? e.message
+      : 'failed to fetch rnstatus (request timed out or rnsd unreachable).') + '</p>';
   });
 }
 document.addEventListener('DOMContentLoaded', loadRnstatus);
+setInterval(loadRnstatus, 5000);
 </script>
 <script>
 // Update check / apply — async with a live spinner so the page never blank-hangs

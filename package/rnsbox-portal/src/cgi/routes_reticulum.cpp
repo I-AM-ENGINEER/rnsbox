@@ -1159,6 +1159,176 @@ void reticulum_bluetooth_peers(const Request& req, Response& res) {
     res.body = out;
 }
 
+// ===================== rnstatus (parsed, cached) =====================
+// rnstatus -a costs a python cold start (~2-5 s on the C906), so the JSON
+// endpoint caches the PARSED result in /run for RNSTATUS_TTL seconds with a
+// flock making concurrent misses single-flight — the page polls it and gets
+// an instant (at most TTL-old) snapshot instead of a console dump.
+constexpr const char* RNSTATUS_CACHE = "/run/rnsbox-rnstatus.json";
+constexpr const char* RNSTATUS_LOCK  = "/run/rnsbox-rnstatus.lock";
+constexpr int RNSTATUS_TTL = 5;   // seconds
+
+struct IfStat {
+    std::string name, details, status, mode, rate, mtu;
+    std::string clients, peers, serving;
+    std::string tx, tx_rate, rx, rx_rate;
+};
+
+// "↑1.92 MB    0 bps" (or the ↓ continuation) -> bytes + rate. The arrows
+// are UTF-8 (E2 86 91/93); skip any leading non-ASCII, then two tokens.
+static void traffic_tokens(const std::string& v, std::string& bytes, std::string& rate) {
+    std::string t = util::trim(v);
+    size_t b = 0;
+    while (b < t.size() && (unsigned char)t[b] >= 0x80) ++b;
+    t = t.substr(b);
+    // "1.92 MB    0 bps" — value+unit, then value+unit. Split on whitespace
+    // runs; with >=4 tokens the unit belongs to each value, with 2 the bare
+    // values carry no unit.
+    std::vector<std::string> tok;
+    size_t i = 0;
+    while (i < t.size()) {
+        size_t e = t.find_first_of(" \t", i);
+        if (e == std::string::npos) e = t.size();
+        std::string w = t.substr(i, e - i);
+        if (!w.empty()) tok.push_back(w);
+        i = e + 1;
+    }
+    if (tok.size() >= 4) {
+        bytes = tok[0] + " " + tok[1];
+        for (size_t k = 2; k < tok.size(); ++k) { if (k > 2) rate += " "; rate += tok[k]; }
+    } else if (tok.size() >= 2) {
+        bytes = tok[0];
+        for (size_t k = 1; k < tok.size(); ++k) { if (k > 1) rate += " "; rate += tok[k]; }
+    } else if (tok.size() == 1) {
+        bytes = tok[0];
+    }
+}
+
+static bool rnstatus_parse(const std::string& out, std::vector<IfStat>& ifs,
+                           std::string& thash, std::string& tupt, std::string& tstate) {
+    IfStat cur;
+    bool have = false;
+    auto flush = [&]() {
+        if (have) { ifs.push_back(cur); cur = IfStat(); have = false; }
+    };
+    size_t pos = 0;
+    while (pos <= out.size()) {
+        size_t e = out.find('\n', pos);
+        std::string ln = out.substr(pos, e == std::string::npos ? std::string::npos : e - pos);
+        pos = (e == std::string::npos) ? out.size() + 1 : e + 1;
+        if (!ln.empty() && ln.back() == '\r') ln.pop_back();
+        // Interface header: " Name[Details]" — one leading space, a bracket.
+        if (ln.size() > 1 && ln[0] == ' ' && ln[1] != ' ' && ln.find('[') != std::string::npos
+            && ln.find(':') == std::string::npos) {
+            flush();
+            std::string head = util::trim(ln);
+            size_t ob = head.find('[');
+            size_t cb = head.rfind(']');
+            cur.name = util::trim(head.substr(0, ob));
+            if (cb != std::string::npos && cb > ob)
+                cur.details = head.substr(ob + 1, cb - ob - 1);
+            have = true;
+            continue;
+        }
+        std::string t = util::trim(ln);
+        // rnstatus separates blocks with a blank line; the transport tail
+        // ("Transport Instance <hash> running") only parses as a top-level
+        // line once the last interface block is closed.
+        if (t.empty()) { flush(); continue; }
+        if (!have) {
+            if (t.rfind("Transport Instance", 0) == 0) {
+                size_t a = t.find('<'), b = t.find('>', a);
+                if (a != std::string::npos && b != std::string::npos) thash = t.substr(a + 1, b - a - 1);
+                tstate = t;
+            } else if (t.rfind("Uptime is", 0) == 0) {
+                tupt = t.substr(9);
+                tupt = util::trim(tupt);
+            }
+            continue;
+        }
+        // "    Key   : value"
+        size_t colon = ln.find(':');
+        if (ln.compare(0, 4, "    ") == 0 && colon != std::string::npos && colon > 4) {
+            std::string k = util::trim(ln.substr(0, colon));
+            std::string v = util::trim(ln.substr(colon + 1));
+            if (k == "Status") cur.status = v;
+            else if (k == "Mode") cur.mode = v;
+            else if (k == "Rate") {
+                // "1.00 Gbps, MTU 262144"
+                size_t m = v.find("MTU");
+                if (m != std::string::npos) {
+                    cur.mtu = util::trim(v.substr(m + 3));
+                    cur.rate = util::trim(v.substr(0, m));
+                    if (!cur.rate.empty() && cur.rate.back() == ',') cur.rate.pop_back();
+                } else cur.rate = v;
+            }
+            else if (k == "Clients") cur.clients = v;
+            else if (k == "Peers") cur.peers = v;         // "0 reachable"
+            else if (k == "Serving") cur.serving = v;
+            else if (k == "Traffic") traffic_tokens(v, cur.tx, cur.tx_rate);
+        } else if (!t.empty() && (unsigned char)t[0] >= 0x80) {
+            // continuation line of Traffic: the ↓ (rx) half
+            traffic_tokens(t, cur.rx, cur.rx_rate);
+        }
+    }
+    flush();
+    return !ifs.empty() || !thash.empty();
+}
+
+static bool rnstatus_fresh(std::string& out) {
+    struct stat st;
+    if (::stat(RNSTATUS_CACHE, &st) != 0) return false;
+    time_t now = ::time(nullptr);
+    if (st.st_mtime > now || now - st.st_mtime >= RNSTATUS_TTL) return false;
+    out = util::read_file(RNSTATUS_CACHE, 256 * 1024);
+    std::string t = util::trim(out);
+    return !t.empty() && t[0] == '{';
+}
+
+// GET /reticulum/rnstatus.json — the parsed interface table.
+void reticulum_rnstatus(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, true)) return;
+    res.content_type = "application/json";
+    std::string cached;
+    if (rnstatus_fresh(cached)) { res.body = cached; return; }
+
+    int lfd = ::open(RNSTATUS_LOCK, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (lfd >= 0) ::flock(lfd, LOCK_EX);
+    struct LockGuard { int fd; ~LockGuard() { if (fd >= 0) ::close(fd); } } guard{lfd};
+    if (rnstatus_fresh(cached)) { res.body = cached; return; }
+
+    util::RunResult rr = util::run({"/usr/bin/rnstatus", "-a"}, "", 25);
+    std::vector<IfStat> ifs;
+    std::string thash, tupt, tstate;
+    if (!rnstatus_parse(rr.out, ifs, thash, tupt, tstate)) {
+        res.body = "{\"error\":\"rnstatus returned nothing (is rnsd running?)\"}";
+        return;
+    }
+    std::string o = "{\"age\":" + std::to_string(::time(nullptr)) + ",\"interfaces\":[";
+    for (size_t i = 0; i < ifs.size(); ++i) {
+        const IfStat& f = ifs[i];
+        if (i) o += ",";
+        o += "{\"name\":\"" + http::json_escape(f.name) +
+             "\",\"details\":\"" + http::json_escape(f.details) +
+             "\",\"status\":\"" + http::json_escape(f.status) +
+             "\",\"mode\":\"" + http::json_escape(f.mode) +
+             "\",\"rate\":\"" + http::json_escape(f.rate) +
+             "\",\"mtu\":\"" + http::json_escape(f.mtu) +
+             "\",\"clients\":\"" + http::json_escape(f.clients) +
+             "\",\"peers\":\"" + http::json_escape(f.peers) +
+             "\",\"serving\":\"" + http::json_escape(f.serving) +
+             "\",\"tx\":\"" + http::json_escape(f.tx) +
+             "\",\"tx_rate\":\"" + http::json_escape(f.tx_rate) +
+             "\",\"rx\":\"" + http::json_escape(f.rx) +
+             "\",\"rx_rate\":\"" + http::json_escape(f.rx_rate) + "\"}";
+    }
+    o += "],\"transport\":{\"hash\":\"" + http::json_escape(thash) +
+         "\",\"uptime\":\"" + http::json_escape(tupt) +
+         "\",\"state\":\"" + http::json_escape(tstate) + "\"}}";
+    util::write_file_atomic(RNSTATUS_CACHE, o, 0600);
+    res.body = o;
+}
+
 // ===================== RNode (USB serial / BLE) =====================
 // /etc/rnsbox/rnode.conf is the single source of truth (store::read_rnode /
 // write_rnode); S81rnode regenerates the managed [[RNode ...]] section of

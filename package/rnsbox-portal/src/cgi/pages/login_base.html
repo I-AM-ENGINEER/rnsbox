@@ -5,6 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Sign in — __HOSTNAME__</title>
   <link rel="stylesheet" href="/style.css">
+  <script>
+  (function(){
+    var t = 'dark';
+    try { t = localStorage.getItem('rnsbox-theme') || 'dark'; } catch(e){}
+    if (t !== 'light' && t !== 'dark') t = 'dark';
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+  </script>
 </head>
 <body class="login-screen">
 <main class="login-page">

@@ -5,6 +5,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>__TITLE__ — __HOSTNAME__</title>
   <link rel="stylesheet" href="/style.css">
+  <script>
+  // Theme: dark by default; the top-bar toggle flips and persists it.
+  // Set before first paint so the page never flashes the wrong palette.
+  (function(){
+    var t = 'dark';
+    try { t = localStorage.getItem('rnsbox-theme') || 'dark'; } catch(e){}
+    if (t !== 'light' && t !== 'dark') t = 'dark';
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+  </script>
 </head>
 <body>
 <header class="topbar">
@@ -15,12 +25,33 @@
   </div>
   <nav class="topnav">
     <span class="user">__USER__</span>
+    <button type="button" class="logout theme-toggle" id="theme-toggle"
+            title="Switch dark / light theme">◐</button>
     <!-- POST form, not a link: /logout is POST-only (a GET must not change state) -->
     <form class="logout-form" method="post" action="__BASE__/logout">
       <button type="submit" class="logout">Logout</button>
     </form>
   </nav>
 </header>
+<script>
+(function(){
+  var b = document.getElementById('theme-toggle');
+  if (!b) return;
+  function label(){
+    var dark = document.documentElement.getAttribute('data-theme') === 'dark';
+    b.textContent = dark ? '☾' : '☀';
+    b.title = dark ? 'Switch to light theme' : 'Switch to dark theme';
+  }
+  b.addEventListener('click', function(){
+    var cur = document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+    var nxt = cur === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', nxt);
+    try { localStorage.setItem('rnsbox-theme', nxt); } catch(e){}
+    label();
+  });
+  label();
+})();
+</script>
 <div class="page">
   <aside class="sidebar">
     <a href="__BASE__/" class="__ACT_dashboard__">Dashboard</a>

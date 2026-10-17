@@ -26,6 +26,7 @@ void op_delete(const http::Request&, http::Response&);             // POST PRG
 // reticulum tab
 void reticulum_page(const http::Request&, http::Response&);        // GET  render
 void reticulum_status(const http::Request&, http::Response&);      // GET  JSON (?raw=1 = rnstatus)
+void reticulum_rnstatus(const http::Request&, http::Response&);   // GET  JSON (parsed, cached rnstatus -a)
 void reticulum_halow(const http::Request&, http::Response&);       // GET  JSON (live modem)
 void reticulum_config_save(const http::Request&, http::Response&); // POST PRG
 void reticulum_restart(const http::Request&, http::Response&);     // POST PRG

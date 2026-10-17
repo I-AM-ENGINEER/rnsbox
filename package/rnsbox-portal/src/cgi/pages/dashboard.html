@@ -4,14 +4,6 @@ __DEFAULT_PASS_WARN__
   <h2>Dashboard</h2>
   <div class="autoref">
     <span class="muted" id="autoref-status"></span>
-    <label>Auto-refresh
-      <select id="autoref">
-        <option value="0">Off</option>
-        <option value="5">5s</option>
-        <option value="10">10s</option>
-        <option value="15">15s</option>
-      </select>
-    </label>
   </div>
 </div>
 
@@ -121,30 +113,19 @@ __HALOW_SCRIPT__
   function refreshData(){
     return fetch('__BASE__/dashboard/data').then(function(r){return r.json();}).then(function(d){ if(d && !d.error) patch(d); }).catch(function(){});
   }
-  var sel=$('autoref'), timer=null, KEY='rnsbox-autoref';
+  // Live dashboard: a fixed 1 s refresh, always on (the JSON is cheap —
+  // procfs + pidfile reads, no subprocess). The HaLow card keeps its own
+  // slower cadence: its endpoint caches for 10 s and a python helper backs
+  // it, so it must not ride the 1 s tick.
   function tick(){
     setText('autoref-status','updating…');
-    if(window.__loadHalow) window.__loadHalow();
     refreshData().then(function(){
       var t=new Date();
       setText('autoref-status','updated '+t.toTimeString().slice(0,8));
     });
   }
-  function apply(sec){
-    if(timer){ clearInterval(timer); timer=null; }
-    if(sec>0){ timer=setInterval(tick, sec*1000); setText('autoref-status','every '+sec+'s'); }
-    else setText('autoref-status','');
-  }
-  if(sel){
-    var saved=0; try{ saved=parseInt(localStorage.getItem(KEY)||'0',10)||0; }catch(e){}
-    if([0,5,10,15].indexOf(saved)<0) saved=0;
-    sel.value=String(saved);
-    sel.addEventListener('change', function(){
-      var v=parseInt(sel.value,10)||0;
-      try{ localStorage.setItem(KEY, String(v)); }catch(e){}
-      apply(v);
-    });
-    apply(saved);
-  }
+  tick();
+  setInterval(tick, 1000);
+  if(window.__loadHalow){ setInterval(window.__loadHalow, 5000); }
 })();
 </script>

@@ -80,12 +80,17 @@ void network_page(const Request& req, Response& res) {
     } else {
         for (size_t i = 0; i < ops.size(); ++i) {
             const auto& o = ops[i];
+            // tcp/4242 is pinned (read_openports always re-adds it and
+            // delete refuses) — render it without a Remove button instead
+            // of offering one that can never work.
+            bool pinned = (o.proto == "tcp" && o.port == 4242);
             rows += "<tr><td><span class=\"badge " + E(o.proto) + "\">" + E(upper(o.proto)) + "</span></td>"
                     "<td>" + std::to_string(o.port) + "</td>"
                     "<td>" + E(o.comment) + "</td>"
-                    "<td><form method=\"post\" action=\"" + base + "/network/openport/delete\" class=\"inline\">"
-                    "<input type=\"hidden\" name=\"idx\" value=\"" + std::to_string(i) + "\">"
-                    "<button type=\"submit\" class=\"btn-danger\">Remove</button></form></td></tr>";
+                    "<td>" + (pinned ? std::string("<span class=\"muted\">pinned</span>")
+                             : "<form method=\"post\" action=\"" + base + "/network/openport/delete\" class=\"inline\">"
+                               "<input type=\"hidden\" name=\"idx\" value=\"" + std::to_string(i) + "\">"
+                               "<button type=\"submit\" class=\"btn-danger\">Remove</button></form>") + "</td></tr>";
         }
     }
     h = R(std::move(h), "__OPENPORTS_ROWS__", rows);

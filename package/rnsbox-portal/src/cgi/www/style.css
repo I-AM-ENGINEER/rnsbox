@@ -13,8 +13,34 @@
   --err:       #ef4444;
   --tcp:       #2563eb;
   --udp:       #7c3aed;
+  --code-bg:   #f1f5f9;      /* code chips, button hover, striped wells */
+  --panel:     #f6fbf9;      /* light green wells (HaLow tiles) */
+  --panel-border: #cdeee2;
+  --hover:     #fafbfc;
   --mono:      ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
+
+/* ---- Dark theme (toggle in the top bar; falls back to the system
+      preference; persisted in localStorage 'rnsbox-theme') ---- */
+html[data-theme="dark"] {
+  --bg:        #0f1720;
+  --card:      #1a2530;
+  --text:      #dbe2ea;
+  --muted:     #8fa0b0;
+  --border:    #2c3a48;
+  --primary:   #0a2735;
+  --primary-2: #155873;
+  --accent:    #38bdf8;
+  --ok:        #34d399;
+  --warn:      #fbbf24;
+  --err:       #f87171;
+  --code-bg:   #101a24;
+  --panel:     #14212b;
+  --panel-border: #263744;
+  --hover:     #22303d;
+}
+html[data-theme="dark"] .topbar { box-shadow: 0 1px 0 rgba(0,0,0,0.5); }
+html[data-theme="dark"] .login-box { box-shadow: 0 10px 40px rgba(0,0,0,0.6); }
 
 * { box-sizing: border-box; }
 html, body {
@@ -26,7 +52,7 @@ html, body {
 }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
-code { font-family: var(--mono); font-size: 12.5px; background: #f1f5f9; padding: 1px 4px; border-radius: 3px; }
+code { font-family: var(--mono); font-size: 12.5px; background: var(--code-bg); padding: 1px 4px; border-radius: 3px; }
 strong { font-weight: 600; }
 
 /* ---- Top bar ---- */
@@ -139,14 +165,14 @@ table.data th {
   color: var(--muted);
   padding: 6px 10px;
   border-bottom: 2px solid var(--border);
-  background: #fafafa;
+  background: var(--code-bg);
 }
 table.data td {
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
   vertical-align: middle;
 }
-table.data tr:hover td { background: #fafbfc; }
+table.data tr:hover td { background: var(--hover); }
 /* TCP client interface editor: compact inputs inside table cells (tied to
    the row's update form through the HTML form= attribute). */
 table.data td input[type=text], table.data td input[type=number] {
@@ -190,7 +216,7 @@ input[type=text], input[type=password], input[type=number], select, textarea {
   border-radius: 3px;
   padding: 7px 10px;
   font: inherit;
-  background: #fff;
+  background: var(--card);
   color: var(--text);
   width: 100%;
   max-width: 360px;
@@ -211,7 +237,7 @@ textarea {
 
 button, .btn, .btn-primary, .btn-danger {
   border: 1px solid var(--border);
-  background: #fff;
+  background: var(--card);
   color: var(--text);
   padding: 7px 14px;
   border-radius: 3px;
@@ -220,7 +246,7 @@ button, .btn, .btn-primary, .btn-danger {
   font-weight: 500;
   display: inline-block;
 }
-button:hover, .btn:hover { background: #f1f5f9; text-decoration: none; }
+button:hover, .btn:hover { background: var(--code-bg); text-decoration: none; }
 .btn-primary {
   background: var(--primary);
   color: #fff;
@@ -228,7 +254,7 @@ button:hover, .btn:hover { background: #f1f5f9; text-decoration: none; }
 }
 .btn-primary:hover { background: var(--primary-2); color: #fff; }
 .btn-danger {
-  background: #fff;
+  background: var(--card);
   color: var(--err);
   border-color: var(--err);
 }
@@ -319,7 +345,7 @@ body.login-screen { background: var(--primary); }
   padding: 20px;
 }
 .login-box {
-  background: #fff;
+  background: var(--card);
   border-radius: 6px;
   padding: 30px 36px;
   width: 100%;
@@ -410,7 +436,7 @@ img.qr {
   width: 100%;
   margin: 12px 0 10px;
   padding: 8px 10px;
-  background: #f1f5f9;
+  background: var(--code-bg);
   border: 1px solid var(--border);
   border-radius: 4px;
   font-size: 11.5px;
@@ -441,8 +467,8 @@ button:disabled, button:disabled:hover { opacity: 0.55; cursor: not-allowed; }
 .sig-a { color: var(--warn); font-weight: 600; }
 .sig-r { color: var(--err);  font-weight: 600; }
 .halow-live {
-  background: #f6fbf9;
-  border: 1px solid #cdeee2;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
   border-radius: 4px;
   padding: 10px 12px;
   margin: 10px 0;
@@ -456,10 +482,10 @@ button:disabled, button:disabled:hover { opacity: 0.55; cursor: not-allowed; }
 .halow-live table.halow-kv th { width: 128px; font-weight: 600; color: var(--muted); white-space: nowrap; }
 .halow-live table.halow-kv td { color: var(--text); }
 .halow-live table.halow-kv tr + tr th,
-.halow-live table.halow-kv tr + tr td { border-top: 1px solid #d9ece4; }
+.halow-live table.halow-kv tr + tr td { border-top: 1px solid var(--panel-border); }
 /* Airtime / channel-utilisation mini bar. */
 .hbar { display: inline-block; width: 90px; height: 7px; border-radius: 4px;
-  background: #dfeee7; overflow: hidden; vertical-align: middle; }
+  background: var(--panel-border); overflow: hidden; vertical-align: middle; }
 .hbar > span { display: block; height: 100%; background: var(--ok); }
 /* Card action row: "Open modem web UI" + the quick-add form (side by side). */
 .halow-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 12px 0 0; }
@@ -473,7 +499,7 @@ button:disabled, button:disabled:hover { opacity: 0.55; cursor: not-allowed; }
    wide screen down to 1 on a phone; min-width:0 + overflow-wrap keep long values
    (IPs, hostnames) inside their tile so the page never scrolls sideways. */
 .hstats { display: grid; grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)); gap: 10px 12px; margin: 4px 0 2px; }
-.hstat { min-width: 0; padding: 9px 11px; background: #f6fbf9; border: 1px solid #cdeee2; border-radius: 5px; }
+.hstat { min-width: 0; padding: 9px 11px; background: var(--panel); border: 1px solid var(--panel-border); border-radius: 5px; }
 .hstat-k { font-size: 10.5px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted);
   margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .hstat-v { font-size: 12.5px; line-height: 1.45; color: var(--text); overflow-wrap: anywhere; }
@@ -494,6 +520,6 @@ details.neigh > summary {
 details.neigh > summary::-webkit-details-marker { display: none; }
 details.neigh > summary::after { content: "\25BE"; color: var(--muted); font-weight: 400; }
 details.neigh[open] > summary::after { content: "\25B4"; }
-details.neigh > summary:hover { background: #fafbfc; }
+details.neigh > summary:hover { background: var(--hover); }
 details.neigh .body { border-top: 1px solid var(--border); }
 details.neigh .data { margin: 0; }

@@ -174,6 +174,13 @@ std::vector<OpenPort> read_openports() {
         op.comment = comment;
         out.push_back(op);
     }
+    // tcp/4242 — the rnsd TCPServerInterface — is how WAN Reticulum peers
+    // reach this box. It is pinned: added here when the operator's file
+    // lacks it, and delete_openport() refuses to drop it. nftgen and the
+    // Network page both read this list, so the pin holds everywhere.
+    bool have4242 = false;
+    for (const auto& o : out) if (o.proto == "tcp" && o.port == 4242) have4242 = true;
+    if (!have4242) out.push_back({"tcp", 4242, "rnsd TCP interface (always open)"});
     return out;
 }
 
@@ -202,6 +209,8 @@ bool add_openport(const OpenPort& op, std::string& err) {
 bool delete_openport(int idx) {
     auto items = read_openports();
     if (idx < 0 || idx >= (int)items.size()) return false;
+    // The pinned rnsd TCP port survives every removal attempt.
+    if (items[idx].proto == "tcp" && items[idx].port == 4242) return false;
     items.erase(items.begin() + idx);
     return write_openports(items);
 }
