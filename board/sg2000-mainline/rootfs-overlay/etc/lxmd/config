@@ -1,0 +1,30 @@
+# RNSBox lxmd config — a dedicated LXMF Propagation Node.
+# Gated by /etc/rnsbox/lxmd.conf (whether S85lxmd starts lxmd at all); this
+# file tunes the node itself. Run `lxmd --exampleconfig` for every option.
+
+[propagation]
+
+# Run as a propagation node (S85lxmd also passes -p, so this is belt-and-braces).
+enable_node = yes
+
+# Name announced to the network.
+node_name = RNSBox Propagation Node
+
+# Announce every 6 hours, and once at startup.
+announce_interval = 360
+announce_at_start = yes
+
+# Peer automatically with nearby propagation nodes.
+autopeer = yes
+autopeer_maxdepth = 6
+
+# Message-store cap in MB, on the rootfs. Kept small for the 256 MB / SD-card
+# box (upstream default is 500). LXMF evicts old/large messages first when full.
+message_storage_limit = 64
+
+[lxmf]
+display_name = RNSBox
+
+[logging]
+# 0=critical .. 4=debug. 3=info; lower to 2 to keep the log quiet.
+loglevel = 3
