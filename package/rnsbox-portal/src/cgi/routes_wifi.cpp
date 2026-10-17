@@ -126,9 +126,19 @@ void wifi_page(const Request& req, Response& res) {
 
     h = R(std::move(h), "__STA_SSID__", E(cfg["sta_ssid"]));
 
+    // Hotspot form. A blank ap_ssid in wifi.conf is not "no SSID": S35wifi
+    // names the hotspot after the device hostname then (the out-of-the-box
+    // default, so the SSID follows S10uuid's rename). Show the name the AP
+    // actually broadcasts — saving pins it explicitly.
+    std::string ap_ssid = cfg["ap_ssid"];
+    if (ap_ssid.empty()) {
+        ap_ssid = util::trim(util::read_file("/proc/sys/kernel/hostname", 128));
+        if (ap_ssid.empty() || ap_ssid == "localhost") ap_ssid = "rnsbox";
+    }
+
     // Hotspot form
     h = R(std::move(h), "__AP_ENABLE_CHECKED__", (m == "ap" || m == "sta+ap") ? "checked" : "");
-    h = R(std::move(h), "__AP_SSID__", E(cfg["ap_ssid"]));
+    h = R(std::move(h), "__AP_SSID__", E(ap_ssid));
     h = R(std::move(h), "__AP_PSK__",  E(cfg["ap_psk"]));
     // Mode says hotspot-on but S35wifi refuses a weak PSK (e.g. a box still on
     // the old 'changeme123' default) — explain the missing AP.
@@ -271,10 +281,8 @@ void wifi_ap(const Request& req, Response& res) {
         render::redirect_flash(res, wifi_redirect(), "error", "Hotspot SSID is at most 32 bytes");
         return;
     }
-    if (enable && ssid.empty()) {
-        render::redirect_flash(res, wifi_redirect(), "error", "The hotspot needs an SSID");
-        return;
-    }
+    // A blank SSID is allowed: S35wifi then names the hotspot after the
+    // device hostname (the field above already shows that name).
     // Never turn the AP on with no/short/published password (the image ships
     // ap_psk empty; S35wifi enforces the same rule at start).
     std::string why = enable ? ap_psk_problem(psk) : std::string();
@@ -321,11 +329,10 @@ void wifi_mode(const Request& req, Response& res) {
         return;
     }
     // ap / sta+ap switch the hotspot on with the STORED ssid/password — hold
-    // them to the same rule as the Hotspot form.
+    // them to the same rule as the Hotspot form (blank ssid = hostname).
     if (mode == "ap" || mode == "sta+ap") {
         auto cur = wifi::read_conf();
-        std::string why = cur["ap_ssid"].empty() ? std::string("The hotspot needs an SSID")
-                                                 : ap_psk_problem(cur["ap_psk"]);
+        std::string why = ap_psk_problem(cur["ap_psk"]);
         if (!why.empty()) {
             render::redirect_flash(res, wifi_redirect(), "error",
                 why + " — set it in the Hotspot section below, then enable the hotspot there.");

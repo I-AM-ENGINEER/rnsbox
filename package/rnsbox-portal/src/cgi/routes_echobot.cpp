@@ -10,10 +10,12 @@
 #include "render.h"
 #include "web.h"
 #include "util.h"
+#include <array>
 #include <cctype>
 #include <cstdlib>
 #include <ctime>
 #include <string>
+#include <vector>
 
 using http::Request;
 using http::Response;
@@ -29,6 +31,7 @@ static std::string eb_redirect() { return web::base() + "/reticulum#echobot"; }
 constexpr const char* ECHOBOT_CONF  = "/etc/rnsbox/echobot.conf";
 constexpr const char* ECHOBOT_STATE = "/var/lib/rnsbox-echobot/state.json";
 constexpr const char* ECHOBOT_PID   = "/var/run/echobot.pid";
+constexpr const char* ECHOBOT_PEERS = "/var/lib/rnsbox-echobot/peers.tsv";
 
 struct EchobotConf {
     bool enabled = true;
@@ -36,17 +39,26 @@ struct EchobotConf {
     std::string name;   // empty = the derived default (echobot_default_name)
 };
 
-// The bot's default display name shares the box's base prefix: the image
-// pins the hostname to "rnsbox" (S10uuid applies /boot/hostname; the build
-// writes "rnsbox" there), so "<hostname> echo bot" announces the bot as the
-// same node the operator sees in the portal header — and the BLE advert is
-// defaulted to the hostname too (see routes_reticulum.cpp).
-static std::string echobot_default_name() {
+// The box's own hostname, e.g. "rnsbox-57145f". S10uuid derives it from the
+// persisted /boot/hostname; the portal shows it wherever the bot is named so
+// one box is never mistaken for another.
+static std::string echobot_hostname() {
     std::string h = util::trim(util::read_file("/proc/sys/kernel/hostname", 128));
     if (h.empty() || h == "localhost") h = "rnsbox";
-    std::string n = h + " echo bot";
+    return h;
+}
+
+// The bot's default display name puts the service first and the box second:
+// "echo bot <hostname>". Shipped configs may pin the legacy literals
+// ("rnsbox echo bot", "<hostname> echo bot"); treat them as "not customised"
+// so the announced name follows the box's hostname.
+static std::string echobot_default_name() {
+    std::string n = "echo bot " + echobot_hostname();
     if (n.size() > 48) n = n.substr(0, 48);
     return n;
+}
+static bool echobot_legacy_name(const std::string& n) {
+    return n == "rnsbox echo bot" || n == echobot_hostname() + " echo bot";
 }
 
 // Same parsing rules as the daemon's read_conf() and S87echobot's read_conf():
@@ -154,6 +166,80 @@ static std::string fmt_utc(long epoch) {
     return std::string(buf);
 }
 
+static std::string fmt_bytes(long b) {
+    char buf[32];
+    if (b >= 1024 * 1024) snprintf(buf, sizeof(buf), "%.1f MB", b / 1048576.0);
+    else if (b >= 1024)   snprintf(buf, sizeof(buf), "%.1f KB", b / 1024.0);
+    else                  snprintf(buf, sizeof(buf), "%ld B", b);
+    return buf;
+}
+
+// --- per-peer traffic table -------------------------------------------------
+// The daemon appends a line to peers.tsv per peer it heard via announce or
+// echoed to (atomic rewrite, newest first):
+//   hash \t name \t rx_msgs \t rx_bytes \t tx_msgs \t tx_bytes \t tx_ok \t tx_fail \t last_seen
+// Names are daemon-sanitised (single line, no tabs), but stay defensive here:
+// a malformed line just doesn't render.
+static void split_tab(const std::string& line, std::string f[9]) {
+    size_t i = 0;
+    for (int n = 0; n < 9; ++n) {
+        size_t t = line.find('\t', i);
+        f[n] = (t == std::string::npos || n == 8) ? line.substr(i) : line.substr(i, t - i);
+        if (t == std::string::npos) break;
+        i = t + 1;
+    }
+}
+
+static long pl(const std::string& s) {
+    return s.find_first_not_of("0123456789") == std::string::npos && !s.empty()
+               ? strtol(s.c_str(), nullptr, 10) : 0;
+}
+
+static std::string echobot_peers_table() {
+    std::string data = util::read_file(ECHOBOT_PEERS, 262144);
+    std::vector<std::array<std::string, 9>> rows;
+    size_t i = 0;
+    while (i < data.size()) {
+        size_t nl = data.find('\n', i);
+        std::string line = data.substr(i, nl == std::string::npos ? std::string::npos : nl - i);
+        i = (nl == std::string::npos) ? data.size() : nl + 1;
+        std::string f[9];
+        split_tab(line, f);
+        if (f[0].size() != 32 || f[0].find_first_not_of("0123456789abcdef") != std::string::npos)
+            continue;   // not an LXMF destination hash line
+        rows.push_back({f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8]});
+    }
+    if (rows.empty())
+        return "<p class=\"muted\">No peers yet — a row appears for every destination the bot hears an announce from, and its counters grow with each message echoed.</p>";
+
+    std::string t = "<table class=\"data\">\n    <tr><th>Peer</th><th>Received</th><th>Sent</th><th>Delivered</th></tr>";
+    for (const auto& r : rows) {
+        long rxm = pl(r[2]), rxb = pl(r[3]), txm = pl(r[4]), txb = pl(r[5]);
+        long ok = pl(r[6]), fail = pl(r[7]);
+        std::string peer;
+        if (r[1].empty())
+            peer = "<code title=\"" + r[0] + "\">" + r[0].substr(0, 8) + "&hellip;</code>";
+        else
+            peer = E(r[1]) + " <code title=\"" + r[0] + "\">" + r[0].substr(0, 8) + "</code>";
+        std::string delivered;
+        long tried = ok + fail;
+        if (tried > 0) {
+            char pct[8];
+            snprintf(pct, sizeof(pct), "%ld%%", ok * 100 / tried);
+            delivered = std::string(pct) + " <span class=\"muted\">(" + std::to_string(ok) +
+                        "/" + std::to_string(tried) + ")</span>";
+        } else {
+            delivered = "<span class=\"muted\">&mdash;</span>";
+        }
+        t += "\n    <tr><td>" + peer + "</td><td>" + std::to_string(rxm) +
+             " <span class=\"muted\">msgs · " + fmt_bytes(rxb) + "</span></td><td>" +
+             std::to_string(txm) + " <span class=\"muted\">msgs · " + fmt_bytes(txb) +
+             "</span></td><td>" + delivered + "</td></tr>";
+    }
+    t += "\n  </table>";
+    return t;
+}
+
 // ===================== GET render =====================
 
 // The two cards (status + settings), rendered for embedding into the
@@ -162,7 +248,7 @@ static std::string fmt_utc(long epoch) {
 // of its own.
 std::string echobot_cards(const std::string& base) {
     EchobotConf c = echobot_read_conf();
-    if (c.name.empty()) c.name = echobot_default_name();
+    if (c.name.empty() || echobot_legacy_name(c.name)) c.name = echobot_default_name();
     std::string state = util::read_file(ECHOBOT_STATE, 65536);
     bool running = echobot_running();
 
@@ -227,6 +313,8 @@ std::string echobot_cards(const std::string& base) {
     h = R(std::move(h), "__ECHOBOT_ECHO_FAIL__", std::to_string(echo_fail));
     h = R(std::move(h), "__ECHOBOT_CHECKED__", c.enabled ? "checked" : "");
     h = R(std::move(h), "__ECHOBOT_NAME_VALUE__", E(c.name));
+    h = R(std::move(h), "__ECHOBOT_HOSTNAME__", E(echobot_hostname()));
+    h = R(std::move(h), "__ECHOBOT_PEERS__", echobot_peers_table());
     h = R(std::move(h), "__ECHOBOT_INTERVAL_OPTS__", opts);
     return h;
 }
@@ -244,7 +332,8 @@ void echobot_save(const Request& req, Response& res) {
     bool enabled = req.f("enabled") == "on";
 
     std::string name = util::trim(req.f("name"));
-    if (name.empty() || !util::is_single_line_clean(name)) name = echobot_default_name();
+    if (name.empty() || echobot_legacy_name(name) || !util::is_single_line_clean(name))
+        name = echobot_default_name();
     if (name.size() > 48) name = name.substr(0, 48);
 
     long interval = strtol(req.f("interval").c_str(), nullptr, 10);

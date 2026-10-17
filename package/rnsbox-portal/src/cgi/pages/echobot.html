@@ -1,16 +1,19 @@
-<!-- Echo bot: rendered as cards inside the Reticulum tab (routes_echobot.cpp
+<!-- Echo bot: ONE card inside the Reticulum tab (routes_echobot.cpp
      echobot_cards()); the id anchors the old /echobot bookmark redirect. -->
 <section class="card" id="echobot">
-  <h3>Echo bot</h3>
+  <h3>echo bot __ECHOBOT_HOSTNAME__</h3>
   <table class="kv">
     <tr><th>Service</th><td>__ECHOBOT_STATUS__</td></tr>
     <tr><th>LXMF address</th><td>__ECHOBOT_ADDR__</td></tr>
     <tr><th>Announced name</th><td>__ECHOBOT_NAME__</td></tr>
     <tr><th>Name suffix</th><td><code>__ECHOBOT_SUFFIX__</code> <span class="muted">— first 3 bytes of the bot identity's hash; generated once, stable across reboots, not editable</span></td></tr>
-    <tr><th>Announces sent</th><td>__ECHOBOT_ANNOUNCES__</td></tr>
-    <tr><th>Last announce</th><td>__ECHOBOT_LAST_ANNOUNCE__</td></tr>
+    <tr><th>Announces sent</th><td>__ECHOBOT_ANNOUNCES__ <span class="muted">· last __ECHOBOT_LAST_ANNOUNCE__</span></td></tr>
     <tr><th>Messages echoed</th><td>__ECHOBOT_ECHO_OK__ ok / __ECHOBOT_ECHO_FAIL__ failed</td></tr>
   </table>
+
+  <h4>Traffic — per peer</h4>
+  __ECHOBOT_PEERS__
+  <p class="muted">Every LXMF destination heard via announce gets a row; counters survive restarts.</p>
 
   <div class="time-actions">
     <form method="post" action="__BASE__/echobot/announce" class="inline">
@@ -21,13 +24,7 @@
     </form>
   </div>
 
-  <h4>Try it from any LXMF client</h4>
-  <p class="muted">NomadNet: <code>Conversations</code> → enter the LXMF address above → send any text — the bot echoes it right back. Sideband and every other LXMF client work the same. The announce carries the bot's name, so once heard, it also shows up in NomadNet's node list. Announce history: <code>logread&nbsp;|&nbsp;grep&nbsp;echobot</code>.</p>
-  <p class="muted">The bot shares rnsd's Reticulum instance and has its own persistent identity: its address and name suffix never change across reboots or updates. It coexists with lxmd and NomadNet — each holds its own LXMF destination.</p>
-</section>
-
-<section class="card">
-  <h3>Echo bot settings</h3>
+  <h4>Settings</h4>
   <form method="post" action="__BASE__/echobot/save">
     <label>Enable echo bot
       <input type="checkbox" name="enabled" __ECHOBOT_CHECKED__>
@@ -40,9 +37,10 @@
       <select name="interval">__ECHOBOT_INTERVAL_OPTS__
       </select>
     </label>
-    <button type="submit" class="btn-primary">Save &amp; apply</button>
+    <div class="time-actions">
+      <button type="submit" class="btn-primary">Save &amp; apply</button>
+    </div>
     <p class="muted">Saving applies at once by restarting the bot (or stopping it when disabled). A start is refused while free RAM is below
-    <code>min_free_mb</code> (40 MB) in <code>/etc/rnsbox/echobot.conf</code> — that floor protects rnsd from the OOM killer;
-    free RAM first (or lower the floor if you know your budget) and start again.</p>
+    <code>min_free_mb</code> (40 MB) — that floor protects rnsd from the OOM killer.</p>
   </form>
 </section>

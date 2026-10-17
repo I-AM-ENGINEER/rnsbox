@@ -28,9 +28,11 @@
 # the announce loop picks it up within its 1 s tick.
 #
 # Status for the portal: /var/lib/rnsbox-echobot/state.json (atomic rewrites),
-# read directly by the CGI. Announces are logged to stdout -> syslog via the
-# init script's FIFO ("LXMF announced <hash> as <name>"), so `logread |
-# grep echobot` shows the announce history.
+# read directly by the CGI, plus peers.tsv — one line per peer destination
+# heard or echoed to (per-peer RX/TX message and byte counters, delivery
+# success) for the portal's Traffic table. Announces are logged to stdout ->
+# syslog via the init script's FIFO ("LXMF announced <hash> as <name>"), so
+# `logread | grep echobot` shows the announce history.
 #
 # No propagation node: replies go DIRECT (or OPPORTUNISTIC when a ratchet is
 # known and no link exists — one packet instead of a link setup). Received
@@ -51,9 +53,10 @@ CONF_PATH = "/etc/rnsbox/echobot.conf"
 STATE_DIR = "/var/lib/rnsbox-echobot"
 IDENTITY_PATH = os.path.join(STATE_DIR, "identity.pem")
 STATE_PATH = os.path.join(STATE_DIR, "state.json")
+PEERS_PATH = os.path.join(STATE_DIR, "peers.tsv")
 RNS_CONFIGDIR = "/etc/reticulum"
 
-DEFAULT_NAME = "rnsbox echo bot"
+DEFAULT_NAME = "rnsbox echo bot"  # legacy literal; resolved to <hostname>
 DEFAULT_INTERVAL = 86400        # one announce per day
 MIN_INTERVAL = 600              # 10 min: an announce flood helps nobody
 MAX_INTERVAL = 30 * 86400       # 30 days
@@ -117,6 +120,29 @@ def read_conf(path):
     return conf
 
 
+def read_hostname():
+    try:
+        with open("/proc/sys/kernel/hostname", "r", encoding="utf-8") as f:
+            host = f.read().strip()
+    except OSError:
+        host = ""
+    return host if host and host != "localhost" else "rnsbox"
+
+
+def hostname_name():
+    # S10uuid renames the box to rnsbox-XXXXXX; the bot follows it. Service
+    # first, box second: "echo bot rnsbox-XXXXXX". Shipped configs used the
+    # literals "rnsbox echo bot" / "<hostname> echo bot" before this existed.
+    return ("echo bot " + read_hostname())[:64]
+
+
+def effective_name(conf):
+    name = conf["name"].strip()
+    if not name or name == DEFAULT_NAME or name == (read_hostname() + " echo bot"):
+        return hostname_name()
+    return name[:64]
+
+
 # ----------------------------------------------------------------- state ----
 
 class State:
@@ -164,6 +190,106 @@ class State:
             os.chmod(STATE_PATH, 0o600)
         except Exception as e:
             log("could not write state.json: " + repr(e))
+
+
+# ------------------------------------------------- per-peer traffic ----------
+
+MAX_PEERS = 64          # rows in the portal's Traffic table
+FLUSH_EVERY = 5.0       # s between peers.tsv rewrites (announce-storm damper)
+
+
+class Peers:
+    # Per-destination traffic counters for the portal's Traffic table: one row
+    # per LXMF destination heard via announce or exchanged messages with.
+    # In-memory; flushed atomically to peers.tsv (newest first) at most every
+    # FLUSH_EVERY seconds and on clean stop, so an announce storm cannot hammer
+    # the flash. TSV columns: hash, name, rx_msgs, rx_bytes, tx_msgs, tx_bytes,
+    # tx_ok, tx_fail, last_seen. The name is sanitised to one tab-free ASCII
+    # line — the portal's splitter can stay dumb.
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.peers = {}
+        self.dirty = False
+        self._next_flush = 0.0
+        try:
+            with open(PEERS_PATH, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    parts = line.rstrip("\n").split("\t")
+                    if len(parts) != 9 or len(parts[0]) != 32:
+                        continue
+                    if any(c not in "0123456789abcdef" for c in parts[0]):
+                        continue
+                    try:
+                        nums = [int(x) for x in parts[2:]]
+                    except ValueError:
+                        continue
+                    if any(n < 0 for n in nums):
+                        continue
+                    self.peers[parts[0]] = dict(name=parts[1][:32],
+                                               rx_msgs=nums[0], rx_bytes=nums[1],
+                                               tx_msgs=nums[2], tx_bytes=nums[3],
+                                               tx_ok=nums[4], tx_fail=nums[5],
+                                               last_seen=nums[6])
+        except Exception:
+            pass
+
+    @staticmethod
+    def _clean_name(raw):
+        name = "".join(c if 0x20 <= ord(c) < 0x7f else " " for c in str(raw))
+        return name.replace("\t", " ").strip()[:32]
+
+    def update(self, hash_hex, name=None, **bumps):
+        with self.lock:
+            p = self.peers.get(hash_hex)
+            if p is None:
+                p = dict(name="", rx_msgs=0, rx_bytes=0, tx_msgs=0,
+                         tx_bytes=0, tx_ok=0, tx_fail=0, last_seen=0)
+                self.peers[hash_hex] = p
+            if name:
+                p["name"] = self._clean_name(name)
+            for k, d in bumps.items():
+                p[k] = int(p.get(k, 0)) + int(d)
+            p["last_seen"] = int(time.time())
+            if len(self.peers) > MAX_PEERS:
+                stale = sorted(self.peers, key=lambda h: self.peers[h]["last_seen"])
+                for h in stale[:len(self.peers) - MAX_PEERS]:
+                    self.peers.pop(h, None)
+            self.dirty = True
+
+    def heard(self, hash_hex, name):
+        # Announce path: only add a NEW row when the announce carried a usable
+        # name (binary app_data would otherwise pollute the table with noise);
+        # a name refresh for a known peer always goes through.
+        with self.lock:
+            known = hash_hex in self.peers
+        if name or known:
+            self.update(hash_hex, name=name)
+
+    def flush_if_due(self, force=False):
+        with self.lock:
+            if not self.dirty:
+                return
+            if not force and time.monotonic() < self._next_flush:
+                return
+            ordered = sorted(self.peers.items(),
+                             key=lambda kv: kv[1]["last_seen"], reverse=True)
+            body = "".join(
+                h + "\t" + p["name"] + "\t" +
+                "\t".join(str(p[k]) for k in ("rx_msgs", "rx_bytes", "tx_msgs",
+                                              "tx_bytes", "tx_ok", "tx_fail",
+                                              "last_seen")) + "\n"
+                for h, p in ordered)
+            self.dirty = False
+            self._next_flush = time.monotonic() + FLUSH_EVERY
+        tmp = PEERS_PATH + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(body)
+            os.replace(tmp, PEERS_PATH)
+            os.chmod(PEERS_PATH, 0o600)
+        except Exception as e:
+            log("could not write peers.tsv: " + repr(e))
 
 
 # ------------------------------------------------- shared instance probe ----
@@ -237,8 +363,9 @@ def main():
 
     os.makedirs(STATE_DIR, exist_ok=True)
     state = State()
+    peers = Peers()
     state.set(status="waiting", detail="waiting for rnsd's shared instance",
-              name_base=conf["name"], interval=conf["interval"],
+              name_base=effective_name(conf), interval=conf["interval"],
               started_at=int(time.time()))
 
     # ---- wait for rnsd's shared instance (S82rnsd may still be starting) ----
@@ -274,10 +401,10 @@ def main():
         log("new identity created at " + IDENTITY_PATH)
 
     suffix = identity.hash[:3].hex()
-    display_name = (conf["name"] + " " + suffix).strip()
+    display_name = (effective_name(conf) + " " + suffix).strip()
     state.set(status="waiting", detail="attaching to the shared instance",
               lxmf_addr=identity.hash.hex(), dest_hash="", suffix=suffix,
-              name_base=conf["name"], display_name=display_name,
+              name_base=effective_name(conf), display_name=display_name,
               interval=conf["interval"], started_at=int(time.time()))
     log("LXMF address " + identity.hash.hex() + " (\"" + display_name + "\")")
 
@@ -299,6 +426,28 @@ def main():
 
     router.register_delivery_callback(on_message)
 
+    # Peer names for the Traffic table come from the announces the transport
+    # already hears (LXMF clients carry their display name in app_data).
+    def on_announce(*a):
+        # RNS >= 0.6.6 passes (destination_hash, announced_identity, app_data);
+        # ancient stacks prefixed an aspect — index from the end either way.
+        try:
+            destination_hash, app_data = a[-3], a[-1]
+            name = ""
+            if app_data:
+                try:
+                    name = bytes(app_data).decode("utf-8", "replace")
+                except Exception:
+                    name = ""
+            peers.heard(destination_hash.hex(), name.strip())
+        except Exception:
+            pass
+
+    try:
+        RNS.Transport.register_announce_handler(on_announce)
+    except Exception as e:
+        log("could not register the announce handler: " + repr(e))
+
     def do_announce():
         try:
             router.announce(delivery.hash)
@@ -313,7 +462,8 @@ def main():
     def announce_loop():
         # Announce at start, then every `interval` seconds (monotonic clock:
         # a wall-clock step must not skip or double an announce), plus on
-        # SIGUSR1 (the portal's "Announce now").
+        # SIGUSR1 (the portal's "Announce now"). Also drains the peers.tsv
+        # flush (rate-limited inside Peers).
         if conf["announce_at_start"]:
             time.sleep(1)   # let RNS finish bringing interfaces up
             do_announce()
@@ -326,6 +476,7 @@ def main():
             elif time.monotonic() >= next_at:
                 do_announce()
                 next_at = time.monotonic() + conf["interval"]
+            peers.flush_if_due()
             time.sleep(1)
 
     def echo_worker():
@@ -347,7 +498,9 @@ def main():
                 state.bump("echo_fail")
                 continue
             srchex = src.hex()
-            log("received a message from " + srchex + " (" + str(len(content)) + " bytes); echoing back")
+            rx_bytes = len(content)
+            peers.update(srchex, rx_msgs=1, rx_bytes=rx_bytes)
+            log("received a message from " + srchex + " (" + str(rx_bytes) + " bytes); echoing back")
             try:
                 dest_identity = RNS.Identity.recall(src)
                 if dest_identity is None:
@@ -377,14 +530,18 @@ def main():
                 def on_delivered(lxm, s=src):
                     log("echo delivered to " + s.hex())
                     state.bump("echo_ok")
+                    peers.update(s.hex(), tx_ok=1)
 
                 def on_failed(lxm, s=src):
                     log("echo to " + s.hex() + " failed")
                     state.bump("echo_fail")
+                    peers.update(s.hex(), tx_fail=1)
 
                 reply.register_delivery_callback(on_delivered)
                 reply.register_failed_callback(on_failed)
                 router.handle_outbound(reply)
+                peers.update(srchex, tx_msgs=1,
+                             tx_bytes=len(content) + len(title or ""))
             except Exception as e:
                 log("echo to " + srchex + " failed: " + repr(e))
                 state.bump("echo_fail")
@@ -405,7 +562,7 @@ def main():
 
     state.set(status="running", detail="announcing and echoing",
               lxmf_addr=identity.hash.hex(), dest_hash=delivery.hash.hex(),
-              suffix=suffix, name_base=conf["name"], display_name=display_name,
+              suffix=suffix, name_base=effective_name(conf), display_name=display_name,
               interval=conf["interval"], started_at=int(time.time()))
     log("echo bot running: address " + delivery.hash.hex() +
         ", announce interval " + str(conf["interval"]) + "s")
@@ -415,6 +572,7 @@ def main():
         while not stop_wanted.is_set():
             time.sleep(0.5)
     finally:
+        peers.flush_if_due(force=True)
         state.set(status="stopped", detail="stopped")
         log("stopping")
 

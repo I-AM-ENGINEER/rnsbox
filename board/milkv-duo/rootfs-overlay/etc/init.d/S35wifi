@@ -312,8 +312,10 @@ _hostapd_up() {
 start_ap() {
 	iface="$1"
 	ssid=$(cfg ap_ssid); psk=$(cfg ap_psk); chan=$(cfg ap_channel)
+	# Blank ap_ssid = the device hostname: the out-of-the-box hotspot is
+	# named after the box (rnsbox-xxxxxx) and follows S10uuid's rename.
+	if [ -z "$ssid" ]; then ssid="$(hostname)"; log "ap_ssid empty - naming the hotspot after the hostname ($ssid)"; fi
 	hidden=$(cfg ap_hidden); htmode=$(cfg ap_htmode)
-	[ -z "$ssid" ] && { log "AP requested but ap_ssid empty; skipping"; return 0; }
 	if ! ap_psk_ok "$psk"; then
 		ap_refuse "$AP_PSK_REASON"
 		rm -f /run/wifi-ap-iface      # no AP: don't let the portal think one is up

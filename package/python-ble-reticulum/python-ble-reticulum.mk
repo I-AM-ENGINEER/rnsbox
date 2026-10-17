@@ -6,10 +6,20 @@
 
 PYTHON_BLE_RETICULUM_VERSION = 0.2.3
 # Vendored copy of https://github.com/torlando-tech/ble-reticulum at v0.2.3
-# (MIT, see LICENSE). Not on PyPI - the sources ship in this package dir and
-# the one RNSBox-specific change lives in patches/ (a Bluetooth-stack probe so
-# the interface degrades into an honest, logged no-op instead of an endless
-# scan-retry loop when the board has no adapter).
+# (MIT, see LICENSE). Not on PyPI - the sources ship in this package dir.
+# RNSBox deltas:
+#   - patches/0001: a Bluetooth-stack probe so the interface degrades into an
+#     honest, logged no-op instead of an endless scan-retry loop when the
+#     board has no adapter;
+#   - src/ble_reticulum/linux_bluetooth_driver.py: a BlueZ Device1.Disconnect
+#     on the identity-handshake timeout. A central that connected before it
+#     had its transport identity (the Columba Python backend does this on a
+#     stale link) never sends the 16-byte RX handshake; without a real LE
+#     disconnect it keeps the link alive with keepalives and the handshake is
+#     never retried. Dropping the link makes it reconnect and handshake.
+#   - src/ble_reticulum/BLEInterface.py: the identity-handshake wait is 10 s
+#     instead of 30 (see the comment at _pending_identity_timeout) so the
+#     kick-and-reconnect cycle above costs a third of the dead-air time.
 PYTHON_BLE_RETICULUM_SOURCE =
 PYTHON_BLE_RETICULUM_SITE = $(call qstrip,$(if $(BR2_EXTERNAL_RNSBOX_PATH),$(BR2_EXTERNAL_RNSBOX_PATH),$(TOPDIR))/package/python-ble-reticulum/src)
 PYTHON_BLE_RETICULUM_SITE_METHOD = local

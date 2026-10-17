@@ -209,22 +209,6 @@ index 0cf752a83..56b124c21 100755
  		# Step 2: clock-synced but rnsd not running -> kick S82.
  		# S82rnsd refuses to start if /run/clock-synced is absent, so
  		# rerunning is cheap when it shouldn't run anyway.
-@@ -56,6 +97,15 @@ loop() {
- 				/etc/init.d/S82rnsd start >> "$LOG" 2>&1
- 			fi
- 		fi
-+		# Step 2c: keep the optional rnsh listener alive once rnsd is up
-+		# (its own start defers while rnsd's shared instance is not
-+		# accepting clients, and nothing else retries it on this board).
-+		# Cheap idempotent gate: only when enabled and not already running.
-+		if [ -x /etc/init.d/S86rnsh ] && [ -f /run/clock-synced ] 		   && grep -q "^enabled=yes" /etc/rnsbox/rnsh.conf 2>/dev/null; then
-+			rp=
-+			{ read -r rp </var/run/rnsh.pid; } 2>/dev/null
-+			[ -n "$rp" ] && [ "$(cat "/proc/$rp/comm" 2>/dev/null)" = rnsh ] || 				/etc/init.d/S86rnsh start >> "$LOG" 2>&1
-+		fi
- 	done
- }
- 
 diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S82rnsd b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S82rnsd
 index a68497ae1..e691f0f1c 100755
 --- a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S82rnsd

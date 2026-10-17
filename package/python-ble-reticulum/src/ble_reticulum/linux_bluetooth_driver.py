@@ -1074,7 +1074,12 @@ class LinuxBluetoothDriver(BLEDriverInterface):
             except Exception as e:
                 self._log(f"Error disconnecting from {address}: {e}", "WARNING")
 
-        # For peripheral connections, client disconnects from us (we can't force disconnect)
+        # Peripheral connection: bluezero has no disconnect API for incoming
+        # centrals. Dropping the BlueZ link is what makes a peer that connected
+        # before it had its transport identity reconnect and run the handshake;
+        # leaving the zombie link up keeps its stale GATT client alive forever.
+        elif peer.connection_type == "peripheral" and self.gatt_server:
+            self.gatt_server.disconnect_central(address)
 
         # Clean up
         with self._peers_lock:
@@ -2658,6 +2663,37 @@ class BluezeroGATTServer:
                 self.on_central_disconnected(central_address)
             except Exception as e:
                 self._log(f"Error in central disconnected callback: {e}", "ERROR")
+
+    def disconnect_central(self, central_address: str) -> bool:
+        """Force-disconnect a central that connected to our GATT server.
+
+        bluezero exposes no disconnect for incoming links. Without this, a
+        central whose identity handshake failed stays connected (its GATT
+        client keeps sending keepalives) while BLEInterface has discarded the
+        peer; it never reconnects, so the handshake is never retried. A real
+        BlueZ disconnect makes the peer open a fresh link.
+        """
+        try:
+            import dbus
+        except ImportError:
+            self._log(f"Cannot force-disconnect {central_address}: dbus-python missing", "DEBUG")
+            return False
+
+        address = central_address.split("/")[-1]
+        if address.startswith("dev:"):
+            address = address[4:]
+        address = address.replace("_", ":")
+
+        try:
+            dev_path = f"/org/bluez/hci{self.adapter_index}/dev_{address.replace(':', '_')}"
+            bus = dbus.SystemBus()
+            dev = bus.get_object("org.bluez", dev_path)
+            dbus.Interface(dev, "org.bluez.Device1").Disconnect()
+            self._log(f"Force-disconnected central {address}")
+            return True
+        except Exception as e:
+            self._log(f"Could not force-disconnect central {central_address}: {e}", "WARNING")
+            return False
 
     def send_notification(self, central_address: str, data: bytes):
         """Send notification to a connected central."""

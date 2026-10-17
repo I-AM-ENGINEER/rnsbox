@@ -26,12 +26,12 @@ $(eval $(python-package))
 # own C extension does the actual D-Bus watch integration against the same
 # libglib-2.0.
 define RNSBOX_PYTHON_BLUEZERO_INSTALL_GI_SHIM
-	$(INSTALL) -d $(TARGET_DIR)/usr/lib/python$(PYTHON3_VERSION_MAJOR).$(PYTHON3_VERSION_MINOR)/site-packages/gi/repository
+	$(INSTALL) -d $(TARGET_DIR)/usr/lib/python$(PYTHON3_VERSION_MAJOR)/site-packages/gi/repository
 	$(INSTALL) -m 0644 $(RNSBOX_PYTHON_BLUEZERO_PKGDIR)/src/gi/__init__.py \
-		$(TARGET_DIR)/usr/lib/python$(PYTHON3_VERSION_MAJOR).$(PYTHON3_VERSION_MINOR)/site-packages/gi/__init__.py
+		$(TARGET_DIR)/usr/lib/python$(PYTHON3_VERSION_MAJOR)/site-packages/gi/__init__.py
 	$(INSTALL) -m 0644 $(RNSBOX_PYTHON_BLUEZERO_PKGDIR)/src/gi/repository/__init__.py \
-		$(TARGET_DIR)/usr/lib/python$(PYTHON3_VERSION_MAJOR).$(PYTHON3_VERSION_MINOR)/site-packages/gi/repository/__init__.py
+		$(TARGET_DIR)/usr/lib/python$(PYTHON3_VERSION_MAJOR)/site-packages/gi/repository/__init__.py
 	$(INSTALL) -m 0644 $(RNSBOX_PYTHON_BLUEZERO_PKGDIR)/src/gi/repository/GLib.py \
-		$(TARGET_DIR)/usr/lib/python$(PYTHON3_VERSION_MAJOR).$(PYTHON3_VERSION_MINOR)/site-packages/gi/repository/GLib.py
+		$(TARGET_DIR)/usr/lib/python$(PYTHON3_VERSION_MAJOR)/site-packages/gi/repository/GLib.py
 endef
 RNSBOX_PYTHON_BLUEZERO_POST_INSTALL_TARGET_HOOKS += RNSBOX_PYTHON_BLUEZERO_INSTALL_GI_SHIM

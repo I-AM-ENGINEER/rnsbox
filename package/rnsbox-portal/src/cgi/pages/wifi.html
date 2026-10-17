@@ -57,6 +57,9 @@
   <form method="post" action="__BASE__/wifi/ap">
     <label><input type="checkbox" name="ap_enable" __AP_ENABLE_CHECKED__> Enable hotspot</label>
     <label>SSID <input type="text" name="ap_ssid" value="__AP_SSID__" maxlength="32"></label>
+    <p class="muted">Clear the field to let the hotspot follow the device hostname
+    (it shows the current name — <code>__AP_SSID__</code> — and follows S10uuid's
+    rename); typing a name pins it.</p>
     <label>Password (8–63 characters — required to enable the hotspot)
       <input type="password" id="ap_psk" name="ap_psk" value="__AP_PSK__" minlength="8" maxlength="63" autocomplete="new-password">
       <button type="button" class="btn" onclick="togglePw('ap_psk', this)">Show</button>

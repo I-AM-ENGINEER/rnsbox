@@ -383,9 +383,15 @@ class BLEInterface(Interface):
         self._identity_cache_ttl = 60  # seconds
 
         # Pending connections awaiting identity handshake (address -> timestamp)
-        # If identity not received within timeout, connection is closed
+        # If identity not received within timeout, connection is closed.
+        # RNSBox delta: 10 s, not upstream's 30 — a healthy central reads the
+        # Identity characteristic and writes its own hash within ~1 s of
+        # subscribing; the shorter window kicks a peer that connected without
+        # its transport identity (Columba's Python backend on its FIRST link)
+        # sooner, so its GATT client reconnects — with the identity — and the
+        # link becomes usable instead of idling dead air for half a minute.
         self._pending_identity_connections = {}
-        self._pending_identity_timeout = 30  # seconds
+        self._pending_identity_timeout = 10  # seconds
 
         # Pending interface detachments with grace period (identity_hash -> timestamp)
         # Allows new connections to establish before detaching the interface

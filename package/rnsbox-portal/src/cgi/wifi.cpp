@@ -37,7 +37,9 @@ bool present() {
 std::map<std::string, std::string> read_conf() {
     std::map<std::string, std::string> cfg;
     for (const char* k : KEYS) cfg[k] = "";
-    cfg["mode"] = "off"; cfg["ap_ssid"] = "RNSBox-AP"; cfg["ap_channel"] = "6";
+    // ap_ssid default is EMPTY on purpose: S35wifi names the hotspot after
+    // the device hostname when it's blank, so the field shows that instead.
+    cfg["mode"] = "off"; cfg["ap_ssid"] = ""; cfg["ap_channel"] = "6";
     cfg["ap_htmode"] = "ht20"; cfg["tx_power"] = "auto";
     std::string data = util::read_file(CONF);
     size_t i = 0;
