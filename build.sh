@@ -880,6 +880,14 @@ printf '#!/bin/bash\nexec /usr/bin/wget "$@" --tries=5 --timeout=60 --read-timeo
 chmod +x "$WORKDIR/bin/wget"
 export PATH="$WORKDIR/bin:$PATH"
 
+# sudo refuses a sudoers file it can write; git cannot carry the 0440
+# file mode, so enforce it on the overlay copy at every build (fresh
+# clone and reuse alike). NB: if/fi, not an AND-list — under set -e a
+# false test here would kill the script.
+if [ -e "$WORKDIR/buildroot/board/cvitek/SG200X/overlay/etc/sudoers" ]; then
+    chmod 0440 "$WORKDIR/buildroot/board/cvitek/SG200X/overlay/etc/sudoers"
+fi
+
 # Shared packages live in ONE place — <repo>/package/ — no matter how many
 # boards this repo grows to. The patch series deliberately does not vendor
 # them (its last patch deletes the copies the early series added); copy the
