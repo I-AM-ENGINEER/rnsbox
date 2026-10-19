@@ -1,0 +1,4 @@
+#!/bin/sh
+# AIC8800D80 SDIO WiFi + BT (hci0 over SDIO function 2).
+( sleep 3; /bin/sh /root/wifi.sh ) &
+exit 0
