@@ -4,8 +4,9 @@
  * the FIT's default configuration (older generations append
  * #config-sg2002_licheervnano_sd), Image.gz is gunzipped to 0x80200000.
  *
- * NOTE: scaffold. Not wired into build.sh yet; the mainline v7.3-rc7 tree
- * already ships arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts.
+ * Built by configs/rnsbox_licheerv_nano_mainline_defconfig; the mainline
+ * v7.3-rc7 tree already ships sg2002-licheerv-nano-b.dts and
+ * linux-patches/0001-* enables its gmac0 + mdio nodes (internal EPHY).
  */
 /dts-v1/;
 
