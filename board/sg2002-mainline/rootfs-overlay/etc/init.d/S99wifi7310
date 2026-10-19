@@ -1,0 +1,7 @@
+#!/bin/sh
+# LicheeRV Nano: the AIC8800D80 sits on SDIO1, which the mainline 7.3 DTS
+# does not enable yet.  The SG2000 bring-up cannot be reused blindly: it
+# drives GPIOA15 as WL_REG_ON, while on this board GPIOA15 is I2C SCL /
+# camera reset.  Keep WiFi off until the SDIO1 node and the correct power
+# GPIO are described in the DTS.
+exit 0
