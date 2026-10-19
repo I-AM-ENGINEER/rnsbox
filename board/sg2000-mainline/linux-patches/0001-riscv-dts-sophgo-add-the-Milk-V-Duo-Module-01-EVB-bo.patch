@@ -28,19 +28,31 @@ UART0 and SD pins are on their reset multiplexing on this carrier (the
 vendor u-boot cvi_board_init only sets the PHY LED pins); the pinctrl
 nodes pin the same state explicitly so the DT does not depend on the
 boot ROM defaults.
+
 ---
-diff --git a/arch/riscv/boot/dts/sophgo/sg2000-milkv-duomodule01-evb.dts b/arch/riscv/boot/dts/sophgo/sg2000-milkv-duomodule01-evb.dts
+diff --git a/arch/riscv/boot/dts/sophgo/sg2000-duomodule01-evb.dts b/arch/riscv/boot/dts/sophgo/sg2000-duomodule01-evb.dts
 new file mode 100644
-index 000000000000..111111111111
+index 00000000000..11111111111
 --- /dev/null
-+++ b/arch/riscv/boot/dts/sophgo/sg2000-milkv-duomodule01-evb.dts
-@@ -0,0 +1,117 @@
++++ b/arch/riscv/boot/dts/sophgo/sg2000-duomodule01-evb.dts
+@@ -0,0 +1,246 @@
 +// SPDX-License-Identifier: (GPL-2.0 OR MIT)
 +
 +/dts-v1/;
 +
++#include <dt-bindings/clock/sophgo,cv1800.h>
++#include <dt-bindings/gpio/gpio.h>
 +#include <dt-bindings/pinctrl/pinctrl-sg2000.h>
 +#include "sg2000.dtsi"
++
++/*
++ * Milk-V Duo Module 01 Evaluation Board (SG2000, C906, 512 MB DDR3, SD boot).
++ *
++ * Minimal RNSBox headless shape: uart0 console + SD (sdhci0) + internal
++ * GbE PHY + DWC2 gadget on the OTG port. The module's optional -W variant
++ * (AIC8800 SDIO wifi) and the Duo-S-specific eMMC / uart4 / sdhci1 wiring
++ * are left disabled - the EVB does not wire them the same way.
++ */
 +
 +/ {
 +	model = "Milk-V Duo Module 01 Evaluation Board";
@@ -48,6 +60,7 @@ index 000000000000..111111111111
 +
 +	aliases {
 +		mmc0 = &sdhci0;
++		mmc1 = &sdhci1;
 +		serial0 = &uart0;
 +	};
 +
@@ -55,17 +68,33 @@ index 000000000000..111111111111
 +		stdout-path = "serial0:115200n8";
 +	};
 +
-+	/*
-+	 * The vendor OpenSBI in fip.bin lives here and does not reserve
-+	 * itself through the FDT (the vendor kernel parses the riscv.fwsz
-+	 * bootarg instead, which mainline ignores): hide the firmware
-+	 * region from the allocator explicitly.
++
++
++
++	/* WL_REG_ON for the module's AIC8800 "W" radio: porta 15. Wired into
++	 * sdhci1's vmmc-supply so the mmc core powers the chip before probing
++	 * (CONFIG_REGULATOR is enabled for this).
 +	 */
++	wl_reg_on: regulator-wlregon {
++		compatible = "regulator-fixed";
++		regulator-name = "wl-reg-on";
++		regulator-min-microvolt = <3300000>;
++		regulator-max-microvolt = <3300000>;
++		gpio = <&porta 15 GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++	};
++
 +	reserved-memory {
 +		#address-cells = <1>;
 +		#size-cells = <1>;
 +		ranges;
 +
++		/*
++		 * The vendor OpenSBI in fip.bin lives here and does not
++		 * reserve itself through the FDT (the vendor kernel parses
++		 * the riscv.fwsz bootarg instead, which mainline ignores):
++		 * hide the firmware region from the allocator explicitly.
++		 */
 +		opensbi: region@80000000 {
 +			reg = <0x80000000 0x80000>;
 +			no-map;
@@ -78,16 +107,6 @@ index 000000000000..111111111111
 +};
 +
 +&pinctrl {
-+	uart0_cfg: uart0-cfg {
-+		uart0-pins {
-+			pinmux = <PINMUX(PIN_UART0_TX, 0)>,
-+				 <PINMUX(PIN_UART0_RX, 0)>;
-+			bias-pull-up;
-+			drive-strength-microamp = <10800>;
-+			power-source = <3300>;
-+		};
-+	};
-+
 +	sdhci0_cfg: sdhci0-cfg {
 +		sdhci0-cd-pins {
 +			pinmux = <PINMUX(PIN_SD0_CD, 0)>;
@@ -120,6 +139,41 @@ index 000000000000..111111111111
 +			power-source = <3300>;
 +		};
 +	};
++
++	uart0_cfg: uart0-cfg {
++		uart0-pins {
++			pinmux = <PINMUX(PIN_UART0_TX, 0)>,
++				 <PINMUX(PIN_UART0_RX, 0)>;
++			bias-pull-up;
++			drive-strength-microamp = <10800>;
++			power-source = <3300>;
++		};
++	};
++
++	sdhci1_cfg: sdhci1-cfg {
++		/* Vendor U-Boot cvi_sdio1_pad_setting: CLK pull-down, CMD/DAT
++		 * pull-up, drive strength left at the weakest default. */
++		sdhci1-clk-pins {
++			pinmux = <PINMUX(PIN_SD1_CLK, 0)>;
++			bias-pull-down;
++			power-source = <3300>;
++		};
++
++		sdhci1-cmd-pins {
++			pinmux = <PINMUX(PIN_SD1_CMD, 0)>;
++			bias-pull-up;
++			power-source = <3300>;
++		};
++
++		sdhci1-data-pins {
++			pinmux = <PINMUX(PIN_SD1_D0, 0)>,
++				 <PINMUX(PIN_SD1_D1, 0)>,
++				 <PINMUX(PIN_SD1_D2, 0)>,
++				 <PINMUX(PIN_SD1_D3, 0)>;
++			bias-pull-up;
++			power-source = <3300>;
++		};
++	};
 +};
 +
 +&dmac {
@@ -142,17 +196,60 @@ index 000000000000..111111111111
 +	bus-width = <4>;
 +	disable-wp;
 +	no-1-8-v;
-+	no-mmc;
-+	no-sdio;
-+	max-frequency = <25000000>;
++	min-frequency = <400000>; // 400Khz
++	max-frequency = <25000000>; // 25 MHz: the 50 MHz HS re-init breaks SD on this EVB
++	/* RNSBox bring-up: the DMA engines (ADMA2/SDMA) fault on the first
++	 * descriptor on this incoherent C906 - mask the DMA capability bits
++	 * so sdhci runs PIO until this is root-caused from a live system.
++	 * SDMA|ADMA2|ADMA1 = 0x00400000|0x00080000|0x00100000 */
++	sdhci-caps-mask = <0x0 0x00580000>;
 +	pinctrl-0 = <&sdhci0_cfg>;
 +	pinctrl-names = "default";
 +	status = "okay";
 +};
 +
-+&uart0 {
-+	pinctrl-0 = <&uart0_cfg>;
++&sdhci1 {
++	/* WiFi: AIC8800D80 combo on the dedicated SDIO slot (the EVB "W"
++	 * radio). U-Boot already powers WL_REG_ON and tuned the card on this
++	 * host (its "wifi-sd@4320000" mmc1), so no power sequencing here; if
++	 * the rail is ever found off, the vendor fix is the aicbsp CVITEK
++	 * glue (WL_REG_ON = porta 15 + host rescan).
++	 */
++	/* The SDHCI divider base is the CARD clock input, which on cv18xx is
++	 * CLK_SD1 (bypass mux + divider), not CLK_AXI4_SD1 (an AXI gate) that
++	 * the SoC dtsi lists as "core". Feed the driver the real card clock
++	 * and pin it to FPLL/4 = 375 MHz, the vendor src-frequency. */
++	clocks = <&clk CLK_SD1>, <&clk CLK_AXI4_SD1>;
++	clock-names = "core", "bus";
++	assigned-clocks = <&clk CLK_SD1>;
++	assigned-clock-parents = <&clk CLK_FPLL>;
++	assigned-clock-rates = <375000000>;
++	bus-width = <4>;
++	no-1-8-v;
++	cap-sdio-irq;
++	keep-power-in-host;
++	non-removable;
++	no-mmc;
++	no-sd;
++	/* The rnsbox vendor-side patch for this EVB caps wifisd at 25 MHz
++	 * ("reliability over throughput"); 50 MHz HS re-init is marginal
++	 * here (DATA CRC on reads). */
++	max-frequency = <25000000>;
++	/* ADMA enabled: the kernel now has the T-Head CMO errata, so
++	 * descriptor fetches are properly cache-synced. PIO TX worked but
++	 * PIO RX gave -EILSEQ on the first 512-byte block read. */
++	pinctrl-0 = <&sdhci1_cfg>;
 +	pinctrl-names = "default";
++	status = "okay";
++};
++
++&uart0 {
++	/* Force a fixed uartclk: the bootloader leaves cam0_200 at the
++	 * vendor 96 MHz and the 8250 driver must not second-guess it. */
++	/delete-property/ resets;
++	clock-frequency = <96000000>;
++	/* No pinctrl/reset here: U-Boot already muxes UART0, and a failing
++	 * pinctrl state would keep the 8250 driver from ever probing. */
 +	status = "okay";
 +};
 +
@@ -165,4 +262,23 @@ index 000000000000..111111111111
 +	dr_mode = "peripheral";
 +	status = "okay";
 +};
---
++
++/*
++ * Vendor UART clock: disppll 768 MHz, clk_cam0_200 = disppll/8 = 96 MHz.
++ * 96 MHz makes the SLIP 2 Mbaud rate exact (96M/16/3) and keeps 115200
++ * within the DW UART's fractional-divider range. Without this the 8250
++ * driver and the bootloader disagree about uartclk and the console is
++ * garbled.
++ */
++
++&{/soc} {
++	watchdog@3010000 {
++		compatible = "ice,ice-wdt";
++		reg = <0x03010000 0x1000>;
++	};
++};
++
++/* No assigned-clock reclock: the bootloader (fip/u-boot) already leaves the
++ * UART clock in a state where its 115200 console is exact, and reprogramming
++ * disppll from Linux was never proven on hardware. The 8250 driver reads the
++ * real rate back from the PLL/divider registers via the clocks property. */
