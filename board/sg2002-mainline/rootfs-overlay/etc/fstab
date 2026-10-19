@@ -1,0 +1,13 @@
+# /boot: boot FAT (gadget flag files). /tmp covers /var/log,cache,spool
+# (skeleton symlinks -> ../tmp) — do NOT add separate tmpfs lines for those
+# (stacked mounts); /run covers /var/lock and the cron spool. noatime: SD economy.
+
+# <file system>	<mount pt>	<type>	<options>				<dump>	<pass>
+/dev/root	/		ext4	rw,noauto,noatime,commit=60,errors=remount-ro	0	1
+/dev/mmcblk0p1	/boot		vfat	defaults,noatime			0	0
+proc		/proc		proc	defaults				0	0
+devpts		/dev/pts	devpts	defaults,gid=5,mode=620,ptmxmode=0666	0	0
+sysfs		/sys		sysfs	defaults				0	0
+tmpfs		/dev/shm	tmpfs	mode=0777				0	0
+tmpfs		/tmp		tmpfs	mode=1777,size=16M			0	0
+tmpfs		/run		tmpfs	mode=0755,nosuid,nodev			0	0

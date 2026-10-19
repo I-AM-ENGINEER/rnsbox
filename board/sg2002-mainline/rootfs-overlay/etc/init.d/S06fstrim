@@ -1,0 +1,7 @@
+#!/bin/sh
+# Trim the SD card once per boot (avoids mounting with discard, which
+# causes write stutters on SD). Silent no-op when the card/kernel lacks
+# discard support.
+[ -x /sbin/fstrim ] || [ -x /usr/sbin/fstrim ] || exit 0
+fstrim -a >/dev/null 2>&1 || true
+exit 0
