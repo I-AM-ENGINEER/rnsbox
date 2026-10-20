@@ -1,0 +1,10 @@
+# Arguments for bluetoothd (buildroot's S40bluetoothd reads this file).
+#
+# -n: stay in the foreground (S40bluetoothd backgrounds it itself).
+# -E: enable BlueZ experimental features. ble-reticulum's install.sh treats
+#     this as required for proper BLE connectivity (the GATT-server /
+#     advertising APIs blezero registers behave differently without it on
+#     some BlueZ releases); harmless on releases where the same APIs are
+#     already stable. main.conf sets Experimental=true as well — belt and
+#     braces, one of the two is what bluetoothd ends up reading.
+BLUETOOTHD_ARGS="-n -E"

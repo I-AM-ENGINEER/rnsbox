@@ -1,0 +1,42 @@
+#!/bin/sh
+# RNSBox A/B: mark the current rootfs slot "good" once the system is healthy, so
+# the initramfs boot-count rollback (see ramdisk .../init) does not revert a
+# working update. Clears the boot-attempt counter on the shared /boot partition.
+#
+# "Healthy" = rnsd is running AND the admin portal is listening on :80. rnsd is
+# clock-gated (S82rnsd waits for /run/clock-synced) and cold-starts slowly on the
+# C906, so a background watcher waits up to ~5 min rather than blocking boot or
+# giving up too early. Layout-detecting: a clean no-op on the single-partition
+# (pre-A/B) image (no p3).
+
+[ "$1" = start ] || exit 0
+[ -b /dev/mmcblk0p3 ] || exit 0          # A/B layout only
+[ -f /boot/ab_tries ] || exit 0          # nothing to confirm
+
+healthy() {
+	# rnsd pid alive?
+	[ -f /var/run/rnsd.pid ] || return 1
+	kill -0 "$(cat /var/run/rnsd.pid)" 2>/dev/null || return 1
+	# portal listening on :80 ? (parse /proc/net/tcp: local :0050, state 0A=LISTEN)
+	awk '$2 ~ /:0050$/ && $4 == "0A" { ok = 1 } END { exit !ok }' /proc/net/tcp
+}
+
+# Background watcher so boot is never blocked; poll up to ~5 min for health.
+(
+	i=0
+	while [ $i -lt 60 ]; do
+		if healthy; then
+			mount -o remount,rw /boot 2>/dev/null
+			echo 0 > /boot/ab_tries
+			sync
+			mount -o remount,ro /boot 2>/dev/null
+			echo "S98confirm: slot confirmed healthy — boot counter cleared" > /dev/console 2>/dev/null
+			exit 0
+		fi
+		sleep 5
+		i=$((i + 1))
+	done
+	echo "S98confirm: not healthy within timeout — rollback armed" > /dev/console 2>/dev/null
+) &
+
+exit 0

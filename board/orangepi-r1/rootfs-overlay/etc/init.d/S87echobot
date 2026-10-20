@@ -1,0 +1,355 @@
+#!/bin/sh
+# S87echobot — the RNSBox local LXMF echo bot (/usr/bin/rnsbox-echobot).
+#
+# The box's built-in LXMF presence: announces its LXMF destination (once a day
+# by default, /etc/rnsbox/echobot.conf `interval=`) and echoes every message
+# back — the fastest "is this box reachable?" check from any LXMF client
+# (NomadNet: Conversations -> the address on the portal's Echo bot tab).
+# Unlike lxmd/nomadnet this ships ENABLED: it is the headline out-of-the-box
+# feature, its cost is one announce a day plus a small python process, and the
+# RAM floor below turns "tight box" into "bot off" — never "rnsd OOM-killed".
+# Disable with the portal's Echo bot tab (or enabled=no here) + restart.
+#
+# Runs AFTER S82rnsd so it attaches to rnsd's *shared* Reticulum instance
+# (--rnsconfig is baked into the script: /etc/reticulum) instead of starting a
+# second transport stack. rnsd's shared instance may open a little after rcS
+# starts us; the daemon polls /proc for it itself (rns_shared_up, the
+# S85lxmd test) and only then attaches — so unlike S85lxmd there is no
+# wanwatch deferral here, and start() just requires rnsd to be running.
+#
+# Identity: the daemon keeps /var/lib/rnsbox-echobot/identity.pem on the
+# persistent rootfs (umask 077 while it runs, so the file lands 0600) — the
+# LXMF address and the 6-hex name suffix survive reboots and updates. The
+# rest of /var/lib/rnsbox-echobot (LXMF caches, state.json) is small and
+# rarely written: rootfs-safe.
+#
+# Like S82rnsd/S85lxmd: unbuffered output fed to syslog (/var/log/messages,
+# tag "echobot[<pid>]") through a FIFO, so $! / the pidfile is the daemon
+# itself. It leads a session and process group of its own (setsid), and stop
+# ends that whole group: LXMF can fork stamp-generation workers, which would
+# otherwise outlive a SIGTERM to the daemon alone (see stop_bot). Nothing
+# started here keeps the caller's stdin/stdout/stderr.
+#
+# `announce` — forced announce for the portal's "Announce now" button: sends
+# SIGUSR1 to a running daemon (exit 1 if it is not running). `enabled` —
+# exit 0 iff enabled=yes in the conf (wanwatch's svc_enabled convention, kept
+# for operators and future wiring).
+
+NAME=echobot
+DAEMON=/usr/bin/rnsbox-echobot
+CONF=/etc/rnsbox/echobot.conf
+STATEDIR=/var/lib/rnsbox-echobot
+PIDFILE=/var/run/$NAME.pid
+LOGPIPE=/var/run/$NAME.logpipe
+LOGGER_PIDFILE=/var/run/$NAME.logger.pid   # the logger reading $LOGPIPE
+STOP_WAIT=10   # s the daemon gets to persist LXMF state and exit after TERM
+
+[ -x "$DAEMON" ] || exit 0
+
+# --- read the enable flag + RAM floor (flat key=value, no shell sourcing) ---
+read_conf() {
+	enabled="yes"
+	min_free_mb=40
+	if [ -r "$CONF" ]; then
+		v=$(grep -E '^[[:space:]]*enabled[[:space:]]*=' "$CONF" 2>/dev/null \
+		      | tail -1 | sed -E 's/^[[:space:]]*enabled[[:space:]]*=[[:space:]]*//' \
+		      | tr -d '"' | tr -d "'" | tr '[:upper:]' '[:lower:]' | awk '{print $1}')
+		case "$v" in no|false|0|off) enabled="no" ;; esac
+		m=$(grep -E '^[[:space:]]*min_free_mb[[:space:]]*=' "$CONF" 2>/dev/null \
+		      | tail -1 | sed -E 's/^[[:space:]]*min_free_mb[[:space:]]*=[[:space:]]*//' \
+		      | tr -d '"' | tr -d "'" | awk '{print $1}')
+		case "$m" in ''|*[!0-9]*) ;; *) min_free_mb="$m" ;; esac
+	fi
+}
+
+mem_available_mb() {
+	awk '/^MemAvailable:/{print int($2/1024); found=1} END{if(!found) print 0}' /proc/meminfo 2>/dev/null
+}
+
+# rnsd_running — true while an rnsd process exists. A /proc cmdline scan, not
+# `pidof rnsd`: rnsd is a python console-script (argv "/usr/bin/python
+# /usr/bin/rnsd ..."), and pidof is not present on every buildroot image this
+# script ships on; the scan matches what S82rnsd's own is_rnsd() matches.
+rnsd_running() {
+	for _d in /proc/[0-9]*/cmdline; do
+		tr '\0' '\n' <"$_d" 2>/dev/null | head -n 2 | grep -qE '(^|/)rnsd$' && return 0
+	done
+	return 1
+}
+
+# pidfile_pid FILE — print the pid FILE holds; false if none (or not a pid).
+pidfile_pid() {
+	_p=
+	{ read -r _p <"$1"; } 2>/dev/null
+	case "$_p" in ''|*[!0-9]*) return 1 ;; esac
+	echo "$_p"
+}
+
+# pstat PID — PSTATE and PPGRP = PID's state and process group (fields 3 and
+# 5 of /proc/PID/stat, counted after comm's last ")": comm may hold spaces);
+# false once PID is gone. Builtins only. Same as S82rnsd/S85lxmd.
+pstat() {
+	PSTATE=; PPGRP=
+	case "$1" in ''|*[!0-9]*) return 1 ;; esac
+	_s=
+	{ read -r _s <"/proc/$1/stat"; } 2>/dev/null || return 1
+	set -- ${_s##*) }
+	PSTATE=$1; PPGRP=$3
+}
+
+# is_echobot PID — true if PID is a live echobot daemon, or a fork of one
+# (LXMF's stamp workers are forks without exec, so they keep its comm). The
+# daemon is a shebang script, and the kernel names a script process after the
+# script file, so its comm is "rnsbox-echobot"; started through the
+# interpreter instead (comm python*) it is confirmed on argv[0]/argv[1]. A
+# zombie, a recycled pid or logger's "echobot[<pid>]" tag never match.
+is_echobot() {
+	pstat "$1" && [ "$PSTATE" != Z ] || return 1
+	comm=
+	{ read -r comm <"/proc/$1/comm"; } 2>/dev/null
+	case "$comm" in
+		rnsbox-echobot) return 0 ;;
+		python*) tr '\0' '\n' <"/proc/$1/cmdline" 2>/dev/null | head -n 2 \
+		           | grep -qE '(^|/)rnsbox-echobot$' ;;
+		*)       return 1 ;;
+	esac
+}
+
+# group_alive PGID — true while process group PGID has a member that has not
+# exited (a zombie holds nothing open). Builtins only.
+group_alive() {
+	for _d in /proc/[0-9]*; do
+		pstat "${_d#/proc/}" && [ "$PPGRP" = "$1" ] && [ "$PSTATE" != Z ] && return 0
+	done
+	return 1
+}
+
+# group_has_echobot PGID — true if the daemon, or a fork of it, is alive in
+# process group PGID: the daemon's group, even once the daemon itself is gone
+# and only its forks are left.
+group_has_echobot() {
+	for _d in /proc/[0-9]*; do
+		pstat "${_d#/proc/}" && [ "$PPGRP" = "$1" ] && is_echobot "${_d#/proc/}" && return 0
+	done
+	return 1
+}
+
+# is_our_logger PID — true if PID is the logger start ran for the daemon's
+# output: comm "logger" and an "echobot[<pid>]" tag in its argv (a zombie's
+# argv reads empty), so a stale $LOGGER_PIDFILE naming a recycled pid never
+# matches.
+is_our_logger() {
+	_c=
+	{ read -r _c <"/proc/$1/comm"; } 2>/dev/null
+	[ "$_c" = logger ] || return 1
+	tr '\0' '\n' <"/proc/$1/cmdline" 2>/dev/null | grep -q "^$NAME\[[0-9]*\]\$"
+}
+
+# stop_bot — stop the daemon and everything it started; false if nothing was
+# running. start made it the leader of a session and process group of its own
+# (setsid), numbered by the pid in $PIDFILE, and all it forks stays in that
+# group. On the box, LXMF's stamp workers would survive a SIGTERM to the
+# daemon alone: reparented to init, spinning at ~100% CPU, holding the FIFO
+# open so that logger never exited either. So (as S85lxmd):
+#   1. SIGSTOP the group (so CPU-bound forks don't starve the exit on the one
+#      core), SIGTERM the daemon and SIGCONT it alone: it persists its LXMF
+#      state and exits. Wait up to STOP_WAIT s for it.
+#   2. SIGKILL whatever is left of the group: the forks, and the daemon itself
+#      if it overran. Not SIGTERM: a fork inherits the daemon's Python signal
+#      handlers, and a stamp worker given SIGTERM would run its own exit
+#      handler and write state from its stale fork-time copy.
+#   3. Wait up to 1 s for the group and logger to be gone; logger reads EOF
+#      once the last writer of the FIFO has exited.
+# A daemon found gone with forks still running (it crashed, or was killed on
+# its own) skips to 2 — start runs this for that case too. A stale pidfile is
+# harmless: a recycled pid is no daemon (is_echobot), and while any member of
+# the group lives the kernel never hands out its number again. A daemon that
+# is not its own group leader (setsid missing) is signalled alone, never its
+# group.
+stop_bot() {
+	p=$(pidfile_pid "$PIDFILE")
+	lp=$(pidfile_pid "$LOGGER_PIDFILE") && ! is_our_logger "$lp" && lp=
+	lead=; grp=
+	if [ -n "$p" ] && is_echobot "$p"; then
+		lead=$p
+		[ "$PPGRP" = "$p" ] && grp=$p
+	elif [ -n "$p" ] && group_has_echobot "$p"; then
+		grp=$p
+	fi
+	if [ -z "$lead$grp" ]; then
+		# nothing left to log for
+		[ -n "$lp" ] && kill "$lp" 2>/dev/null
+		rm -f "$LOGGER_PIDFILE"
+		return 1
+	fi
+	if [ -n "$lead" ]; then
+		[ -n "$grp" ] && kill -STOP "-$grp" 2>/dev/null
+		kill "$lead" 2>/dev/null
+		kill -CONT "$lead" 2>/dev/null
+		i=0
+		while [ "$i" -lt "$STOP_WAIT" ] && is_echobot "$lead"; do
+			sleep 1; i=$((i + 1))
+		done
+	fi
+	if [ -n "$grp" ]; then
+		group_alive "$grp" && kill -KILL "-$grp" 2>/dev/null
+	elif is_echobot "$lead"; then
+		kill -KILL "$lead" 2>/dev/null
+	fi
+	i=0
+	while [ "$i" -lt 5 ]; do
+		{ [ -n "$grp" ] && group_alive "$grp"; } || is_echobot "$lead" \
+			|| { [ -n "$lp" ] && is_our_logger "$lp"; } || break
+		sleep 0.2; i=$((i + 1))
+	done
+	[ -n "$lp" ] && is_our_logger "$lp" && kill "$lp" 2>/dev/null
+	rm -f "$LOGGER_PIDFILE"
+	return 0
+}
+
+# disabled — true, with a note, unless $CONF says enabled=yes (also loads
+# min_free_mb). Every start path runs this first.
+disabled() {
+	read_conf
+	[ "$enabled" = "yes" ] && return 1
+	echo "S87echobot: disabled in $CONF (enabled=$enabled); skipping"
+	echo "           set 'enabled=yes' to run the LXMF echo bot"
+	return 0
+}
+
+start() {
+	disabled && return 0
+
+	if p=$(pidfile_pid "$PIDFILE") && is_echobot "$p"; then
+		echo "S87echobot: already running (pid $p)"
+		return 0
+	fi
+	# What a daemon that died left behind: its forks and its logger.
+	stop_bot && echo "S87echobot: ended the forks of a daemon that had exited (pid ${p:-?})"
+
+	# The daemon attaches to rnsd's shared instance — no rnsd, nothing to
+	# attach to. (It waits for the shared socket itself; this only catches
+	# rnsd being disabled/stopped entirely.)
+	if ! rnsd_running; then
+		echo "S87echobot: refusing to start - rnsd (S82rnsd) is not running"
+		echo "           the echo bot shares rnsd's Reticulum instance; start rnsd first"
+		return 1
+	fi
+
+	# RAM floor: protect rnsd (the core service) from an OOM kill. The daemon
+	# has no message store, so it needs less than lxmd's 60.
+	avail=$(mem_available_mb)
+	if [ "$avail" -lt "$min_free_mb" ]; then
+		echo "S87echobot: refusing to start - only ${avail} MB free (< min_free_mb=${min_free_mb})"
+		echo "           free RAM first (e.g. 'S81router stop' to stop the web UI)"
+		echo "           or lower min_free_mb in $CONF if you know your budget"
+		return 1
+	fi
+
+	mkdir -p /var/run "$STATEDIR"
+	# The daemon runs with umask 077 (identity.pem + state.json are
+	# root-private); tighten anything an older build left readable.
+	find "$STATEDIR" ! -type l -perm /077 -exec chmod go-rwx {} + 2>/dev/null
+
+	printf "Starting %s: " "$NAME"
+	# setsid: the daemon leads a session and process group of its own (stop
+	# ends that group), with no controlling terminal. busybox setsid forks
+	# only when its caller leads a process group, and the backgrounded
+	# subshell never does (no job control in a script): it exec's setsid,
+	# which exec's the daemon, so $! is the daemon's pid and its process
+	# group. Without setsid it still runs, and stop signals it alone. stdin
+	# is /dev/null, the daemon writes only to the FIFO and logger only to
+	# syslog: nothing keeps the caller's stdin/stdout/stderr open. logger
+	# gets a session of its own too, and its pid is kept for stop.
+	SETSID=
+	command -v setsid >/dev/null 2>&1 && SETSID=setsid
+	rm -f "$LOGPIPE" "$LOGGER_PIDFILE"
+	if command -v logger >/dev/null 2>&1 && mkfifo -m 600 "$LOGPIPE" 2>/dev/null; then
+		(
+			umask 077
+			export PYTHONUNBUFFERED=1
+			exec $SETSID "$DAEMON"
+		) 9>&- </dev/null >"$LOGPIPE" 2>&1 &
+		PID=$!
+		$SETSID logger -t "$NAME[$PID]" -p daemon.notice 9>&- <"$LOGPIPE" >/dev/null 2>&1 &
+		echo $! > "$LOGGER_PIDFILE"
+	else
+		( umask 077; exec $SETSID "$DAEMON" ) 9>&- </dev/null >/dev/null 2>&1 &
+		PID=$!
+	fi
+	echo "$PID" > "$PIDFILE"
+	sleep 0.5
+	if kill -0 "$PID" 2>/dev/null; then
+		echo "OK (pid $PID, ${avail} MB free, shared instance)"
+	else
+		echo "FAIL (see /var/log/messages)"
+		rm -f "$PIDFILE"
+		return 1
+	fi
+}
+
+stop() {
+	printf "Stopping %s: " "$NAME"
+	if stop_bot; then
+		rm -f "$PIDFILE"
+		echo "OK"
+	else
+		rm -f "$PIDFILE"
+		echo "(not running)"
+	fi
+}
+
+# Forced announce for the portal's Echo bot tab: SIGUSR1 to a running daemon.
+# The announce loop picks it up within its 1 s tick; the announce lands in
+# syslog ("LXMF announced ...") and state.json (last_announce).
+announce() {
+	p=$(pidfile_pid "$PIDFILE")
+	if [ -n "$p" ] && is_echobot "$p"; then
+		if kill -USR1 "$p" 2>/dev/null; then
+			echo "S87echobot: announce requested (pid $p)"
+			return 0
+		fi
+		echo "S87echobot: could not signal pid $p" >&2
+		return 1
+	fi
+	echo "S87echobot: not running - no announce sent (start it first)" >&2
+	return 1
+}
+
+status() {
+	read_conf
+	echo "enabled in conf: $enabled  (min_free_mb=$min_free_mb, free now $(mem_available_mb) MB)"
+	if p=$(pidfile_pid "$PIDFILE") && is_echobot "$p"; then
+		echo "running:         pid $p"
+	else
+		echo "running:         no"
+	fi
+	[ -r "$STATEDIR/state.json" ] && cat "$STATEDIR/state.json"
+}
+
+# start/stop/restart serialize on one lock (rcS, the portal and an operator
+# can overlap); announce needs it too (it reads the pidfile). flock -n in a
+# loop (busybox flock has no -w), bounded like S82rnsd.
+LOCK_WAIT=20
+[ "$1" = announce ] && LOCK_WAIT=5
+exec 9>/run/echobot.lock
+if command -v flock >/dev/null 2>&1; then
+	i=0
+	until flock -n 9 2>/dev/null; do
+		if [ "$i" -ge "$LOCK_WAIT" ]; then
+			echo "S87echobot: ${1:-start}: /run/echobot.lock still held after ${LOCK_WAIT}s - not done" >&2
+			exit 1
+		fi
+		sleep 1; i=$((i + 1))
+	done
+fi
+
+case "${1:-start}" in
+	start)   start ;;
+	stop)    stop ;;
+	restart) stop; sleep 1; start ;;
+	announce) announce ;;
+	enabled) disabled && exit 1 || exit 0 ;;
+	status)  status ;;
+	*) echo "Usage: $0 {start|stop|restart|announce|enabled|status}" >&2; exit 1 ;;
+esac

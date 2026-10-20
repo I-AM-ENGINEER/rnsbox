@@ -1,0 +1,125 @@
+# Reticulum config — opinionated default for the RNSBox router.
+#
+# rnsd creates this file with stock defaults if it's missing. We ship
+# an opinionated version that:
+#   - enables transport (we're a fixed-location router; routing for
+#     other nodes is the whole point of running this as a service)
+#   - listens on TCP 0.0.0.0:4242 so external Reticulum peers can
+#     connect inbound (WAN reach: `tcp 4242` in
+#     /etc/rnsbox/openports.conf, shipped open; the portal UI edits it)
+#   - runs an AutoInterface on the LAN (br-lan: the USB-C link and the
+#     WiFi hotspot) so devices on it auto-discover this node without
+#     manual config
+#
+# Edit live via the portal (Reticulum tab) or directly with SSH +
+# `/etc/init.d/S82rnsd restart` to apply.
+#
+# Full reference: https://markqvist.github.io/Reticulum/manual/
+
+[reticulum]
+  enable_transport = Yes
+  share_instance = Yes
+  shared_instance_port = 37428
+  instance_control_port = 37429
+  panic_on_interface_error = No
+
+[logging]
+  loglevel = 4
+
+[interfaces]
+
+  # LAN-side auto-discovery. Reticulum multicasts node announcements
+  # over the LAN, so any client tethered via USB-C or joined to the
+  # hotspot (both ports of the bridge br-lan, one segment) finds this
+  # node with no config.
+  # Runs purely over IPv6 link-local: the LAN iface's fe80:: address, the
+  # ff12:: link-scope group, UDP 29716/29717 (discovery) + 42671 (data).
+  # The LAN iface is br-lan, or usb0 alone if the bridge couldn't be made
+  # (/run/lan-iface). It is the only iface with IPv6 on this box (S09ipv6
+  # / S30gadget_nic; usb0 has none while it is a bridge port), and its
+  # link-local appears only once the link has carrier: a USB host has
+  # brought usb0 up, or the hotspot is running.
+  # `devices` lists both names: AutoInterface (RNS/Interfaces/
+  # AutoInterface.py, __init__) walks the system ifaces once at startup,
+  # skips any not in `devices`, and adopts one only if it has an fe80::
+  # address, so whichever of the two is the LAN iface is used and the
+  # other is skipped. The pin also keeps it off any iface that might gain
+  # IPv6 later (with no `devices` it would try them all).
+  # rnsd adopts the LAN iface only if it already has its link-local when
+  # rnsd starts; if the link comes up later, S46wanwatch restarts rnsd
+  # once when the address appears (or restart rnsd yourself from the
+  # portal Reticulum tab).
+  [[LAN AutoInterface]]
+    type = AutoInterface
+    enabled = True
+    devices = br-lan, usb0
+    # Explicit 10 Mbit/s: RNS sizes announce caps and link timeouts from this.
+    # It equals AutoInterface's own BITRATE_GUESS today; pinned here so a
+    # future RNS default can't change it. Conservative next to the real LAN
+    # (USB-C NCM / 2.4 GHz hotspot) - the C906 running Python is the limit.
+    bitrate = 10000000
+
+  # Inbound TCP listener for external Reticulum peers. Bound on all
+  # interfaces; nftables limits which interfaces actually reach it.
+  # Reachable from the WAN side through the `tcp 4242` entry that
+  # /etc/rnsbox/openports.conf ships with; remove it via the portal
+  # (Network -> Open ports) to close it there.
+  [[TCP Server]]
+    type = TCPServerInterface
+    enabled = True
+    listen_ip = 0.0.0.0
+    listen_port = 4242
+
+  # RNS Testnet TCP entrypoints — connect on boot to known public
+  # transport nodes so the device joins the broader Reticulum testnet
+  # without any manual peer configuration. TCPClientInterface keeps
+  # retrying indefinitely; harmless if a remote is temporarily down.
+  # Both verified reachable + actively exchanging announcements as of
+  # 2026-05-16. Earlier attempts dropped: betweentheborders.com:4242
+  # (host off the air at flash time) and rns.beleth.net:4242 (worked
+  # at first but swapped out by operator request for the .146 node).
+  [[Catz Node (TCP)]]
+    type = TCPClientInterface
+    enabled = yes
+    target_host = 77.37.146.243
+    target_port = 4242
+
+  [[RNS Node 31.129.33.146]]
+    type = TCPClientInterface
+    enabled = yes
+    target_host = 31.129.33.146
+    target_port = 4242
+
+  # Bluetooth Low Energy (BLE) transport — short-range mesh radio over the
+  # onboard BT controller (Zero 2 W: dtoverlay=miniuart-bt in config.txt;
+  # Pi 3/4: on by default) or a USB BLE dongle. Both roles at once: the box
+  # scans for nearby Reticulum BLE peers AND accepts inbound connections
+  # over its own GATT server, so phones and other nodes reach it with no
+  # config. The stack under it: BlueZ (experimental) + dbus, brought up by
+  # S37bluetooth + S40bluetoothd; the transport itself is the vendored
+  # torlando-tech/ble-reticulum classes, which RNS loads from
+  # /etc/reticulum/interfaces/.
+  #
+  # Without an adapter this is an honest no-op: rnsd runs, all other
+  # interfaces are unaffected, and the log names the reason ("no Bluetooth
+  # adapter (no hci device)"). The probe re-runs every 30 s, so a dongle
+  # plugged in later brings BLE up on its own (or restart rnsd from the
+  # portal to retry immediately).
+  #
+  # Enabled by default. Toggle here (or in the portal Reticulum tab) and
+  # restart rnsd to apply.
+  [[BLE Interface]]
+    type = BLEInterface
+    # The box is a peripheral-only access point: phones connect to it.
+    # Central scanning made it chase every Reticulum advert (including a
+    # phone's rotating random addresses) and collide with the phone's own
+    # connection attempts.
+    enable_central = no
+    enabled = yes
+    # Advertised name — keep it short, BLE ads have a 31-byte budget.
+    # Leave unset to advertise the service UUID only (the peer learns the
+    # node name from the Reticulum announce anyway).
+    device_name = RNSBox
+    # BLE GATT reality is well below the driver 700 kbit/s guess; pacing
+    # announces/routing on ~50 kbit/s keeps RNS honest about this link.
+    bitrate = 50000

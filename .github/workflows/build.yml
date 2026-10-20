@@ -65,6 +65,13 @@ jobs:
             imgdir: /mnt/rnsbox/lichee/install
           - board: sg2002-arm64
             imgdir: /mnt/rnsbox/lichee/install
+          - board: sg2002-licheerv-arm64
+            imgdir: /mnt/rnsbox/lichee/install
+          # external tree: ARM Orange Pi R1 and mainline ARM64 Duo S
+          - board: orangepi-r1
+            imgdir: /mnt/rnsbox/out/orangepi-r1/images
+          - board: sg2000-duo-s-arm64-mainline
+            imgdir: /mnt/rnsbox/out/sg2000-duo-s-arm64-mainline/images
           # cv1800b: cold-build bring-up pending (the vendor initramfs is
           # not populated from a fresh workdir — busybox/blkid missing at
           # gen_init_cpio). The flow builds locally; return it to the
@@ -78,7 +85,7 @@ jobs:
       # SoC-arch pairs (what the rv/arm boot switch needs to match), not
       # board-dir names: Duo Module 01 on the EVB = sg2000-*, LicheeRV
       # Nano-e = sg2002-*, and the suffix is the core the switch selects.
-      PRODUCT_NAMES: sg2000_duomodule01_sd=sg2000-rv64 sg2000_duo01evb_arm64_sd=sg2000-arm64 sg2002_licheervnano_sd=sg2002-rv64 sg2002_duo_arm64_sd=sg2002-arm64 cv1800b_sophpi_duo_sd=cv1800b-rv64
+      PRODUCT_NAMES: sg2000_duomodule01_sd=sg2000-rv64 sg2000_duo01evb_arm64_sd=sg2000-arm64 sg2002_licheervnano_sd=sg2002-rv64 sg2002_duo_arm64_sd=sg2002-arm64 sg2002_licheervnano_arm64_sd=sg2002-licheerv-arm64 cv1800b_sophpi_duo_sd=cv1800b-rv64
     steps:
       - name: Free up disk space
         uses: jlumbroso/free-disk-space@main

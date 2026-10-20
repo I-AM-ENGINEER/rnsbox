@@ -1,0 +1,17 @@
+#!/bin/sh
+# S29fw — fail-closed IPv4 firewall before any uplink gets an address.
+#
+# S30eth / S35wifi address the WAN (dhcpcd or static), and stock S50sshd listens on 0.0.0.0:22, before S60routing loads
+# the real ruleset. Without this, WAN SSH is reachable for a few seconds on
+# every boot even with `tcp 22` removed from Open ports. (S09ipv6 is the IPv6
+# equivalent.) Loads S60routing's emergency ruleset, whose LAN is br-lan AND
+# usb0 (the LAN iface isn't made until S30gadget_nic, and a bridge that
+# can't be made there leaves usb0 as the LAN); S60routing start replaces it.
+#
+# Order: after S09ipv6, before
+# S30eth, S30gadget_nic, S31slip and S35wifi.
+case "${1:-start}" in
+	start|restart) /etc/init.d/S60routing early ;;
+	stop)          ;;    # S60routing stop leaves the box closed
+	*) echo "Usage: $0 {start|stop|restart}" >&2; exit 1 ;;
+esac

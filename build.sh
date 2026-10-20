@@ -23,12 +23,13 @@
 #   sg2000-rv64         — same BSP, the Duo Module 01 / EVB board dir
 #                         (sg2000_duomodule01_sd) in the C906 RISC-V boot.
 #   sg2000-arm64 /      — same vendor BSP (same pin, same host-tools), booting
-#   sg2002-arm64          Linux on the Cortex-A53: the shared licheerv-nano
-#                         series is applied first, then the ARM64 board delta
+#   sg2002-arm64 /        Linux on the Cortex-A53: the shared licheerv-nano
+#   sg2002-licheerv-arm64 series is applied first, then the ARM64 board delta
 #                         under patches/milkv-duo-01-arm/ (board dirs
-#                         sg2000_duo01evb_arm64_sd / sg2002_duo_arm64_sd,
-#                         aarch64 buildroot defconfig, 64bit ramdisk overlay);
-#                         one board per build via RNSBOX_PACKER_BOARDS.
+#                         sg2000_duo01evb_arm64_sd, sg2002_duo_arm64_sd and
+#                         sg2002_licheervnano_arm64_sd; aarch64 buildroot
+#                         defconfig, 64bit ramdisk overlay); one board per
+#                         build via RNSBOX_PACKER_BOARDS.
 #
 #   ./build.sh [board] [lite|dvd]     (default board: sg2002-rv64, lite)
 #   ./build.sh all lite               — every board sequentially
@@ -50,7 +51,7 @@ HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 # same SoCs, not different boards): sg2000-rv64 = Duo Module 01 (EVB),
 # sg2000-arm64 = same on the A53, sg2002-rv64 = LicheeRV Nano-e,
 # sg2002-arm64 = same on the A53. cv1800b (Duo 64M) is RV-only.
-BOARDS="sg2000-rv64 sg2000-arm64 sg2002-rv64 sg2002-arm64 milkv-duo-cv1800b rpi-universal pc-x86_64 milkv-duo-cv1800b-mainline"
+BOARDS="sg2000-rv64 sg2000-arm64 sg2002-rv64 sg2002-arm64 sg2002-licheerv-arm64 milkv-duo-cv1800b rpi-universal orangepi-r1 pc-x86_64 milkv-duo-cv1800b-mainline sg2000-duo-s-arm64-mainline"
 
 # ---- image version stamp (read by rnsbox-sysupdate for update decisions) ----
 # Same formula as the CI release job's tag: r<UTC date>-<short sha>. On CI,
@@ -104,7 +105,7 @@ case "$BOARD" in
         RNSBOX_BR_DEFCONFIG=cvitek_SG200X_musl_riscv64_defconfig
         RNSBOX_PACKER=build-rnsbox.sh
         ;;
-    sg2000-arm64|sg2002-arm64)
+    sg2000-arm64|sg2002-arm64|sg2002-licheerv-arm64)
         # One arm64 board per build: the family shares an identical kernel
         # defconfig and aarch64 rootfs, so a single-board run packs its own
         # boot.sd/fip only (the other board's image is the sibling job's).
@@ -112,6 +113,8 @@ case "$BOARD" in
         # kill the script (same lesson as the packer copy below).
         if [ "$BOARD" = sg2000-arm64 ]; then
             local_board=sg2000_duo01evb_arm64_sd
+        elif [ "$BOARD" = sg2002-licheerv-arm64 ]; then
+            local_board=sg2002_licheervnano_arm64_sd
         else
             local_board=sg2002_duo_arm64_sd
         fi
@@ -170,6 +173,15 @@ case "$BOARD" in
         # install/soc_<board>/images next to it
         RNSBOX_IMAGES_DIR="install/soc_cv1800b_sophpi_duo_sd/images"
         ;;
+    orangepi-r1)
+        # Allwinner H2+ (Cortex-A7) on mainline Linux 6.6 + U-Boot 2024.01.
+        # Same external-tree flow as rpi-universal; the image is assembled by
+        # board/orangepi-r1/post-image.sh (GPT + sunxi SPL at 8 KiB).
+        BUILD_STYLE=external
+        UPSTREAM_URL="${UPSTREAM_URL:-https://github.com/buildroot/buildroot.git}"
+        UPSTREAM_COMMIT="${UPSTREAM_COMMIT:-679b9ead7620bbf193620d1ebf56f53c1764d37a}"  # 2026.02.3
+        DEFCONFIG=rnsbox_orangepi_r1_defconfig
+        ;;
     rpi-universal)
         BUILD_STYLE=external
         UPSTREAM_URL="${UPSTREAM_URL:-https://github.com/buildroot/buildroot.git}"
@@ -196,6 +208,16 @@ case "$BOARD" in
         UPSTREAM_URL="${UPSTREAM_URL:-https://github.com/buildroot/buildroot.git}"
         UPSTREAM_COMMIT="${UPSTREAM_COMMIT:-679b9ead7620bbf193620d1ebf56f53c1764d37a}"  # 2026.02.3
         DEFCONFIG=rnsbox_milkv_duo_cv1800b_mainline_defconfig
+        ;;
+    sg2000-duo-s-arm64-mainline)
+        # Milk-V Duo S on the Cortex-A53 with MAINLINE Linux: upstream
+        # sg2000-milkv-duo-s.dts (Ethernet, eMMC, SDIO WiFi, USB), the
+        # vendor ARM64 fip.bin (SG2000) and our boot.sd FIT around the
+        # mainline arm64 Image/DTB.
+        BUILD_STYLE=external
+        UPSTREAM_URL="${UPSTREAM_URL:-https://github.com/buildroot/buildroot.git}"
+        UPSTREAM_COMMIT="${UPSTREAM_COMMIT:-679b9ead7620bbf193620d1ebf56f53c1764d37a}"  # 2026.02.3
+        DEFCONFIG=rnsbox_duo_s_arm64_mainline_defconfig
         ;;
 esac
 
@@ -751,6 +773,40 @@ rnsbox_build_rpi_universal() {    # Set up by the external flow below: $UPSTREAM
     "$EXT/scripts/build-variant.sh" "$VARIANT" "$UPSTREAM" "$ODIR" "$EXT"
 }
 
+rnsbox_build_sg2000_duo_s_arm64_mainline() {
+    # External flow, lite-only (one NCM gadget; the dvd clients LUN is not
+    # wired for this board). Same shape as milkv-duo-cv1800b-mainline.
+    export PATH=$(echo "$PATH" | tr ':' '\n' | grep -v '^/mnt/[a-z]/' | paste -sd:)
+    export PATH=/usr/sbin:/sbin:$PATH
+    if [ "$VARIANT" != lite ]; then
+        echo ">> sg2000-duo-s-arm64-mainline: lite only, building lite"
+        VARIANT=lite
+    fi
+    export RNSBOX_VARIANT="$VARIANT"
+
+    echo ">> configuring ($DEFCONFIG) + building (first run compiles everything; be patient)"
+    make -C "$UPSTREAM" O="$ODIR" BR2_EXTERNAL="$EXT" "$DEFCONFIG"
+    rnsbox_pin_dl
+    make -C "$UPSTREAM" O="$ODIR" BR2_EXTERNAL="$EXT"
+}
+
+rnsbox_build_orangepi_r1() {
+    # External flow (same shared upstream clone/dl cache as rpi-universal).
+    # The H2+ port is lite-only: one NCM gadget, no clients DVD.
+    export PATH=$(echo "$PATH" | tr ':' '\n' | grep -v '^/mnt/[a-z]/' | paste -sd:)
+    export PATH=/usr/sbin:/sbin:$PATH
+    if [ "$VARIANT" != lite ]; then
+        echo ">> orangepi-r1: the '$VARIANT' variant is not built (lite only)"
+        VARIANT=lite
+    fi
+    export RNSBOX_VARIANT="$VARIANT"
+
+    echo ">> configuring ($DEFCONFIG) + building (first run compiles everything; be patient)"
+    make -C "$UPSTREAM" O="$ODIR" BR2_EXTERNAL="$EXT" "$DEFCONFIG"
+    rnsbox_pin_dl
+    make -C "$UPSTREAM" O="$ODIR" BR2_EXTERNAL="$EXT"
+}
+
 rnsbox_build_pc_x86_64() {
     # Same external flow as the rpi-universal (set up by the block below: $UPSTREAM
     # pristine clone, $EXT tree, $ODIR, pinned dl cache). No variant staging:
@@ -796,8 +852,10 @@ rnsbox_build() {
         sg2000-rv64)      rnsbox_build_milkv_duo_01 ;;
         milkv-duo-cv1800b)     rnsbox_build_milkv_duo_cv1800b ;;
         rpi-universal)    rnsbox_build_rpi_universal ;;
+        orangepi-r1)      rnsbox_build_orangepi_r1 ;;
         pc-x86_64)        rnsbox_build_pc_x86_64 ;;
         milkv-duo-cv1800b-mainline) rnsbox_build_milkv_duo_cv1800b_mainline ;;
+        sg2000-duo-s-arm64-mainline) rnsbox_build_sg2000_duo_s_arm64_mainline ;;
     esac
 }
 

@@ -1,0 +1,95 @@
+# RNSBox kernel additions on top of the sunxi defconfig for the Orange Pi R1
+# (Allwinner H2+, 4x Cortex-A7, 256 MB). The upstream sunxi defconfig already
+# carries the platform drivers (EMAC, MMC, USB host, WiFi stack); this fragment
+# adds the router/gadget data plane and the low-RAM extras.
+
+# --- USB gadget: CDC-NCM (+ optional read-only mass storage) on the micro-USB
+#     OTG port (MUSB, peripheral mode already set by the Zero-derived DTS) ---
+CONFIG_USB_MUSB_HDRC=y
+CONFIG_USB_MUSB_SUNXI=y
+CONFIG_USB_MUSB_DUAL_ROLE=y
+CONFIG_USB_GADGET=y
+CONFIG_USB_CONFIGFS=y
+CONFIG_USB_CONFIGFS_NCM=y
+CONFIG_USB_CONFIGFS_MASS_STORAGE=y
+CONFIG_USB_GADGET_VBUS_DRAW=500
+
+# --- nftables data plane (S60routing; ruleset validated by nft -c) ---
+CONFIG_NF_TABLES=y
+CONFIG_NF_TABLES_INET=y
+CONFIG_NF_TABLES_IPV4=y
+CONFIG_NF_TABLES_IPV6=y
+CONFIG_NF_TABLES_NETDEV=y
+CONFIG_NFT_CT=y
+CONFIG_NFT_LIMIT=y
+CONFIG_NFT_LOG=y
+CONFIG_NFT_NAT=y
+CONFIG_NFT_MASQ=y
+CONFIG_NFT_REDIR=y
+CONFIG_NFT_REJECT=y
+CONFIG_NFT_FIB_INET=y
+CONFIG_NF_CONNTRACK=y
+CONFIG_NF_CONNTRACK_EVENTS=y
+CONFIG_NF_NAT=y
+CONFIG_NETFILTER_XTABLES=y
+
+# --- one bridged LAN (br-lan): USB OTG NCM + WiFi hotspot share a subnet ---
+CONFIG_BRIDGE=y
+CONFIG_BRIDGE_IGMP_SNOOPING=y
+
+# --- SLIP over UART for the optional HaLow modem link (ttyS1) ---
+CONFIG_SLIP=y
+CONFIG_SLIP_COMPRESSED=y
+CONFIG_SLIP_SMART=y
+
+# --- RNode / USB serial modems ---
+CONFIG_USB_ACM=y
+CONFIG_USB_SERIAL=y
+CONFIG_USB_SERIAL_GENERIC=y
+CONFIG_USB_SERIAL_CH341=y
+CONFIG_USB_SERIAL_CP210X=y
+CONFIG_USB_SERIAL_FTDI_SIO=y
+CONFIG_USB_SERIAL_PL2303=y
+
+# --- onboard RTL8189ETV WiFi (SDIO, out-of-tree Buildroot module) ---
+CONFIG_WIRELESS=y
+CONFIG_CFG80211=y
+
+# --- throughput: BBR + fq ---
+CONFIG_TCP_CONG_BBR=y
+CONFIG_DEFAULT_TCP_CONG="bbr"
+CONFIG_NET_SCH_FQ=y
+
+# --- misc router bits ---
+CONFIG_TUN=y
+CONFIG_VETH=y
+
+# --- 256 MB RAM: zram swap (S05zram) ---
+CONFIG_SWAP=y
+CONFIG_ZSMALLOC=y
+CONFIG_ZRAM=m
+CONFIG_ZRAM_DEF_COMP_LZORLE=y
+CONFIG_CRYPTO_LZO=y
+CONFIG_CRYPTO_LZORLE=y
+
+# --- watchdog + cpufreq governor used by the shared init chain ---
+CONFIG_WATCHDOG=y
+CONFIG_SUNXI_WATCHDOG=y
+CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y
+
+# --- optional DS3231 RTC on the header I2C bus ---
+CONFIG_I2C=y
+CONFIG_I2C_MV64XXX=y
+CONFIG_RTC_CLASS=y
+CONFIG_RTC_DRV_DS1307=y
+
+# --- rootfs essentials ---
+CONFIG_DEVTMPFS=y
+CONFIG_DEVTMPFS_MOUNT=y
+CONFIG_EXT4_FS=y
+CONFIG_VFAT_FS=y
+CONFIG_NLS_CODEPAGE_437=y
+CONFIG_NLS_ISO8859_1=y
+CONFIG_TMPFS=y
+CONFIG_TMPFS_POSIX_ACL=y
+CONFIG_IPV6=y

@@ -3,17 +3,20 @@
 RNSBox turns a small, USB-powered single-board computer into a
 [Reticulum](https://reticulum.network/) router and transport node with an
 OpenWrt-style web admin UI. One repository serves every supported board —
-currently the **Sipeed LicheeRV Nano-e** (SG2002, RISC-V) and the
-**Raspberry Pi** (one universal image for Zero 2 W / 3 / 4 / 5) — with the
-router software shared and only the board files differing.
+the **Sipeed LicheeRV Nano-e** and **Milk-V Duo / Duo S / Duo 256M**
+(SG2000/SG2002, RISC-V C906 *and* ARM Cortex-A53), the **Raspberry Pi**
+(one universal image for Zero 2 W / 3 / 4 / 5) and the **Orange Pi R1**
+(Allwinner H2+, 4× Cortex-A7) — with the router software shared and only
+the board files differing.
 
 The repository is a Buildroot **external tree** plus, for boards whose
 vendor only ships a BSP fork, a git-am patch series — so it contains only
 the RNSBox delta; the kernel, Buildroot and vendor sources come from
 upstream and are fetched at build time.
 
-- **LicheeRV Nano-e:** [`sipeed/LicheeRV-Nano-Build`](https://github.com/sipeed/LicheeRV-Nano-Build) at `d4003f15b` via the 23 patches in [`patches/licheerv-nano/`](patches/licheerv-nano)
-- **Raspberry Pi (universal):** [`buildroot/buildroot`](https://github.com/buildroot/buildroot) 2026.02.3 LTS at `679b9ead` (no patches — the board builds straight from this repo as an external tree)
+- **LicheeRV Nano-e / Milk-V Duo family (RISC-V and ARM):** [`sipeed/LicheeRV-Nano-Build`](https://github.com/sipeed/LicheeRV-Nano-Build) at `d4003f15b` via the patches in [`patches/licheerv-nano/`](patches/licheerv-nano), [`patches/milkv-duo-01/`](patches/milkv-duo-01) and [`patches/milkv-duo-01-arm/`](patches/milkv-duo-01-arm)
+- **Milk-V Duo S on mainline ARM64:** [`buildroot/buildroot`](https://github.com/buildroot/buildroot) 2026.02.3 LTS at `679b9ead` + mainline Linux `v7.3-rc7` (`board/sg2000-duo-s-arm64-mainline/`)
+- **Raspberry Pi (universal) / Orange Pi R1:** [`buildroot/buildroot`](https://github.com/buildroot/buildroot) 2026.02.3 LTS at `679b9ead` (no patches — the boards build straight from this repo as an external tree)
 
 ## Quick start
 
@@ -25,8 +28,11 @@ cd rnsbox
 ./build.sh sg2002-rv64 lite      # LicheeRV Nano-e (SG2002, C906 boot)
 ./build.sh sg2000-rv64 lite      # Duo Module 01 on the EVB (SG2000, C906 boot)
 ./build.sh sg2000-arm64 lite     # same board on the A53 (the rv/arm switch)
-./build.sh sg2002-arm64 lite     # SG2002 on the A53
+./build.sh sg2002-arm64 lite     # SG2002 (Duo 256M) on the A53
+./build.sh sg2002-licheerv-arm64 lite  # LicheeRV Nano on the A53 (vendor arm64)
 ./build.sh rpi-universal lite    # Raspberry Pi — Zero 2 W / 3 / 4 / 5 (~433 MB)
+./build.sh orangepi-r1 lite      # Orange Pi R1 (Allwinner H2+, ARMv7)
+./build.sh sg2000-duo-s-arm64-mainline lite  # Duo S, mainline Linux on the A53
 ./build.sh all lite             # every board, sequentially
 # dvd instead of lite adds a read-only disc of the latest Reticulum clients
 ```
@@ -39,8 +45,10 @@ EVB, Duo Module 01, LicheeRV Nano-e and Duo are the same two SoCs — the
 the LicheeRV Nano-e / Duo form factor.
 
 The finished image lands under `LicheeRV-Nano-Build/install/soc_sg2002_licheervnano_sd/images/`
-(LicheeRV) or `~/rnsbox-work/upstream/out/rpi-universal/images/` (Pi). Flash it with
-`dd` (or a tool like balenaEtcher) to a microSD and boot the board.
+(LicheeRV), `milkv-duo-01-arm/install/soc_<board>/images/` (vendor ARM64
+family) or `~/rnsbox-work/upstream/out/<board>/images/` (Pi, Orange Pi,
+mainline Duo S). Flash it with `dd` (or a tool like balenaEtcher) to a
+microSD and boot the board.
 
 > **First build is long.** The LicheeRV build compiles a Rust host toolchain from
 > source (needed for `python-cryptography` on `riscv64-musl`), so the first run

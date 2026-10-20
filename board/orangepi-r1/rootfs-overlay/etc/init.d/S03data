@@ -1,0 +1,54 @@
+#!/bin/sh
+# RNSBox A/B: mount the persistent /data partition (p4) and bind-mount the state
+# directories that MUST survive a rootfs slot swap — the Reticulum identity, the
+# router config + portal password, the SSH host keys, and the updater state.
+# First boot formats p4 and seeds each dir from the shipped rootfs defaults.
+#
+# Layout-detecting: on the single-partition (dvd / pre-A/B) image there is no
+# p4, so this is a clean no-op and that state simply stays on the rootfs.
+#
+# Runs at S03 — after S01fs mounts /boot and the stock S02* setup, and before
+# anything that reads the state (S10uuid, S30*, S60routing, S81router, S82rnsd,
+# S50sshd) so their writes land on /data.
+
+DATA=/dev/mmcblk0p4
+
+start() {
+	[ -b "$DATA" ] || return 0        # no data partition => single-partition layout
+
+	# Format on the very first boot if p4 isn't an ext filesystem yet.
+	if ! dumpe2fs -h "$DATA" >/dev/null 2>&1; then
+		printf "S03data: formatting %s ... " "$DATA"
+		mke2fs -t ext4 -F -q -L rnsbox-data "$DATA" && echo "OK" || { echo "FAILED"; return 0; }
+	fi
+
+	mkdir -p /data
+	mount -o noatime "$DATA" /data 2>/dev/null || { echo "S03data: mount failed"; return 0; }
+
+	# <store-name>:<rootfs-dir> — bind-mount each dir off /data, seeding it on
+	# first boot from the shipped rootfs copy (identity/keys created later land
+	# on /data automatically through the bind mount).
+	for map in \
+		rnsbox:/etc/rnsbox \
+		reticulum:/etc/reticulum \
+		ssh:/etc/ssh \
+		var-rnsbox:/var/lib/rnsbox \
+		var-nomadnet:/var/lib/nomadnetwork
+	do
+		name=${map%%:*}; dir=${map#*:}
+		store="/data/$name"
+		if [ ! -d "$store" ]; then
+			mkdir -p "$store"
+			[ -d "$dir" ] && cp -a "$dir/." "$store/" 2>/dev/null   # seed defaults
+		fi
+		mkdir -p "$dir"
+		mount --bind "$store" "$dir"
+	done
+	echo "S03data: /data mounted; state relocated to the persistent partition"
+}
+
+case "$1" in
+	start) start ;;
+	stop)  : ;;
+	*)     echo "usage: $0 {start|stop}"; exit 1 ;;
+esac
