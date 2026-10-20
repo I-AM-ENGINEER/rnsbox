@@ -279,12 +279,14 @@ gen_hostapd_conf() {
 			if [ "$chan" = "auto" ]; then
 				echo "ht_capab=[$off][SHORT-GI-20][SHORT-GI-40][SHORT-GI-80]"
 				echo "vht_oper_chwidth=1"
+				[ "$std" = "ax" ] && echo "he_oper_chwidth=1"
 			else
 				ctr=$(center80 "$chan")
 				if [ -n "$ctr" ]; then
 					echo "ht_capab=[$off][SHORT-GI-20][SHORT-GI-40][SHORT-GI-80]"
 					echo "vht_oper_chwidth=1"
 					echo "vht_oper_centr_freq_seg0_idx=$ctr"
+					[ "$std" = "ax" ] && echo "he_oper_chwidth=1"
 				else
 					echo "ht_capab=[SHORT-GI-20]"
 				fi
@@ -310,11 +312,13 @@ gen_hostapd_conf() {
 			if [ "$std" = "ac" ] || [ "$std" = "ax" ]; then
 				echo "vht_oper_chwidth=0"
 			fi
+			[ "$std" = "ax" ] && echo "he_oper_chwidth=0"
 		else
 			echo "ht_capab=[SHORT-GI-20]"
 			if [ "$std" = "ac" ] || [ "$std" = "ax" ]; then
 				echo "vht_oper_chwidth=0"
 			fi
+			[ "$std" = "ax" ] && echo "he_oper_chwidth=0"
 		fi
 		echo "ignore_broadcast_ssid=${hidden:-0}"
 		echo "auth_algs=1"
