@@ -1,10 +1,12 @@
-riscv: dts: sophgo: add the Milk-V Duo Module 01 EVB board
+From: RNSBox <rnsbox@localhost>
+Subject: [PATCH] riscv: dts: sophgo: add the Milk-V Duo Module 01 EVB board
 
 Mainline v7.3 already carries sg2000.dtsi (clk/pinctrl/plic/clint) and
 the Milk-V Duo S board. The Duo Module 01 on the Evaluation Board is the
 same SG2000 SoC behind a different carrier: uSD on sdhci0 (SD0), console
-on UART0, the internal GbE PHY on gmac0. This board file enables the
-minimum for an SD-boot headless router:
+on UART0, the internal GbE PHY on gmac0, and the module's optional eMMC
+on the dedicated eMMC controller. This board file enables the minimum for
+a headless router:
 
 - reserved-memory: the vendor OpenSBI in fip.bin lives at 0x80000000 and
   does not reserve itself through the FDT (the vendor kernel parses the
@@ -15,14 +17,14 @@ minimum for an SD-boot headless router:
   same board to min 400 kHz / max 25 MHz "reliability over throughput",
   and the sibling sg200x vendor flow had to cap &sd at 25 MHz too (the
   50 MHz HS re-init broke SD boots there).
+- eMMC on &emmc (4-bit, no-1-8-v) for the module variants that carry it;
+  the uSD slot remains mmc0 and the default boot medium.
+- sdhci1 as the AIC8800 SDIO slot (the -W module), with the real card
+  clock source (CLK_SD1) and a 25 MHz cap.
 - usb in the gadget role (dr_mode = "peripheral") for the RNSBox
   CDC-NCM portal; needs the dwc2 -> generic-PHY mode propagation patch
   in this same directory (phy-cv1800-usb2 gates VBUS/ID-override on
   set_mode).
-
-No eMMC (the module pads it but the EVB SD-boot flow targets the uSD
-slot), no SDIO wifi (the 01-W module's AIC8800 has no mainline driver),
-no display/camera (headless RNSBox).
 
 UART0 and SD pins are on their reset multiplexing on this carrier (the
 vendor u-boot cvi_board_init only sets the PHY LED pins); the pinctrl
@@ -35,7 +37,7 @@ new file mode 100644
 index 00000000000..11111111111
 --- /dev/null
 +++ b/arch/riscv/boot/dts/sophgo/sg2000-duomodule01-evb.dts
-@@ -0,0 +1,246 @@
+@@ -0,0 +1,292 @@
 +// SPDX-License-Identifier: (GPL-2.0 OR MIT)
 +
 +/dts-v1/;
@@ -49,9 +51,9 @@ index 00000000000..11111111111
 + * Milk-V Duo Module 01 Evaluation Board (SG2000, C906, 512 MB DDR3, SD boot).
 + *
 + * Minimal RNSBox headless shape: uart0 console + SD (sdhci0) + internal
-+ * GbE PHY + DWC2 gadget on the OTG port. The module's optional -W variant
-+ * (AIC8800 SDIO wifi) and the Duo-S-specific eMMC / uart4 / sdhci1 wiring
-+ * are left disabled - the EVB does not wire them the same way.
++ * GbE PHY + DWC2 gadget on the OTG port + the module's eMMC on the
++ * dedicated SG2000 eMMC controller (the uSD slot stays the boot medium).
++ * The -W module's AIC8800 SDIO wifi and the Duo-S uart4 wiring stay off.
 + */
 +
 +/ {
@@ -60,7 +62,8 @@ index 00000000000..11111111111
 +
 +	aliases {
 +		mmc0 = &sdhci0;
-+		mmc1 = &sdhci1;
++		mmc1 = &emmc;
++		mmc2 = &sdhci1;
 +		serial0 = &uart0;
 +	};
 +
@@ -140,6 +143,39 @@ index 00000000000..11111111111
 +		};
 +	};
 +
++	emmc_cfg: emmc-cfg {
++		emmc-rstn-pins {
++			pinmux = <PINMUX(PIN_EMMC_RSTN, 0)>;
++			bias-pull-up;
++			drive-strength-microamp = <10800>;
++			power-source = <1800>;
++		};
++
++		emmc-clk-pins {
++			pinmux = <PINMUX(PIN_EMMC_CLK, 0)>;
++			bias-pull-up;
++			drive-strength-microamp = <10800>;
++			power-source = <1800>;
++		};
++
++		emmc-cmd-pins {
++			pinmux = <PINMUX(PIN_EMMC_CMD, 0)>;
++			bias-pull-up;
++			drive-strength-microamp = <10800>;
++			power-source = <1800>;
++		};
++
++		emmc-data-pins {
++			pinmux = <PINMUX(PIN_EMMC_DAT0, 0)>,
++				 <PINMUX(PIN_EMMC_DAT1, 0)>,
++				 <PINMUX(PIN_EMMC_DAT2, 0)>,
++				 <PINMUX(PIN_EMMC_DAT3, 0)>;
++			bias-pull-up;
++			drive-strength-microamp = <10800>;
++			power-source = <1800>;
++		};
++	};
++
 +	uart0_cfg: uart0-cfg {
 +		uart0-pins {
 +			pinmux = <PINMUX(PIN_UART0_TX, 0)>,
@@ -189,6 +225,18 @@ index 00000000000..11111111111
 +};
 +
 +&saradc {
++	status = "okay";
++};
++
++&emmc {
++	bus-width = <4>;
++	no-1-8-v;
++	cap-mmc-hw-reset;
++	no-sd;
++	no-sdio;
++	non-removable;
++	pinctrl-0 = <&emmc_cfg>;
++	pinctrl-names = "default";
 +	status = "okay";
 +};
 +
@@ -282,3 +330,6 @@ index 00000000000..11111111111
 + * UART clock in a state where its 115200 console is exact, and reprogramming
 + * disppll from Linux was never proven on hardware. The 8250 driver reads the
 + * real rate back from the PLL/divider registers via the clocks property. */
+-- 
+2.43.0
+

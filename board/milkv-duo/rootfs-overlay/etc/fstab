@@ -3,7 +3,7 @@
 # (stacked mounts); /run covers /var/lock and the cron spool. noatime: SD economy.
 
 # <file system>	<mount pt>	<type>	<options>				<dump>	<pass>
-/dev/root	/		ext4	rw,noauto,noatime			0	1
+/dev/root	/		ext4	rw,noauto,noatime,commit=60,errors=remount-ro			0	1
 /dev/mmcblk0p1	/boot		vfat	defaults,noatime			0	0
 proc		/proc		proc	defaults				0	0
 devpts		/dev/pts	devpts	defaults,gid=5,mode=620,ptmxmode=0666	0	0

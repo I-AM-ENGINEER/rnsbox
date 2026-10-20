@@ -28,7 +28,7 @@ cp -f "${FIP_SRC}" "${BINARIES_DIR}/fip.bin"
 # FIT payload: gzip the Image (u-boot gunzips to 0x80200000) + the DTB
 # buildroot installed next to it (BR2_LINUX_KERNEL_INTREE_DTS_NAME).
 gzip -9 -c "${BINARIES_DIR}/Image" > "${BINARIES_DIR}/Image.gz"
-DTB="${BINARIES_DIR}/sg2000-milkv-duomodule01-evb.dtb"
+DTB="${BINARIES_DIR}/sg2000-duomodule01-evb.dtb"
 [ -f "${DTB}" ] || { echo "FATAL: ${DTB} missing" >&2; exit 1; }
 cp -f "${BOARD_DIR}/boot.its" "${BINARIES_DIR}/boot.its"
 ( cd "${BINARIES_DIR}" && "${MKIMAGE}" -f boot.its boot.sd )

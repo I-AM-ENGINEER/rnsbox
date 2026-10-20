@@ -42,7 +42,7 @@
 
 		fdt-sg2000_duomodule01_sd {
 			description = "mainline sg2000-milkv-duomodule01-evb device tree";
-			data = /incbin/("./sg2000-milkv-duomodule01-evb.dtb");
+			data = /incbin/("./sg2000-duomodule01-evb.dtb");
 			type = "flat_dt";
 			arch = "riscv";
 			compression = "none";

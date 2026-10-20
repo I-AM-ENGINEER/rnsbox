@@ -1,0 +1,3 @@
+#!/bin/sh
+# Milk-V Duo 256M has no SDIO WiFi; do not run the SG2000 AIC bring-up.
+exit 0

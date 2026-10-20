@@ -1,0 +1,20 @@
+From: RNSBox <rnsbox@localhost>
+Subject: [PATCH] riscv: dts: sophgo: use USB gadget mode on the Milk-V Duo S
+
+The RNSBox portal exposes a CDC-NCM management interface on the
+board's single USB-C port, so the DWC2 controller must run in
+peripheral mode.  The EVB DTS already does this.
+
+---
+--- a/arch/riscv/boot/dts/sophgo/sg2000-milkv-duo-s.dts
++++ b/arch/riscv/boot/dts/sophgo/sg2000-milkv-duo-s.dts
+@@ -239,6 +239,6 @@
+ };
+ 
+ &usb {
+-	dr_mode = "host";
++	dr_mode = "peripheral";
+ 	status = "okay";
+ };
+-- 
+2.43.0

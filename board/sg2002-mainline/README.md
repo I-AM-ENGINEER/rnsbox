@@ -65,13 +65,25 @@ FSBL) by the same local SDK build that produced the working vendor
 LicheeRV Nano image.  It is the only closed-board blob in this target;
 the kernel, DTB and rootfs are built from source.
 
+## Wi-Fi / BT (B/WE variants)
+
+The same AIC8800D80 as on the EVB sits on SDIO1 (`0x4320000`).  The DTS
+now enables `sdhci1` with the real card clock (`CLK_SD1`, 375 MHz parent,
+25 MHz cap), the SD1 pin group (`PIN_SD1_*`, function 0 as the vendor
+u-boot programs it), and an `mmc-pwrseq-simple` on **GPIOA26** - the pin
+the vendor `cvi_board_init` drives as WL_REG_ON.  GPIOA15 is the
+bit-banged I2C bus on this board, which is why the EVB bring-up cannot
+be used unchanged.
+
+The AIC BSP takes two board knobs: `wlregon_pin=26` and
+`sd1_pads_config=0` (the DT pinctrl owns the SD1 pads).  Firmware, the
+LPO/RTC fix, the chip_reset sequence and the SDIO function-2 BT path are
+shared with the EVB; `rootfs-overlay/root/wifi.sh` and `S99wifi7310`
+carry the LicheeRV values.
+
 ## Still to do
 
-* WiFi/BT: the B/WE variants carry the AIC8800D80 on SDIO1.  The mainline
-  LicheeRV DTS does not enable `sdhci1` yet, so `S99wifi7310` will not
-  find the card on this board until the SDIO1 node/pinmux/pwrseq are
-  added.  Ethernet, USB host and the SD rootfs do not depend on it.
 * Hardware bring-up of this image on a physical Nano: the DTB compiles
-  and its Ethernet nodes are validated, and the driver/PHY combination
-  is the one proven on the EVB, but this image has not yet been booted
-  on a Nano in this session.
+  and its Ethernet/SDIO nodes are validated, and the driver/PHY
+  combination is the one proven on the EVB, but this image has not yet
+  been booted on a Nano in this session.

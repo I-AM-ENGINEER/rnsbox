@@ -1,0 +1,119 @@
+From: RNSBox <rnsbox@localhost>
+Subject: [PATCH] riscv: dts: sophgo: enable Ethernet, SDIO Wi-Fi and USB gadget on the LicheeRV Nano B
+
+The E/WE edition wires the SG2002 internal 10/100 EPHY to the RJ45
+magjack (EPHY_TX/RX pairs through AC coupling); there is no external
+MAC/PHY.  TMI7003C next to the SoC is the 3-channel DCDC+LDO power
+regulator, not an Ethernet device: its EN1/2/3 pins are strapped to VSYS
+and it has no software control interface.
+
+Ethernet: enable gmac0 and the MDIO mux, mirroring the Milk-V Duo S DTS.
+
+Wi-Fi: the B/WE variants carry the AIC8800D80 on SDIO1 (0x4320000).  Add
+the SD1 pin group (function 0, as the vendor u-boot programs it), the
+CLK_SD1 card-clock source, and an mmc-pwrseq on GPIOA26 - the pin the
+vendor cvi_board_init drives as WL_REG_ON.  GPIOA15 is the bit-banged
+I2C bus on this board, so it must not be used for Wi-Fi power.
+
+USB: the single USB-C port is used for the RNSBox CDC-NCM gadget.
+
+---
+--- a/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts
++++ b/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts
+@@ -5,6 +5,7 @@
+ 
+ /dts-v1/;
+ 
++#include <dt-bindings/gpio/gpio.h>
+ #include "sg2002.dtsi"
+ 
+ / {
+@@ -26,13 +27,51 @@
+ 	chosen {
+ 		stdout-path = "serial0:115200n8";
+ 	};
++
++	wifi_pwrseq: wifi-pwrseq {
++		compatible = "mmc-pwrseq-simple";
++		reset-gpios = <&porta 26 GPIO_ACTIVE_LOW>;
++		power-off-delay-us = <50000>;
++		post-power-on-delay-ms = <200>;
++	};
+ };
+ 
+ &osc {
+ 	clock-frequency = <25000000>;
+ };
+ 
++&gmac0 {
++	status = "okay";
++};
++
++&mdio {
++	status = "okay";
++};
++
+ &pinctrl {
++	sdhci1_cfg: sdhci1-cfg {
++		sdhci1-clk-pins {
++			pinmux = <PINMUX(PIN_SD1_CLK, 0)>;
++			bias-pull-down;
++			power-source = <3300>;
++		};
++
++		sdhci1-cmd-pins {
++			pinmux = <PINMUX(PIN_SD1_CMD, 0)>;
++			bias-pull-up;
++			power-source = <3300>;
++		};
++
++		sdhci1-data-pins {
++			pinmux = <PINMUX(PIN_SD1_D0, 0)>,
++				 <PINMUX(PIN_SD1_D1, 0)>,
++				 <PINMUX(PIN_SD1_D2, 0)>,
++				 <PINMUX(PIN_SD1_D3, 0)>;
++			bias-pull-up;
++			power-source = <3300>;
++		};
++	};
++
+ 	uart0_cfg: uart0-cfg {
+ 		uart0-pins {
+ 			pinmux = <PINMUX(PIN_UART0_TX, 0)>,
+@@ -88,6 +127,26 @@
+ 	disable-wp;
+ };
+ 
++&sdhci1 {
++	clocks = <&clk CLK_SD1>, <&clk CLK_AXI4_SD1>;
++	clock-names = "core", "bus";
++	assigned-clocks = <&clk CLK_SD1>;
++	assigned-clock-parents = <&clk CLK_FPLL>;
++	assigned-clock-rates = <375000000>;
++	bus-width = <4>;
++	no-1-8-v;
++	cap-sdio-irq;
++	keep-power-in-host;
++	non-removable;
++	no-mmc;
++	no-sd;
++	max-frequency = <25000000>;
++	mmc-pwrseq = <&wifi_pwrseq>;
++	pinctrl-0 = <&sdhci1_cfg>;
++	pinctrl-names = "default";
++	status = "okay";
++};
++
+ &uart0 {
+ 	pinctrl-0 = <&uart0_cfg>;
+ 	pinctrl-names = "default";
+@@ -95,6 +154,6 @@
+ };
+ 
+ &usb {
+-	dr_mode = "host";
++	dr_mode = "peripheral";
+ 	status = "okay";
+ };
+-- 
+2.43.0

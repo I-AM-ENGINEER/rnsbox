@@ -30,6 +30,15 @@ MODULE_PARM_DESC(sdio_clk_mhz, "RNSBox: force SDIO clock in MHz (0=leave)");
 
 static void cvi_wlregon(int on);
 
+/* RNSBox: WL_REG_ON is GPIOA15 on the Duo Module 01 / Duo S, but
+ * GPIOA26 on the LicheeRV Nano (vendor u-boot cvi_board_init). */
+static int wlregon_pin = 15;
+module_param(wlregon_pin, int, 0644);
+MODULE_PARM_DESC(wlregon_pin, "RNSBox: WL_REG_ON GPIOA bit (-1 disables)");
+static bool sd1_pads_config = true;
+module_param(sd1_pads_config, bool, 0644);
+MODULE_PARM_DESC(sd1_pads_config, "RNSBox: program the SG2000 SD1 pads");
+
 static int chip_reset;
 static int rnsbox_chip_reset_set(const char *val, const struct kernel_param *kp)
 {
@@ -199,19 +208,21 @@ static void cvi_wlregon(int on)
 {
 	u32 val;
 
+	if (wlregon_pin < 0 || wlregon_pin > 31)
+		return;
 	if (!cvi_porta_base) {
 		cvi_porta_base = ioremap(0x03020000, 0x100);
 		if (!cvi_porta_base)
 			return;
 	}
 	/* dw-apb-gpio bank A: SWPORTA_DR @0x00, SWPORTA_DDR @0x04 */
-	val = readl(cvi_porta_base + 0x04) | BIT(15);
+	val = readl(cvi_porta_base + 0x04) | BIT(wlregon_pin);
 	writel(val, cvi_porta_base + 0x04);
 	val = readl(cvi_porta_base + 0x00);
 	if (on)
-		val |= BIT(15);
+		val |= BIT(wlregon_pin);
 	else
-		val &= ~BIT(15);
+		val &= ~BIT(wlregon_pin);
 	writel(val, cvi_porta_base + 0x00);
 }
 static int cvi_sdio_rescan(void)
@@ -714,7 +725,8 @@ static int aicbsp_platform_power_on(void)
 	// Duo Module 01-W: assert WL_REG_ON before the bus scan; the AIC8800
 	// comes up unpowered on this module.
 	printk("======== CVITEK WLAN_POWER_ON ========\n");
-	cvi_sd1_pads_config();
+	if (sd1_pads_config)
+		cvi_sd1_pads_config();
 	cvi_lpo_fix();
 	cvi_wlregon(1);
 	mdelay(50);
