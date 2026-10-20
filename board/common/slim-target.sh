@@ -45,9 +45,6 @@ fi
 if [ -f "$COMMON_DIR/S87ttyd" ] && [ -d "$T/etc/init.d" ]; then
 	install -m 0755 "$COMMON_DIR/S87ttyd" "$T/etc/init.d/S87ttyd"
 fi
-if [ -f "$COMMON_DIR/console.conf" ]; then
-	install -D -m 0600 "$COMMON_DIR/console.conf" "$T/etc/rnsbox/console.conf"
-fi
 if [ -f "$COMMON_DIR/zshrc" ]; then
 	mkdir -p "$T/etc/zsh"
 	install -m 0644 "$COMMON_DIR/zshrc" "$T/etc/zsh/zshrc"
