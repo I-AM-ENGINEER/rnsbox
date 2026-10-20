@@ -1,0 +1,31 @@
+<h2>Console</h2>
+
+<section class="card">
+  <p class="muted">Run a one-shot shell command as <strong>root</strong> on this
+  box. Output is captured (up to 256 KiB) and the command is killed after
+  20&nbsp;s. There is no interactive TTY and no state between commands — combine
+  what you need with pipes or <code>&amp;&amp;</code>. For a full interactive
+  shell, enable SSH under Settings.</p>
+  <form method="post" action="__BASE__/console" class="row-form console-form">
+    <input type="text" name="cmd" value="__CMD__" maxlength="4096"
+           placeholder="e.g. ip addr show, iw dev, dmesg | tail -80" autofocus>
+    <button type="submit" class="btn-primary">Run</button>
+  </form>
+  <div class="row-form" style="margin-top:8px">
+    <button type="button" class="btn" onclick="setcmd('ip addr show')">ip addr</button>
+    <button type="button" class="btn" onclick="setcmd('ip link show')">ip link</button>
+    <button type="button" class="btn" onclick="setcmd('iw dev')">iw dev</button>
+    <button type="button" class="btn" onclick="setcmd('dmesg | tail -80')">dmesg</button>
+    <button type="button" class="btn" onclick="setcmd('ps w')">ps</button>
+    <button type="button" class="btn" onclick="setcmd('df -h')">df</button>
+    <button type="button" class="btn" onclick="setcmd('tail -80 /var/log/wifi.log')">wifi log</button>
+  </div>
+  __OUTPUT__
+</section>
+
+<script>
+function setcmd(c){
+  var e = document.querySelector('input[name=cmd]');
+  if (e) { e.value = c; e.focus(); }
+}
+</script>

@@ -526,3 +526,24 @@ details.neigh[open] > summary::after { content: "\25B4"; }
 details.neigh > summary:hover { background: var(--hover); }
 details.neigh .body { border-top: 1px solid var(--border); }
 details.neigh .data { margin: 0; }
+
+/* Console tab: authenticated one-shot command runner */
+.console-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.console-form input[name="cmd"] {
+  flex: 1 1 28rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+pre.console-out {
+  margin-top: 12px;
+  padding: 12px 14px;
+  max-height: 60vh;
+  overflow: auto;
+  border-radius: 6px;
+  background: #0b141a;
+  color: #d9e7f2;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12.5px;
+  line-height: 1.45;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}

@@ -34,6 +34,14 @@ T="${1:-.}"
 # directory the sysinit mount fails and USB gadget setup has no flags.
 mkdir -p "$T/boot"
 
+# Stable per-device hostname (rnsbox-XXXXXX from the best stable MAC, or a
+# persisted random ID when every radio hands out a random address). Shared by
+# every board that runs this post-build script.
+COMMON_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+if [ -f "$COMMON_DIR/S10hostname" ] && [ -d "$T/etc/init.d" ]; then
+	install -m 0755 "$COMMON_DIR/S10hostname" "$T/etc/init.d/S10hostname"
+fi
+
 # When the repo is checked out on NTFS/DrvFs (WSL), every file is reported
 # as 0644, so rsync -a cannot carry the executable bit of the overlay init
 # scripts. busybox init execve()s rcS directly: 0644 there means the box

@@ -160,6 +160,10 @@ strip_resolv() {
 }
 
 start_dhcp() {
+	# An admin-down eth0 reports no carrier (the PHY is only polled once the
+	# interface is up), so udhcpc would never get a lease. Bring the link up
+	# first; a cable plugged in later is handled by S46wanwatch.
+	ip link set eth0 up 2>/dev/null || true
 	stop_dhcp   # never run two clients on eth0 (e.g. `start` issued twice)
 	# -t tries, -T timeout, -A wait-before-retry, -b background after lease fail
 	# -x hostname: send DHCP option 12 (udhcpc sends none by default). dhcpcd's

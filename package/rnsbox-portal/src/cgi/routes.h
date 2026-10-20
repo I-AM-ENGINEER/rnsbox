@@ -72,6 +72,9 @@ void access_issue(const http::Request&, http::Response&);          // POST -> te
 void access_revoke(const http::Request&, http::Response&);         // POST PRG
 void access_reissue(const http::Request&, http::Response&);        // POST -> text/plain download
 
+// console tab (authenticated one-shot root shell)
+void console_page(const http::Request&, http::Response&);          // GET/POST render+run
+
 // settings tab
 void settings_page(const http::Request&, http::Response&);         // GET  render
 void settings_password(const http::Request&, http::Response&);     // POST PRG
