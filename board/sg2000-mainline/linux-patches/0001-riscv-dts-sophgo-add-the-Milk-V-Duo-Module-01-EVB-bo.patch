@@ -4,40 +4,32 @@ Subject: [PATCH] riscv: dts: sophgo: add the Milk-V Duo Module 01 EVB board
 Mainline v7.3 already carries sg2000.dtsi (clk/pinctrl/plic/clint) and
 the Milk-V Duo S board. The Duo Module 01 on the Evaluation Board is the
 same SG2000 SoC behind a different carrier: uSD on sdhci0 (SD0), console
-on UART0, the internal GbE PHY on gmac0, and the module's optional eMMC
-on the dedicated eMMC controller. This board file enables the minimum for
-a headless router:
+on UART0, the internal GbE PHY on gmac0, and the module's eMMC.
+
+Hardware-verified bring-up (EVB with the eMMC module):
 
 - reserved-memory: the vendor OpenSBI in fip.bin lives at 0x80000000 and
-  does not reserve itself through the FDT (the vendor kernel parses the
-  riscv.fwsz bootarg instead, which mainline ignores) - hide the 512 KB
-  firmware region from the allocator explicitly. Same lesson as the
-  CV1800B port (board/milkv-duo/linux-patches).
-- sdhci0 at a conservative 25 MHz cap: the vendor board DTS tunes the
-  same board to min 400 kHz / max 25 MHz "reliability over throughput",
-  and the sibling sg200x vendor flow had to cap &sd at 25 MHz too (the
-  50 MHz HS re-init broke SD boots there).
-- eMMC on &emmc (4-bit, no-1-8-v) for the module variants that carry it;
-  the uSD slot remains mmc0 and the default boot medium.
-- sdhci1 as the AIC8800 SDIO slot (the -W module), with the real card
-  clock source (CLK_SD1) and a 25 MHz cap.
-- usb in the gadget role (dr_mode = "peripheral") for the RNSBox
-  CDC-NCM portal; needs the dwc2 -> generic-PHY mode propagation patch
-  in this same directory (phy-cv1800-usb2 gates VBUS/ID-override on
-  set_mode).
+  does not reserve itself through the FDT; hide the 512 KB firmware
+  region explicitly.
+- sdhci0 at a conservative 25 MHz cap (the 50 MHz HS re-init breaks SD
+  on this EVB).
+- sdhci1: AIC8800 SDIO with CLK_SD1 as the real card clock (the AXI gate
+  as "core" makes the clock land at 75% and CRC-fails).
+- eMMC: the dedicated controller at 0x4300000.  The module's eMMC is
+  3.3 V, so the pin group is the minimal CLK/CMD/DAT0-3 set with
+  power-source 3300 (the reset pin and the 1800 rail kept the
+  controller from binding), and CLK_EMMC is the "core" clock with a 375 MHz FPLL
+  parent.  Hardware probe: mmc1:0001 8GTF4R 7.28 GiB.
+- usb in gadget mode (CDC-NCM) for the RNSBox portal.
 
-UART0 and SD pins are on their reset multiplexing on this carrier (the
-vendor u-boot cvi_board_init only sets the PHY LED pins); the pinctrl
-nodes pin the same state explicitly so the DT does not depend on the
-boot ROM defaults.
-
+The pinctrl nodes pin the reset-multiplexed UART0/SD state explicitly.
 ---
 diff --git a/arch/riscv/boot/dts/sophgo/sg2000-duomodule01-evb.dts b/arch/riscv/boot/dts/sophgo/sg2000-duomodule01-evb.dts
 new file mode 100644
 index 00000000000..11111111111
 --- /dev/null
 +++ b/arch/riscv/boot/dts/sophgo/sg2000-duomodule01-evb.dts
-@@ -0,0 +1,292 @@
+@@ -0,0 +1,287 @@
 +// SPDX-License-Identifier: (GPL-2.0 OR MIT)
 +
 +/dts-v1/;
@@ -144,25 +136,16 @@ index 00000000000..11111111111
 +	};
 +
 +	emmc_cfg: emmc-cfg {
-+		emmc-rstn-pins {
-+			pinmux = <PINMUX(PIN_EMMC_RSTN, 0)>;
-+			bias-pull-up;
-+			drive-strength-microamp = <10800>;
-+			power-source = <1800>;
-+		};
-+
 +		emmc-clk-pins {
 +			pinmux = <PINMUX(PIN_EMMC_CLK, 0)>;
 +			bias-pull-up;
-+			drive-strength-microamp = <10800>;
-+			power-source = <1800>;
++			power-source = <3300>;
 +		};
 +
 +		emmc-cmd-pins {
 +			pinmux = <PINMUX(PIN_EMMC_CMD, 0)>;
 +			bias-pull-up;
-+			drive-strength-microamp = <10800>;
-+			power-source = <1800>;
++			power-source = <3300>;
 +		};
 +
 +		emmc-data-pins {
@@ -171,8 +154,7 @@ index 00000000000..11111111111
 +				 <PINMUX(PIN_EMMC_DAT2, 0)>,
 +				 <PINMUX(PIN_EMMC_DAT3, 0)>;
 +			bias-pull-up;
-+			drive-strength-microamp = <10800>;
-+			power-source = <1800>;
++			power-source = <3300>;
 +		};
 +	};
 +
@@ -229,14 +211,19 @@ index 00000000000..11111111111
 +};
 +
 +&emmc {
++	pinctrl-0 = <&emmc_cfg>;
++	pinctrl-names = "default";
++	clocks = <&clk CLK_EMMC>, <&clk CLK_AXI4_EMMC>;
++	clock-names = "core", "bus";
++	assigned-clocks = <&clk CLK_EMMC>;
++	assigned-clock-parents = <&clk CLK_FPLL>;
++	assigned-clock-rates = <375000000>;
 +	bus-width = <4>;
 +	no-1-8-v;
 +	cap-mmc-hw-reset;
 +	no-sd;
 +	no-sdio;
 +	non-removable;
-+	pinctrl-0 = <&emmc_cfg>;
-+	pinctrl-names = "default";
 +	status = "okay";
 +};
 +
