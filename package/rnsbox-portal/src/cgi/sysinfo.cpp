@@ -288,10 +288,14 @@ std::string wan_gateway(const std::string& wan_setting, const Network& net) {
     return it == net.gateway_of.end() ? std::string() : it->second;
 }
 
+// Human name for the active uplink; the box is a Reticulum router, not a
+// consumer WAN/LAN router, so never answer "WAN (auto (no uplink))".
 std::string wan_label(const std::string& wan_setting, const Network& net) {
-    if (wan_setting != "auto") return wan_setting;
-    if (net.default_dev == "eth0" || net.default_dev == "wlan0") return "auto → " + net.default_dev;
-    return "auto (no uplink)";
+    std::string ifc = wan_display_iface(wan_setting, net);
+    if (ifc == "eth0") return "Ethernet (eth0)";
+    if (ifc == "wlan0") return "WiFi (wlan0)";
+    if (ifc == "usb0" || ifc == "br-lan") return "USB-NCM (" + ifc + ")";
+    return ifc;
 }
 
 static std::string find_rnsd_pid() {

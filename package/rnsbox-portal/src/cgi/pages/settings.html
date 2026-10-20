@@ -20,7 +20,7 @@
 
   <h4>Sync to browser</h4>
   <p class="muted">Set the clock to this device's time — the quickest way to get a
-  correct clock on a box with no internet (HaLow-, LAN- or WiFi-only). A fitted
+  correct clock on a box with no internet (HaLow-, USB-NCM- or WiFi-only). A fitted
   RTC is set too, even one that was never set, so the time survives reboots.</p>
   <p>This browser reads <strong id="browser-time">…</strong> UTC</p>
   <form method="post" action="__BASE__/settings/time/browser"
@@ -79,8 +79,8 @@
   <table class="kv">
     <tr><th>Status</th><td>__SSH_STATUS__</td></tr>
   </table>
-  <p class="muted">SSH is <strong>off by default</strong>. When enabled it serves the LAN
-  (USB-C gadget, WiFi hotspot or Ethernet) — the WAN side stays closed unless tcp 22 is
+  <p class="muted">SSH is <strong>off by default</strong>. When enabled it serves the USB-NCM link
+  (USB-C gadget, WiFi hotspot) — the Ethernet side stays closed unless tcp 22 is
   also added to Open ports on the <a href="__BASE__/network">Network</a> tab. The login
   is the unprivileged user <code>admin</code>; <code>root</code> login is closed.</p>
   <form method="post" action="__BASE__/settings/ssh">
@@ -110,9 +110,9 @@
 __USB_SECTION__
 
 <section class="card">
-  <h3>WAN interface</h3>
+  <h3>Default uplink</h3>
   <p>Currently: <strong>__WAN__</strong></p>
-  <p class="muted">Choose the WAN uplink (automatic, eth0 wired or wlan0 WiFi)
+  <p class="muted">Choose the default uplink (automatic, Ethernet or WiFi)
   on the <a href="__BASE__/network">Network</a> tab. On the W variant, a WiFi
   uplink also needs the WiFi client connected (<a href="__BASE__/wifi">WiFi</a> tab).</p>
 </section>

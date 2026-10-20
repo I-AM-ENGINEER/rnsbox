@@ -156,10 +156,10 @@ static UsbState usb_state() {
 static std::string usb_mode_badge(const std::string& role) {
     if (role == "host")
         return "<span class=\"badge warn\">host</span> <span class=\"muted\">USB devices "
-               "(OTG adapter); no gadget LAN</span>";
+               "(OTG adapter); no USB-NCM link</span>";
     if (role == "device")
         return "<span class=\"badge ok\">device</span> <span class=\"muted\">CDC-NCM gadget "
-               "&mdash; the LAN: portal at 10.42.0.1</span>";
+               "&mdash; portal at 10.42.0.1 over USB-NCM</span>";
     return "<span class=\"badge\">unknown</span>";
 }
 
@@ -184,10 +184,10 @@ static std::string usb_section_html(const UsbState& s) {
     h += "  <form method=\"post\" action=\"" + web::base() + "/settings/usb\">\n";
     h += "    <label><input type=\"radio\" name=\"mode\" value=\"device\"" +
          std::string(host ? "" : " checked") + "> Device (gadget) &mdash; the port is the box's "
-         "LAN: <code>10.42.0.1</code> over the cable</label>\n";
+         "USB-NCM: <code>10.42.0.1</code> over the cable</label>\n";
     h += "    <label><input type=\"radio\" name=\"mode\" value=\"host\"" +
          std::string(host ? " checked" : "") + "> Host &mdash; the port drives USB devices "
-         "(flash drives, Huawei modems, RNode) through an OTG adapter; the gadget LAN goes away</label>\n";
+         "(flash drives, Huawei modems, RNode) through an OTG adapter; the USB-NCM link goes away</label>\n";
     h += "    <button type=\"submit\" class=\"btn-primary\">Save &amp; apply</button>\n  </form>\n";
     h += "  <p class=\"muted\">" + note + "</p>\n</section>\n";
     return h;
@@ -343,7 +343,7 @@ void ssh_set(const Request& req, Response& res) {
     web::run_init("S50sshd", "restart");
     render::redirect_flash(res, settings_redirect(), "success",
         "SSH enabled: log in as user admin (not root — root login is closed). "
-        "SSH answers on the LAN side; the WAN stays closed unless tcp 22 is "
+        "SSH answers on the USB-NCM side; the Ethernet side stays closed unless tcp 22 is "
         "opened under Network -> Open ports.");
 }
 

@@ -374,7 +374,7 @@ void dashboard_page(const Request& req, Response& res) {
             ports = "      <tr><th>Ports</th><td id=\"d-lan-ports\">" + ports_html(lan_ports(net, lan_if)) + "</td></tr>\n";
         lan =
             "<section class=\"card\">\n"
-            "    <h3>LAN (" + E(lan_if) + ")</h3>\n"
+            "    <h3>USB-NCM (" + E(lan_if) + ")</h3>\n"
             "    <table class=\"kv\">\n"
             "      <tr><th>State</th><td id=\"d-lan-state\">" + state_badge(lif) + "</td></tr>\n"
             "      <tr><th>Address</th><td id=\"d-lan-addr\">" + addr + "</td></tr>\n" +

@@ -1,0 +1,5 @@
+# RNSBox shell defaults for the web console and SSH.
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+PS1='%F{green}%n@%m%f:%F{blue}%~%f# '
+alias ll='ls -l'
+alias la='ls -la'

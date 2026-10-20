@@ -75,7 +75,7 @@ void network_page(const Request& req, Response& res) {
     rows.clear();
     auto ops = store::read_openports();
     if (ops.empty()) {
-        rows = "<tr><td colspan=\"4\" class=\"muted\">No open ports &mdash; WAN access is closed (the LAN side &mdash; " +
+        rows = "<tr><td colspan=\"4\" class=\"muted\">No open ports &mdash; Ethernet access is closed (the USB-NCM side &mdash; " +
                lan + " &mdash; stays open).</td></tr>";
     } else {
         for (size_t i = 0; i < ops.size(); ++i) {
@@ -142,7 +142,7 @@ void wan_set(const Request& req, Response& res) {
     std::string iface = util::trim(req.f("wan")); if (iface.empty()) iface = "auto";
     std::string mode = util::trim(req.f("wan_mode")); if (mode != "static") mode = "dhcp";
     if (iface == "wlan0" && !wifi::present()) {
-        render::redirect_flash(res, net_redirect(), "error", "No WiFi radio — wlan0 WAN needs the W variant.");
+        render::redirect_flash(res, net_redirect(), "error", "No WiFi radio — the WiFi uplink needs the W variant.");
         return;
     }
     store::WanConfig c;
@@ -163,17 +163,17 @@ void wan_set(const Request& req, Response& res) {
     web::run_init("S60routing");
     if (iface == "auto")
         render::redirect_flash(res, net_redirect(), "success",
-            std::string("WAN set to automatic: eth0 while it has a cable and an address") +
+            std::string("Uplink set to automatic: Ethernet (eth0) while it has a cable and an address") +
             (mode == "static" ? " (static " + c.address + "/" + c.prefix + ")" : "") +
             (wifi::present() ? ", otherwise the WiFi client (WiFi tab → mode sta or sta+ap)." : "."));
     else if (iface == "wlan0")
         render::redirect_flash(res, net_redirect(), "success",
-            "WAN set to wlan0 (WiFi) only. Make sure WiFi is connected as a client (WiFi tab → mode sta or sta+ap).");
+            "Uplink set to WiFi (wlan0) only. Make sure WiFi is connected as a client (WiFi tab → mode sta or sta+ap).");
     else if (mode == "static")
         render::redirect_flash(res, net_redirect(), "success",
-            "WAN set to eth0 only, static " + c.address + "/" + c.prefix + ".");
+            "Uplink set to Ethernet (eth0) only, static " + c.address + "/" + c.prefix + ".");
     else
-        render::redirect_flash(res, net_redirect(), "success", "WAN set to eth0 only (DHCP).");
+        render::redirect_flash(res, net_redirect(), "success", "Uplink set to Ethernet (eth0) only (DHCP).");
 }
 
 void pf_add(const Request& req, Response& res) {

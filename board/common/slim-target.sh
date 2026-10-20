@@ -41,6 +41,18 @@ COMMON_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 if [ -f "$COMMON_DIR/S10hostname" ] && [ -d "$T/etc/init.d" ]; then
 	install -m 0755 "$COMMON_DIR/S10hostname" "$T/etc/init.d/S10hostname"
 fi
+# Full zsh web terminal (ttyd) and its LAN-only password file.
+if [ -f "$COMMON_DIR/S87ttyd" ] && [ -d "$T/etc/init.d" ]; then
+	install -m 0755 "$COMMON_DIR/S87ttyd" "$T/etc/init.d/S87ttyd"
+fi
+if [ -f "$COMMON_DIR/console.conf" ]; then
+	install -D -m 0600 "$COMMON_DIR/console.conf" "$T/etc/rnsbox/console.conf"
+fi
+if [ -f "$COMMON_DIR/zshrc" ]; then
+	mkdir -p "$T/etc/zsh"
+	install -m 0644 "$COMMON_DIR/zshrc" "$T/etc/zsh/zshrc"
+	install -m 0644 "$COMMON_DIR/zshrc" "$T/etc/zshrc"
+fi
 
 # When the repo is checked out on NTFS/DrvFs (WSL), every file is reported
 # as 0644, so rsync -a cannot carry the executable bit of the overlay init

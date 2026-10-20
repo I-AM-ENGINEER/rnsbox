@@ -150,3 +150,7 @@ BR2_PACKAGE_PYTHON_BLE_RETICULUM=y
 BR2_PACKAGE_RNSBOX_BT_FIRMWARE=y
 # kernel release suffix (uname -r -> 6.x.y-rnsbox)
 BR2_LINUX_KERNEL_LOCALVERSION="-rnsbox"
+
+# Full web terminal: ttyd (xterm.js) + zsh for the Console tab.
+BR2_PACKAGE_TTYD=y
+BR2_PACKAGE_ZSH=y

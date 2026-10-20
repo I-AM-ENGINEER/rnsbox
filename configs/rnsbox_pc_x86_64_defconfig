@@ -85,3 +85,7 @@ BR2_TARGET_ROOTFS_EXT2_SIZE="400M"
 BR2_PACKAGE_HOST_GENIMAGE=y
 # portal is C++ — the toolchain needs g++ (run 37: g++ missing at rnsbox-portal build)
 BR2_TOOLCHAIN_BUILDROOT_CXX=y
+
+# Full web terminal: ttyd (xterm.js) + zsh for the Console tab.
+BR2_PACKAGE_TTYD=y
+BR2_PACKAGE_ZSH=y

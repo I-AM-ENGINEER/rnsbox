@@ -1,0 +1,35 @@
+#!/bin/sh
+# S87ttyd — full zsh web terminal on the LAN (ttyd + xterm.js).
+#
+# ttyd listens on the box's LAN address only (10.42.0.1), never on the
+# Ethernet uplink. Basic auth: user admin, password from
+# /etc/rnsbox/console.conf (random on first boot, shown to a logged-in
+# portal admin on the Console tab).
+CONF=/etc/rnsbox/console.conf
+LOG=/var/log/ttyd.log
+LAN_IP=10.42.0.1
+PORT=7681
+
+mkdir -p /var/log /etc/rnsbox
+pass=$(sed -n 's/^password=//p' "$CONF" 2>/dev/null | tail -1 | tr -d '[:space:]')
+if [ -z "$pass" ]; then
+	pass=$(dd if=/dev/urandom bs=16 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n' | cut -c1-16)
+	[ -n "$pass" ] || pass=admin
+	printf '# ttyd web-console password (generated on first boot; LAN only).\npassword=%s\n' "$pass" > "$CONF"
+	chmod 600 "$CONF"
+fi
+
+zsh=$(command -v zsh 2>/dev/null); [ -n "$zsh" ] || zsh=/bin/sh
+ttyd=$(command -v ttyd 2>/dev/null)
+[ -n "$ttyd" ] || { echo "$(date '+%F %T'): ttyd not installed" >> "$LOG"; exit 0; }
+
+case "${1:-start}" in
+	start)
+		pidof ttyd >/dev/null 2>&1 && exit 0
+		"$ttyd" -W -i "$LAN_IP" -p "$PORT" -c "admin:$pass" \
+			-t "titleFixed=RNSBox console" "$zsh" -l >>"$LOG" 2>&1 &
+		;;
+	stop)    killall ttyd 2>/dev/null ;;
+	restart) "$0" stop; sleep 1; "$0" start ;;
+	*) echo "Usage: $0 {start|stop|restart}" >&2; exit 1 ;;
+esac

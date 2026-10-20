@@ -51,7 +51,7 @@ std::string wan_display_iface(const std::string& wan_setting, const Network& net
 std::string wan_gateway(const std::string& wan_setting, const Network& net);
 
 // Human label for the WAN setting: "eth0", "wlan0", "auto → wlan0",
-// "auto (no uplink)". Plain text (the caller escapes).
+// friendly ("Ethernet (eth0)", "WiFi (wlan0)"). Plain text (caller escapes).
 std::string wan_label(const std::string& wan_setting, const Network& net);
 
 struct Rnsd {
