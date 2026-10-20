@@ -44,7 +44,7 @@ std::map<std::string, std::string> read_conf() {
     cfg["mode"] = "off"; cfg["ap_ssid"] = ""; cfg["ap_channel"] = "6";
     cfg["ap_htmode"] = "ht20"; cfg["tx_power"] = "auto";
     cfg["sta_security"] = "wpa2"; cfg["sta_band"] = "auto";
-    cfg["ap_security"] = "wpa3"; cfg["ap_band"] = "2.4";
+    cfg["ap_security"] = "wpa3"; cfg["ap_band"] = "auto";
     cfg["ap_standard"] = "auto"; cfg["ap_width"] = "20";
     std::string data = util::read_file(CONF);
     size_t i = 0;
@@ -75,7 +75,8 @@ std::map<std::string, std::string> read_conf() {
     if (cfg["ap_security"] != "wpa2" && cfg["ap_security"] != "wpa3" &&
         cfg["ap_security"] != "wpa2+wpa3")
         cfg["ap_security"] = "wpa3";
-    if (cfg["ap_band"] != "5") cfg["ap_band"] = "2.4";
+    if (cfg["ap_band"] != "2.4" && cfg["ap_band"] != "5")
+        cfg["ap_band"] = "auto";
     if (cfg["ap_standard"] != "n" && cfg["ap_standard"] != "ac" &&
         cfg["ap_standard"] != "ax")
         cfg["ap_standard"] = "auto";
@@ -269,14 +270,29 @@ std::string scan_json() {
         std::string block = out.substr(i + 5, (next == std::string::npos ? out.size() : next) - (i + 5));
         Net e = parse_block(block);
         if (!e.ssid.empty()) {
-            // One row per BSS, NOT per SSID: a dual-band AP advertises the
-            // same SSID on 2.4 and 5 GHz, and the user must be able to pick
-            // the 5 GHz BSS (the chosen band is stored for wpa_supplicant).
-            std::string key = !e.bssid.empty() ? e.bssid
-                                               : (e.ssid + "|" + e.band + "|" + e.channel);
-            auto it = nets.find(key);
-            if (it == nets.end()) nets[key] = e;
-            else if (sig_val(e.signal) > sig_val(it->second.signal)) it->second = e;
+            // One row per SSID: the same network on 2.4 and 5 GHz is one
+            // entry with Band "2.4/5"; the client stores band=auto and lets
+            // wpa_supplicant pick/roam between the BSSes.
+            auto it = nets.find(e.ssid);
+            if (it == nets.end()) {
+                nets[e.ssid] = e;
+            } else {
+                Net& p = it->second;
+                if (!e.band.empty() && p.band.find(e.band) == std::string::npos) {
+                    if (p.band.empty()) p.band = e.band;
+                    else if ((p.band.find("2.4") != std::string::npos && e.band == "5") ||
+                             (p.band.find("5") != std::string::npos && e.band == "2.4"))
+                        p.band = "2.4/5";
+                    else
+                        p.band += "/" + e.band;
+                    p.channel.clear();   // one row spanning bands: no single channel
+                }
+                if (sig_val(e.signal) > sig_val(p.signal)) {
+                    p.signal = e.signal;
+                    if (p.band.find('/') == std::string::npos) p.channel = e.channel;
+                }
+                if (p.security == "Open" && e.security != "Open") p.security = e.security;
+            }
         }
         i = next;
     }

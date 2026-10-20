@@ -70,6 +70,8 @@ static bool is_5g_chan(int n) {
 
 static bool channel_valid(const std::string& band, const std::string& chan,
                           const std::string& width) {
+    // "auto" band is hostapd ACS on 2.4/5: no fixed channel makes sense.
+    if (band == "auto") return chan == "auto";
     if (chan == "auto") return true;
     if (!all_digits(chan)) return false;
     int n = atoi(chan.c_str());
@@ -88,7 +90,7 @@ static std::string channel_options(const std::string& band, const std::string& c
     if (band == "5") {
         for (int c : {36, 40, 44, 48, 149, 153, 157, 161, 165})
             o += opt(std::to_string(c), std::to_string(c), cur);
-    } else {
+    } else if (band == "2.4") {
         for (int c = 1; c <= 13; ++c)
             o += opt(std::to_string(c), std::to_string(c), cur);
     }
@@ -246,6 +248,7 @@ void wifi_page(const Request& req, Response& res) {
     h = R(std::move(h), "__AP_SECURITY_OPTIONS__", security_options(cfg["ap_security"], false));
     // Both bands stay visible as radios (a <select> shows only the selected
     // one and looks like the box supports a single band).
+    h = R(std::move(h), "__AP_BAND_AUTO_CHECKED__", cfg["ap_band"] == "auto" ? "checked" : "");
     h = R(std::move(h), "__AP_BAND_24_CHECKED__", cfg["ap_band"] == "2.4" ? "checked" : "");
     h = R(std::move(h), "__AP_BAND_5_CHECKED__",  cfg["ap_band"] == "5"  ? "checked" : "");
     h = R(std::move(h), "__AP_STANDARD_OPTIONS__", standard_options(cfg["ap_standard"]));
@@ -396,9 +399,9 @@ void wifi_ap(const Request& req, Response& res) {
         render::redirect_flash(res, wifi_redirect(), "error", "Unknown hotspot security mode");
         return;
     }
-    if (band.empty()) band = "2.4";
-    if (band != "2.4" && band != "5") {
-        render::redirect_flash(res, wifi_redirect(), "error", "Hotspot band must be 2.4 or 5 GHz");
+    if (band.empty()) band = "auto";
+    if (band != "auto" && band != "2.4" && band != "5") {
+        render::redirect_flash(res, wifi_redirect(), "error", "Hotspot band must be auto, 2.4 or 5 GHz");
         return;
     }
     if (standard.empty()) standard = "auto";

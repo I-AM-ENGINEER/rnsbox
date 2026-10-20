@@ -66,7 +66,11 @@ cfg() {
 # ap_band_code — "24" or "5" for the hotspot's configured band. Concurrent
 # mode pins the STA to this same band (single radio).
 ap_band_code() {
-	case "$(cfg ap_band)" in 5) echo 5 ;; *) echo 24 ;; esac
+	case "$(cfg ap_band)" in
+		5)   echo 5 ;;
+		2.4) echo 24 ;;
+		*)   echo "" ;;   # 2.4/5 auto: STA scans both; the AP follows it
+	esac
 }
 
 # center80 <primary> — 80 MHz centre channel, empty when the primary cannot
@@ -436,7 +440,13 @@ start_ap() {
 	# named after the box (rnsbox-xxxxxx) and follows S10uuid's rename.
 	if [ -z "$ssid" ]; then ssid="$(hostname)"; log "ap_ssid empty - naming the hotspot after the hostname ($ssid)"; fi
 	hidden=$(cfg ap_hidden)
-	band=$(cfg ap_band); [ "$band" = "5" ] || band=2.4
+	band_cfg=$(cfg ap_band)
+	auto_band=0
+	case "$band_cfg" in
+		5)   band=5 ;;
+		2.4) band=2.4 ;;
+		*)   band=5; auto_band=1 ;;   # 2.4/5 auto: prefer 5, fall back to 2.4
+	esac
 	std=$(cfg ap_standard); [ -z "$std" ] && std=auto
 	width=$(cfg ap_width)
 	if [ -z "$width" ]; then
@@ -531,6 +541,7 @@ start_ap() {
 				esac
 			fi
 			[ "$chan" = "auto" ] && { [ "$band" = "5" ] && chan=36 || chan=6; }
+			auto_band=0   # the AP follows the live STA; no 2.4 auto fallback
 		fi
 		log "concurrent mode: AP inherits STA ch=$chan band=$band width=${sta_width:-20}MHz std=$std off=${ap_sec_off:-none}"
 	fi
@@ -562,6 +573,19 @@ start_ap() {
 			echo "$iface" > /run/wifi-ap-iface
 			apply_txpower "$iface"
 			log "AP started on $iface ssid=$ssid ch=$fb_chan band=$fb_band width=20 std=n $(ap_bridge_state "$iface") (fallback)"
+		elif [ "$auto_band" = 1 ] && [ "$iface" != "$AP_IF_CONCURRENT" ]; then
+			# 2.4/5 auto and 5 GHz could not start: keep the hotspot alive on
+			# 2.4 GHz. Concurrent mode never falls back here (the STA is the
+			# band/channel master and the watchdog re-syncs the AP).
+			log "auto band: 5 GHz AP failed — retrying 2.4 GHz ch6 20 MHz"
+			gen_hostapd_conf "$iface" "$ssid" "$psk" 6 "$hidden" 20 "" 2.4 "$sec" n
+			if _hostapd_up; then
+				echo "$iface" > /run/wifi-ap-iface
+				apply_txpower "$iface"
+				log "AP started on $iface ssid=$ssid ch=6 band=2.4 width=20 std=n $(ap_bridge_state "$iface") (2.4 fallback)"
+			else
+				log "AP failed on 2.4 GHz too — see hostapd output above"
+			fi
 		else
 			log "AP failed to start even on ch$fb_chan 20 MHz — see hostapd output above"
 		fi

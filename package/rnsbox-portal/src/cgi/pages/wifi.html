@@ -74,6 +74,7 @@
       <select name="ap_security">__AP_SECURITY_OPTIONS__</select>
     </label>
     <div class="row-form"><strong>Band</strong>
+      <label><input type="radio" name="ap_band" value="auto" __AP_BAND_AUTO_CHECKED__> 2.4/5 GHz (auto)</label>
       <label><input type="radio" name="ap_band" value="2.4" __AP_BAND_24_CHECKED__> 2.4 GHz</label>
       <label><input type="radio" name="ap_band" value="5" __AP_BAND_5_CHECKED__> 5 GHz</label>
     </div>
@@ -214,8 +215,11 @@ function renderScan(){
   nets.forEach(function(n){
     var tr=document.createElement('tr');
     var band=n.band?(n.band+' GHz'):'';
-    // In concurrent mode the STA follows the AP band; grey out the other one.
-    var blockHi=CONCURRENT && (n.band==='5' || n.band==='6');
+    // In concurrent mode the STA must include the hotspot's band. A merged
+    // "2.4/5" row is usable on either; "auto" lets the STA scan both.
+    var apb=apBand();
+    var bands=(n.band||'').split('/');
+    var blockHi=CONCURRENT && apb!=='auto' && bands.indexOf(apb)===-1;
     td(tr, n.ssid||'(hidden)');
     td(tr, (n.signal||'?')+' dBm');
     td(tr, n.channel||'');
@@ -235,7 +239,7 @@ function renderScan(){
         var sec=document.getElementById('sta_security');
         var bandEl=document.getElementById('sta_band');
         if(sec) sec.value=secFromScan(n.security||'');
-        if(bandEl) bandEl.value=(n.band==='5'?'5':(n.band==='2.4'?'2.4':'auto'));
+        if(bandEl) bandEl.value='auto';   // let wpa_supplicant roam between bands
         syncStaSecurity();
       };
       last.appendChild(b);
@@ -249,14 +253,14 @@ var CH24=[1,2,3,4,5,6,7,8,9,10,11,12,13];
 var CH5=[36,40,44,48,149,153,157,161,165];
 function apBand(){
   var el=document.querySelector('input[name="ap_band"]:checked');
-  return el?el.value:'2.4';
+  return el?el.value:'auto';
 }
 function fillChannels(){
   var chEl=document.getElementById('ap_channel');
   var wEl=document.getElementById('ap_width');
   if(!chEl) return;
   var band=apBand(), cur=chEl.value, width=wEl?wEl.value:'20';
-  var list=(band==='5')?CH5:CH24;
+  var list=(band==='5')?CH5:(band==='auto'?[]:CH24);
   if(width==='80' && band==='5') list=[36,40,44,48,149,153,157,161];
   else if(width==='40' && band==='5') list=[36,40,44,48,149,153,157,161];
   chEl.innerHTML='';
