@@ -89,3 +89,4 @@ BR2_TOOLCHAIN_BUILDROOT_CXX=y
 # TTY console: screen sessions + zsh, served by the portal itself.
 BR2_PACKAGE_SCREEN=y
 BR2_PACKAGE_ZSH=y
+BR2_ROOTFS_USERS_TABLES="$(BR2_EXTERNAL_RNSBOX_PATH)/board/common/users.txt"

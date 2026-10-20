@@ -7,6 +7,11 @@
 # zsh is the login shell when the image has it.
 set -u
 
+# Old images predate BR2_ROOTFS_USERS_TABLES: create the login account here.
+if ! grep -q '^admin:' /etc/passwd 2>/dev/null; then
+	adduser -D -h /home/admin -s /bin/zsh admin 2>/dev/null || true
+fi
+
 if [ -x /bin/zsh ] && [ -f /etc/passwd ]; then
 	sed -i 's#^\(admin:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:\)[^:]*#\1/bin/zsh#' /etc/passwd
 fi
