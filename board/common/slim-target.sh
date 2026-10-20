@@ -45,6 +45,10 @@ fi
 if [ -f "$COMMON_DIR/S10consoleuser" ] && [ -d "$T/etc/init.d" ]; then
 	install -m 0755 "$COMMON_DIR/S10consoleuser" "$T/etc/init.d/S10consoleuser"
 fi
+# Single-session helper for the portal's screen-based console.
+if [ -f "$COMMON_DIR/rnsbox-console-session" ]; then
+	install -D -m 0755 "$COMMON_DIR/rnsbox-console-session" "$T/usr/sbin/rnsbox-console-session"
+fi
 # Drop the former ttyd service and password file; the console is now a CGI
 # screen session on the portal's own HTTP port.
 rm -f "$T/etc/init.d/S87ttyd" "$T/usr/bin/ttyd" "$T/etc/rnsbox/console.conf"

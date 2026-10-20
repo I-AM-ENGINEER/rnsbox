@@ -11,6 +11,13 @@ set -u
 if ! grep -q '^admin:' /etc/passwd 2>/dev/null; then
 	adduser -D -h /home/admin -s /bin/zsh admin 2>/dev/null || true
 fi
+mkdir -p /home/admin
+chown admin:admin /home/admin 2>/dev/null || true
+# Suppress zsh's first-run newuser-install menu.
+if [ -f /etc/zsh/zshrc ] && [ ! -e /home/admin/.zshrc ]; then
+	cp /etc/zsh/zshrc /home/admin/.zshrc
+	chown admin:admin /home/admin/.zshrc 2>/dev/null || true
+fi
 
 if [ -x /bin/zsh ] && [ -f /etc/passwd ]; then
 	sed -i 's#^\(admin:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:\)[^:]*#\1/bin/zsh#' /etc/passwd

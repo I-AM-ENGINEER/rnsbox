@@ -13,22 +13,19 @@
 namespace routes {
 
 static const char* SCREEN = "/usr/bin/screen";
-static const char* SESS = "rnsbox-console";
 static const char* CAP = "/tmp/rnsbox-console.txt";
 
 static std::string R(std::string s, const std::string& a, const std::string& b) {
     return web::replace_all(std::move(s), a, b);
 }
 
-static bool screen_running() {
-    util::RunResult r = util::run({SCREEN, "-ls"}, "", 5);
-    return r.out.find(SESS) != std::string::npos;
-}
-
-static void ensure_screen() {
-    if (screen_running()) return;
-    // Detached: /bin/login prompts on the PTY; the CGI session is the gate.
-    util::run({SCREEN, "-dmS", SESS, "/bin/login"}, "", 5);
+// The helper prints the pid of the single screen session (starting it when
+// needed). Address it as <pid>.rnsbox-console so a stale duplicate can never
+// make -S ambiguous.
+static std::string session_id() {
+    util::RunResult r = util::run({"/usr/sbin/rnsbox-console-session"}, "", 10);
+    std::string pid = util::trim(r.out);
+    return pid.empty() ? std::string() : pid + ".rnsbox-console";
 }
 
 void console_page(const http::Request& req, http::Response& res) {
@@ -40,9 +37,10 @@ void console_page(const http::Request& req, http::Response& res) {
 
 void console_screen(const http::Request& req, http::Response& res) {
     if (!web::require_auth(req, res, false)) return;
-    ensure_screen();
+    std::string id = session_id();
+    if (id.empty()) { res.body = ""; return; }
     ::unlink(CAP);
-    util::run({SCREEN, "-S", SESS, "-X", "hardcopy", CAP}, "", 5);
+    util::run({SCREEN, "-S", id, "-X", "hardcopy", CAP}, "", 5);
     res.content_type = "text/plain; charset=utf-8";
     res.body = util::read_file(CAP, 256 * 1024);
 }
@@ -51,10 +49,11 @@ void console_input(const http::Request& req, http::Response& res) {
     if (!web::require_auth(req, res, false)) return;
     std::string line = req.f("line");
     if (line.size() > 4096) line.resize(4096);
-    ensure_screen();
+    std::string id = session_id();
     // No shell: screen receives the line literally, including control bytes
     // (the Ctrl-C button posts U+0003).
-    util::run({SCREEN, "-S", SESS, "-X", "stuff", line + "\n"}, "", 5);
+    if (!id.empty())
+        util::run({SCREEN, "-S", id, "-X", "stuff", line + "\n"}, "", 5);
     res.content_type = "application/json";
     res.body = "{\"ok\":true}";
 }
