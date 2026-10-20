@@ -1,8 +1,9 @@
 #!/bin/sh
 # S36wifiwatch — AP-priority watchdog for concurrent WiFi (mode=sta+ap).
 #
-# The AIC8800 is a SINGLE radio. In sta+ap the AP (hostapd on wlan1) shares the
-# STA's channel, and ANY STA scan hops the radio off that channel — so a
+# The AIC8800 is a SINGLE radio. In sta+ap the AP (hostapd on uap0; wlan0 in
+# AP-only mode) shares the STA's channel, and ANY STA scan hops the radio off
+# that channel — so a
 # disconnected wpa_supplicant, scanning continuously to find the upstream,
 # permanently disrupts the hotspot when you carry the device out of range.
 #
@@ -21,7 +22,9 @@
 
 CONF=/etc/rnsbox/wifi.conf
 STA_IF=wlan0
-AP_IF=wlan1
+# Default for concurrent mode; /run/wifi-ap-iface (written by S35wifi) is
+# authoritative when it exists (wlan0 when the AP runs alone).
+AP_IF=uap0
 LOG=/var/log/wifi.log
 # Written by S35wifi when it refuses to start the AP (weak/empty ap_psk, or no
 # LAN bridge). While it exists there is no hotspot to revive or protect — see
@@ -37,7 +40,8 @@ log() { printf '%s: wifiwatch %s\n' "$(date '+%F %T')" "$*" >> "$LOG"; }
 wpa() { wpa_cli -i "$STA_IF" "$@" 2>/dev/null; }
 sta_up()   { wpa status 2>/dev/null | grep -q '^wpa_state=COMPLETED'; }
 ap_up()    { pidof hostapd >/dev/null 2>&1; }
-ap_idle()  { [ "$(iw dev "$AP_IF" station dump 2>/dev/null | grep -c '^Station')" = "0" ]; }
+ap_iface() { cat /run/wifi-ap-iface 2>/dev/null || echo "$AP_IF"; }
+ap_idle()  { [ "$(iw dev "$(ap_iface)" station dump 2>/dev/null | grep -c '^Station')" = "0" ]; }
 now_s()    { cut -d. -f1 /proc/uptime; }
 
 loop() {

@@ -97,9 +97,15 @@ static std::vector<LanPort> lan_ports(const sysinfo::Network& net, const std::st
     return out;
 }
 
+// An administratively down interface (WiFi off by default, no cable on a
+// spare port) is a normal state, not an error: neutral badge. Red is kept
+// for states that actually mean something is wrong (e.g. dormant/unknown).
 static std::string state_badge(const sysinfo::Iface* i) {
     if (i && i->state == "up") return "<span class=\"badge ok\">UP</span>";
-    return "<span class=\"badge warn\">" + E((i && !i->state.empty()) ? i->state : std::string("DOWN")) + "</span>";
+    std::string st = (i && !i->state.empty()) ? i->state : std::string("DOWN");
+    if (st == "down" || st == "DOWN" || st == "lowerlayerdown" || st == "notpresent")
+        return "<span class=\"badge\">" + E(st) + "</span>";
+    return "<span class=\"badge err\">" + E(st) + "</span>";
 }
 
 // "usb0 [UP] USB-C · wlan1 [UP] WiFi hotspot" — same markup as the patch() JS.
@@ -343,10 +349,7 @@ void dashboard_page(const Request& req, Response& res) {
 
     // WAN card
     h = R(std::move(h), "__WAN__", E(sysinfo::wan_label(wan.interface, net)));
-    std::string wstate = (wif && wif->state == "up")
-        ? std::string("<span class=\"badge ok\">UP</span>")
-        : "<span class=\"badge err\">" + E((wif && !wif->state.empty()) ? wif->state : std::string("DOWN")) + "</span>";
-    h = R(std::move(h), "__WAN_STATE__", wstate);
+    h = R(std::move(h), "__WAN_STATE__", state_badge(wif));
     h = R(std::move(h), "__WAN_ADDR__", (wif && !wif->addrs.empty()) ? join_esc(wif->addrs) : "(none)");
     std::string wgw = sysinfo::wan_gateway(wan.interface, net);
     h = R(std::move(h), "__WAN_GW__",   wgw.empty() ? "(none)" : E(wgw));

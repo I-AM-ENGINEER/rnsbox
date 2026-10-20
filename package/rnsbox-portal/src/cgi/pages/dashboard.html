@@ -67,6 +67,15 @@ __HALOW_SCRIPT__
   // Everything dynamic that goes through setHTML() is escaped with esc() first
   // (the JSON carries iface state, update versions from PyPI, etc.).
   function esc(s){ return (''+(s==null?'':s)).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
+  // Down (WiFi off by default, no cable) is normal and must not look like a
+  // fault: neutral badge. Red only for states that mean something is wrong.
+  function stateBadge(st){
+    st = st || 'DOWN';
+    if(st === 'up') return '<span class="badge ok">UP</span>';
+    if(st === 'down' || st === 'DOWN' || st === 'lowerlayerdown' || st === 'notpresent')
+      return '<span class="badge">'+esc(st)+'</span>';
+    return '<span class="badge err">'+esc(st)+'</span>';
+  }
   function patch(d){
     var s=d.sys||{}, m=s.mem||{}, wif=d.wan_if||{}, lif=d.lan_if||{}, rn=d.rnsd||{}, up=d.update||{};
     setText('d-uptime', s.uptime||'');
@@ -80,13 +89,13 @@ __HALOW_SCRIPT__
       setText('d-ram-note', pct+'% used · '+m.buffcache_mb+' MB buff/cache (reclaimable)');
     }
     if(d.wan_label) setText('d-wan-label', d.wan_label);
-    setHTML('d-wan-state', wif.state==='up'?'<span class="badge ok">UP</span>':'<span class="badge err">'+esc(wif.state||'DOWN')+'</span>');
+    setHTML('d-wan-state', stateBadge(wif.state));
     setText('d-wan-addr', (wif.addrs&&wif.addrs.length)?wif.addrs.join(', '):'(none)');
     setText('d-wan-gw', d.gateway||'(none)');
     setText('d-wan-dns', (d.dns&&d.dns.length)?d.dns.join(', '):'(none)');
     setText('d-wan-rxtx', (wif.rx||'0')+' / '+(wif.tx||'0'));
     if($('d-lan-state')){
-      setHTML('d-lan-state', lif.state==='up'?'<span class="badge ok">UP</span>':'<span class="badge warn">'+esc(lif.state||'DOWN')+'</span>');
+      setHTML('d-lan-state', stateBadge(lif.state));
       setText('d-lan-addr', (lif.addrs&&lif.addrs.length)?lif.addrs.join(', '):'(none)');
       setText('d-lan-rxtx', (lif.rx||'0')+' / '+(lif.tx||'0'));
     }
@@ -95,7 +104,7 @@ __HALOW_SCRIPT__
     if($('d-lan-ports')){
       var ps=d.lan_ports||[];
       setHTML('d-lan-ports', ps.length ? ps.map(function(p){
-        return esc(p.name)+' '+(p.state==='up'?'<span class="badge ok">UP</span>':'<span class="badge warn">'+esc(p.state||'DOWN')+'</span>')+
+        return esc(p.name)+' '+stateBadge(p.state)+
           (p.role?' <span class="muted">'+esc(p.role)+'</span>':'');
       }).join(' · ') : '(none)');
     }

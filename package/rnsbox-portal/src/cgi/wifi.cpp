@@ -19,8 +19,10 @@ namespace wifi {
 // 10.42.0.1/24, one dnsmasq pool). Old ap_ip / ap_dhcp_start / ap_dhcp_end
 // lines are ignored on read and dropped by the next write_conf().
 static const char* KEYS[] = {
-    "mode", "sta_ssid", "sta_psk", "sta_hidden", "sta_country",
-    "ap_ssid", "ap_psk", "ap_channel", "ap_htmode", "ap_hidden",
+    "mode", "sta_ssid", "sta_psk", "sta_security", "sta_band",
+    "sta_hidden", "sta_country",
+    "ap_ssid", "ap_psk", "ap_security", "ap_band", "ap_standard",
+    "ap_width", "ap_channel", "ap_htmode", "ap_hidden",
     "tx_power",
 };
 
@@ -41,6 +43,9 @@ std::map<std::string, std::string> read_conf() {
     // the device hostname when it's blank, so the field shows that instead.
     cfg["mode"] = "off"; cfg["ap_ssid"] = ""; cfg["ap_channel"] = "6";
     cfg["ap_htmode"] = "ht20"; cfg["tx_power"] = "auto";
+    cfg["sta_security"] = "wpa2"; cfg["sta_band"] = "auto";
+    cfg["ap_security"] = "wpa2"; cfg["ap_band"] = "2.4";
+    cfg["ap_standard"] = "auto"; cfg["ap_width"] = "20";
     std::string data = util::read_file(CONF);
     size_t i = 0;
     while (i < data.size()) {
@@ -58,6 +63,30 @@ std::map<std::string, std::string> read_conf() {
             v = v.substr(1, v.size() - 2);
         if (cfg.count(k)) cfg[k] = v;
     }
+    // Normalize / migrate the settings added after the first image:
+    // ap_htmode (ht20|ht40) was the old width knob; ap_width (20|40|80) is
+    // the current one. Keep both in sync so an older S35wifi still gets a
+    // sane width if the portal is the only thing updated.
+    if (cfg["sta_security"] != "open" && cfg["sta_security"] != "wpa3" &&
+        cfg["sta_security"] != "wpa2+wpa3")
+        cfg["sta_security"] = "wpa2";
+    if (cfg["sta_band"] != "2.4" && cfg["sta_band"] != "5")
+        cfg["sta_band"] = "auto";
+    if (cfg["ap_security"] != "wpa3" && cfg["ap_security"] != "wpa2+wpa3")
+        cfg["ap_security"] = "wpa2";
+    if (cfg["ap_band"] != "5") cfg["ap_band"] = "2.4";
+    if (cfg["ap_standard"] != "n" && cfg["ap_standard"] != "ac" &&
+        cfg["ap_standard"] != "ax")
+        cfg["ap_standard"] = "auto";
+    if (cfg["ap_width"] != "40" && cfg["ap_width"] != "80")
+        cfg["ap_width"] = "20";
+    // 2.4 GHz cannot do 802.11ac, and 80 MHz needs ac/ax on 5 GHz.
+    if (cfg["ap_band"] != "5" && cfg["ap_standard"] == "ac")
+        cfg["ap_standard"] = "auto";
+    if (cfg["ap_width"] == "80" &&
+        (cfg["ap_band"] != "5" || (cfg["ap_standard"] != "ac" && cfg["ap_standard"] != "ax")))
+        cfg["ap_width"] = "20";
+    cfg["ap_htmode"] = (cfg["ap_width"] == "40") ? "ht40" : "ht20";
     return cfg;
 }
 
@@ -89,12 +118,20 @@ bool write_conf(const std::map<std::string, std::string>& updates) {
         "# mode: off | sta | ap | sta+ap\n\n";
     o += "mode=" + cfg["mode"] + "\n\n";
     o += "# --- STA (client) ---\n";
-    for (const char* k : {"sta_ssid", "sta_psk", "sta_hidden", "sta_country"})
+    o += "# sta_security: wpa2 | wpa3 | wpa2+wpa3 | open\n";
+    o += "# sta_band: auto | 2.4 | 5 (auto = whichever BSS wins)\n";
+    for (const char* k : {"sta_ssid", "sta_psk", "sta_security", "sta_band",
+                          "sta_hidden", "sta_country"})
         o += std::string(k) + "=" + cfg[k] + "\n";
     o += "\n# --- AP (hotspot) ---\n";
     o += "# Bridged into the LAN (br-lan): clients share 10.42.0.0/24 and its DHCP pool.\n";
     o += "# ap_psk: 8..63 chars — the hotspot will not start without one.\n";
-    for (const char* k : {"ap_ssid", "ap_psk", "ap_channel", "ap_htmode", "ap_hidden"})
+    o += "# ap_security: wpa2 | wpa3 | wpa2+wpa3 (no open hotspot).\n";
+    o += "# ap_band: 2.4 | 5; ap_standard: auto | n | ac | ax; ap_width: 20 | 40 | 80.\n";
+    o += "# ap_channel: 1..13 (2.4), 36..165 (5), or auto (ACS).\n";
+    for (const char* k : {"ap_ssid", "ap_psk", "ap_security", "ap_band",
+                          "ap_standard", "ap_width", "ap_channel", "ap_htmode",
+                          "ap_hidden"})
         o += std::string(k) + "=" + cfg[k] + "\n";
     o += "\n# --- TX power (radio-wide): auto = chip max, or 1..18 dBm ---\n";
     o += "tx_power=" + cfg["tx_power"] + "\n";
@@ -172,10 +209,33 @@ static Net parse_block(const std::string& block) {
 
 static double sig_val(const std::string& s) { return s.empty() ? -999.0 : atof(s.c_str()); }
 
+static const char* iw_path() {
+    if (::access("/usr/sbin/iw", X_OK) == 0) return "/usr/sbin/iw";
+    if (::access("/sbin/iw", X_OK) == 0) return "/sbin/iw";
+    return nullptr;
+}
+
 std::string scan_json() {
-    if (!present()) return "[]";
-    util::run({"/sbin/ip", "link", "set", STA_IF, "up"}, "", 5);
-    std::string out = "\n" + util::run({"/usr/sbin/iw", "dev", STA_IF, "scan"}, "", 15).out;
+    if (!present())
+        return "{\"nets\":[],\"error\":\"no WiFi radio detected\"}";
+    auto cfg = read_conf();
+    // Scanning is a client-mode operation. Refuse it while STA is disabled
+    // (mode off/ap): bringing wlan0 up and scanning would hop the single
+    // radio away from the hotspot for no reason.
+    if (cfg["mode"] != "sta" && cfg["mode"] != "sta+ap")
+        return "{\"nets\":[],\"error\":\"STA mode is off — enable it above to scan\"}";
+    const char* iw = iw_path();
+    if (!iw)
+        return "{\"nets\":[],\"error\":\"iw is not installed on this image\"}";
+
+    util::RunResult up = util::run({"/sbin/ip", "link", "set", STA_IF, "up"}, "", 5);
+    if (up.exit_code != 0) {
+        std::string why = util::trim(up.out);
+        return "{\"nets\":[],\"error\":\"cannot bring up " + std::string(STA_IF) +
+               (why.empty() ? std::string() : ": " + http::json_escape(why)) + "\"}";
+    }
+    util::RunResult r = util::run({iw, "dev", STA_IF, "scan"}, "", 20);
+    std::string out = "\n" + r.out;
     // split on "\nBSS "
     std::map<std::string, Net> nets;
     size_t i = out.find("\nBSS ");
@@ -197,7 +257,7 @@ std::string scan_json() {
     std::vector<Net> list;
     for (auto& kv : nets) list.push_back(kv.second);
     std::sort(list.begin(), list.end(), [](const Net& a, const Net& b) { return sig_val(a.signal) > sig_val(b.signal); });
-    std::string o = "[";
+    std::string o = "{\"nets\":[";
     for (size_t k = 0; k < list.size(); ++k) {
         if (k) o += ",";
         o += "{\"bssid\":\"" + http::json_escape(list[k].bssid) +
@@ -207,7 +267,15 @@ std::string scan_json() {
              "\",\"band\":\"" + http::json_escape(list[k].band) +
              "\",\"security\":\"" + http::json_escape(list[k].security) + "\"}";
     }
-    o += "]";
+    o += "],\"error\":\"";
+    if (list.empty()) {
+        if (r.timed_out) o += "scan timed out";
+        else if (r.exit_code != 0) {
+            std::string why = util::trim(r.out);
+            o += http::json_escape(why.empty() ? "scan failed" : why);
+        }
+    }
+    o += "\"}";
     return o;
 }
 

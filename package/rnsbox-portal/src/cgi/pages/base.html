@@ -24,7 +24,8 @@
     <span class="brand-host">__HOSTNAME__</span>
   </div>
   <nav class="topnav">
-    <span class="user">__USER__</span>
+    <!-- No username chip: the portal has exactly one account (admin), so
+         showing it in the corner is noise. -->
     <button type="button" class="logout theme-toggle" id="theme-toggle"
             title="Switch dark / light theme">◐</button>
     <!-- POST form, not a link: /logout is POST-only (a GET must not change state) -->
