@@ -137,6 +137,24 @@ fi
 [ -e "$T/usr/sbin/dnsmasq" ] && ok "dnsmasq present" || warn "dnsmasq not installed"
 [ -e "$T/etc/init.d/S80dnsmasq" ] || warn "no S80dnsmasq init script"
 
+# ---- bootability ----------------------------------------------------------
+# busybox init execve()s rcS directly. An overlay copied from a DrvFs
+# checkout loses the +x bit and the box comes up at a login prompt with no
+# services ("can't run rcS: Permission denied") — shipped in r2026.10.20.
+if [ -x "$T/etc/init.d/rcS" ]; then
+    ok "rcS executable"
+else
+    bad "rcS is not executable (busybox init cannot run it)"
+fi
+# Every S* script is execve'd by rcS and must carry the bit too.
+for s in "$T"/etc/init.d/S*; do
+    [ -e "$s" ] || continue
+    [ -x "$s" ] || bad "$(basename "$s") is not executable"
+done
+# The fstab mounts the boot FAT on /boot (gadget flag files); the buildroot
+# skeleton does not create that directory.
+[ -d "$T/boot" ] && ok "/boot mountpoint present" || bad "/boot missing (fstab mount will fail)"
+
 if [ "$FLAVOR" = cvitek ]; then
     [ -e "$T/etc/init.d/S35wifi" ] && ok "S35wifi (AIC8800 bring-up) present" || bad "S35wifi missing"
     # the radio kos are board-SKU content: present on -W images, soft on the
