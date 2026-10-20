@@ -41,12 +41,13 @@ COMMON_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 if [ -f "$COMMON_DIR/S10hostname" ] && [ -d "$T/etc/init.d" ]; then
 	install -m 0755 "$COMMON_DIR/S10hostname" "$T/etc/init.d/S10hostname"
 fi
-# Full zsh web terminal (ttyd); the portal session is the only gate.
-if [ -f "$COMMON_DIR/S87ttyd" ] && [ -d "$T/etc/init.d" ]; then
-	install -m 0755 "$COMMON_DIR/S87ttyd" "$T/etc/init.d/S87ttyd"
+# TTY console login user (admin password mirrors the portal admin password).
+if [ -f "$COMMON_DIR/S10consoleuser" ] && [ -d "$T/etc/init.d" ]; then
+	install -m 0755 "$COMMON_DIR/S10consoleuser" "$T/etc/init.d/S10consoleuser"
 fi
-# Older targets/images shipped a ttyd basic-auth password file; drop it.
-rm -f "$T/etc/rnsbox/console.conf"
+# Drop the former ttyd service and password file; the console is now a CGI
+# screen session on the portal's own HTTP port.
+rm -f "$T/etc/init.d/S87ttyd" "$T/usr/bin/ttyd" "$T/etc/rnsbox/console.conf"
 if [ -f "$COMMON_DIR/zshrc" ]; then
 	mkdir -p "$T/etc/zsh"
 	install -m 0644 "$COMMON_DIR/zshrc" "$T/etc/zsh/zshrc"

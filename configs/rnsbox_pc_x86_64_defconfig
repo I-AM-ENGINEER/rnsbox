@@ -86,6 +86,6 @@ BR2_PACKAGE_HOST_GENIMAGE=y
 # portal is C++ — the toolchain needs g++ (run 37: g++ missing at rnsbox-portal build)
 BR2_TOOLCHAIN_BUILDROOT_CXX=y
 
-# Full web terminal: ttyd (xterm.js) + zsh for the Console tab.
-BR2_PACKAGE_TTYD=y
+# TTY console: screen sessions + zsh, served by the portal itself.
+BR2_PACKAGE_SCREEN=y
 BR2_PACKAGE_ZSH=y

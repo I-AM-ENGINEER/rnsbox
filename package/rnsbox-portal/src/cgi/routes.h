@@ -72,8 +72,10 @@ void access_issue(const http::Request&, http::Response&);          // POST -> te
 void access_revoke(const http::Request&, http::Response&);         // POST PRG
 void access_reissue(const http::Request&, http::Response&);        // POST -> text/plain download
 
-// console tab (authenticated one-shot root shell)
-void console_page(const http::Request&, http::Response&);          // GET/POST render+run
+// console tab (TTY login through a screen PTY on the portal's HTTP port)
+void console_page(const http::Request&, http::Response&);          // GET  render
+void console_screen(const http::Request&, http::Response&);        // GET  plain-text screen snapshot
+void console_input(const http::Request&, http::Response&);         // POST line -> PTY
 
 // settings tab
 void settings_page(const http::Request&, http::Response&);         // GET  render

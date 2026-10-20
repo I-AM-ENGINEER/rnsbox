@@ -1,0 +1,21 @@
+#!/bin/sh
+# S10consoleuser — the TTY console logs in as the unprivileged `admin` user.
+#
+# Its unix password mirrors the portal admin password: the image ships the
+# account locked, so seed the factory default admin/admin here. Changing the
+# password in Settings -> Change admin password updates the unix account too.
+# zsh is the login shell when the image has it.
+set -u
+
+if [ -x /bin/zsh ] && [ -f /etc/passwd ]; then
+	sed -i 's#^\(admin:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:\)[^:]*#\1/bin/zsh#' /etc/passwd
+fi
+
+sh=$(awk -F: '$1 == "admin" { print $2 }' /etc/shadow 2>/dev/null)
+case "$sh" in
+	""|'!'*|'*'*)
+		# busybox passwd reads the new password twice; -a pins the hash.
+		printf 'admin\nadmin\n' | /usr/bin/passwd -a sha512 admin >/dev/null 2>&1 || true
+		;;
+esac
+exit 0

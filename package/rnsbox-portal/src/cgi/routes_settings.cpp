@@ -268,6 +268,11 @@ void settings_password(const Request& req, Response& res) {
         render::redirect_flash(res, settings_redirect(), "error", "New password must be at least 6 characters");
     } else {
         session::set_password(s.user, neu);
+        // The TTY console logs in as the unix `admin` user; keep its password
+        // in step with the portal password. The factory admin/admin value is
+        // seeded by S10consoleuser on first boot.
+        util::run({"/usr/bin/passwd", "-a", "sha512", "admin"},
+                  neu + "\n" + neu + "\n", 15);
         // sec: a session issued under the OLD password must not survive the
         // change (whoever held one — e.g. signed in with the factory default
         // just before the operator changed it — would stay logged in for up

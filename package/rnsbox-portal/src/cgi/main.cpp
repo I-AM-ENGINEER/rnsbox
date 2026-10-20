@@ -461,6 +461,8 @@ int main(int argc, char** argv) {
     else if (p == "/access/revoke")              routes::access_revoke(req, res);
     else if (p == "/access/reissue")             routes::access_reissue(req, res);
     else if (p == "/console")                    routes::console_page(req, res);
+    else if (p == "/console/screen")             routes::console_screen(req, res);
+    else if (p == "/console/input")              routes::console_input(req, res);
     else if (p == "/settings")                   routes::settings_page(req, res);
     else if (p == "/settings/password")          routes::settings_password(req, res);
     else if (p == "/settings/hostname")          routes::hostname_set(req, res);

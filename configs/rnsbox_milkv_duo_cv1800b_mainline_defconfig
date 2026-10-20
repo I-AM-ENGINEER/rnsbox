@@ -81,6 +81,6 @@ BR2_PACKAGE_HOSTAPD_DRIVER_NL80211=y
 BR2_PACKAGE_HOSTAPD_ACS=y
 BR2_PACKAGE_HOSTAPD_WPA3=y
 
-# Full web terminal: ttyd (xterm.js) + zsh for the Console tab.
-BR2_PACKAGE_TTYD=y
+# TTY console: screen sessions + zsh, served by the portal itself.
+BR2_PACKAGE_SCREEN=y
 BR2_PACKAGE_ZSH=y
