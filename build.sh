@@ -894,6 +894,14 @@ if [ "${BUILD_STYLE:-patches}" = external ]; then
             EXT="$UPSTREAM_BASE/rnsbox-ext"
             echo ">> syncing repo -> $EXT (drvfs is too slow for buildroot)"
             rsync -a --delete --exclude .git --exclude dl --exclude out "$HERE/" "$EXT/"
+            # DrvFs reports every file as 0644, so rsync -a cannot carry the
+            # executable bit recorded in the git index. Re-apply it for the
+            # scripts that must stay runnable (init.d, helpers) — otherwise
+            # the image ships a non-executable rcS and boots without services.
+            ( cd "$HERE" && git ls-files -s ) | while read -r mode _ _ path; do
+                [ "$mode" = 100755 ] || continue
+                if [ -f "$EXT/$path" ]; then chmod 0755 "$EXT/$path"; fi
+            done
             ;;
     esac
 

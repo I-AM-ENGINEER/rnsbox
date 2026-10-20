@@ -28,6 +28,29 @@ set -eu
 T="${1:-.}"
 [ -d "$T/usr" ] || { echo "slim-target: '$T' does not look like a TARGET_DIR" >&2; exit 1; }
 
+# ---- boot mountpoint and overlay exec bits --------------------------------
+# The buildroot skeleton has no /boot, but every RNSBox fstab mounts the
+# boot FAT there (the usb.* gadget flag files live on it). Without the
+# directory the sysinit mount fails and USB gadget setup has no flags.
+mkdir -p "$T/boot"
+
+# When the repo is checked out on NTFS/DrvFs (WSL), every file is reported
+# as 0644, so rsync -a cannot carry the executable bit of the overlay init
+# scripts. busybox init execve()s rcS directly: 0644 there means the box
+# boots to a login prompt with no services ("can't run rcS: Permission
+# denied"). build.sh re-applies the git modes to the WSL-side copy; repeat
+# the critical ones here so the image is correct regardless of how the
+# overlay was populated.
+if [ -d "$T/etc/init.d" ]; then
+	chmod 0755 "$T/etc/init.d/rcS" "$T/etc/init.d/rcK" 2>/dev/null || true
+	for s in "$T"/etc/init.d/S*; do
+		if [ -e "$s" ]; then chmod 0755 "$s"; fi
+	done
+fi
+if [ -e "$T/usr/share/udhcpc/default.script" ]; then
+	chmod 0755 "$T/usr/share/udhcpc/default.script"
+fi
+
 # ---- python: stdlib modules a headless router never imports ---------------
 # ensurepip (~4M): pip is preinstalled from the rootfs packages; ensurepip
 #   only bootstraps pip into a venv.
