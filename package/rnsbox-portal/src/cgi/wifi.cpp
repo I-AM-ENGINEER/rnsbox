@@ -44,7 +44,7 @@ std::map<std::string, std::string> read_conf() {
     cfg["mode"] = "off"; cfg["ap_ssid"] = ""; cfg["ap_channel"] = "6";
     cfg["ap_htmode"] = "ht20"; cfg["tx_power"] = "auto";
     cfg["sta_security"] = "wpa2"; cfg["sta_band"] = "auto";
-    cfg["ap_security"] = "wpa2"; cfg["ap_band"] = "2.4";
+    cfg["ap_security"] = "wpa3"; cfg["ap_band"] = "2.4";
     cfg["ap_standard"] = "auto"; cfg["ap_width"] = "20";
     std::string data = util::read_file(CONF);
     size_t i = 0;
@@ -72,8 +72,9 @@ std::map<std::string, std::string> read_conf() {
         cfg["sta_security"] = "wpa2";
     if (cfg["sta_band"] != "2.4" && cfg["sta_band"] != "5")
         cfg["sta_band"] = "auto";
-    if (cfg["ap_security"] != "wpa3" && cfg["ap_security"] != "wpa2+wpa3")
-        cfg["ap_security"] = "wpa2";
+    if (cfg["ap_security"] != "wpa2" && cfg["ap_security"] != "wpa3" &&
+        cfg["ap_security"] != "wpa2+wpa3")
+        cfg["ap_security"] = "wpa3";
     if (cfg["ap_band"] != "5") cfg["ap_band"] = "2.4";
     if (cfg["ap_standard"] != "n" && cfg["ap_standard"] != "ac" &&
         cfg["ap_standard"] != "ax")
@@ -172,15 +173,39 @@ static std::string line_value(const std::string& block, const char* prefix) {
     return "";
 }
 
+// iw prints signal/txpower with two decimals ("-35.00 dBm", "18.00 dBm");
+// the radio reports whole dBm and the fraction just flickers, so drop it.
+static std::string int_signal(const std::string& s) {
+    size_t dot = s.find('.');
+    return dot == std::string::npos ? s : s.substr(0, dot);
+}
+
 struct Net { std::string bssid, ssid, signal, channel, band, security; };
 
 static Net parse_block(const std::string& block) {
-    Net n; n.security = "open";
+    Net n; n.security = "Open";
     size_t bsp = block.find_first_of(" (\n");
     n.bssid = util::trim(block.substr(0, bsp));   // block starts with "BSS <addr>"
-    n.signal = after_token(block, "signal: ");
-    if (block.find("RSN:") != std::string::npos || block.find("WPA:") != std::string::npos)
-        n.security = "secured";
+    n.signal = int_signal(after_token(block, "signal: "));
+    // The scan table is where the user sees the security protocol (the join
+    // form deliberately does not show it). Parse the RSN/WPA authentication
+    // suite, not just "is there encryption": WPA2 vs WPA3 vs transition
+    // decides the wpa_supplicant key_mgmt we store on "Use".
+    std::string auth = line_value(block, "* Authentication suites:");
+    if (block.find("RSN:") != std::string::npos) {
+        if (auth.find("SAE") != std::string::npos)
+            n.security = (auth.find("PSK") != std::string::npos) ? "WPA2/WPA3" : "WPA3";
+        else if (auth.find("OWE") != std::string::npos)
+            n.security = "OWE";
+        else if (auth.find("802.1X") != std::string::npos)
+            n.security = "WPA2-Enterprise";
+        else
+            n.security = "WPA2";
+    } else if (block.find("WPA:") != std::string::npos) {
+        n.security = "WPA";
+    } else if (block.find("Privacy") != std::string::npos) {
+        n.security = "WEP";
+    }
     // first "channel N"
     size_t cp = 0;
     while ((cp = block.find("channel ", cp)) != std::string::npos) {
@@ -244,13 +269,14 @@ std::string scan_json() {
         std::string block = out.substr(i + 5, (next == std::string::npos ? out.size() : next) - (i + 5));
         Net e = parse_block(block);
         if (!e.ssid.empty()) {
-            auto it = nets.find(e.ssid);
-            if (it == nets.end()) nets[e.ssid] = e;
-            else {
-                bool prev2 = it->second.band == "2.4", ent2 = e.band == "2.4";
-                if (ent2 && !prev2) it->second = e;
-                else if (ent2 == prev2 && sig_val(e.signal) > sig_val(it->second.signal)) it->second = e;
-            }
+            // One row per BSS, NOT per SSID: a dual-band AP advertises the
+            // same SSID on 2.4 and 5 GHz, and the user must be able to pick
+            // the 5 GHz BSS (the chosen band is stored for wpa_supplicant).
+            std::string key = !e.bssid.empty() ? e.bssid
+                                               : (e.ssid + "|" + e.band + "|" + e.channel);
+            auto it = nets.find(key);
+            if (it == nets.end()) nets[key] = e;
+            else if (sig_val(e.signal) > sig_val(it->second.signal)) it->second = e;
         }
         i = next;
     }
@@ -313,10 +339,10 @@ Status status() {
         std::string sta_info = util::run({"/usr/sbin/iw", "dev", STA_IF, "info"}, "", 5).out;
         s.sta.connected = true;
         s.sta.ssid = line_value(link, "SSID:");
-        s.sta.signal = after_token(link, "signal: ");
+        s.sta.signal = int_signal(after_token(link, "signal: "));
         s.sta.ip = ip_of(STA_IF);
         s.sta.width = after_token(sta_info, "width: ");
-        s.sta.txpower = after_token(sta_info, "txpower ");
+        s.sta.txpower = int_signal(after_token(sta_info, "txpower "));
     }
     std::string ap_if = ap_iface();
     if (!ap_if.empty()) {
@@ -333,7 +359,7 @@ Status status() {
         s.ap.ip = ip_of(ap_if);
         if (s.ap.ip.empty() && !s.ap.bridge.empty()) s.ap.ip = ip_of(s.ap.bridge);
         s.ap.width = after_token(ap_info, "width: ");
-        s.ap.txpower = after_token(ap_info, "txpower ");
+        s.ap.txpower = int_signal(after_token(ap_info, "txpower "));
     }
     return s;
 }

@@ -34,8 +34,10 @@ static std::string opt(const std::string& v, const std::string& label, const std
 // hotspot always requires a passphrase (no open AP).
 static std::string security_options(const std::string& cur, bool allow_open) {
     std::string o;
+    // WPA3 first: it is the hotspot default. "WPA3-PSK" is what users call
+    // SAE; the generated hostapd config still uses SAE.
+    o += opt("wpa3", "WPA3-PSK", cur);
     o += opt("wpa2", "WPA2-PSK", cur);
-    o += opt("wpa3", "WPA3-SAE", cur);
     o += opt("wpa2+wpa3", "WPA2 + WPA3 (mixed)", cur);
     if (allow_open) o += opt("open", "Open (no password)", cur);
     return o;
@@ -207,9 +209,9 @@ void wifi_page(const Request& req, Response& res) {
     h = R(std::move(h), "__AP_CHECKED__",  ap_on  ? "checked" : "");
     h = R(std::move(h), "__SCAN_DISABLED__", sta_on ? "" : "disabled");
     h = R(std::move(h), "__STA_OFF_NOTE__", sta_on ? "" :
-        "<p class=\"muted\">Enable <strong>STA mode</strong> above to scan and join a network.</p>");
+        "<p class=\"muted\">STA mode is off.</p>");
     h = R(std::move(h), "__AP_OFF_NOTE__", ap_on ? "" :
-        "<p class=\"muted\">Enable <strong>AP mode</strong> above to run the hotspot.</p>");
+        "<p class=\"muted\">AP mode is off.</p>");
 
     // Join-section concurrent note
     std::string note;
@@ -221,10 +223,11 @@ void wifi_page(const Request& req, Response& res) {
     h = R(std::move(h), "__CONCURRENT_NOTE__", note);
 
     // ---- STA settings ----
+    // Security and band are properties of the scanned BSS, not operator
+    // choices: the form carries them as hidden fields filled by "Use".
     h = R(std::move(h), "__STA_SSID__", E(cfg["sta_ssid"]));
-    h = R(std::move(h), "__STA_SECURITY_OPTIONS__", security_options(cfg["sta_security"], true));
-    h = R(std::move(h), "__STA_BAND_OPTIONS__", band_options(cfg["sta_band"], true));
-    h = R(std::move(h), "__STA_BAND_DISABLED__", concurrent ? "disabled" : "");
+    h = R(std::move(h), "__STA_SECURITY__", E(cfg["sta_security"]));
+    h = R(std::move(h), "__STA_BAND__", E(cfg["sta_band"]));
     h = R(std::move(h), "__STA_HIDDEN_CHECKED__", cfg["sta_hidden"] == "1" ? "checked" : "");
     h = R(std::move(h), "__STA_ENABLED_JS__", sta_on ? "true" : "false");
 
@@ -241,7 +244,10 @@ void wifi_page(const Request& req, Response& res) {
     h = R(std::move(h), "__AP_SSID__", E(ap_ssid));
     h = R(std::move(h), "__AP_PSK__",  E(cfg["ap_psk"]));
     h = R(std::move(h), "__AP_SECURITY_OPTIONS__", security_options(cfg["ap_security"], false));
-    h = R(std::move(h), "__AP_BAND_OPTIONS__", band_options(cfg["ap_band"], false));
+    // Both bands stay visible as radios (a <select> shows only the selected
+    // one and looks like the box supports a single band).
+    h = R(std::move(h), "__AP_BAND_24_CHECKED__", cfg["ap_band"] == "2.4" ? "checked" : "");
+    h = R(std::move(h), "__AP_BAND_5_CHECKED__",  cfg["ap_band"] == "5"  ? "checked" : "");
     h = R(std::move(h), "__AP_STANDARD_OPTIONS__", standard_options(cfg["ap_standard"]));
 
     std::string sel_chan = cfg["ap_channel"];
@@ -385,7 +391,7 @@ void wifi_ap(const Request& req, Response& res) {
     std::string chan = util::trim(req.f("ap_channel"));
     bool hidden = req.f("ap_hidden") == "on";
 
-    if (security.empty()) security = "wpa2";
+    if (security.empty()) security = "wpa3";
     if (security != "wpa2" && security != "wpa3" && security != "wpa2+wpa3") {
         render::redirect_flash(res, wifi_redirect(), "error", "Unknown hotspot security mode");
         return;
@@ -458,12 +464,23 @@ void wifi_ap(const Request& req, Response& res) {
 
 void wifi_mode(const Request& req, Response& res) {
     if (!web::require_auth(req, res, false)) return;
+    auto cur = wifi::read_conf();
     std::string mode = util::trim(req.f("mode"));
-    // New UI: two independent toggles. Missing checkbox fields mean "off";
-    // the legacy mode=<off|sta|ap|sta+ap> form still works.
+    std::string only = util::trim(req.f("only"));
+    // New UI: one toggle per card. "only" says which card's checkbox was
+    // submitted, so the other mode keeps its current state; the legacy
+    // mode=<off|sta|ap|sta+ap> form still works unchanged.
     if (mode.empty()) {
-        bool sta = req.f("sta_enable") == "on";
-        bool ap  = req.f("ap_enable") == "on";
+        bool sta = (cur["mode"] == "sta" || cur["mode"] == "sta+ap");
+        bool ap  = (cur["mode"] == "ap"  || cur["mode"] == "sta+ap");
+        if (only == "sta") {
+            sta = req.f("sta_enable") == "on";
+        } else if (only == "ap") {
+            ap = req.f("ap_enable") == "on";
+        } else {
+            sta = req.f("sta_enable") == "on";
+            ap  = req.f("ap_enable") == "on";
+        }
         mode = (sta && ap) ? "sta+ap" : sta ? "sta" : ap ? "ap" : "off";
     }
     // Reject rather than default to "off": turning the radio off can drop a
@@ -475,7 +492,6 @@ void wifi_mode(const Request& req, Response& res) {
     // ap / sta+ap switch the hotspot on with the STORED ssid/password — hold
     // them to the same rule as the Hotspot form (blank ssid = hostname).
     if (mode == "ap" || mode == "sta+ap") {
-        auto cur = wifi::read_conf();
         std::string why = ap_psk_problem(cur["ap_psk"]);
         if (!why.empty()) {
             render::redirect_flash(res, wifi_redirect(), "error",

@@ -11,23 +11,14 @@
 </section>
 
 <section class="card">
-  <h3>Modes</h3>
+  <h3>STA mode</h3>
   <form method="post" action="__BASE__/wifi/mode" class="row-form">
-    <label><input type="checkbox" name="sta_enable" __STA_CHECKED__>
-      <strong>STA mode</strong> — join an existing network</label>
-    <label><input type="checkbox" name="ap_enable" __AP_CHECKED__>
-      <strong>AP mode</strong> — run the hotspot</label>
-    <button type="submit" class="btn-primary">Apply modes</button>
+    <input type="hidden" name="only" value="sta">
+    <label><input type="checkbox" name="sta_enable" __STA_CHECKED__> Enabled</label>
+    <button type="submit" class="btn">Apply</button>
   </form>
-  <p class="muted">Both modes can be enabled at once — the single radio
-  time-shares them. With both off the radio is idle: that is a normal
-  operating state, not an error.</p>
-</section>
-
-<section class="card">
-  <h3>STA mode — join a network</h3>
   __STA_OFF_NOTE__
-  <div style="margin-bottom:10px">
+  <div style="margin-top:10px">
     <button type="button" class="btn" id="scanbtn" onclick="doScan()" __SCAN_DISABLED__>Scan</button>
     <button type="button" class="btn" id="scanstop" onclick="stopScan()" style="display:none">Stop scan</button>
     <span id="scanmsg" class="muted"></span>
@@ -45,22 +36,24 @@
       <input name="psk" id="sta_psk" type="password" placeholder="password (blank = open)" minlength="8" maxlength="63">
       <button type="button" class="btn" onclick="togglePw('sta_psk', this)">Show</button>
     </label>
-    <label>Security
-      <select name="sta_security" id="sta_security">__STA_SECURITY_OPTIONS__</select>
-    </label>
-    <label>Band
-      <select name="sta_band" __STA_BAND_DISABLED__>__STA_BAND_OPTIONS__</select>
-    </label>
-    <label><input type="checkbox" name="sta_hidden" __STA_HIDDEN_CHECKED__> Hidden network (scan_ssid)</label>
+    <!-- Filled from the selected scan row: the protocol and band are the
+         network's, not operator choices, and are not shown again here. -->
+    <input type="hidden" name="sta_security" id="sta_security" value="__STA_SECURITY__">
+    <input type="hidden" name="sta_band" id="sta_band" value="__STA_BAND__">
+    <label><input type="checkbox" name="sta_hidden" __STA_HIDDEN_CHECKED__> Hidden network</label>
     <p class="muted">Another RNSBox's hotspot can't be this box's uplink: every
-    RNSBox's LAN is 10.42.0.0/24, so the box refuses DHCP from such a network
-    (its router and DNS would be the box itself).</p>
+    RNSBox's LAN is 10.42.0.0/24, so the box refuses DHCP from such a network.</p>
     <button type="submit" class="btn-primary">Connect</button>
   </form>
 </section>
 
 <section class="card">
-  <h3>AP mode — hotspot</h3>
+  <h3>AP mode</h3>
+  <form method="post" action="__BASE__/wifi/mode" class="row-form">
+    <input type="hidden" name="only" value="ap">
+    <label><input type="checkbox" name="ap_enable" __AP_CHECKED__> Enabled</label>
+    <button type="submit" class="btn">Apply</button>
+  </form>
   __AP_OFF_NOTE__
   __AP_PSK_NOTE__
   <form method="post" action="__BASE__/wifi/ap">
@@ -80,9 +73,10 @@
     <label>Security
       <select name="ap_security">__AP_SECURITY_OPTIONS__</select>
     </label>
-    <label>Band
-      <select name="ap_band" id="ap_band">__AP_BAND_OPTIONS__</select>
-    </label>
+    <div class="row-form"><strong>Band</strong>
+      <label><input type="radio" name="ap_band" value="2.4" __AP_BAND_24_CHECKED__> 2.4 GHz</label>
+      <label><input type="radio" name="ap_band" value="5" __AP_BAND_5_CHECKED__> 5 GHz</label>
+    </div>
     <label>Wi-Fi standard
       <select name="ap_standard" id="ap_standard">__AP_STANDARD_OPTIONS__</select>
     </label>
@@ -97,9 +91,8 @@
   </form>
   <p class="muted" style="margin-top:8px">In concurrent <em>STA + AP</em> mode the
   client follows the hotspot's band and the hotspot inherits the client's exact
-  channel and width (single radio — they must share one channel). <em>auto</em>
-  channel and manual width changes apply only in AP-only mode; if the radio
-  can't honor them the hotspot falls back to 20&nbsp;MHz.</p>
+  channel and width (one radio). <em>auto</em> channel applies in AP-only mode;
+  if the radio can't honor it the hotspot falls back to 20&nbsp;MHz.</p>
 </section>
 
 <section class="card">
@@ -128,8 +121,8 @@ function togglePw(id, btn){
   if (el.type === 'password'){ el.type = 'text';  btn.textContent = 'Hide'; }
   else                       { el.type = 'password'; btn.textContent = 'Show'; }
 }
-// Open networks have no password: disable (and clear) the field so the
-// browser doesn't submit a stale value.
+// The join form has no Security select: the protocol comes from the scan row.
+// Open networks have no password; disable (and clear) the field.
 function syncStaSecurity(){
   var s=document.getElementById('sta_security'), p=document.getElementById('sta_psk');
   if(!s || !p) return;
@@ -137,6 +130,19 @@ function syncStaSecurity(){
   p.disabled = open;
   if(open) p.value='';
 }
+function secFromScan(s){
+  if (s === 'Open') return 'open';
+  if (s === 'WPA3') return 'wpa3';
+  if (s === 'WPA2/WPA3') return 'wpa2+wpa3';
+  return 'wpa2';   // WPA2, WPA, WEP and Enterprise all start as WPA2-PSK
+}
+// A manually typed SSID no longer carries the last scan row's protocol/band.
+document.getElementById('ssid').addEventListener('input', function(){
+  var sec=document.getElementById('sta_security'), band=document.getElementById('sta_band');
+  if(sec) sec.value='wpa2';
+  if(band) band.value='auto';
+  syncStaSecurity();
+});
 // Continuous scan: re-scans every few seconds for up to 5 minutes (or until
 // "Stop scan" / leaving the page), merging results as APs appear.
 var scanTimer=null, scanStopped=false, scanDeadline=0, scanFound={};
@@ -227,7 +233,10 @@ function renderScan(){
       b.onclick=function(){
         document.getElementById('ssid').value=n.ssid||'';
         var sec=document.getElementById('sta_security');
-        if(sec){ sec.value=(n.security==='open')?'open':'wpa2'; syncStaSecurity(); }
+        var bandEl=document.getElementById('sta_band');
+        if(sec) sec.value=secFromScan(n.security||'');
+        if(bandEl) bandEl.value=(n.band==='5'?'5':(n.band==='2.4'?'2.4':'auto'));
+        syncStaSecurity();
       };
       last.appendChild(b);
     }
@@ -238,12 +247,15 @@ function renderScan(){
 // ---- AP band / standard / channel / width synchronization -----------------
 var CH24=[1,2,3,4,5,6,7,8,9,10,11,12,13];
 var CH5=[36,40,44,48,149,153,157,161,165];
+function apBand(){
+  var el=document.querySelector('input[name="ap_band"]:checked');
+  return el?el.value:'2.4';
+}
 function fillChannels(){
-  var bandEl=document.getElementById('ap_band');
   var chEl=document.getElementById('ap_channel');
   var wEl=document.getElementById('ap_width');
-  if(!bandEl || !chEl) return;
-  var band=bandEl.value, cur=chEl.value, width=wEl?wEl.value:'20';
+  if(!chEl) return;
+  var band=apBand(), cur=chEl.value, width=wEl?wEl.value:'20';
   var list=(band==='5')?CH5:CH24;
   if(width==='80' && band==='5') list=[36,40,44,48,149,153,157,161];
   else if(width==='40' && band==='5') list=[36,40,44,48,149,153,157,161];
@@ -259,11 +271,10 @@ function fillChannels(){
   chEl.value=ok?cur:'auto';
 }
 function syncWidth(){
-  var bandEl=document.getElementById('ap_band');
   var stdEl=document.getElementById('ap_standard');
   var wEl=document.getElementById('ap_width');
-  if(!bandEl || !stdEl || !wEl) return;
-  var band=bandEl.value, std=stdEl.value;
+  if(!stdEl || !wEl) return;
+  var band=apBand(), std=stdEl.value;
   for(var i=0;i<wEl.options.length;i++){
     var v=wEl.options[i].value, dis=false;
     if(v==='80' && (band!=='5' || (std!=='ac' && std!=='ax'))) dis=true;
@@ -272,10 +283,9 @@ function syncWidth(){
   if(wEl.options[wEl.selectedIndex] && wEl.options[wEl.selectedIndex].disabled) wEl.value='20';
 }
 function syncStandard(){
-  var bandEl=document.getElementById('ap_band');
   var stdEl=document.getElementById('ap_standard');
-  if(!bandEl || !stdEl) return;
-  var band=bandEl.value;
+  if(!stdEl) return;
+  var band=apBand();
   for(var i=0;i<stdEl.options.length;i++){
     if(stdEl.options[i].value==='ac') stdEl.options[i].disabled=(band!=='5');
   }
@@ -283,12 +293,13 @@ function syncStandard(){
   syncWidth();
 }
 (function(){
-  var bandEl=document.getElementById('ap_band');
   var stdEl=document.getElementById('ap_standard');
   var wEl=document.getElementById('ap_width');
   var staSec=document.getElementById('sta_security');
-  if(staSec){ staSec.addEventListener('change', syncStaSecurity); syncStaSecurity(); }
-  if(bandEl) bandEl.addEventListener('change', function(){ syncStandard(); fillChannels(); });
+  var bands=document.querySelectorAll('input[name="ap_band"]');
+  if(staSec){ syncStaSecurity(); }
+  for(var bi=0; bi<bands.length; bi++)
+    bands[bi].addEventListener('change', function(){ syncStandard(); fillChannels(); });
   if(stdEl) stdEl.addEventListener('change', function(){ syncWidth(); fillChannels(); });
   if(wEl) wEl.addEventListener('change', fillChannels);
   syncStandard();

@@ -126,8 +126,8 @@ ap_unbridge() {
 }
 
 load_modules() {
-	# rtl8189es is an out-of-tree module built by Buildroot; the SDIO
-	# firmware is loaded by the driver itself. modprobe is a no-op when
+	# brcmfmac is built into the RNSBox kernel; firmware comes from the
+	# brcmfmac-sdio-firmware-rpi NVRAM package. modprobe is a no-op when
 	# built-in.
 	modprobe 8189es 2>/dev/null || modprobe rtl8189es 2>/dev/null || true
 	modprobe cfg80211 2>/dev/null || true
@@ -218,7 +218,7 @@ gen_hostapd_conf() {
 	width="$6"; force_off="$7"; band="$8"; sec="$9"; std="${10}"
 	[ -z "$width" ] && width=20
 	[ -z "$band" ] && band=2.4
-	[ -z "$sec" ] && sec=wpa2
+	[ -z "$sec" ] && sec=wpa3
 	[ -z "$std" ] && std=auto
 	{
 		echo "interface=$iface"
@@ -442,8 +442,8 @@ start_ap() {
 	if [ -z "$width" ]; then
 		case "$(cfg ap_htmode)" in ht40) width=40 ;; *) width=20 ;; esac
 	fi
-	sec=$(cfg ap_security); [ -z "$sec" ] && sec=wpa2
-	case "$sec" in wpa2|wpa3|wpa2+wpa3) ;; *) sec=wpa2 ;; esac
+	sec=$(cfg ap_security); [ -z "$sec" ] && sec=wpa3
+	case "$sec" in wpa2|wpa3|wpa2+wpa3) ;; *) sec=wpa3 ;; esac
 	case "$std" in auto|n|ac|ax) ;; *) std=auto ;; esac
 	case "$width" in 20|40|80) ;; *) width=20 ;; esac
 	# Normalize combinations hostapd/the radio cannot do.
