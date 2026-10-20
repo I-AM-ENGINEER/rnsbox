@@ -11,7 +11,7 @@ if [ -e /boot/resolv.conf ]
 then
 	RESOLV_CONF="/etc/resolv.conf.dhcp"
 fi
-[ -e "$RESOLV_CONF" ] || touch "$RESOLV_CONF"
+[ -e $RESOLV_CONF ] || touch $RESOLV_CONF
 # RNSBox: register DNS in openresolv's database (the same one dhcpcd's
 # wlan0 hook uses) instead of editing resolv.conf, so a dhcpcd event on
 # wlan0 can't regenerate eth0's servers away. /boot/resolv.conf keeps the
@@ -42,10 +42,30 @@ wait_for_ipv6_default_route() {
 	printf " timeout!\n"
 }
 
+# Dotted netmask -> CIDR prefix, for the ip(8) replacement of ifconfig.
+mask2prefix() {
+	_p=0
+	for _o in $(echo "$1" | tr '.' ' '); do
+		case "$_o" in
+			255) _p=$((_p + 8)) ;;
+			254) _p=$((_p + 7)) ;;
+			252) _p=$((_p + 6)) ;;
+			248) _p=$((_p + 5)) ;;
+			240) _p=$((_p + 4)) ;;
+			224) _p=$((_p + 3)) ;;
+			192) _p=$((_p + 2)) ;;
+			128) _p=$((_p + 1)) ;;
+		esac
+	done
+	echo "$_p"
+}
+
 case "$ACTION" in
 	deconfig)
-		/sbin/ifconfig "$interface" up
-		/sbin/ifconfig "$interface" 0.0.0.0
+		# busybox may be built without ifconfig/route; ip(8) is always there.
+		# busybox ip counts: no -4/-6 aliases, use -f inet/inet6.
+		/sbin/ip link set "$interface" up
+		/sbin/ip addr flush dev "$interface"
 
 		# drop info from this interface
 		if $USE_RESOLVCONF; then
@@ -53,27 +73,37 @@ case "$ACTION" in
 		else
 			# resolv.conf may be a symlink to /tmp/, so take care
 			TMPFILE=$(mktemp)
-			grep -vE "# $interface\$" "$RESOLV_CONF" > "$TMPFILE"
-			cat "$TMPFILE" > "$RESOLV_CONF"
+			grep -vE "# $interface\$" $RESOLV_CONF > $TMPFILE
+			cat $TMPFILE > $RESOLV_CONF
 			rm -f $TMPFILE
 		fi
 
 		if [ -x /usr/sbin/avahi-autoipd ]; then
-			/usr/sbin/avahi-autoipd -c "$interface" && /usr/sbin/avahi-autoipd -k "$interface"
+			/usr/sbin/avahi-autoipd -c $interface && /usr/sbin/avahi-autoipd -k $interface
 		fi
 		;;
 
 	leasefail|nak)
 		if [ -x /usr/sbin/avahi-autoipd ]; then
-			/usr/sbin/avahi-autoipd -c "$interface" || /usr/sbin/avahi-autoipd -wD "$interface" --no-chroot
+			/usr/sbin/avahi-autoipd -c $interface || /usr/sbin/avahi-autoipd -wD $interface --no-chroot
 		fi
 		;;
 
 	renew|bound)
 		if [ -x /usr/sbin/avahi-autoipd ]; then
-			/usr/sbin/avahi-autoipd -c "$interface" && /usr/sbin/avahi-autoipd -k "$interface"
+			/usr/sbin/avahi-autoipd -c $interface && /usr/sbin/avahi-autoipd -k $interface
 		fi
-		/sbin/ifconfig "$interface" "$ip" ${BROADCAST:-} ${NETMASK:-}
+		if [ -n "$ip" ]; then
+			case "$ip" in
+				*:*)
+					/sbin/ip -f inet6 addr add "$ip" dev "$interface" 2>/dev/null
+					;;
+				*)
+					_pfx=$(mask2prefix "${subnet:-255.255.255.0}")
+					/sbin/ip addr add "$ip/${_pfx:-24}" dev "$interface" 2>/dev/null
+					;;
+			esac
+		fi
 		if [ -n "$ipv6" ] ; then
 			wait_for_ipv6_default_route
 		fi
@@ -96,12 +126,11 @@ case "$ACTION" in
 			done
 		elif [ -n "$router" ] ; then
 			echo "deleting routers"
-			while route del default gw 0.0.0.0 dev "$interface" 2> /dev/null; do
+			while /sbin/ip route del default dev "$interface" 2>/dev/null; do
 				:
 			done
-
 			for i in $router ; do
-				route add default gw "$i" dev "$interface"
+				/sbin/ip route add default via "$i" dev "$interface" 2>/dev/null
 			done
 		fi
 
@@ -121,8 +150,8 @@ case "$ACTION" in
 			# drop info from this interface
 			# resolv.conf may be a symlink to /tmp/, so take care
 			TMPFILE=$(mktemp)
-			grep -vE "# $interface\$" "$RESOLV_CONF" > "$TMPFILE"
-			cat "$TMPFILE" > "$RESOLV_CONF"
+			grep -vE "# $interface\$" $RESOLV_CONF > $TMPFILE
+			cat $TMPFILE > $RESOLV_CONF
 			rm -f $TMPFILE
 
 			[ -n "$search_list" ] &&
