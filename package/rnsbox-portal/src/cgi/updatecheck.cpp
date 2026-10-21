@@ -123,7 +123,10 @@ State display() {
     if (!j.empty()) {
         s.latest = json_str(j, "latest");
         s.error = json_str(j, "error");
+        s.source = json_str(j, "source");
         s.checked_at = json_int(j, "checked_at");
+        s.downloaded_version = json_str(j, "downloaded_version");
+        s.downloaded_at = json_int(j, "downloaded_at");
     }
     s.update_available = newer(s.latest, s.installed);
     return s;

@@ -33,14 +33,18 @@ void reticulum_restart(const http::Request&, http::Response&);     // POST PRG
 void reticulum_autorestart(const http::Request&, http::Response&); // POST PRG
 void reticulum_rnsdwatchdog(const http::Request&, http::Response&); // POST PRG
 void reticulum_autoupdate(const http::Request&, http::Response&);  // POST PRG
-void reticulum_checkupdate(const http::Request&, http::Response&); // POST PRG (python helper)
-void reticulum_applyupdate(const http::Request&, http::Response&); // POST PRG (python helper)
+void reticulum_maintenance(const http::Request&, http::Response&); // POST PRG (one form: update+restart+watchdog)
+void reticulum_checkupdate(const http::Request&, http::Response&); // POST JSON (python helper)
+void reticulum_downloadupdate(const http::Request&, http::Response&); // POST JSON (fetch+verify wheel)
+void reticulum_installupdate(const http::Request&, http::Response&);  // POST JSON (install+rollback)
+void reticulum_applyupdate(const http::Request&, http::Response&); // POST JSON (legacy alias: install)
 void reticulum_slip(const http::Request&, http::Response&);        // POST PRG
 void reticulum_rnsh_save(const http::Request&, http::Response&);   // POST PRG
 void reticulum_halow_add(const http::Request&, http::Response&);   // POST PRG
 // TCP client interface editor ([[...]] type = TCPClientInterface stanzas)
 void reticulum_tcpclient_add(const http::Request&, http::Response&);    // POST PRG
 void reticulum_tcpclient_update(const http::Request&, http::Response&); // POST PRG
+void reticulum_tcpclient_save(const http::Request&, http::Response&);   // POST PRG
 void reticulum_tcpclient_delete(const http::Request&, http::Response&); // POST PRG
 void reticulum_bluetooth(const http::Request&, http::Response&);        // POST PRG
 void reticulum_bluetooth_raise(const http::Request&, http::Response&);  // POST PRG
@@ -72,10 +76,19 @@ void access_issue(const http::Request&, http::Response&);          // POST -> te
 void access_revoke(const http::Request&, http::Response&);         // POST PRG
 void access_reissue(const http::Request&, http::Response&);        // POST -> text/plain download
 
-// console tab (TTY login through a screen PTY on the portal's HTTP port)
+// terminal tabs (xterm.js + chunked HTTP stream to the local PTY broker).
+// The full pages are the same terminal without the portal chrome, opened in
+// their own browser tab ("Open in new tab" on the normal page).
 void console_page(const http::Request&, http::Response&);          // GET  render
-void console_screen(const http::Request&, http::Response&);        // GET  plain-text screen snapshot
-void console_input(const http::Request&, http::Response&);         // POST line -> PTY
+void console_full_page(const http::Request&, http::Response&);     // GET  render (no chrome)
+void console_stream(const http::Request&, http::Response&);        // GET  raw VT output stream
+void console_input(const http::Request&, http::Response&);         // POST raw key bytes -> PTY
+void console_resize(const http::Request&, http::Response&);        // POST cols/rows -> PTY
+void nomadnet_page(const http::Request&, http::Response&);         // GET  render
+void nomadnet_full_page(const http::Request&, http::Response&);    // GET  render (no chrome)
+void nomadnet_stream(const http::Request&, http::Response&);       // GET  raw VT output stream
+void nomadnet_input(const http::Request&, http::Response&);        // POST raw key bytes -> PTY
+void nomadnet_resize(const http::Request&, http::Response&);       // POST cols/rows -> PTY
 
 // settings tab
 void settings_page(const http::Request&, http::Response&);         // GET  render
@@ -89,9 +102,10 @@ void usb_mode_set(const http::Request&, http::Response&);          // POST PRG (
 
 // echo bot (cards on the Reticulum tab; /echobot redirects to the card)
 std::string echobot_cards(const std::string& base);              // cards HTML for the Reticulum page
+std::string echobot_dashboard_card(const std::string& base);     // compact Dashboard card (enabled only)
 void echobot_page(const http::Request&, http::Response&);        // GET  -> redirect to the card
 void echobot_peers(const http::Request&, http::Response&);       // GET  -> traffic table fragment (AJAX)
-void echobot_toggle(const http::Request&, http::Response&);      // POST PRG (Enable switch)
+void echobot_toggle(const http::Request&, http::Response&);      // POST PRG (legacy Enable switch)
 void echobot_save(const http::Request&, http::Response&);        // POST PRG
 void echobot_announce(const http::Request&, http::Response&);    // POST PRG
 void echobot_restart(const http::Request&, http::Response&);     // POST PRG
@@ -108,6 +122,9 @@ void wifi_connect(const http::Request&, http::Response&);          // POST PRG
 void wifi_ap(const http::Request&, http::Response&);               // POST PRG
 void wifi_mode(const http::Request&, http::Response&);             // POST PRG
 void wifi_txpower(const http::Request&, http::Response&);          // POST PRG
+void wifi_net_add(const http::Request&, http::Response&);          // POST PRG
+void wifi_net_delete(const http::Request&, http::Response&);       // POST PRG
+void wifi_net_connect(const http::Request&, http::Response&);      // POST PRG
 
 }  // namespace routes
 #endif

@@ -45,9 +45,20 @@ define RNSBOX_PORTAL_INSTALL_TARGET_CMDS
 	$(INSTALL) -m 0644 $(@D)/cgi/pages/*.html $(TARGET_DIR)/usr/share/rnsbox-portal/pages/
 	$(INSTALL) -D -m 0644 $(@D)/cgi/www/style.css $(TARGET_DIR)/www/style.css
 	$(INSTALL) -D -m 0644 $(@D)/cgi/www/index.html $(TARGET_DIR)/www/index.html
+	$(INSTALL) -D -m 0644 $(@D)/cgi/www/xterm/xterm.js $(TARGET_DIR)/www/xterm/xterm.js
+	$(INSTALL) -D -m 0644 $(@D)/cgi/www/xterm/xterm.css $(TARGET_DIR)/www/xterm/xterm.css
+	$(INSTALL) -D -m 0644 $(@D)/cgi/www/xterm/addon-fit.js $(TARGET_DIR)/www/xterm/addon-fit.js
+	$(INSTALL) -D -m 0644 $(@D)/cgi/www/xterm/LICENSE $(TARGET_DIR)/www/xterm/LICENSE
+	$(INSTALL) -D -m 0644 $(@D)/cgi/www/term.js $(TARGET_DIR)/www/term.js
 	mkdir -p $(TARGET_DIR)/www/qr
 	$(INSTALL) -m 0644 $(@D)/cgi/www/qr/*.svg $(TARGET_DIR)/www/qr/
 	$(INSTALL) -D -m 0755 $(@D)/cgi/helpers/updatecheck.py $(TARGET_DIR)/usr/lib/rnsbox/updatecheck.py
+	# Fallback trust store for boards built without ca-certificates: several
+	# rnsbox images ship an empty /etc/ssl/certs, so every HTTPS check failed.
+	$(INSTALL) -D -m 0644 $(@D)/ca-certificates.crt $(TARGET_DIR)/usr/share/rnsbox-portal/ca-certificates.crt
+	# Signed rngit release manifest (trust anchor for Git over Reticulum
+	# updates; points at the official Reticulum release node).
+	$(INSTALL) -D -m 0644 $(@D)/rns-release.rsm $(TARGET_DIR)/usr/share/rnsbox-portal/rns-release.rsm
 	$(INSTALL) -D -m 0755 $(@D)/cgi/helpers/rnode.py $(TARGET_DIR)/usr/lib/rnsbox/rnode.py
 	$(INSTALL) -D -m 0755 $(@D)/cgi/helpers/rnshaccess.py $(TARGET_DIR)/usr/lib/rnsbox/rnshaccess.py
 	$(INSTALL) -D -m 0755 $(@D)/cgi/helpers/halow.py $(TARGET_DIR)/usr/lib/rnsbox/halow.py

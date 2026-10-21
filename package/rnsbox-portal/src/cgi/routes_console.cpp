@@ -1,61 +1,211 @@
-// routes_console.cpp — TTY console on the portal's own HTTP port.
+// routes_console.cpp — real PTY terminals on the portal's own HTTP port.
 //
-// A detached GNU screen session runs /bin/login on a real PTY; the CGI route
-// snapshots its screen (hardcopy) and stuffs input lines. No second HTTP
-// port and no separate network service: the portal's login is the gate.
+// The Console and NomadNet tabs are xterm.js in the browser. Their output is a
+// long-lived chunked HTTP response (uhttpd relays CGI stdout as it arrives);
+// keystrokes and window resizes are small POSTs carrying raw bytes. Both
+// endpoints are authenticated by the portal session and talk to the local PTY
+// broker over a root-only Unix socket — no second port, no separate network
+// service. The broker keeps one session per tab (the admin shell, NomadNet's
+// TUI), so each tab survives reloads and opens in its own browser tab without
+// the portal chrome.
 #include "routes.h"
+#include "console.h"
 #include "render.h"
 #include "web.h"
-#include "util.h"
+#include <cerrno>
+#include <cstdlib>
 #include <string>
 #include <unistd.h>
 
 namespace routes {
 
-static const char* SCREEN = "/usr/bin/screen";
-static const char* CAP = "/tmp/rnsbox-console.txt";
-
-static std::string R(std::string s, const std::string& a, const std::string& b) {
-    return web::replace_all(std::move(s), a, b);
+static int int_arg(const http::Request& req, const char* n, int lo, int hi, int def) {
+    const std::string& s = req.a(n);
+    if (s.empty()) return def;
+    char* end = nullptr;
+    long v = strtol(s.c_str(), &end, 10);
+    if (!end || *end != '\0') return def;
+    if (v < lo) v = lo;
+    if (v > hi) v = hi;
+    return static_cast<int>(v);
 }
 
-// The helper prints the pid of the single screen session (starting it when
-// needed). Address it as <pid>.rnsbox-console so a stale duplicate can never
-// make -S ambiguous.
-static std::string session_id() {
-    util::RunResult r = util::run({"/usr/sbin/rnsbox-console-session"}, "", 10);
-    std::string pid = util::trim(r.out);
-    return pid.empty() ? std::string() : pid + ".rnsbox-console";
+static bool write_all_stdout(const char* p, size_t n) {
+    while (n) {
+        ssize_t w = ::write(STDOUT_FILENO, p, n);
+        if (w > 0) { p += w; n -= static_cast<size_t>(w); continue; }
+        if (w < 0 && errno == EINTR) continue;
+        return false;
+    }
+    return true;
 }
 
+// One page body serves every terminal tab and both chrome modes. `api` is the
+// route prefix the page's AJAX talks to (/console or /nomadnet); the broker
+// session is selected by that prefix, not by the browser.
+static void term_page(const http::Request& req, http::Response& res,
+                      const char* title, const char* active,
+                      const char* api, bool full) {
+    if (!web::require_auth(req, res, false)) return;
+    const std::string base = web::base();
+    std::string h = render::page_file("terminal");
+    h = web::replace_all(h, "__TERM_TITLE__", render::esc(title));
+    h = web::replace_all(h, "__TERM_JSV__", render::asset_version());
+    h = web::replace_all(h, "__TERM_BASE__", render::esc(base));
+    h = web::replace_all(h, "__TERM_API__", render::esc(base + api));
+    h = web::replace_all(h, "__TERM_HEADING__",
+                         full ? std::string()
+                              : "<h2>" + render::esc(title) + "</h2>");
+    if (full) {
+        h = web::replace_all(h, "__TERM_FULL_BTN__", "");
+        res.body = render::full_page(title, h);
+        return;
+    }
+    std::string full_url = base + api + "/full";
+    h = web::replace_all(h, "__TERM_FULL_BTN__",
+        "<a class=\"btn\" href=\"" + render::esc(full_url) +
+        "\" target=\"_blank\" rel=\"noopener\">Open in new tab</a>");
+    res.body = render::layout(req, res, title, active, h);
+}
+
+// GET /<api>/stream — raw VT bytes, chunked, until the browser goes away or
+// the session ends. Every attach replays the session's current ring so a
+// reload/reconnect reconstructs the visible screen (the page resets xterm
+// before reading).
+static void term_stream(const http::Request& req, http::Response& res,
+                        const std::string& session) {
+    if (!web::require_auth(req, res, false)) return;
+
+    int cols = int_arg(req, "cols", 2, 400, 80);
+    int rows = int_arg(req, "rows", 2, 200, 24);
+    int fd = console::connect_session();
+    if (fd < 0) {
+        res.status = "503 Service Unavailable";
+        res.content_type = "text/plain; charset=utf-8";
+        res.body = "Console broker is not running (S11console).\n";
+        return;
+    }
+    if (!console::attach(fd, session, cols, rows)) {
+        close(fd);
+        res.status = "503 Service Unavailable";
+        res.content_type = "text/plain; charset=utf-8";
+        res.body = "Console broker refused the session.\n";
+        return;
+    }
+
+    // Headers first (res.send() flushes), then raw terminal bytes. uhttpd
+    // sees no Content-Length and uses Transfer-Encoding: chunked.
+    res.streamed = true;
+    res.content_type = "application/octet-stream";
+    res.headers.push_back("Cache-Control: no-store");
+    res.send();
+
+    // Flush the response through uhttpd even when the session has nothing to
+    // replay: uhttpd may hold the CGI headers until the first body byte. A NUL
+    // is ignored by xterm and just tells the browser the stream is live.
+    (void)write_all_stdout("\0", 1);
+
+    char buf[8192];
+    for (;;) {
+        ssize_t n = ::read(fd, buf, sizeof buf);
+        if (n > 0) {
+            if (!write_all_stdout(buf, static_cast<size_t>(n))) break;
+            continue;
+        }
+        if (n == 0) break;
+        if (errno == EINTR) continue;
+        break;   // socket timeout/error: let the browser reconnect
+    }
+    close(fd);
+}
+
+// POST /<api>/input — raw bytes from xterm's onData/onBinary. The body is not
+// form-encoded: control sequences and UTF-8 must survive untouched.
+static void term_input(const http::Request& req, http::Response& res,
+                       const std::string& session) {
+    if (!web::require_auth(req, res, false)) return;
+    if (req.body.size() > 200 * 1024) {
+        res.status = "413 Payload Too Large";
+        res.content_type = "application/json";
+        res.body = "{\"error\":\"input too large\"}";
+        return;
+    }
+    int fd = console::connect_session();
+    if (fd < 0) {
+        res.status = "503 Service Unavailable";
+        res.content_type = "application/json";
+        res.body = "{\"error\":\"console broker unavailable\"}";
+        return;
+    }
+    bool ok = console::send_input(fd, session, req.body);
+    close(fd);
+    if (!ok) {
+        res.status = "502 Bad Gateway";
+        res.content_type = "application/json";
+        res.body = "{\"error\":\"input rejected\"}";
+        return;
+    }
+    res.status = "204 No Content";
+    res.content_type = "text/plain";
+}
+
+// POST /<api>/resize?cols=N&rows=N — propagate fit() changes to the PTY.
+static void term_resize(const http::Request& req, http::Response& res,
+                        const std::string& session) {
+    if (!web::require_auth(req, res, false)) return;
+    int cols = int_arg(req, "cols", 2, 400, 80);
+    int rows = int_arg(req, "rows", 2, 200, 24);
+    int fd = console::connect_session();
+    if (fd < 0) {
+        res.status = "503 Service Unavailable";
+        res.content_type = "application/json";
+        res.body = "{\"error\":\"console broker unavailable\"}";
+        return;
+    }
+    bool ok = console::send_resize(fd, session, cols, rows);
+    close(fd);
+    if (!ok) {
+        res.status = "502 Bad Gateway";
+        res.content_type = "application/json";
+        res.body = "{\"error\":\"resize rejected\"}";
+        return;
+    }
+    res.status = "204 No Content";
+    res.content_type = "text/plain";
+}
+
+// ---- Console tab: the admin login shell ----
 void console_page(const http::Request& req, http::Response& res) {
-    if (!web::require_auth(req, res, false)) return;
-    std::string h = render::page_file("console");
-    h = R(std::move(h), "__BASE__", web::base());
-    res.body = render::layout(req, res, "Console", "console", h);
+    term_page(req, res, "Console", "console", "/console", false);
 }
-
-void console_screen(const http::Request& req, http::Response& res) {
-    if (!web::require_auth(req, res, false)) return;
-    std::string id = session_id();
-    if (id.empty()) { res.body = ""; return; }
-    ::unlink(CAP);
-    util::run({SCREEN, "-S", id, "-X", "hardcopy", CAP}, "", 5);
-    res.content_type = "text/plain; charset=utf-8";
-    res.body = util::read_file(CAP, 256 * 1024);
+void console_full_page(const http::Request& req, http::Response& res) {
+    term_page(req, res, "Console", "console", "/console", true);
 }
-
+void console_stream(const http::Request& req, http::Response& res) {
+    term_stream(req, res, console::SESSION_SHELL);
+}
 void console_input(const http::Request& req, http::Response& res) {
-    if (!web::require_auth(req, res, false)) return;
-    std::string line = req.f("line");
-    if (line.size() > 4096) line.resize(4096);
-    std::string id = session_id();
-    // No shell: screen receives the line literally, including control bytes
-    // (the Ctrl-C button posts U+0003).
-    if (!id.empty())
-        util::run({SCREEN, "-S", id, "-X", "stuff", line + "\n"}, "", 5);
-    res.content_type = "application/json";
-    res.body = "{\"ok\":true}";
+    term_input(req, res, console::SESSION_SHELL);
+}
+void console_resize(const http::Request& req, http::Response& res) {
+    term_resize(req, res, console::SESSION_SHELL);
+}
+
+// ---- NomadNet tab: the NomadNet TUI client ----
+void nomadnet_page(const http::Request& req, http::Response& res) {
+    term_page(req, res, "NomadNet", "nomadnet", "/nomadnet", false);
+}
+void nomadnet_full_page(const http::Request& req, http::Response& res) {
+    term_page(req, res, "NomadNet", "nomadnet", "/nomadnet", true);
+}
+void nomadnet_stream(const http::Request& req, http::Response& res) {
+    term_stream(req, res, console::SESSION_NOMADNET);
+}
+void nomadnet_input(const http::Request& req, http::Response& res) {
+    term_input(req, res, console::SESSION_NOMADNET);
+}
+void nomadnet_resize(const http::Request& req, http::Response& res) {
+    term_resize(req, res, console::SESSION_NOMADNET);
 }
 
 }  // namespace routes

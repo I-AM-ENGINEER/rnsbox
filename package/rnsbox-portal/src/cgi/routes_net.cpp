@@ -97,10 +97,18 @@ void network_page(const Request& req, Response& res) {
 
     // All interfaces. Bridge topology noted under the name: the LAN bridge
     // carries the address; its ports (usb0, the hotspot iface) carry none.
+    // The Gateway column is the iface's own default gateway (empty for LAN
+    // ports): with WAN=auto eth0 and wlan0 can both hold one, on the same
+    // upstream subnet, and each row shows its own instead of only the card's.
+    bool eth_uplink = (w.interface == "auto" || w.interface == "eth0");
+    bool wifi_uplink = (w.interface == "auto" || w.interface == "wlan0");
     rows.clear();
     for (const auto& i : net.ifaces) {
         std::string addrs;
         for (size_t k = 0; k < i.addrs.size(); ++k) { if (k) addrs += ", "; addrs += E(i.addrs[k]); }
+        std::string gw;
+        auto git = net.gateway_of.find(i.name);
+        if (git != net.gateway_of.end()) gw = git->second;
         std::string st = (i.state == "up")
             ? std::string("<span class=\"badge ok\">UP</span>")
             : "<span class=\"badge warn\">" + E(i.state.empty() ? "?" : i.state) + "</span>";
@@ -110,10 +118,15 @@ void network_page(const Request& req, Response& res) {
         } else if (!i.master.empty()) {
             std::string role = (i.master == lan_if) ? sysinfo::lan_port_role(i.name) : std::string();
             note = "port of " + E(i.master) + (role.empty() ? std::string() : " &middot; " + E(role));
+        } else if (i.name == "eth0" && eth_uplink) {
+            note = "Ethernet uplink";
+        } else if (i.name == "wlan0" && wifi_uplink) {
+            note = "WiFi STA uplink";
         }
         if (!note.empty()) note = "<br><span class=\"muted\">" + note + "</span>";
         rows += "<tr><td><strong>" + E(i.name) + "</strong>" + note + "</td><td>" + st + "</td>"
-                "<td>" + addrs + "</td><td><code>" + E(i.mac) + "</code></td>"
+                "<td>" + addrs + "</td><td>" + (gw.empty() ? std::string("—") : E(gw)) + "</td>"
+                "<td><code>" + E(i.mac) + "</code></td>"
                 "<td>" + E(i.mtu) + "</td><td>" + E(i.rx) + " / " + E(i.tx) + "</td></tr>";
     }
     h = R(std::move(h), "__IFACES_ROWS__", rows);

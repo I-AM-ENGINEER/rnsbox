@@ -45,13 +45,14 @@ fi
 if [ -f "$COMMON_DIR/S10consoleuser" ] && [ -d "$T/etc/init.d" ]; then
 	install -m 0755 "$COMMON_DIR/S10consoleuser" "$T/etc/init.d/S10consoleuser"
 fi
-# Single-session helper for the portal's screen-based console.
-if [ -f "$COMMON_DIR/rnsbox-console-session" ]; then
-	install -D -m 0755 "$COMMON_DIR/rnsbox-console-session" "$T/usr/sbin/rnsbox-console-session"
+# PTY broker behind the Console tab (xterm.js over the portal's HTTP port).
+if [ -f "$COMMON_DIR/S11console" ] && [ -d "$T/etc/init.d" ]; then
+	install -m 0755 "$COMMON_DIR/S11console" "$T/etc/init.d/S11console"
 fi
-# Drop the former ttyd service and password file; the console is now a CGI
-# screen session on the portal's own HTTP port.
-rm -f "$T/etc/init.d/S87ttyd" "$T/usr/bin/ttyd" "$T/etc/rnsbox/console.conf"
+# Drop the former ttyd service, the screen snapshot helper and the screen
+# binary: the console is now a PTY broker streamed to xterm.js on :80.
+rm -f "$T/etc/init.d/S87ttyd" "$T/usr/bin/ttyd" "$T/etc/rnsbox/console.conf" \
+      "$T/usr/sbin/rnsbox-console-session" "$T/usr/bin/screen"
 if [ -f "$COMMON_DIR/zshrc" ]; then
 	mkdir -p "$T/etc/zsh"
 	install -m 0644 "$COMMON_DIR/zshrc" "$T/etc/zsh/zshrc"
@@ -73,6 +74,9 @@ if [ -d "$T/etc/init.d" ]; then
 fi
 if [ -e "$T/usr/share/udhcpc/default.script" ]; then
 	chmod 0755 "$T/usr/share/udhcpc/default.script"
+fi
+if [ -e "$T/usr/bin/rnsbox-echobot" ]; then
+	chmod 0755 "$T/usr/bin/rnsbox-echobot"
 fi
 
 # ---- python: stdlib modules a headless router never imports ---------------

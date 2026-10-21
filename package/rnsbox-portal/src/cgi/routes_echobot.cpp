@@ -34,7 +34,7 @@ constexpr const char* ECHOBOT_PID   = "/var/run/echobot.pid";
 constexpr const char* ECHOBOT_PEERS = "/run/rnsbox-echobot-peers.tsv";
 
 struct EchobotConf {
-    bool enabled = true;
+    bool enabled = false;
     long interval = 86400;
     std::string name;   // empty = the derived default (echobot_default_name)
 };
@@ -274,8 +274,6 @@ std::string echobot_cards(const std::string& base) {
         badge = "<span class=\"badge warn\">stopped</span>";
     if (running && !detail.empty())
         badge += " <span class=\"muted\">" + E(detail) + "</span>";
-    else if (!running && c.enabled)
-        badge += " <span class=\"muted\">start it from here (the Enable switch) or <code>/etc/init.d/S87echobot start</code></span>";
     if (!running && !status.empty() && status != "running" && status != "stopped")
         badge += " <span class=\"muted\">(last state: " + E(status) + (detail.empty() ? "" : ": " + detail) + ")</span>";
 
@@ -315,6 +313,54 @@ std::string echobot_cards(const std::string& base) {
     h = R(std::move(h), "__ECHOBOT_PEERS__", echobot_peers_table());
     h = R(std::move(h), "__ECHOBOT_INTERVAL_OPTS__", opts);
     return h;
+}
+
+// Compact Dashboard card — only when the bot is enabled in the config, per
+// the "if enabled, show it on the Dashboard" rule. Same cheap file reads as
+// the Reticulum card; no subprocess, no state change.
+std::string echobot_dashboard_card(const std::string& base) {
+    EchobotConf c = echobot_read_conf();
+    if (!c.enabled) return std::string();
+
+    std::string state = util::read_file(ECHOBOT_STATE, 65536);
+    bool running = echobot_running();
+    std::string detail = json_str(state, "detail");
+    std::string dest   = json_str(state, "dest_hash");
+    std::string dname  = json_str(state, "display_name");
+    long last_announce = json_num(state, "last_announce");
+    long announces     = json_num(state, "announce_count");
+    long echo_ok       = json_num(state, "echo_ok");
+    long echo_fail     = json_num(state, "echo_fail");
+
+    std::string badge = running
+        ? "<span class=\"badge ok\">running</span>"
+        : "<span class=\"badge warn\">stopped</span>";
+    if (running && !detail.empty())
+        badge += " <span class=\"muted\">" + E(detail) + "</span>";
+
+    std::string addr = dest.empty()
+        ? "<span class=\"muted\">not created yet</span>"
+        : "<code>" + E(dest) + "</code>";
+    std::string name = dname.empty() ? c.name : dname;
+    if (name.empty() || echobot_legacy_name(name)) name = echobot_default_name();
+
+    std::string last = "never";
+    if (last_announce > 0) last = E(fmt_utc(last_announce));
+
+    return "<section class=\"card\" id=\"echobot-card\">\n"
+           "    <h3>Echo Bot</h3>\n"
+           "    <table class=\"kv\">\n"
+           "      <tr><th>Status</th><td>" + badge + "</td></tr>\n"
+           "      <tr><th>LXMF address</th><td>" + addr + "</td></tr>\n"
+           "      <tr><th>Announced name</th><td>" + E(name) + "</td></tr>\n"
+           "      <tr><th>Announces sent</th><td>" + std::to_string(announces) +
+           " <span class=\"muted\">· last " + last + "</span></td></tr>\n"
+           "      <tr><th>Messages echoed</th><td>" + std::to_string(echo_ok) +
+           " ok / " + std::to_string(echo_fail) + " failed</td></tr>\n"
+           "    </table>\n"
+           "    <p class=\"cardfoot\"><a class=\"btn\" href=\"" + base +
+           "/reticulum#echobot\">Manage &rarr;</a></p>\n"
+           "  </section>";
 }
 
 // Old bookmark route: the echo bot is a card on the Reticulum tab now.
@@ -380,8 +426,9 @@ void echobot_save(const Request& req, Response& res) {
         render::redirect_flash(res, eb_redirect(), "success", "Echo bot disabled.");
 }
 
-// POST /echobot/toggle — the Enable switch at the top of the card. Only the
-// enabled flag changes; name/interval/min_free_mb are preserved as-is.
+// POST /echobot/toggle — legacy Enable-switch endpoint, kept for pages cached
+// before the switch became part of the Save & apply form. Only the enabled
+// flag changes; name/interval/min_free_mb are preserved as-is.
 void echobot_toggle(const Request& req, Response& res) {
     if (!web::require_auth(req, res, false)) return;
     bool enable = req.f("enabled") == "on";

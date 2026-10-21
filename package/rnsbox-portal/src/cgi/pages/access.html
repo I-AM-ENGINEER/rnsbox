@@ -13,16 +13,16 @@
   <em>Revoke &amp; re-issue</em>. Revoking makes the old file useless.</p>
 
   <form method="post" action="__BASE__/access/issue" style="margin-top:12px">
-    <button type="submit" class="btn-primary">Выдать доступ и скачать файл &nbsp;(issue &amp; download)</button>
+    <button type="submit" class="btn-primary">Issue access &amp; download file</button>
     <span class="muted" style="margin-left:8px">POST — responds with <code>text/plain</code> download; do this from a trusted network.</span>
   </form>
 </section>
 
 <section class="card">
   <h3>Issued accesses</h3>
-  <table class="kv" style="width:100%">
-    <tr><th style="width:25%">Key hash</th><th style="width:25%">Issued</th><th style="width:15%">Status</th><th>Actions</th></tr>
-    __A_GRANTS__
+  <table class="data">
+    <thead><tr><th>Key hash</th><th>Issued</th><th>Status</th><th>Actions</th></tr></thead>
+    <tbody>__A_GRANTS__</tbody>
   </table>
   <p class="muted">One file per row was downloaded at issue time; the box holds no copies.
   “Revoke &amp; re-issue” retires the old key and downloads a fresh file in one step.</p>
@@ -32,8 +32,8 @@
   <h3>Manually added client hashes</h3>
   <p class="muted">Hashes typed by hand in the RNS Shell card above (<code>rnsh -p</code> output) —
   no key file was issued for these.</p>
-  <table class="kv" style="width:100%">
-    <tr><th style="width:25%">Hash</th><th>Actions</th></tr>
-    __A_MANUAL__
+  <table class="data">
+    <thead><tr><th>Hash</th><th>Actions</th></tr></thead>
+    <tbody>__A_MANUAL__</tbody>
   </table>
 </section>

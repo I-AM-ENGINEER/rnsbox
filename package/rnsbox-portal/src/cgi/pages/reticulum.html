@@ -10,49 +10,80 @@
       Reticulum (rnsd) <strong>__RNS_VERSION__</strong>
       __UPDATE_BADGE__
     </td></tr>
-    <tr><th>Update check</th><td>
-      __UPDATE_CHECK_LINE__
-    </td></tr>
   </table>
-  <form method="post" action="__BASE__/reticulum/restart" class="inline">
-    <button type="submit" class="btn-primary">Restart rnsd</button>
-  </form>
-  <button type="button" class="btn" onclick="loadRnstatus()">Refresh</button>
-  <button type="button" class="btn" id="btn-checkupd" onclick="doUpdate('checkupdate', this, false)">Check for updates</button>
-  __APPLY_UPDATE_FORM__
-  <span id="update-msg" class="msg" style="margin-left:8px"></span>
-
-  <form method="post" action="__BASE__/reticulum/autoupdate" class="row-form" style="margin-top:10px">
-    <label style="margin:0"><input type="checkbox" name="auto_update"
-      __AUTO_UPDATE_CHECKED__ onchange="this.form.submit()"> check for updates daily</label>
-    <noscript><button type="submit" class="btn">Save &amp; apply</button></noscript>
-    <span class="muted">in-place update replaces only the rnsd package (pure-Python); your config is untouched and it rolls back if rnsd fails to restart</span>
-  </form>
-
-  <form method="post" action="__BASE__/reticulum/autorestart" class="row-form" style="margin-top:10px">
-    <label for="rnsd_days" style="margin:0">Auto-restart rnsd</label>
-    <select id="rnsd_days" name="days">
-      __RESTART_DAYS_OPTIONS__
-    </select>
-    <button type="submit" class="btn">Save &amp; apply</button>
-    <span class="muted">restarts at 04:00 — bounds rnsd's announce-cache RAM growth</span>
-  </form>
-
-  <form method="post" action="__BASE__/reticulum/rnsdwatchdog" class="row-form" style="margin-top:10px">
-    <label style="margin:0"><input type="checkbox" name="enabled" __RNSDMON_CHECKED__> Watchdog:
-      reboot if rnsd stays down</label>
-    <select name="limit">
-      __RNSDMON_OPTIONS__
-    </select>
-    <button type="submit" class="btn">Save &amp; apply</button>
-    <span class="muted">last resort — a background watcher restarts rnsd within 10&nbsp;s; if it still
-    hasn't stayed up for this long, the box syncs and reboots</span>
-    <div style="margin-top:6px" class="muted">__RNSDMON_STATE__</div>
-  </form>
 
   <h4>Interfaces (rnstatus)</h4>
   <div id="rnstatus-ui"><p class="muted">loading… (querying the rnsd instance, the first read can take a few seconds)</p></div>
   <p class="muted" id="rnstatus-meta"></p>
+</section>
+
+<section class="card">
+  <h3>Maintenance</h3>
+  <table class="kv">
+    <tr><th>Update check</th><td>
+      __UPDATE_CHECK_LINE__
+    </td></tr>
+    <tr><th>Download</th><td>
+      __UPDATE_DOWNLOAD_LINE__
+    </td></tr>
+  </table>
+
+  <form method="post" action="__BASE__/reticulum/maintenance">
+    <div class="row-form">
+      <label class="check" style="margin:0"><input type="checkbox" name="auto_update"
+        id="auto_update" __AUTO_UPDATE_CHECKED__> check for and download updates daily</label>
+    </div>
+
+    <div class="row-form" style="margin-top:10px">
+      <label class="check" style="margin:0"><input type="checkbox" name="auto_install"
+        id="auto_install" __AUTO_INSTALL_CHECKED__> install the downloaded update automatically</label>
+      <span class="muted">off by default — rolls back if rnsd does not come up</span>
+    </div>
+
+    <div class="row-form" style="margin-top:10px">
+      <label for="rnsd_days" style="margin:0">Auto-restart rnsd</label>
+      <select id="rnsd_days" name="days">
+        __RESTART_DAYS_OPTIONS__
+      </select>
+      <input type="time" id="rnsd_time" name="time" value="__RNSD_RESTART_TIME__"
+             aria-label="Restart time" title="Restart time">
+    </div>
+
+    <div class="row-form" style="margin-top:10px">
+      <label class="check" style="margin:0"><input type="checkbox" name="enabled" __RNSDMON_CHECKED__> Watchdog:
+        reboot if rnsd stays down</label>
+      <select name="limit">
+        __RNSDMON_OPTIONS__
+      </select>
+      <div class="row-form-state">
+        <span class="muted">Watchdog state</span>
+        <span>__RNSDMON_STATE__</span>
+      </div>
+    </div>
+
+    <div class="form-actions">
+      <span id="update-msg" class="msg"></span>
+      <button type="submit" class="btn-primary">Save &amp; apply</button>
+      <button type="submit" class="btn" formaction="__BASE__/reticulum/restart"
+              formnovalidate>Restart rnsd</button>
+      <button type="button" class="btn" id="btn-checkupd"
+              onclick="doUpdate('checkupdate', this, false)">Check for updates</button>
+      __UPDATE_BUTTONS__
+    </div>
+  </form>
+  <script>
+  (function(){
+    var chk = document.getElementById('auto_update');
+    var inst = document.getElementById('auto_install');
+    if (!chk || !inst) return;
+    function sync() {
+      if (!chk.checked) { inst.checked = false; inst.disabled = true; }
+      else inst.disabled = false;
+    }
+    chk.addEventListener('change', sync);
+    sync();
+  })();
+  </script>
 </section>
 
 <section class="card">
@@ -71,7 +102,7 @@
   __HALOW_LIVE_BLOCK__
 
   <form method="post" action="__BASE__/reticulum/slip">
-    <label style="margin:8px 0 0"><input type="checkbox" name="enabled"
+    <label class="check"><input type="checkbox" name="enabled"
       __SLIP_ENABLED_CHECKED__> Enable SLIP link at boot</label>
     <div class="row-form" style="margin-top:10px">
       <label style="margin:0">UART device
@@ -84,7 +115,9 @@
       <label style="margin:0">Modem (peer IP)
         <input type="text" name="peer_ip" value="__SLIP_PEER_IP__"></label>
     </div>
-    <button type="submit" class="btn-primary" style="margin-top:10px">Save &amp; apply</button>
+    <div class="form-actions" style="margin-top:10px">
+      <button type="submit" class="btn-primary">Save &amp; apply</button>
+    </div>
     <p class="muted">Wire a hardware UART to the modem, cross TX&harr;RX, common
     ground, 3.3&nbsp;V TTL &mdash; pads and device are board-specific (Pi:
     <code>/dev/serial0</code>; rnsbox CVITEK boards: UART1 = <code>ttyS1</code> on
@@ -184,10 +217,12 @@
         <input type="number" name="spreadingfactor" value="__RNODE_SF__" min="5" max="12" title="5..12"></label>
       <label style="margin:0">Coding rate
         <input type="number" name="codingrate" value="__RNODE_CR__" min="5" max="8" title="5..8"></label>
-      <label style="margin:0"><input type="checkbox" name="flow_control" __RNODE_FLOW_CHECKED__> flow control</label>
+      <label class="check" style="margin:0"><input type="checkbox" name="flow_control" __RNODE_FLOW_CHECKED__> flow control</label>
     </div>
-    <button type="submit" class="btn-primary" style="margin-top:10px">Save &amp; apply</button>
-    <span class="muted">saving restarts rnsd — the modem may be plugged in at any time, rnsd retries the port every 5 s</span>
+    <div class="form-actions" style="margin-top:10px">
+      <span class="muted">saving restarts rnsd — the modem may be plugged in at any time, rnsd retries the port every 5 s</span>
+      <button type="submit" class="btn-primary">Save &amp; apply</button>
+    </div>
   </form>
 </section>
 
@@ -309,7 +344,7 @@ setInterval(rnodeStatusRefresh, 15000);
   </table>
 
   <form method="post" action="__BASE__/reticulum/rnsh">
-    <label style="margin:8px 0 0"><input type="checkbox" name="enabled"
+    <label class="check"><input type="checkbox" name="enabled"
       __RNSH_CHECKED__> Enable RNS Shell</label>
     <div class="row-form" style="margin-top:10px">
       <label style="margin:0">Announce every (seconds; 0 = once at startup)
@@ -319,8 +354,10 @@ setInterval(rnodeStatusRefresh, 15000);
     <label style="display:block;margin:10px 0 4px">Allowed client identities
       (one <code>rnsh -p</code> hash per line)</label>
     <textarea name="allowed" rows="4" spellcheck="false" class="mono">__RNSH_ALLOWED__</textarea>
-    <button type="submit" class="btn-primary" style="margin-top:10px">Save &amp; apply</button>
-    <span class="muted">saving restarts the RNS Shell service</span>
+    <div class="form-actions" style="margin-top:10px">
+      <span class="muted">saving restarts the RNS Shell service</span>
+      <button type="submit" class="btn-primary">Save &amp; apply</button>
+    </div>
   </form>
 </section>
 
@@ -330,21 +367,26 @@ __ECHOBOT_CARDS__
 
 <section class="card">
   <h3>TCP client interfaces</h3>
-  <p class="muted">Outbound Reticulum TCP links (<code>TCPClientInterface</code>): another
-  Reticulum router, a public connection server, or the HaLow modem's TCP radio bridge. They are
-  declared in <code>/etc/reticulum/config</code> and edited in place here — the raw editor below
-  keeps showing the truth. Adding, saving or deleting restarts rnsd.</p>
-  <table class="data">
-    <thead><tr><th>Name</th><th>Host</th><th>Port</th><th></th></tr></thead>
-    <tbody>
-      __TCP_CLIENTS_ROWS__
-    </tbody>
-  </table>
-  <form method="post" action="__BASE__/reticulum/tcpclient/add" class="row-form">
-    <input type="text" name="name" placeholder="name (e.g. Remote Router)" maxlength="48">
-    <input type="text" name="host" placeholder="host (IP or name)" maxlength="253" required>
-    <input type="number" name="port" placeholder="port" min="1" max="65535" required>
-    <button type="submit" class="btn-primary">Add &amp; apply</button>
+  <form method="post" action="__BASE__/reticulum/tcpclient/save">
+    <input type="hidden" name="count" value="__TCP_CLIENTS_COUNT__">
+    <table class="data tcp-table">
+      <thead><tr><th>Name</th><th>Host</th><th>Port</th><th></th></tr></thead>
+      <tbody>
+        __TCP_CLIENTS_ROWS__
+        <tr class="tcp-add-row">
+          <td><input type="text" name="new_name" placeholder="Name" maxlength="48"></td>
+          <td><input type="text" name="new_host" placeholder="Host / IP" maxlength="253"></td>
+          <td><input type="number" name="new_port" placeholder="Port" min="1" max="65535"></td>
+          <td class="tcp-actions">
+            <button type="submit" class="btn" formaction="__BASE__/reticulum/tcpclient/add"
+                    formnovalidate>Add</button>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="form-actions">
+      <button type="submit" class="btn-primary">Save &amp; apply</button>
+    </div>
   </form>
 </section>
 
@@ -360,6 +402,74 @@ __ECHOBOT_CARDS__
 <script>
 // HTML-escape anything dynamic before it reaches innerHTML.
 function escH(s){ return (''+(s==null?'':s)).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
+var RN_DATA = [];
+var RN_SORT = { key: 'name', dir: 1 };
+function rnBytes(v){
+  var m = ('' + (v || '')).match(/([\d.]+)\s*([KMG]?B)/i);
+  if (!m) return 0;
+  var n = parseFloat(m[1]) || 0, u = m[2].toUpperCase();
+  if (u === 'KB') n *= 1024;
+  else if (u === 'MB') n *= 1024 * 1024;
+  else if (u === 'GB') n *= 1024 * 1024 * 1024;
+  return n;
+}
+function rnInt(v){ var n = parseInt(v, 10); return isNaN(n) ? 0 : n; }
+function rnSortValue(f, key){
+  if (key === 'name')   return (f.name || '') + ' ' + (f.type || '') + ' ' + (f.details || '');
+  if (key === 'status') return (f.status === 'Up' ? '0' : '1') + ' ' + (f.status || '') + ' ' + (f.mode || '');
+  if (key === 'link')   { var m = ('' + (f.rate || '')).match(/[\d.]+/); return m ? parseFloat(m[0]) : 0; }
+  if (key === 'peers')  return rnInt(f.clients) + rnInt(f.peers) + rnInt(f.serving);
+  if (key === 'rx')     return rnBytes(f.rx);
+  if (key === 'tx')     return rnBytes(f.tx);
+  return '';
+}
+function rnTh(key, label){
+  var sorted = RN_SORT.key === key;
+  return '<th class="sortable' + (sorted ? ' sorted' : '') + '" data-sort="' + key +
+    '" tabindex="0" title="Sort by ' + label + '">' + label +
+    ' <span class="sort-arrow">' + (sorted && RN_SORT.dir < 0 ? '&#9660;' : '&#9650;') + '</span></th>';
+}
+function renderRnstatus(){
+  var ui = document.getElementById('rnstatus-ui');
+  if (!ui) return;
+  if (!RN_DATA.length) { ui.innerHTML = '<p class="muted">no interfaces</p>'; return; }
+  var rows = RN_DATA.slice().sort(function(a, b){
+    var av = rnSortValue(a, RN_SORT.key), bv = rnSortValue(b, RN_SORT.key), cmp;
+    if (typeof av === 'number' && typeof bv === 'number') cmp = av - bv;
+    else cmp = String(av).localeCompare(String(bv), undefined, {numeric: true, sensitivity: 'base'});
+    if (cmp === 0)
+      cmp = String(a.name || '').localeCompare(String(b.name || ''), undefined, {numeric: true, sensitivity: 'base'});
+    return cmp * RN_SORT.dir;
+  }).map(function(f){
+    var stat = f.status === 'Up' ? '<span class="badge ok">Up</span>'
+                               : '<span class="badge warn">' + escH(f.status || '?') + '</span>';
+    var extra = f.clients ? 'clients ' + escH(f.clients) : '';
+    if (f.peers)   extra += (extra ? ' · ' : '') + escH(f.peers) + ' peers';
+    if (f.serving) extra += (extra ? ' · ' : '') + 'serving ' + escH(f.serving) +
+                            (String(f.serving) === '1' ? ' program' : ' programs');
+    var link = f.rate ? escH(f.rate) : '—';
+    if (f.mtu) link += ' <span class="muted">MTU ' + escH(f.mtu) + '</span>';
+    function tr(b, r){ return b ? escH(b) + ' <span class="muted">' + escH(r || '') + '</span>' : '—'; }
+    // Type and endpoint are secondary: the config name is what the operator
+    // recognises, and several interfaces can share that name.
+    var sub = (f.type && f.type !== f.name) ? f.type : '';
+    if (f.details) sub += (sub ? ' · ' : '') + f.details;
+    if (f.parent)  sub += (sub ? ' · ' : '') + 'via ' + f.parent;
+    var tip = f.full_name || f.name || '';
+    if (f.hash) tip += (tip ? ' · ' : '') + f.hash;
+    return '<tr><td title="' + escH(tip) + '"><strong>' + escH(f.name) + '</strong>' +
+      (sub ? '<br><span class="muted mono" style="font-size:11.5px">' + escH(sub) + '</span>' : '') + '</td>' +
+      '<td>' + stat + (f.mode ? '<br><span class="muted">' + escH(f.mode) + '</span>' : '') + '</td>' +
+      '<td class="val">' + link + '</td>' +
+      '<td class="val">' + (extra || '—') + '</td>' +
+      '<td class="val">&darr; ' + tr(f.rx, f.rx_rate) + '</td>' +
+      '<td class="val">&uarr; ' + tr(f.tx, f.tx_rate) + '</td></tr>';
+  }).join('');
+  ui.innerHTML = '<table class="data rnstatus"><thead><tr>' +
+    rnTh('name', 'Interface') + rnTh('status', 'Status') + rnTh('link', 'Link') +
+    rnTh('peers', 'Peers / clients') + rnTh('rx', 'RX') + rnTh('tx', 'TX') +
+    '</tr></thead><tbody>' + rows + '</tbody></table>';
+}
 function loadRnstatus(){
   var ui  = document.getElementById('rnstatus-ui');
   var meta = document.getElementById('rnstatus-meta');
@@ -369,27 +479,13 @@ function loadRnstatus(){
     if (r.status === 401) throw new Error('session expired — please log in again');
     return r.json();
   }).then(function(d){
-    if (d.error) { ui.innerHTML = '<p class="muted">' + escH(d.error) + '</p>'; meta.textContent=''; return; }
-    var rows = (d.interfaces || []).map(function(f){
-      var stat = f.status === 'Up' ? '<span class="badge ok">Up</span>'
-                                 : '<span class="badge warn">' + escH(f.status || '?') + '</span>';
-      var extra = f.clients ? 'clients ' + escH(f.clients) : '';
-      if (f.peers)  extra += (extra ? ' · ' : '') + escH(f.peers) + ' peers';
-      if (f.serving) extra += (extra ? ' · ' : '') + 'serving ' + escH(f.serving);
-      var link = escH(f.rate || '?') + (f.mtu ? ' <span class="muted">MTU ' + escH(f.mtu) + '</span>' : '');
-      function tr(b, r){ return b ? escH(b) + ' <span class="muted">' + escH(r || '') + '</span>' : '—'; }
-      return '<tr><td><strong>' + escH(f.name) + '</strong><br><span class="muted mono" style="font-size:11.5px">' + escH(f.details) + '</span></td>' +
-        '<td>' + stat + (f.mode ? '<br><span class="muted">' + escH(f.mode) + '</span>' : '') + '</td>' +
-        '<td class="val">' + link + '</td>' +
-        '<td class="val">' + (extra || '—') + '</td>' +
-        '<td class="val">&darr; ' + tr(f.rx, f.rx_rate) + '</td>' +
-        '<td class="val">&uarr; ' + tr(f.tx, f.tx_rate) + '</td></tr>';
-    }).join('');
-    ui.innerHTML = '<table class="data"><thead><tr><th>Interface</th><th>Status</th><th>Link</th><th>Peers / clients</th><th>RX</th><th>TX</th></tr></thead><tbody>' +
-      (rows || '<tr><td colspan="6" class="muted">no interfaces</td></tr>') + '</tbody></table>';
+    if (d.error) { RN_DATA = []; ui.innerHTML = '<p class="muted">' + escH(d.error) + '</p>'; meta.textContent=''; return; }
+    RN_DATA = d.interfaces || [];
+    renderRnstatus();
     var t = d.transport || {};
     var when = d.age ? ' · updated ' + new Date(d.age * 1000).toTimeString().slice(0, 8) : '';
-    meta.textContent = (t.hash ? 'transport ' + t.hash : '') +
+    meta.textContent = RN_DATA.length + ' interface' + (RN_DATA.length === 1 ? '' : 's') +
+      (t.hash ? ' · transport ' + t.hash : '') +
       (t.uptime ? ' · up ' + t.uptime : '') + when;
     // refresh the state badge too (it's free and may have changed since load)
     fetch('__BASE__/reticulum/status').then(function(r){ return r.json(); }).then(function(s){
@@ -401,39 +497,68 @@ function loadRnstatus(){
       }
     }).catch(function(){});
   }).catch(function(e){
+    RN_DATA = [];
     ui.innerHTML = '<p class="muted">' + ((e && e.message && /session/.test(e.message)) ? e.message
       : 'failed to fetch rnstatus (request timed out or rnsd unreachable).') + '</p>';
   });
 }
+(function(){
+  var ui = document.getElementById('rnstatus-ui');
+  if (!ui) return;
+  function pick(e){
+    var t = e.target;
+    while (t && t !== ui && t.tagName !== 'TH') t = t.parentNode;
+    if (!t || t === ui || !t.getAttribute || !t.getAttribute('data-sort')) return;
+    var key = t.getAttribute('data-sort');
+    if (RN_SORT.key === key) RN_SORT.dir = -RN_SORT.dir;
+    else { RN_SORT.key = key; RN_SORT.dir = 1; }
+    renderRnstatus();
+  }
+  ui.addEventListener('click', pick);
+  ui.addEventListener('keydown', function(e){
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(e); }
+  });
+})();
 document.addEventListener('DOMContentLoaded', loadRnstatus);
 setInterval(loadRnstatus, 5000);
 </script>
 <script>
-// Update check / apply — async with a live spinner so the page never blank-hangs
-// (an in-place apply can take a minute) and never navigates away (no phantom
-// logout). Shows "⠹ Updating rnsd…" while it runs, then the result; on a
-// version change it reloads so the badge + version refresh.
-function doUpdate(action, btn, isApply){
-  if(isApply && !confirm('Update rnsd now?\n\nThe rns package is replaced in place and rnsd restarts. Your config is not touched, and it rolls back automatically if rnsd fails to come up.')) return;
+// Update check / download / install — async with a live spinner so the page
+// never blank-hangs (install can take a few minutes) and never navigates away
+// (no phantom logout). On success it reloads so the badge, download line and
+// buttons reflect the new state.
+function doUpdate(action, btn, isInstall){
+  if(isInstall && !confirm('Install the downloaded rns update now?\n\nThe rns package is replaced in place and rnsd restarts. Your config is not touched. If rnsd does not come up within about two minutes, the old version is restored automatically.')) return;
+  var verbs = {checkupdate:'Checking for updates',
+               downloadupdate:'Downloading the rnsd update',
+               installupdate:'Installing rnsd'};
+  var verb = verbs[action] || 'Working';
   var msg=document.getElementById('update-msg');
   var frames='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏', fi=0;
-  var verb=isApply?'Updating rnsd':'Checking for updates';
   var wasText=btn.textContent;
-  btn.disabled=true; if(isApply) btn.textContent='Working…';
+  // One update action at a time: disable every button in the action row
+  // (Check/Download/Install and also Restart) and restore their state after.
+  var group=btn.closest ? btn.closest('.form-actions') : null;
+  var peers=group ? Array.prototype.slice.call(group.querySelectorAll('button')) : [btn];
+  var states=peers.map(function(b){ return [b, b.disabled]; });
+  peers.forEach(function(b){ b.disabled=true; });
+  btn.textContent='Working…';
   msg.style.color='var(--muted)';
   var timer=setInterval(function(){ msg.textContent=' '+frames[fi=(fi+1)%frames.length]+' '+verb+'…'; }, 90);
   msg.textContent=' '+frames[0]+' '+verb+'…';
   fetch('__BASE__/reticulum/'+action, {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}})
     .then(function(r){ if(r.status===401){ throw new Error('session expired — please log in again'); } return r.json(); })
     .then(function(d){
-      clearInterval(timer); btn.disabled=false; if(isApply) btn.textContent=wasText;
+      clearInterval(timer); btn.textContent=wasText;
+      states.forEach(function(x){ x[0].disabled=x[1]; });
       // d.error: the dispatcher's 403/405 JSON (e.g. a cross-origin refusal)
       msg.textContent=' '+(d.message||d.error||(d.ok?'done':'failed'));
       msg.style.color=d.ok?'var(--ok)':'var(--err)';
       if(d.reload){ setTimeout(function(){ location.reload(); }, 2500); }
     })
     .catch(function(e){
-      clearInterval(timer); btn.disabled=false; if(isApply) btn.textContent=wasText;
+      clearInterval(timer); btn.textContent=wasText;
+      states.forEach(function(x){ x[0].disabled=x[1]; });
       msg.textContent=' '+(e.message||'request failed');
       msg.style.color='var(--err)';
     });

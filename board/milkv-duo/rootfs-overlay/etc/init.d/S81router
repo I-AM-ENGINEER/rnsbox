@@ -39,19 +39,17 @@ start() {
 		return 0
 	fi
 	printf "Starting uhttpd (portal): "
-	# -t/-T 300: the Reticulum tab's "Update rnsd" apply shells to pip (in-place
-	# package update + rnsd restart, rollback on failure) and can run well past
-	# uhttpd's 60 s default script timeout; raise both the script and network
-	# idle timeouts so the async apply isn't killed mid-flight (the browser
-	# shows a spinner meanwhile). Must stay above the portal's 285 s run limit
-	# for the helper, which stays above the helper's own 270 s budget — the
-	# arithmetic is in updatecheck.py (APPLY_BUDGET).
+	# -t 0: no fixed CGI script timeout. The Console tab's output stream is
+	# deliberately long-lived, and the Reticulum tab's "Update rnsd" apply
+	# already enforces its own 285 s budget (helper 270 s, see updatecheck.py
+	# APPLY_BUDGET). -T 300 still closes idle network clients; the console
+	# broker sends a NUL heartbeat every 10 s so an idle terminal stays alive.
 	# -p 0.0.0.0:8081: serves ONLY the proxied HaLow modem UI (the portal CGI
 	# gates routes by SERVER_PORT), so the modem's own scripts run in a separate
 	# origin and can't drive the portal on :80. Same process, same docroot; if
 	# :8081 fails to bind, uhttpd still runs on :80 (it exits only when no
 	# socket bound at all).
-	uhttpd -p 0.0.0.0:80 -p 0.0.0.0:8081 -h "$DOCROOT" -x /cgi-bin -I index.html -t 300 -T 300
+	uhttpd -p 0.0.0.0:80 -p 0.0.0.0:8081 -h "$DOCROOT" -x /cgi-bin -I index.html -n 16 -t 0 -T 300
 	sleep 0.3
 	if pidof uhttpd >/dev/null 2>&1; then echo "OK (pid $(pidof uhttpd))"; else echo "FAIL"; return 1; fi
 }

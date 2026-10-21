@@ -291,6 +291,17 @@ static bool cron_truthy(const std::string& v) {
     return !(s == "no" || s == "0" || s == "false" || s == "off" || s.empty());
 }
 
+static bool hhmm_valid(const std::string& t) {
+    if (t.size() != 5 || t[2] != ':') return false;
+    for (size_t i = 0; i < 5; ++i) {
+        if (i == 2) continue;
+        if (t[i] < '0' || t[i] > '9') return false;
+    }
+    int h = (t[0] - '0') * 10 + (t[1] - '0');
+    int m = (t[3] - '0') * 10 + (t[4] - '0');
+    return h <= 23 && m <= 59;
+}
+
 int read_rnsd_restart_days() {
     int n = 0;
     if (to_int(util::trim(util::conf_get(CRON_FILE, "rnsd_restart_days")), n)) {
@@ -299,33 +310,50 @@ int read_rnsd_restart_days() {
     return 0;
 }
 
-bool write_rnsd_restart_days(int days, std::string& err) {
+std::string read_rnsd_restart_time() {
+    std::string t = util::trim(util::conf_get(CRON_FILE, "rnsd_restart_time"));
+    return hhmm_valid(t) ? t : std::string("04:00");
+}
+
+bool read_update_check() {
+    std::string v = util::conf_get(CRON_FILE, "update_check");
+    return v.empty() ? true : cron_truthy(v);   // default yes
+}
+
+bool read_update_install() {
+    // absent/empty => false: automatic installation is opt-in.
+    return cron_truthy(util::conf_get(CRON_FILE, "update_install"));
+}
+
+bool write_cron_settings(int days, const std::string& time, bool update_check,
+                         bool update_install, std::string& err) {
     if (days < 0 || days > 7) { err = "days must be 0..7"; return false; }
-    // preserve update_check (default yes when the key is absent)
-    std::string ucv = util::conf_get(CRON_FILE, "update_check");
-    bool uc = ucv.empty() ? true : cron_truthy(ucv);
+    if (!hhmm_valid(time)) { err = "time must be HH:MM"; return false; }
+    if (!update_check) update_install = false;   // install needs the daily check
     std::string o =
         "# RNSBox scheduled tasks — managed by the rnsbox-portal Reticulum tab.\n"
         "# rnsd_restart_days: 0 = off (default); N = restart rnsd every N days at\n"
-        "#   04:00 (memory hygiene). update_check: yes (default) / no — daily\n"
-        "#   check for a newer rnsd (notify-only). Applied by S84cron; live via UI.\n";
+        "#   rnsd_restart_time (HH:MM, default 04:00).\n"
+        "# update_check: yes (default) / no — daily check for a newer rnsd and\n"
+        "#   download its wheel. update_install: no (default) / yes — install the\n"
+        "#   downloaded wheel automatically, rolling back if rnsd does not start.\n";
     o += "rnsd_restart_days=" + std::to_string(days) + "\n";
-    o += std::string("update_check=") + (uc ? "yes" : "no") + "\n";
+    o += "rnsd_restart_time=" + time + "\n";
+    o += std::string("update_check=") + (update_check ? "yes" : "no") + "\n";
+    o += std::string("update_install=") + (update_install ? "yes" : "no") + "\n";
     if (!util::write_file_atomic(CRON_FILE, o, 0644)) { err = "write failed"; return false; }
     return true;
 }
+
+bool write_rnsd_restart_days(int days, const std::string& time, std::string& err) {
+    return write_cron_settings(days, time, read_update_check(),
+                               read_update_install(), err);
+}
+
 bool write_update_check(bool enabled, std::string& err) {
-    // symmetric to write_rnsd_restart_days: preserve rnsd_restart_days (default 0)
-    int days = read_rnsd_restart_days();
-    std::string o =
-        "# RNSBox scheduled tasks — managed by the rnsbox-portal Reticulum tab.\n"
-        "# rnsd_restart_days: 0 = off (default); N = restart rnsd every N days at\n"
-        "#   04:00 (memory hygiene). update_check: yes (default) / no — daily\n"
-        "#   check for a newer rnsd (notify-only). Applied by S84cron; live via UI.\n";
-    o += "rnsd_restart_days=" + std::to_string(days) + "\n";
-    o += std::string("update_check=") + (enabled ? "yes" : "no") + "\n";
-    if (!util::write_file_atomic(CRON_FILE, o, 0644)) { err = "write failed"; return false; }
-    return true;
+    // symmetric to write_rnsd_restart_days: preserve the schedule/install flag
+    return write_cron_settings(read_rnsd_restart_days(), read_rnsd_restart_time(),
+                               enabled, read_update_install(), err);
 }
 
 // ---- reticulum config (raw text) ----
@@ -824,6 +852,25 @@ bool update_tcp_client(int idx, const std::string& name_in, const std::string& h
     for (const auto& l : lines) o += l + "\n";
     if (!util::write_file_atomic(RETICULUM_CONFIG, o, 0600)) { err = "write failed"; return false; }  // see write_reticulum_config
     err.clear();
+    return true;
+}
+
+bool save_tcp_clients(const std::vector<TcpClientIface>& list, std::string& err) {
+    auto cur = read_tcp_clients();
+    if (list.size() != cur.size()) { err = "interface list changed; reload the page"; return false; }
+    for (const auto& t : list) {
+        std::string e;
+        if (!tcp_client_fields(t.name, t.host, t.port, e)) { err = e; return false; }
+    }
+    // Descending: inserting a missing key into an earlier stanza must not
+    // shift the line range of a stanza still waiting to be written.
+    for (int i = (int)list.size() - 1; i >= 0; --i) {
+        std::string e;
+        if (!update_tcp_client(i, list[i].name, list[i].host, list[i].port, e)) {
+            err = e.empty() ? "write failed" : e;
+            return false;
+        }
+    }
     return true;
 }
 

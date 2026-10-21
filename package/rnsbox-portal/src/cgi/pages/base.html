@@ -18,21 +18,23 @@
 </head>
 <body>
 <header class="topbar">
-  <div class="brand">
-    <span class="logo">⬢</span>
-    <span class="brand-name">RNSBox</span>
-    <span class="brand-host">__HOSTNAME__</span>
+  <div class="topbar-inner">
+    <div class="brand">
+      <span class="logo">⬢</span>
+      <span class="brand-name">RNSBox</span>
+      <span class="brand-host">__HOSTNAME__</span>
+    </div>
+    <nav class="topnav">
+      <!-- No username chip: the portal has exactly one account (admin), so
+           showing it in the corner is noise. -->
+      <button type="button" class="logout theme-toggle" id="theme-toggle"
+              title="Switch dark / light theme">◐</button>
+      <!-- POST form, not a link: /logout is POST-only (a GET must not change state) -->
+      <form class="logout-form" method="post" action="__BASE__/logout">
+        <button type="submit" class="logout">Logout</button>
+      </form>
+    </nav>
   </div>
-  <nav class="topnav">
-    <!-- No username chip: the portal has exactly one account (admin), so
-         showing it in the corner is noise. -->
-    <button type="button" class="logout theme-toggle" id="theme-toggle"
-            title="Switch dark / light theme">◐</button>
-    <!-- POST form, not a link: /logout is POST-only (a GET must not change state) -->
-    <form class="logout-form" method="post" action="__BASE__/logout">
-      <button type="submit" class="logout">Logout</button>
-    </form>
-  </nav>
 </header>
 <script>
 (function(){
@@ -60,6 +62,7 @@
     <a href="__BASE__/wifi" class="__ACT_wifi__">WiFi</a>
     <a href="__BASE__/reticulum" class="__ACT_reticulum__">Reticulum</a>
     <a href="__BASE__/console" class="__ACT_console__">Console</a>
+    <a href="__BASE__/nomadnet" class="__ACT_nomadnet__">NomadNet</a>
     <!-- TODO(owners-decision): Updates hidden from the nav (raw A/B updater,
          not ready for prime time) but NOT removed: /updates and its POSTs
          stay reachable by direct link. Decide: finish it or drop the routes. -->
@@ -73,8 +76,10 @@
   </main>
 </div>
 <footer class="sitefoot">
-  <span class="foot-brand"><span class="logo">⬢</span> RNSBox · open-source Reticulum router</span>
-  <a class="foot-donate" href="__BASE__/donate">Donate</a>
+  <div class="sitefoot-inner">
+    <span class="foot-brand"><span class="logo">⬢</span> RNSBox · open-source Reticulum router</span>
+    <a class="foot-donate" href="__BASE__/donate">Donate</a>
+  </div>
 </footer>
 </body>
 </html>

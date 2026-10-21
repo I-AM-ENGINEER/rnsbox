@@ -4,10 +4,11 @@
 # and a default route exists: `S84cron bootcheck`, triggered by S84cron start
 # or S46wanwatch). The helper is stdlib-only Python (no Flask, no
 # rnsbox_portal package); the C++ portal invokes the same script for the
-# on-demand "Check for updates" / "Apply update" buttons on the Reticulum tab
-# (and refuses them itself while the clock isn't set). Arg defaults to "cron"
-# (query PyPI + persist + print a human summary); the portal passes "check" /
-# "apply" (JSON output).
+# on-demand "Check for updates" / "Download" / "Install" buttons on the
+# Reticulum tab (and refuses them itself while the clock isn't set). Arg
+# defaults to "cron" (check, download the wheel and, if update_install=yes,
+# install it; prints a human summary); the portal passes "check" / "download" /
+# "install" (JSON output).
 #
 # cron: skipped while the clock isn't trusted (/run/clock-synced, S45ntpsync):
 # HTTPS to PyPI fails "certificate is not yet valid" at a 1970 / ~2000 clock,

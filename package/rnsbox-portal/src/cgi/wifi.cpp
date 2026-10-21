@@ -18,6 +18,8 @@ namespace wifi {
 // No AP address/DHCP keys: the hotspot is a port of the LAN bridge (br-lan,
 // 10.42.0.1/24, one dnsmasq pool). Old ap_ip / ap_dhcp_start / ap_dhcp_end
 // lines are ignored on read and dropped by the next write_conf().
+constexpr const char* EXTRA_CONF = "/etc/rnsbox/wifi-extra.conf";
+
 static const char* KEYS[] = {
     "mode", "sta_ssid", "sta_psk", "sta_security", "sta_band",
     "sta_hidden", "sta_country",
@@ -321,6 +323,132 @@ std::string scan_json() {
     return o;
 }
 
+// Frequency -> band, using the same ranges as the scan parser above.
+static std::string band_from_freq(int f) {
+    if (f == 2484 || (f >= 2412 && f < 2484)) return "2.4";
+    if (f > 5000 && f <= 5925) return "5";
+    if (f > 5925 && f <= 7125) return "6";
+    return "";
+}
+
+// The negotiated PHY mode of a connected STA is visible in the `iw link`
+// rate line: EHT-MCS (Wi-Fi 7), HE-MCS (ax), VHT-MCS (ac), HT-MCS (n).
+static std::string sta_standard(const std::string& link) {
+    if (link.find("EHT-") != std::string::npos) return "802.11be";
+    if (link.find("HE-")  != std::string::npos) return "802.11ax";
+    if (link.find("VHT-") != std::string::npos) return "802.11ac";
+    if (link.find("HT-")  != std::string::npos) return "802.11n";
+    return "";
+}
+
+std::string security_label(const std::string& s) {
+    if (s == "open") return "Open";
+    if (s == "wpa3") return "WPA3";
+    if (s == "wpa2+wpa3") return "WPA2/WPA3";
+    return "WPA2";
+}
+
+static std::string norm_security(const std::string& s) {
+    if (s == "open" || s == "wpa3" || s == "wpa2+wpa3") return s;
+    return "wpa2";
+}
+
+static std::map<std::string, std::string> read_kv_map(const char* path) {
+    std::map<std::string, std::string> m;
+    std::string data = util::read_file(path);
+    size_t i = 0;
+    while (i <= data.size()) {
+        size_t nl = data.find('\n', i);
+        std::string s = util::trim(data.substr(i, nl == std::string::npos
+                                                  ? std::string::npos : nl - i));
+        i = (nl == std::string::npos) ? data.size() + 1 : nl + 1;
+        if (s.empty() || s[0] == '#' || s.find('=') == std::string::npos) continue;
+        size_t eq = s.find('=');
+        std::string k = util::trim(s.substr(0, eq));
+        std::string v = s.substr(eq + 1);
+        size_t h = v.find('#');
+        if (h != std::string::npos) v = v.substr(0, h);
+        v = util::trim(v);
+        if (v.size() >= 2 && (v.front() == '"' || v.front() == '\'') && v.back() == v.front())
+            v = v.substr(1, v.size() - 2);
+        m[k] = v;
+    }
+    return m;
+}
+
+std::vector<Network> read_extra_networks() {
+    auto m = read_kv_map(EXTRA_CONF);
+    int count = atoi(m["count"].c_str());
+    if (count < 0 || count > 32) count = 0;
+    std::vector<Network> out;
+    for (int i = 1; i <= count; ++i) {
+        std::string p = std::to_string(i) + "_";
+        Network n;
+        n.ssid = m[p + "ssid"];
+        if (n.ssid.empty()) continue;
+        n.psk = m[p + "psk"];
+        n.security = norm_security(m[p + "security"]);
+        n.hidden = (m[p + "hidden"] == "1");
+        out.push_back(n);
+    }
+    return out;
+}
+
+bool has_sta_networks() {
+    return !read_conf()["sta_ssid"].empty() || !read_extra_networks().empty();
+}
+
+bool write_extra_networks(const std::vector<Network>& list, std::string& err) {
+    if (list.size() > 8) { err = "at most 8 additional networks"; return false; }
+    std::string primary = read_conf()["sta_ssid"];
+    std::string o = "# Additional STA networks — managed by rnsbox-portal.\ncount=" +
+                    std::to_string(list.size()) + "\n";
+    for (size_t i = 0; i < list.size(); ++i) {
+        const Network& n = list[i];
+        std::string sec = norm_security(n.security);
+        if (n.ssid.empty() || n.ssid.size() > 32 || !conf_value_ok(n.ssid)) {
+            err = "bad SSID"; return false;
+        }
+        if (sec != "open" && (n.psk.size() < 8 || n.psk.size() > 63 || !conf_value_ok(n.psk))) {
+            err = "bad password"; return false;
+        }
+        for (size_t j = 0; j < i; ++j)
+            if (list[j].ssid == n.ssid) { err = "duplicate SSID"; return false; }
+        if (!primary.empty() && n.ssid == primary) {
+            err = "SSID is already the primary network"; return false;
+        }
+        std::string p = std::to_string(i + 1) + "_";
+        o += p + "ssid=" + n.ssid + "\n";
+        o += p + "psk=" + (sec == "open" ? std::string() : n.psk) + "\n";
+        o += p + "security=" + sec + "\n";
+        o += p + "hidden=" + std::string(n.hidden ? "1" : "") + "\n";
+    }
+    ::unlink((std::string(EXTRA_CONF) + ".tmp").c_str());
+    return util::write_file_atomic(EXTRA_CONF, o, 0600);
+}
+
+bool add_extra_network(const Network& n, std::string& err) {
+    auto list = read_extra_networks();
+    list.push_back(n);
+    return write_extra_networks(list, err);
+}
+
+bool delete_extra_network(int idx, std::string& err) {
+    auto list = read_extra_networks();
+    if (idx < 0 || idx >= (int)list.size()) { err = "no such network"; return false; }
+    list.erase(list.begin() + idx);
+    return write_extra_networks(list, err);
+}
+
+// "channel 36 (5180 MHz), width: ..." from `iw dev <ap> info`.
+static int ap_freq(const std::string& info) {
+    size_t p = info.find("channel ");
+    if (p == std::string::npos) return 0;
+    size_t lp = info.find('(', p);
+    if (lp == std::string::npos) return 0;
+    return (int)atof(info.c_str() + lp + 1);
+}
+
 static std::string ip_of(const std::string& dev) {
     std::string out = util::run({"/sbin/ip", "-4", "addr", "show", "dev", dev}, "", 5).out;
     size_t p = out.find("inet ");
@@ -359,6 +487,15 @@ Status status() {
         s.sta.ip = ip_of(STA_IF);
         s.sta.width = after_token(sta_info, "width: ");
         s.sta.txpower = int_signal(after_token(sta_info, "txpower "));
+        s.sta.band = band_from_freq((int)atof(line_value(link, "freq:").c_str()));
+        s.sta.standard = sta_standard(link);
+        s.sta.channel = after_token(sta_info, "channel ");
+        std::string sec = cfg["sta_security"];
+        if (s.sta.ssid != cfg["sta_ssid"]) {
+            for (const auto& n : read_extra_networks())
+                if (n.ssid == s.sta.ssid) { sec = n.security; break; }
+        }
+        s.sta.security = security_label(sec);
     }
     std::string ap_if = ap_iface();
     if (!ap_if.empty()) {
@@ -376,33 +513,95 @@ Status status() {
         if (s.ap.ip.empty() && !s.ap.bridge.empty()) s.ap.ip = ip_of(s.ap.bridge);
         s.ap.width = after_token(ap_info, "width: ");
         s.ap.txpower = int_signal(after_token(ap_info, "txpower "));
+        s.ap.band = band_from_freq(ap_freq(ap_info));
+        if (s.ap.band.empty() && (cfg["ap_band"] == "2.4" || cfg["ap_band"] == "5"))
+            s.ap.band = cfg["ap_band"];
+        const std::string& as = cfg["ap_standard"];
+        s.ap.standard = (as == "n") ? "802.11n" : (as == "ac") ? "802.11ac" :
+                        (as == "ax") ? "802.11ax" : "auto";
+        s.ap.channel = after_token(ap_info, "channel ");
+        s.ap.ssid = line_value(ap_info, "ssid ");
+        if (s.ap.ssid.empty()) s.ap.ssid = cfg["ap_ssid"];
+        s.ap.security = security_label(cfg["ap_security"]);
     }
     return s;
 }
 
 std::string status_json() {
     Status s = status();
+    auto cfg = read_conf();
+    std::string refused = util::trim(util::read_file("/run/wifi-ap-refused", 512));
     std::string o = std::string("{\"present\":") + (s.present ? "true" : "false") +
         ",\"mode\":\"" + http::json_escape(s.mode) + "\"" +
         ",\"concurrent\":" + (s.concurrent ? "true" : "false") +
-        ",\"tx_power\":\"" + http::json_escape(s.tx_power) + "\"";
+        ",\"tx_power\":\"" + http::json_escape(s.tx_power) + "\"" +
+        ",\"sta_ssid\":\"" + http::json_escape(cfg["sta_ssid"]) + "\"" +
+        ",\"sta_configured\":" + std::string(has_sta_networks() ? "true" : "false") +
+        ",\"ap_refused\":\"" + http::json_escape(refused) + "\"";
     if (!s.present) { o += ",\"sta\":{\"connected\":false},\"ap\":{\"active\":false}}"; return o; }
+    // The dashboard card shows the same per-iface fields as the WAN/LAN cards
+    // (address with prefix, gateway, MAC, counters); status() only knows what
+    // `iw` reports, so pull the rest from the one network summary.
+    sysinfo::Network net = sysinfo::network_summary();
+    auto iface_of = [&](const std::string& n) -> const sysinfo::Iface* {
+        for (const auto& i : net.ifaces) if (i.name == n) return &i;
+        return nullptr;
+    };
+    auto addrs_json = [](const std::vector<std::string>& v) {
+        std::string a = "[";
+        for (size_t k = 0; k < v.size(); ++k) {
+            if (k) a += ",";
+            a += "\"" + http::json_escape(v[k]) + "\"";
+        }
+        return a + "]";
+    };
     if (s.sta.connected) {
+        const sysinfo::Iface* si = iface_of(STA_IF);
+        std::string gw;
+        auto git = net.gateway_of.find(STA_IF);
+        if (git != net.gateway_of.end()) gw = git->second;
         o += ",\"sta\":{\"connected\":true,\"ssid\":\"" + http::json_escape(s.sta.ssid) +
              "\",\"signal\":\"" + http::json_escape(s.sta.signal) +
              "\",\"ip\":\"" + http::json_escape(s.sta.ip) +
-             "\",\"width\":\"" + http::json_escape(s.sta.width) +
-             "\",\"txpower\":\"" + http::json_escape(s.sta.txpower) + "\"}";
+             "\",\"mac\":\"" + http::json_escape(si ? si->mac : "") +
+             "\",\"rx\":\"" + http::json_escape(si ? si->rx : "") +
+             "\",\"tx\":\"" + http::json_escape(si ? si->tx : "") +
+             "\",\"gateway\":\"" + http::json_escape(gw) +
+             "\",\"addrs\":" + (si ? addrs_json(si->addrs) : std::string("[]")) +
+             ",\"width\":\"" + http::json_escape(s.sta.width) +
+             "\",\"txpower\":\"" + http::json_escape(s.sta.txpower) +
+             "\",\"band\":\"" + http::json_escape(s.sta.band) +
+             "\",\"standard\":\"" + http::json_escape(s.sta.standard) +
+             "\",\"channel\":\"" + http::json_escape(s.sta.channel) +
+             "\",\"security\":\"" + http::json_escape(s.sta.security) + "\"}";
     } else {
-        o += ",\"sta\":{\"connected\":false}";
+        // STA mode can be on with no link; keep its MAC/counters visible so
+        // the dashboard card does not blank them between connection attempts.
+        const sysinfo::Iface* si = (s.mode == "sta" || s.mode == "sta+ap") ? iface_of(STA_IF) : nullptr;
+        o += ",\"sta\":{\"connected\":false";
+        if (si) {
+            o += ",\"mac\":\"" + http::json_escape(si->mac) +
+                 "\",\"rx\":\"" + http::json_escape(si->rx) +
+                 "\",\"tx\":\"" + http::json_escape(si->tx) + "\"";
+        }
+        o += "}";
     }
     if (s.ap.active) {
+        const sysinfo::Iface* ai = iface_of(s.ap.iface);
         o += ",\"ap\":{\"active\":true,\"iface\":\"" + http::json_escape(s.ap.iface) +
              "\",\"clients\":" + std::to_string(s.ap.clients) +
              ",\"bridge\":\"" + http::json_escape(s.ap.bridge) +
              "\",\"ip\":\"" + http::json_escape(s.ap.ip) +
+             "\",\"mac\":\"" + http::json_escape(ai ? ai->mac : "") +
+             "\",\"rx\":\"" + http::json_escape(ai ? ai->rx : "") +
+             "\",\"tx\":\"" + http::json_escape(ai ? ai->tx : "") +
              "\",\"width\":\"" + http::json_escape(s.ap.width) +
-             "\",\"txpower\":\"" + http::json_escape(s.ap.txpower) + "\"}";
+             "\",\"txpower\":\"" + http::json_escape(s.ap.txpower) +
+             "\",\"band\":\"" + http::json_escape(s.ap.band) +
+             "\",\"standard\":\"" + http::json_escape(s.ap.standard) +
+             "\",\"channel\":\"" + http::json_escape(s.ap.channel) +
+             "\",\"ssid\":\"" + http::json_escape(s.ap.ssid) +
+             "\",\"security\":\"" + http::json_escape(s.ap.security) + "\"}";
     } else {
         o += ",\"ap\":{\"active\":false}";
     }

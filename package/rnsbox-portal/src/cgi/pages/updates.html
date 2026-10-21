@@ -17,7 +17,7 @@
   <form method="post" action="__BASE__/updates/config">
     <table class="kv">
       <tr><th>Auto-check</th>
-          <td><label><input type="checkbox" name="enabled" value="yes"__CFG_ENABLED__>
+          <td><label class="check"><input type="checkbox" name="enabled" value="yes"__CFG_ENABLED__>
               check automatically on the jittered schedule __AUTO_BADGE__</label></td></tr>
       <tr><th>Provider</th>
           <td><select name="provider">__CFG_PROVIDER__</select>
@@ -33,11 +33,11 @@
           <td><select name="board">__CFG_BOARD__</select>
               <span class="muted">picks the rnsbox-&lt;board&gt;.img.xz asset</span></td></tr>
       <tr><th>Prereleases</th>
-          <td><label><input type="checkbox" name="allow_prerelease" value="yes"__CFG_PRE__>
+          <td><label class="check"><input type="checkbox" name="allow_prerelease" value="yes"__CFG_PRE__>
               install auto-builds (marked pre-release on GitHub) — recommended:
               that is the main channel, and the A/B rollback catches a bad one</label></td></tr>
       <tr><th>Auto-apply</th>
-          <td><label><input type="checkbox" name="auto_apply" value="yes"__CFG_AUTOAPPLY__>
+          <td><label class="check"><input type="checkbox" name="auto_apply" value="yes"__CFG_AUTOAPPLY__>
               download and apply without a confirmation click when a check
               finds an update</label></td></tr>
       <tr><th>Check interval</th>
@@ -48,12 +48,14 @@
               <span class="muted">(the real delay is drawn at random in this
               range, anew after every check)</span></td></tr>
       <tr><th>Allow http://</th>
-          <td><label><input type="checkbox" name="allow_insecure_http" value="yes"__CFG_INSECURE__>
+          <td><label class="check"><input type="checkbox" name="allow_insecure_http" value="yes"__CFG_INSECURE__>
               allow plain-HTTP repositories (downloads are still sha256-verified;
               HTTPS is strongly recommended)</label></td></tr>
     </table>
-    <p><button type="submit" class="btn-primary">Save &amp; apply</button>
-       <span class="muted">takes effect at the next scheduled check — no service restart needed</span></p>
+    <div class="form-actions">
+      <span class="muted">takes effect at the next scheduled check — no service restart needed</span>
+      <button type="submit" class="btn-primary">Save &amp; apply</button>
+    </div>
   </form>
 </section>
 

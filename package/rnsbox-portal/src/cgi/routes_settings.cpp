@@ -67,14 +67,6 @@ static std::string rtc_html(const sysinfo::Rtc& rtc) {
            "is ignored. Check its wiring; the next NTP sync or a browser sync below writes it.</span>";
 }
 
-// Row only when the DS3231's hwmon sensor is there (millidegrees -> 0.25 °C steps).
-static std::string rtc_temp_row(const sysinfo::Rtc& rtc) {
-    if (!rtc.present || !rtc.has_temp) return std::string();
-    char buf[32];
-    snprintf(buf, sizeof(buf), "%.2f", rtc.temp_mc / 1000.0);
-    return "<tr><th>RTC temperature</th><td>" + E(buf) + " &deg;C</td></tr>";
-}
-
 // ---- SSH card fragments ----
 
 // Status line: running (sshd alive) / disabled (the shipped default) /
@@ -177,10 +169,12 @@ static std::string usb_section_html(const UsbState& s) {
                "SSH reachable first.";
     std::string h;
     h += "<section class=\"card\">\n  <h3>USB port role</h3>\n";
-    h += "  <p>Running now: " + usb_mode_badge(s.active) +
-         "<br>Configured: <strong>" + std::string(host ? "host" : "device (gadget)") + "</strong>" +
+    h += "  <table class=\"kv\">\n";
+    h += "    <tr><th>Running now</th><td>" + usb_mode_badge(s.active) + "</td></tr>\n";
+    h += "    <tr><th>Configured</th><td><strong>" + std::string(host ? "host" : "device (gadget)") + "</strong>" +
          std::string(s.active == s.mode ? "" : " <span class=\"badge warn\">pending</span>") +
-         "</p>\n";
+         "</td></tr>\n";
+    h += "  </table>\n";
     h += "  <form method=\"post\" action=\"" + web::base() + "/settings/usb\">\n";
     h += "    <label><input type=\"radio\" name=\"mode\" value=\"device\"" +
          std::string(host ? "" : " checked") + "> Device (gadget) &mdash; the port is the box's "
@@ -226,7 +220,6 @@ void settings_page(const Request& req, Response& res) {
                  : "<span class=\"badge warn\">not synced</span>");
     h = R(std::move(h), "__CLOCK_SOURCE__", clock_source_html(src));
     h = R(std::move(h), "__RTC_STATUS__", rtc_html(rtc));
-    h = R(std::move(h), "__RTC_TEMP_ROW__", rtc_temp_row(rtc));
     // NTP outranks a browser (see time_browser), so the button is moot once it
     // has synced; the POST handler enforces it regardless.
     h = R(std::move(h), "__BROWSER_BTN_ATTR__", src == "ntp" ? " disabled" : "");

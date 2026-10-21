@@ -12,6 +12,7 @@ __DEFAULT_PASS_WARN__
       <tr><th>Hostname</th><td>__HOSTNAME__</td></tr>
       <tr><th>Kernel</th><td>__KERNEL__</td></tr>
       <tr><th>Uptime</th><td id="d-uptime">__UPTIME__</td></tr>
+      <tr><th>Temperature</th><td>__TEMP__</td></tr>
       <tr><th>Load avg</th><td id="d-load">__LOAD__</td></tr>
       <tr><th>Clock source</th><td id="d-clock">__CLOCK__</td></tr>
     </table>
@@ -25,6 +26,7 @@ __DEFAULT_PASS_WARN__
     <p class="muted" id="d-ram-note" style="margin-top:4px">
       __RAM_PCT__% used &middot; __RAM_BUFFCACHE__ MB buff/cache (reclaimable)
     </p>
+    <p class="cardfoot"><a class="btn" href="__BASE__/settings">Manage &rarr;</a></p>
   </section>
 
   <section class="card">
@@ -32,13 +34,17 @@ __DEFAULT_PASS_WARN__
     <table class="kv">
       <tr><th>State</th><td id="d-wan-state">__WAN_STATE__</td></tr>
       <tr><th>Address</th><td id="d-wan-addr">__WAN_ADDR__</td></tr>
+      <tr><th>MAC</th><td id="d-wan-mac">__WAN_MAC__</td></tr>
       <tr><th>Gateway</th><td id="d-wan-gw">__WAN_GW__</td></tr>
       <tr><th>DNS</th><td id="d-wan-dns">__WAN_DNS__</td></tr>
       <tr><th>RX / TX</th><td id="d-wan-rxtx">__WAN_RXTX__</td></tr>
     </table>
+    <p class="cardfoot"><a class="btn" href="__BASE__/network">Manage &rarr;</a></p>
   </section>
 
   __LAN_CARD__
+
+  __WIFI_CARD__
 
   <section class="card">
     <h3>Reticulum</h3>
@@ -46,8 +52,10 @@ __DEFAULT_PASS_WARN__
       <tr><th>Status</th><td id="d-rnsd-status">__RNSD_STATUS__</td></tr>
       <tr><th>Version</th><td id="d-rnsd-version">__RNSD_VERSION__</td></tr>
     </table>
-    <p><a class="btn" href="__BASE__/reticulum">Manage &rarr;</a></p>
+    <p class="cardfoot"><a class="btn" href="__BASE__/reticulum">Manage &rarr;</a></p>
   </section>
+
+  __ECHOBOT_CARD__
 
   __HALOW_CARD__
 
@@ -91,22 +99,22 @@ __HALOW_SCRIPT__
     if(d.wan_label) setText('d-wan-label', d.wan_label);
     setHTML('d-wan-state', stateBadge(wif.state));
     setText('d-wan-addr', (wif.addrs&&wif.addrs.length)?wif.addrs.join(', '):'(none)');
+    setText('d-wan-mac', wif.mac||'(none)');
     setText('d-wan-gw', d.gateway||'(none)');
     setText('d-wan-dns', (d.dns&&d.dns.length)?d.dns.join(', '):'(none)');
     setText('d-wan-rxtx', (wif.rx||'0')+' / '+(wif.tx||'0'));
     if($('d-lan-state')){
       setHTML('d-lan-state', stateBadge(lif.state));
       setText('d-lan-addr', (lif.addrs&&lif.addrs.length)?lif.addrs.join(', '):'(none)');
+      setText('d-lan-mac', lif.mac||'—');
       setText('d-lan-rxtx', (lif.rx||'0')+' / '+(lif.tx||'0'));
     }
-    // Bridge ports (usb0 + the hotspot iface while an AP is up) — same markup
-    // as the server-rendered row.
-    if($('d-lan-ports')){
-      var ps=d.lan_ports||[];
-      setHTML('d-lan-ports', ps.length ? ps.map(function(p){
-        return esc(p.name)+' '+stateBadge(p.state)+
-          (p.role?' <span class="muted">'+esc(p.role)+'</span>':'');
-      }).join(' · ') : '(none)');
+    // USB-NCM is a port of the bridge: own MAC/counters, no address.
+    if($('d-usb-state')){
+      var uif=d.usb_if||{};
+      setHTML('d-usb-state', stateBadge(uif.state));
+      setText('d-usb-mac', uif.mac||'—');
+      setText('d-usb-rxtx', (uif.rx||'0')+' / '+(uif.tx||'0'));
     }
     setHTML('d-rnsd-status', rn.running
       ? '<span class="badge ok">RUNNING</span> (pid '+esc(rn.pid)+')'+(rn.rss_mb?' · '+esc(rn.rss_mb)+' MB RSS':'')
@@ -115,6 +123,65 @@ __HALOW_SCRIPT__
     if(up.update_available) vh+=' <span class="badge warn">update available: '+esc(up.latest)+'</span>';
     else if(up.latest && !up.error) vh+=' <span class="badge ok">up to date</span>';
     setHTML('d-rnsd-version', vh);
+  }
+  function patchWifi(d){
+    if (!document.getElementById('d-wifi-sta-state')) return;
+    var m = d.mode || 'off';
+    var staOn = (m === 'sta' || m === 'sta+ap');
+    var apOn = (m === 'ap' || m === 'sta+ap');
+    var st = d.sta || {}, ap = d.ap || {};
+    if (!d.present) {
+      setHTML('d-wifi-sta-state', '<span class="badge">no radio</span>');
+      setText('d-wifi-sta-ssid', '—');
+      setText('d-wifi-sta-signal', '—');
+      setText('d-wifi-sta-addr', '—');
+      setText('d-wifi-sta-gw', '—');
+      setText('d-wifi-sta-mac', '—');
+      setText('d-wifi-sta-rxtx', '—');
+      setHTML('d-wifi-ap-state', '<span class="badge">no radio</span>');
+      setText('d-wifi-ap-ssid', '—');
+      setText('d-wifi-ap-clients', '—');
+      setText('d-wifi-ap-ip', '—');
+      setText('d-wifi-ap-bridge', '—');
+      setText('d-wifi-ap-mac', '—');
+      setText('d-wifi-ap-rxtx', '—');
+      return;
+    }
+    if (!staOn) {
+      setHTML('d-wifi-sta-state', '<span class="badge">off</span>');
+    } else if (st.connected) {
+      setHTML('d-wifi-sta-state', '<span class="badge ok">CONNECTED</span>');
+    } else if (!d.sta_configured) {
+      setHTML('d-wifi-sta-state', '<span class="badge">not configured</span>');
+    } else {
+      setHTML('d-wifi-sta-state', '<span class="badge warn">not connected</span>');
+    }
+    setText('d-wifi-sta-ssid', (st.connected && st.ssid) ? st.ssid : '—');
+    setText('d-wifi-sta-signal', (st.connected && st.signal) ? st.signal + ' dBm' : '—');
+    var staAddr = (st.addrs && st.addrs.length) ? st.addrs.join(', ') : (st.ip || '');
+    setText('d-wifi-sta-addr', (st.connected && staAddr) ? staAddr : '—');
+    setText('d-wifi-sta-gw', (st.connected && st.gateway) ? st.gateway : '—');
+    setText('d-wifi-sta-mac', st.mac || '—');
+    setText('d-wifi-sta-rxtx', (st.rx || st.tx) ? ((st.rx||'0')+' / '+(st.tx||'0')) : '—');
+    if (!apOn) {
+      setHTML('d-wifi-ap-state', '<span class="badge">off</span>');
+    } else if (ap.active) {
+      setHTML('d-wifi-ap-state', '<span class="badge ok">UP</span>');
+    } else {
+      setHTML('d-wifi-ap-state', '<span class="badge warn">not running</span>');
+    }
+    setText('d-wifi-ap-ssid', (apOn && ap.active && ap.ssid) ? ap.ssid : '—');
+    setText('d-wifi-ap-clients', (apOn && ap.active) ? String(ap.clients || 0) : '—');
+    setText('d-wifi-ap-ip', (apOn && ap.active && ap.ip) ? ap.ip : '—');
+    setText('d-wifi-ap-bridge', (apOn && ap.active && ap.bridge) ? ap.bridge : '—');
+    setText('d-wifi-ap-mac', (apOn && ap.active && ap.mac) ? ap.mac : '—');
+    setText('d-wifi-ap-rxtx', (apOn && ap.active) ? ((ap.rx||'0')+' / '+(ap.tx||'0')) : '—');
+  }
+  function loadWifi(){
+    fetch('__BASE__/wifi/status', {cache: 'no-store', credentials: 'same-origin'})
+      .then(function(r){ return r.json(); })
+      .then(function(d){ if (d) patchWifi(d); })
+      .catch(function(){});
   }
   function refreshData(){
     return fetch('__BASE__/dashboard/data').then(function(r){return r.json();}).then(function(d){ if(d && !d.error) patch(d); }).catch(function(){});
@@ -128,6 +195,10 @@ __HALOW_SCRIPT__
   }
   tick();
   setInterval(tick, 1000);
+  if (document.getElementById('d-wifi-sta-state')) {
+    loadWifi();
+    setInterval(loadWifi, 5000);
+  }
   if(window.__loadHalow){ setInterval(window.__loadHalow, 5000); }
 })();
 </script>

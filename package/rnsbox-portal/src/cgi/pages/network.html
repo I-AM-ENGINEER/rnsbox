@@ -13,20 +13,22 @@
   <em>sta+ap</em>) and is always DHCP-addressed by the WiFi stack — the static
   fields below apply to <strong>eth0</strong> only.</p>
   <form method="post" action="__BASE__/network/wan">
-    <label>Interface
-      <select name="wan">
-        <option value="auto"  __SEL_AUTO__>Automatic — Ethernet when plugged in, else WiFi client</option>
-        <option value="eth0"  __SEL_ETH0__>Ethernet (eth0) only</option>
-        <option value="wlan0" __SEL_WLAN0__>WiFi client (wlan0) only</option>
-      </select>
-    </label>
-    <label>Addressing
-      <select name="wan_mode" id="wan_mode" onchange="wanModeToggle()">
-        <option value="dhcp"   __SEL_DHCP__>DHCP (automatic)</option>
-        <option value="static" __SEL_STATIC__>Static IP</option>
-      </select>
-    </label>
-    <div id="wan_static" style="__WAN_STATIC_DISPLAY__">
+    <div class="form-grid">
+      <label>Interface
+        <select name="wan">
+          <option value="auto"  __SEL_AUTO__>Automatic — Ethernet when plugged in, else WiFi client</option>
+          <option value="eth0"  __SEL_ETH0__>Ethernet (eth0) only</option>
+          <option value="wlan0" __SEL_WLAN0__>WiFi client (wlan0) only</option>
+        </select>
+      </label>
+      <label>Addressing
+        <select name="wan_mode" id="wan_mode" onchange="wanModeToggle()">
+          <option value="dhcp"   __SEL_DHCP__>DHCP (automatic)</option>
+          <option value="static" __SEL_STATIC__>Static IP</option>
+        </select>
+      </label>
+    </div>
+    <div id="wan_static" class="form-grid" style="__WAN_STATIC_DISPLAY__">
       <label>IP address
         <input type="text" name="wan_address" value="__WAN_ADDRESS__" placeholder="192.168.1.50">
       </label>
@@ -68,7 +70,8 @@
       <option value="udp">UDP</option>
     </select>
     <input name="wan_port" type="number" min="1" max="65535" placeholder="External port" required>
-    <input name="lan_ip" type="text" placeholder="USB-NCM IP (e.g. 10.42.0.10)" required>
+    <input name="lan_ip" type="text" placeholder="Target IP" aria-label="USB-NCM target IP"
+           title="USB-NCM host IP, e.g. 10.42.0.10" required>
     <input name="lan_port" type="number" min="1" max="65535" placeholder="Target port" required>
     <input name="comment" type="text" placeholder="comment (optional)">
     <button type="submit" class="btn-primary">Add</button>
@@ -116,7 +119,7 @@
   <h3>All interfaces</h3>
   <table class="data">
     <thead>
-      <tr><th>Iface</th><th>State</th><th>Address</th><th>MAC</th><th>MTU</th><th>RX / TX</th></tr>
+      <tr><th>Iface</th><th>State</th><th>Address</th><th>Gateway</th><th>MAC</th><th>MTU</th><th>RX / TX</th></tr>
     </thead>
     <tbody>
       __IFACES_ROWS__

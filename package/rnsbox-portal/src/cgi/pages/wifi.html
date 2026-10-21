@@ -1,108 +1,119 @@
 <h2>WiFi</h2>
 
 <section class="card">
-  <h3>Status</h3>
-  <table class="kv">
-    <tr><th>Mode</th><td>__STATUS_MODE__</td></tr>
-    <tr><th>Client (STA)</th><td>__STA_CELL__</td></tr>
-    <tr><th>Hotspot (AP)</th><td>__AP_CELL__</td></tr>
-    <tr><th>TX power</th><td>__TXPOWER_CELL__</td></tr>
-  </table>
+  <div class="cardhead"><h3>Status</h3><span id="w-mode">__WIFI_MODE_BADGE__</span></div>
+  <div class="status-grid">
+    <div class="status-col">
+      <h4>Client (STA)</h4>
+      <table class="kv">__WIFI_STA_ROWS__</table>
+    </div>
+    <div class="status-col">
+      <h4>Hotspot (AP)</h4>
+      <table class="kv">__WIFI_AP_ROWS__</table>
+    </div>
+  </div>
 </section>
 
-<section class="card">
+<section class="card" id="sta">
   <h3>STA mode</h3>
-  <form method="post" action="__BASE__/wifi/mode" class="row-form">
-    <input type="hidden" name="only" value="sta">
-    <label><input type="checkbox" name="sta_enable" __STA_CHECKED__> Enabled</label>
-    <button type="submit" class="btn">Apply</button>
-  </form>
-  __STA_OFF_NOTE__
-  <div style="margin-top:10px">
+  <label class="check"><input type="checkbox" name="sta_enable" form="sta-form" __STA_CHECKED__> Enabled</label>
+
+  <div class="button-row">
     <button type="button" class="btn" id="scanbtn" onclick="doScan()" __SCAN_DISABLED__>Scan</button>
     <button type="button" class="btn" id="scanstop" onclick="stopScan()" style="display:none">Stop scan</button>
+    <button type="button" class="btn" onclick="openNetModal('manual')">Add manually</button>
     <span id="scanmsg" class="muted"></span>
   </div>
   <table class="data" id="scantbl" style="display:none">
     <thead><tr><th>SSID</th><th>Signal</th><th>Ch</th><th>Band</th><th>Security</th><th></th></tr></thead>
     <tbody></tbody>
   </table>
-  __CONCURRENT_NOTE__
-  <form method="post" action="__BASE__/wifi/connect" style="margin-top:10px">
-    <label>SSID
-      <input name="ssid" id="ssid" type="text" placeholder="SSID" value="__STA_SSID__" maxlength="32" required>
-    </label>
-    <label>Password
-      <input name="psk" id="sta_psk" type="password" placeholder="password (blank = open)" minlength="8" maxlength="63">
-      <button type="button" class="btn" onclick="togglePw('sta_psk', this)">Show</button>
-    </label>
-    <!-- Filled from the selected scan row: the protocol and band are the
-         network's, not operator choices, and are not shown again here. -->
-    <input type="hidden" name="sta_security" id="sta_security" value="__STA_SECURITY__">
-    <input type="hidden" name="sta_band" id="sta_band" value="__STA_BAND__">
-    <label><input type="checkbox" name="sta_hidden" __STA_HIDDEN_CHECKED__> Hidden network</label>
-    <p class="muted">Another RNSBox's hotspot can't be this box's uplink: every
+
+  <form id="sta-form" method="post" action="__BASE__/wifi/connect" autocomplete="off">
+    <input type="hidden" name="ui_mode" value="1">
+    <div class="form-grid">
+      <label>SSID
+        <input name="ssid" id="ssid" type="text" placeholder="SSID" value="__STA_SSID__" maxlength="32"
+               autocomplete="off" autocapitalize="none" spellcheck="false">
+      </label>
+      <label>Password
+        <span class="input-group">
+          <input name="psk" id="sta_psk" type="password" placeholder="password (blank = keep saved)"
+                 minlength="8" maxlength="63" autocomplete="new-password" autocapitalize="none" spellcheck="false">
+          <button type="button" class="btn" onclick="togglePw('sta_psk', this)">Show</button>
+        </span>
+      </label>
+      <input type="hidden" name="sta_security" id="sta_security" value="__STA_SECURITY__">
+      <input type="hidden" name="sta_band" id="sta_band" value="__STA_BAND__">
+    </div>
+    <div class="form-actions">
+      <button type="submit" name="do" value="connect" class="btn-primary">Connect</button>
+    </div>
+    <label class="check"><input type="checkbox" name="sta_hidden" __STA_HIDDEN_CHECKED__> Hidden network</label>
+    <p class="hint">Another RNSBox's hotspot can't be this box's uplink: every
     RNSBox's LAN is 10.42.0.0/24, so the box refuses DHCP from such a network.</p>
-    <button type="submit" class="btn-primary">Connect</button>
+    <div class="form-actions">
+      <button type="submit" name="do" value="save" class="btn-primary">Save &amp; apply</button>
+    </div>
   </form>
+
+  <h4>Networks</h4>
+  <table class="data">
+    <thead><tr><th>SSID</th><th>Security</th><th>Status</th><th></th></tr></thead>
+    <tbody>__WIFI_NET_ROWS__</tbody>
+  </table>
 </section>
 
-<section class="card">
+<section class="card" id="ap">
   <h3>AP mode</h3>
-  <form method="post" action="__BASE__/wifi/mode" class="row-form">
-    <input type="hidden" name="only" value="ap">
-    <label><input type="checkbox" name="ap_enable" __AP_CHECKED__> Enabled</label>
-    <button type="submit" class="btn">Apply</button>
-  </form>
-  __AP_OFF_NOTE__
+  <label class="check"><input type="checkbox" name="ap_enable" form="ap-form" __AP_CHECKED__> Enabled</label>
   __AP_PSK_NOTE__
-  <form method="post" action="__BASE__/wifi/ap">
-    <label>SSID
-      <input type="text" name="ap_ssid" value="__AP_SSID__" maxlength="32">
-    </label>
-    <p class="muted">Clear the field to let the hotspot follow the device hostname
-    (it shows the current name — <code>__AP_SSID__</code> — and follows S10uuid's
-    rename); typing a name pins it.</p>
-    <label>Password (8–63 characters — required)
-      <input type="password" id="ap_psk" name="ap_psk" value="__AP_PSK__" minlength="8" maxlength="63" autocomplete="new-password">
-      <button type="button" class="btn" onclick="togglePw('ap_psk', this)">Show</button>
-    </label>
-    <p class="muted">The hotspot ships with <strong>no password</strong> and stays off
-    until you choose one: 8–63 printable ASCII characters, without <code>#</code> or
-    <code>"</code>. The old published default <code>changeme123</code> is refused.</p>
-    <label>Security
-      <select name="ap_security">__AP_SECURITY_OPTIONS__</select>
-    </label>
-    <div class="row-form"><strong>Band</strong>
-      <label><input type="radio" name="ap_band" value="auto" __AP_BAND_AUTO_CHECKED__> 2.4/5 GHz (auto)</label>
-      <label><input type="radio" name="ap_band" value="2.4" __AP_BAND_24_CHECKED__> 2.4 GHz</label>
-      <label><input type="radio" name="ap_band" value="5" __AP_BAND_5_CHECKED__> 5 GHz</label>
+
+  <form id="ap-form" method="post" action="__BASE__/wifi/ap" autocomplete="off">
+    <input type="hidden" name="ui_mode" value="1">
+    <div class="form-grid">
+      <label>SSID
+        <input type="text" name="ap_ssid" value="__AP_SSID__" maxlength="32"
+               autocomplete="off" autocapitalize="none" spellcheck="false">
+      </label>
+      <label>Password (8–63 characters — required)
+        <span class="input-group">
+          <input type="password" id="ap_psk" name="ap_psk" value="__AP_PSK__" minlength="8" maxlength="63"
+                 autocomplete="new-password" autocapitalize="none" spellcheck="false">
+          <button type="button" class="btn" onclick="togglePw('ap_psk', this)">Show</button>
+        </span>
+      </label>
+      <label>Security
+        <select name="ap_security">__AP_SECURITY_OPTIONS__</select>
+      </label>
+      <div>
+        <span class="field-label">Band</span>
+        <div class="radio-row">
+          <label><input type="radio" name="ap_band" value="auto" __AP_BAND_AUTO_CHECKED__> 2.4/5 GHz (auto)</label>
+          <label><input type="radio" name="ap_band" value="2.4" __AP_BAND_24_CHECKED__> 2.4 GHz</label>
+          <label><input type="radio" name="ap_band" value="5" __AP_BAND_5_CHECKED__> 5 GHz</label>
+        </div>
+      </div>
+      <label>Wi-Fi standard
+        <select name="ap_standard" id="ap_standard">__AP_STANDARD_OPTIONS__</select>
+      </label>
+      <label>Channel
+        <select name="ap_channel" id="ap_channel">__AP_CHANNEL_OPTIONS__</select>
+      </label>
+      <label>Width
+        <select name="ap_width" id="ap_width">__AP_WIDTH_OPTIONS__</select>
+      </label>
     </div>
-    <label>Wi-Fi standard
-      <select name="ap_standard" id="ap_standard">__AP_STANDARD_OPTIONS__</select>
-    </label>
-    <label>Channel
-      <select name="ap_channel" id="ap_channel">__AP_CHANNEL_OPTIONS__</select>
-    </label>
-    <label>Width
-      <select name="ap_width" id="ap_width">__AP_WIDTH_OPTIONS__</select>
-    </label>
-    <label><input type="checkbox" name="ap_hidden" __AP_HIDDEN_CHECKED__> Hidden hotspot</label>
-    <button type="submit" class="btn-primary">Save &amp; apply</button>
+    <label class="check"><input type="checkbox" name="ap_hidden" __AP_HIDDEN_CHECKED__> Hidden hotspot</label>
+    <div class="form-actions">
+      <button type="submit" class="btn-primary">Save &amp; apply</button>
+    </div>
   </form>
-  <p class="muted" style="margin-top:8px">In concurrent <em>STA + AP</em> mode the
-  client follows the hotspot's band and the hotspot inherits the client's exact
-  channel and width (one radio). <em>auto</em> channel applies in AP-only mode;
-  if the radio can't honor it the hotspot falls back to 20&nbsp;MHz.</p>
 </section>
 
 <section class="card">
   <h3>TX power</h3>
-  <p class="muted">Radio-wide — applies to both client and hotspot (single
-  radio). <strong>auto</strong> = chip maximum, independent of the regulatory
-  database. A number caps power; firmware still applies per-rate EVM backoff
-  below it. Set lower to cut heat/range.</p>
-  <form method="post" action="__BASE__/wifi/txpower" class="row-form">
+  <form method="post" action="__BASE__/wifi/txpower" class="form-actions txpower">
     <select name="tx_power">
       __TXPOWER_OPTIONS__
     </select>
@@ -110,20 +121,95 @@
   </form>
 </section>
 
+<div class="modal" id="net-modal" hidden>
+  <div class="modal-backdrop" onclick="closeNetModal()"></div>
+  <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="net-modal-title">
+    <h3 id="net-modal-title">Connect</h3>
+    <form id="net-modal-form" method="post" action="__BASE__/wifi/net/connect" autocomplete="off">
+      <input type="hidden" name="security" id="net-modal-security" value="wpa2">
+      <input type="hidden" name="manual" id="net-modal-manual" value="">
+      <label>SSID
+        <input type="text" name="ssid" id="net-modal-ssid" maxlength="32" required
+               autocomplete="off" autocapitalize="none" spellcheck="false">
+      </label>
+      <div id="net-modal-pw-row">
+        <label>Password
+          <span class="input-group">
+            <input type="password" name="psk" id="net-modal-psk" minlength="8" maxlength="63"
+                   autocomplete="new-password" autocapitalize="none" spellcheck="false">
+            <button type="button" class="btn" onclick="togglePw('net-modal-psk', this)">Show</button>
+          </span>
+        </label>
+      </div>
+      <div class="form-actions">
+        <button type="button" class="btn" onclick="closeNetModal()">Cancel</button>
+        <button type="submit" class="btn-primary" id="net-modal-submit">Connect</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <script>
 var STA_ENABLED = __STA_ENABLED_JS__;
-// True when the box is in concurrent STA+AP mode: the client follows the
-// hotspot's band, so out-of-band scan results are shown but not selectable.
+// Concurrent STA+AP: the client follows the hotspot's band, so scan results
+// outside it are shown but not selectable.
 var CONCURRENT = __CONCURRENT_JS__;
-// Show/hide a password field. Flips the input type and the button label.
 function togglePw(id, btn){
   var el = document.getElementById(id);
   if (!el) return;
   if (el.type === 'password'){ el.type = 'text';  btn.textContent = 'Hide'; }
   else                       { el.type = 'password'; btn.textContent = 'Show'; }
 }
-// The join form has no Security select: the protocol comes from the scan row.
-// Open networks have no password; disable (and clear) the field.
+var netModal = document.getElementById('net-modal');
+function openNetModal(mode, ssid, security, known){
+  if(!netModal) return;
+  var manual = (mode === 'manual');
+  var ssidEl = document.getElementById('net-modal-ssid');
+  var pskEl = document.getElementById('net-modal-psk');
+  var secEl = document.getElementById('net-modal-security');
+  var row = document.getElementById('net-modal-pw-row');
+  var submit = document.getElementById('net-modal-submit');
+  var showBtn = pskEl.parentNode.querySelector('button');
+  ssidEl.value = ssid || '';
+  ssidEl.readOnly = !manual;
+  secEl.value = manual ? 'wpa2+wpa3' : (security || 'wpa2');
+  document.getElementById('net-modal-manual').value = manual ? '1' : '';
+  pskEl.value = '';
+  pskEl.type = 'password';
+  if(showBtn) showBtn.textContent = 'Show';
+  var open = (!manual && secEl.value === 'open');
+  row.style.display = open ? 'none' : '';
+  pskEl.disabled = open;
+  pskEl.required = (!manual && !open && !known);
+  pskEl.placeholder = manual ? 'password (blank = open)'
+                    : (known ? 'password (blank = keep saved)' : 'password');
+  document.getElementById('net-modal-title').textContent =
+    manual ? 'Add network' : ('Connect to "' + (ssid || '') + '"');
+  submit.textContent = manual ? 'Add' : 'Connect';
+  netModal.hidden = false;
+  setTimeout(function(){
+    if(manual) ssidEl.focus();
+    else if(open) submit.focus();
+    else pskEl.focus();
+  }, 30);
+}
+function closeNetModal(){ if(netModal) netModal.hidden = true; }
+document.addEventListener('keydown', function(e){
+  if(e.key === 'Escape' && netModal && !netModal.hidden) closeNetModal();
+});
+function netKnown(ssid){
+  var els = document.querySelectorAll('.net-state');
+  for (var i = 0; i < els.length; ++i)
+    if (els[i].getAttribute('data-ssid') === ssid) return true;
+  return false;
+}
+function editPrimary(){
+  var f=document.getElementById('sta-form');
+  if(!f) return;
+  f.scrollIntoView({behavior:'smooth', block:'center'});
+  var s=document.getElementById('ssid');
+  if(s) s.focus({preventScroll:true});
+}
 function syncStaSecurity(){
   var s=document.getElementById('sta_security'), p=document.getElementById('sta_psk');
   if(!s || !p) return;
@@ -137,15 +223,14 @@ function secFromScan(s){
   if (s === 'WPA2/WPA3') return 'wpa2+wpa3';
   return 'wpa2';   // WPA2, WPA, WEP and Enterprise all start as WPA2-PSK
 }
-// A manually typed SSID no longer carries the last scan row's protocol/band.
+// Changing the SSID invalidates the protocol/band of the last scan row.
 document.getElementById('ssid').addEventListener('input', function(){
   var sec=document.getElementById('sta_security'), band=document.getElementById('sta_band');
   if(sec) sec.value='wpa2';
   if(band) band.value='auto';
   syncStaSecurity();
 });
-// Continuous scan: re-scans every few seconds for up to 5 minutes (or until
-// "Stop scan" / leaving the page), merging results as APs appear.
+// Continuous scan for up to 5 minutes, merging APs as they appear.
 var scanTimer=null, scanStopped=false, scanDeadline=0, scanFound={};
 function scanKey(n){ return (n.bssid||'')+'|'+(n.ssid||'')+'|'+(n.band||'')+'|'+(n.channel||''); }
 function doScan(){
@@ -178,8 +263,7 @@ function stepScan(){
       if(d && Array.isArray(d.nets)) d.nets.forEach(function(n){ scanFound[scanKey(n)]=n; });
       if(d && d.error){
         msg.textContent=d.error;
-        // Configuration errors won't fix themselves: stop instead of
-        // hammering the radio every two seconds.
+        // Configuration errors won't fix themselves; don't hammer the radio.
         if(/off|not installed|no WiFi|cannot bring up/.test(d.error)){
           scanStopped=true;
           document.getElementById('scanstop').style.display='none';
@@ -208,9 +292,8 @@ function renderScan(){
   if(!nets.length) return;
   nets.sort(function(a,b){ return (parseInt(b.signal)||-999)-(parseInt(a.signal)||-999); });
   msg.textContent='scanning… '+nets.length+' found';
-  // Built with DOM nodes + textContent ONLY: SSIDs come from anyone in radio
-  // range and iw prints < > " ' verbatim, so no scan field may ever reach
-  // innerHTML.
+  // SSIDs come from anyone in radio range and iw prints markup characters
+  // verbatim, so scan fields are built with DOM nodes + textContent only.
   function td(tr, text){ var c=document.createElement('td'); c.textContent=text; tr.appendChild(c); return c; }
   nets.forEach(function(n){
     var tr=document.createElement('tr');
@@ -233,14 +316,10 @@ function renderScan(){
       tr.style.opacity='0.45';
     } else {
       var b=document.createElement('button');
-      b.type='button'; b.className='btn'; b.textContent='Use';
+      b.type='button'; b.className='btn'; b.textContent='Connect';
       b.onclick=function(){
-        document.getElementById('ssid').value=n.ssid||'';
-        var sec=document.getElementById('sta_security');
-        var bandEl=document.getElementById('sta_band');
-        if(sec) sec.value=secFromScan(n.security||'');
-        if(bandEl) bandEl.value='auto';   // let wpa_supplicant roam between bands
-        syncStaSecurity();
+        if(!n.ssid){ openNetModal('manual'); return; }
+        openNetModal('scan', n.ssid, secFromScan(n.security||''), netKnown(n.ssid));
       };
       last.appendChild(b);
     }
@@ -248,7 +327,6 @@ function renderScan(){
   });
 }
 
-// ---- AP band / standard / channel / width synchronization -----------------
 var CH24=[1,2,3,4,5,6,7,8,9,10,11,12,13];
 var CH5=[36,40,44,48,149,153,157,161,165];
 function apBand(){
@@ -308,5 +386,102 @@ function syncStandard(){
   if(wEl) wEl.addEventListener('change', fillChannels);
   syncStandard();
   fillChannels();
+})();
+</script>
+<script>
+(function(){
+  function esc(s){
+    return (''+(s==null?'':s)).replace(/[&<>"']/g,function(c){
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+    });
+  }
+  function setHTML(id, h){ var e=document.getElementById(id); if(e) e.innerHTML=h; }
+  function setText(id, t){ var e=document.getElementById(id); if(e) e.textContent=t; }
+  function patch(d){
+    var m = d.mode || 'off';
+    var staOn = (m === 'sta' || m === 'sta+ap');
+    var apOn  = (m === 'ap'  || m === 'sta+ap');
+    var st = d.sta || {}, ap = d.ap || {};
+    setHTML('w-mode', (!m || m === 'off') ? '<span class="badge">off</span>'
+                                          : '<span class="badge ok">' + esc(m) + '</span>');
+    if (!d.present) {
+      setHTML('w-sta-state', '<span class="badge">no radio</span>');
+      setText('w-sta-ssid', '—'); setText('w-sta-signal', '—');
+      setText('w-sta-band', '—'); setText('w-sta-channel', '—');
+      setText('w-sta-width', '—'); setText('w-sta-standard', '—');
+      setText('w-sta-security', '—'); setText('w-sta-ip', '—');
+      setText('w-sta-gw', '—'); setText('w-sta-mac', '—'); setText('w-sta-rxtx', '—');
+      setHTML('w-ap-state', '<span class="badge">no radio</span>');
+      setText('w-ap-ssid', '—'); setText('w-ap-iface', '—');
+      setText('w-ap-clients', '—'); setText('w-ap-band', '—');
+      setText('w-ap-channel', '—'); setText('w-ap-width', '—');
+      setText('w-ap-standard', '—'); setText('w-ap-security', '—');
+      setText('w-ap-ip', '—'); setText('w-ap-bridge', '—');
+      setText('w-ap-mac', '—'); setText('w-ap-rxtx', '—');
+      return;
+    }
+    if (!staOn) {
+      setHTML('w-sta-state', '<span class="badge">off</span>');
+    } else if (st.connected) {
+      setHTML('w-sta-state', '<span class="badge ok">CONNECTED</span>');
+    } else if (!d.sta_configured) {
+      setHTML('w-sta-state', '<span class="badge">not configured</span>');
+    } else {
+      setHTML('w-sta-state', '<span class="badge warn">not connected</span>');
+    }
+    setText('w-sta-ssid', (st.connected && st.ssid) ? st.ssid : '—');
+    setText('w-sta-signal', (st.connected && st.signal) ? st.signal + ' dBm' : '—');
+    setText('w-sta-band', (st.connected && st.band) ? st.band + ' GHz' : '—');
+    setText('w-sta-channel', (st.connected && st.channel) ? st.channel : '—');
+    setText('w-sta-width', (st.connected && st.width) ? st.width + ' MHz' : '—');
+    setText('w-sta-standard', (st.connected && st.standard) ? st.standard : '—');
+    setText('w-sta-security', (st.connected && st.security) ? st.security : '—');
+    var staAddr = (st.addrs && st.addrs.length) ? st.addrs.join(', ') : (st.ip || '');
+    setText('w-sta-ip', (st.connected && staAddr) ? staAddr : '—');
+    setText('w-sta-gw', (st.connected && st.gateway) ? st.gateway : '—');
+    setText('w-sta-mac', st.mac || '—');
+    setText('w-sta-rxtx', (st.rx || st.tx) ? ((st.rx||'0')+' / '+(st.tx||'0')) : '—');
+    var nstates = document.querySelectorAll('.net-state');
+    for (var i = 0; i < nstates.length; ++i) {
+      var nsSsid = nstates[i].getAttribute('data-ssid');
+      var nsOn = !!(st.connected && st.ssid && st.ssid === nsSsid);
+      nstates[i].innerHTML = nsOn
+        ? '<span class="badge ok">CONNECTED</span>'
+        : '<span class="badge">saved</span>';
+    }
+    if (!apOn) {
+      setHTML('w-ap-state', '<span class="badge">off</span>');
+    } else if (ap.active) {
+      setHTML('w-ap-state', '<span class="badge ok">UP</span>');
+    } else {
+      setHTML('w-ap-state', '<span class="badge warn">not running</span>');
+    }
+    setText('w-ap-ssid', (apOn && ap.active && ap.ssid) ? ap.ssid : '—');
+    setText('w-ap-iface', (apOn && ap.active && ap.iface) ? ap.iface : '—');
+    setText('w-ap-clients', (apOn && ap.active) ? String(ap.clients || 0) : '—');
+    setText('w-ap-band', (apOn && ap.active && ap.band) ? ap.band + ' GHz' : '—');
+    setText('w-ap-channel', (apOn && ap.active && ap.channel) ? ap.channel : '—');
+    setText('w-ap-width', (apOn && ap.active && ap.width) ? ap.width + ' MHz' : '—');
+    setText('w-ap-standard', (apOn && ap.active && ap.standard) ? ap.standard : '—');
+    setText('w-ap-security', (apOn && ap.active && ap.security) ? ap.security : '—');
+    setText('w-ap-ip', (apOn && ap.active && ap.ip) ? ap.ip : '—');
+    setText('w-ap-bridge', (apOn && ap.active && ap.bridge) ? ap.bridge : '—');
+    setText('w-ap-mac', (apOn && ap.active && ap.mac) ? ap.mac : '—');
+    setText('w-ap-rxtx', (apOn && ap.active) ? ((ap.rx||'0')+' / '+(ap.tx||'0')) : '—');
+    if (st.connected) {
+      var fl = document.querySelectorAll('.flash');
+      for (var i = 0; i < fl.length; ++i)
+        if (fl[i].textContent.indexOf('Connecting to') === 0 && fl[i].parentNode)
+          fl[i].parentNode.removeChild(fl[i]);
+    }
+  }
+  function load(){
+    fetch('__BASE__/wifi/status', {cache: 'no-store', credentials: 'same-origin'})
+      .then(function(r){ return r.json(); })
+      .then(function(d){ if (d) patch(d); })
+      .catch(function(){});
+  }
+  load();
+  setInterval(load, 5000);
 })();
 </script>

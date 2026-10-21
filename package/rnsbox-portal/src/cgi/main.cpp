@@ -7,7 +7,8 @@
 // Before either: the Host must be an IP literal or exactly "localhost"
 // (host_is_literal; the dnsmasq aliases such as setup.lan only redirect to the
 // IP), and the modem UI lives alone on its own port/origin (MODEM_PORT).
-// Dual-mode: `nftgen` / `ctflush` CLI for the init scripts.
+// Multi-mode: CGI, `nftgen` / `ctflush` CLI for the init scripts, and
+// `console-broker` (the long-lived PTY behind the Console tab).
 #include "http.h"
 #include "session.h"
 #include "util.h"
@@ -17,10 +18,12 @@
 #include "nftgen.h"
 #include "conntrack.h"
 #include "store.h"
+#include "console.h"
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <signal.h>
 #include <unistd.h>
 
 // ---- method policy ----
@@ -40,12 +43,18 @@ static const char* const POST_ONLY[] = {
     "/wifi/ap",
     "/wifi/mode",
     "/wifi/txpower",
+    "/wifi/net/add",
+    "/wifi/net/delete",
+    "/wifi/net/connect",
     "/reticulum/config",
     "/reticulum/restart",
     "/reticulum/autorestart",
     "/reticulum/rnsdwatchdog",
     "/reticulum/autoupdate",
+    "/reticulum/maintenance",
     "/reticulum/checkupdate",
+    "/reticulum/downloadupdate",
+    "/reticulum/installupdate",
     "/reticulum/applyupdate",
     "/reticulum/slip",
     "/reticulum/rnsh",
@@ -53,6 +62,7 @@ static const char* const POST_ONLY[] = {
     "/reticulum/halow/add",
     "/reticulum/tcpclient/add",
     "/reticulum/tcpclient/update",
+    "/reticulum/tcpclient/save",
     "/reticulum/tcpclient/delete",
     "/reticulum/bluetooth",
     "/reticulum/bluetooth/raise",
@@ -74,6 +84,10 @@ static const char* const POST_ONLY[] = {
     "/echobot/save",
     "/echobot/announce",
     "/echobot/restart",
+    "/console/input",
+    "/console/resize",
+    "/nomadnet/input",
+    "/nomadnet/resize",
 };
 
 static bool is_post_only(const std::string& p) {
@@ -266,6 +280,16 @@ static void r_logout(const http::Request& req, http::Response& res) {
 }
 
 int main(int argc, char** argv) {
+    // The console broker writes to a PTY and a Unix socket; a browser that
+    // navigates away closes its stream, and the CGI's next stdout write must
+    // fail with EPIPE instead of killing the process.
+    signal(SIGPIPE, SIG_IGN);
+
+    // `rnsbox-portal console-broker [-f]` — PTY session owner (S11console).
+    if (argc >= 2 && strcmp(argv[1], "console-broker") == 0) {
+        bool fg = argc >= 3 && (!strcmp(argv[2], "-f") || !strcmp(argv[2], "--foreground"));
+        return console::broker_main(fg);
+    }
     // CLI mode: `rnsbox-portal nftgen --wan eth0 --lan br-lan` (boot path).
     if (argc >= 2 && strcmp(argv[1], "nftgen") == 0)
         return nftgen::cli_main(argc, argv);
@@ -419,6 +443,9 @@ int main(int argc, char** argv) {
     else if (p == "/wifi/ap")                    routes::wifi_ap(req, res);
     else if (p == "/wifi/mode")                  routes::wifi_mode(req, res);
     else if (p == "/wifi/txpower")               routes::wifi_txpower(req, res);
+    else if (p == "/wifi/net/add")               routes::wifi_net_add(req, res);
+    else if (p == "/wifi/net/delete")            routes::wifi_net_delete(req, res);
+    else if (p == "/wifi/net/connect")           routes::wifi_net_connect(req, res);
     else if (p == "/reticulum")                  routes::reticulum_page(req, res);
     else if (p == "/reticulum/status")           routes::reticulum_status(req, res);
     else if (p == "/reticulum/rnstatus.json")    routes::reticulum_rnstatus(req, res);
@@ -428,13 +455,17 @@ int main(int argc, char** argv) {
     else if (p == "/reticulum/autorestart")      routes::reticulum_autorestart(req, res);
     else if (p == "/reticulum/rnsdwatchdog")     routes::reticulum_rnsdwatchdog(req, res);
     else if (p == "/reticulum/autoupdate")       routes::reticulum_autoupdate(req, res);
+    else if (p == "/reticulum/maintenance")      routes::reticulum_maintenance(req, res);
     else if (p == "/reticulum/checkupdate")      routes::reticulum_checkupdate(req, res);
+    else if (p == "/reticulum/downloadupdate")   routes::reticulum_downloadupdate(req, res);
+    else if (p == "/reticulum/installupdate")    routes::reticulum_installupdate(req, res);
     else if (p == "/reticulum/applyupdate")      routes::reticulum_applyupdate(req, res);
     else if (p == "/reticulum/slip")             routes::reticulum_slip(req, res);
     else if (p == "/reticulum/rnsh")             routes::reticulum_rnsh_save(req, res);
     else if (p == "/reticulum/halow/add")        routes::reticulum_halow_add(req, res);
     else if (p == "/reticulum/tcpclient/add")    routes::reticulum_tcpclient_add(req, res);
     else if (p == "/reticulum/tcpclient/update") routes::reticulum_tcpclient_update(req, res);
+    else if (p == "/reticulum/tcpclient/save")   routes::reticulum_tcpclient_save(req, res);
     else if (p == "/reticulum/tcpclient/delete") routes::reticulum_tcpclient_delete(req, res);
     else if (p == "/reticulum/bluetooth")        routes::reticulum_bluetooth(req, res);
     else if (p == "/reticulum/bluetooth/raise")  routes::reticulum_bluetooth_raise(req, res);
@@ -461,8 +492,15 @@ int main(int argc, char** argv) {
     else if (p == "/access/revoke")              routes::access_revoke(req, res);
     else if (p == "/access/reissue")             routes::access_reissue(req, res);
     else if (p == "/console")                    routes::console_page(req, res);
-    else if (p == "/console/screen")             routes::console_screen(req, res);
+    else if (p == "/console/full")               routes::console_full_page(req, res);
+    else if (p == "/console/stream")             routes::console_stream(req, res);
     else if (p == "/console/input")              routes::console_input(req, res);
+    else if (p == "/console/resize")             routes::console_resize(req, res);
+    else if (p == "/nomadnet")                   routes::nomadnet_page(req, res);
+    else if (p == "/nomadnet/full")              routes::nomadnet_full_page(req, res);
+    else if (p == "/nomadnet/stream")            routes::nomadnet_stream(req, res);
+    else if (p == "/nomadnet/input")             routes::nomadnet_input(req, res);
+    else if (p == "/nomadnet/resize")            routes::nomadnet_resize(req, res);
     else if (p == "/settings")                   routes::settings_page(req, res);
     else if (p == "/settings/password")          routes::settings_password(req, res);
     else if (p == "/settings/hostname")          routes::hostname_set(req, res);
@@ -483,6 +521,6 @@ int main(int argc, char** argv) {
     else if (p == "/health") { res.content_type = "application/json"; res.body = "{\"ok\":true}"; }
     else { res.status = "404 Not Found"; res.content_type = "application/json"; res.body = "{\"error\":\"not found\"}"; }
 
-    res.send();
+    if (!res.streamed) res.send();
     return 0;
 }

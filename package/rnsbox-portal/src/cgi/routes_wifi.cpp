@@ -4,6 +4,7 @@
 #include "web.h"
 #include "store.h"
 #include "wifi.h"
+#include "sysinfo.h"
 #include "util.h"
 #include <cctype>
 #include <cstdlib>
@@ -127,6 +128,19 @@ void wifi_page(const Request& req, Response& res) {
 
     auto cfg = wifi::read_conf();
     wifi::Status st = wifi::status();
+    // The WiFi tab shows the same interface fields as the dashboard cards
+    // (address with prefix, gateway, MAC, counters), so read the network
+    // summary once and look up the STA/AP iface by name.
+    sysinfo::Network net = sysinfo::network_summary();
+    auto iface_of = [&](const std::string& n) -> const sysinfo::Iface* {
+        for (const auto& i : net.ifaces) if (i.name == n) return &i;
+        return nullptr;
+    };
+    auto join_addrs = [](const std::vector<std::string>& v) {
+        std::string o;
+        for (size_t k = 0; k < v.size(); ++k) { if (k) o += ", "; o += v[k]; }
+        return o;
+    };
     std::string base = web::base();
     const std::string& m = cfg["mode"];
     bool sta_on = (m == "sta" || m == "sta+ap");
@@ -145,84 +159,153 @@ void wifi_page(const Request& req, Response& res) {
         mode_badge = "<span class=\"badge\">off</span>";
     else
         mode_badge = "<span class=\"badge ok\">" + E(m) + "</span>";
-    h = R(std::move(h), "__STATUS_MODE__", mode_badge);
 
-    // Client (STA) cell
-    std::string sta;
-    if (!sta_on) {
-        sta = "<span class=\"badge\">off</span> <span class=\"muted\">STA mode is disabled</span>";
-    } else if (st.sta.connected) {
-        sta = "<span class=\"badge ok\">CONNECTED</span> " + E(st.sta.ssid) +
-              " (" + E(st.sta.signal) + " dBm)";
-        if (!st.sta.width.empty()) sta += ", " + E(st.sta.width) + " MHz";
-        sta += " — " + (st.sta.ip.empty() ? std::string("no IP") : E(st.sta.ip));
-    } else if (cfg["sta_ssid"].empty()) {
-        sta = "<span class=\"badge\">not configured</span> "
-              "<span class=\"muted\">scan for a network and connect</span>";
-    } else {
-        sta = "<span class=\"badge warn\">not connected</span>";
-        if (concurrent) {
-            sta += "\n        <div class=\"muted\" style=\"margin-top:4px\">In concurrent <em>STA + AP</em>\n"
-                   "        mode the client follows the hotspot's band (single radio must share\n"
-                   "        one channel). If your upstream network is on the other band, switch\n"
-                   "        the hotspot band or disable AP mode.</div>";
-        }
-    }
-    // The joined network overlaps this box's LAN subnet 10.42.0.0/24 (another
-    // RNSBox's hotspot): /etc/dhcpcd.exit-hook recorded why it's no uplink.
-    if (sta_on) {
-        std::string why = util::trim(util::read_file("/run/wifi-sta-conflict", 1024));
-        if (!why.empty())
-            sta += "\n        <div class=\"flash warn\" style=\"margin-top:4px\">" + E(why) + "</div>";
-    }
-    h = R(std::move(h), "__STA_CELL__", sta);
+    h = R(std::move(h), "__WIFI_MODE_BADGE__", mode_badge);
 
-    // Hotspot (AP) cell
-    std::string ap;
-    if (!ap_on) {
-        ap = "<span class=\"badge\">off</span> <span class=\"muted\">AP mode is disabled</span>";
-    } else if (st.ap.active) {
-        ap = "<span class=\"badge ok\">UP</span> on " + E(st.ap.iface) + ",\n        " +
-             std::to_string(st.ap.clients) + " client(s)";
-        if (!st.ap.width.empty()) ap += ", " + E(st.ap.width) + " MHz";
-        // Normally a port of the LAN bridge, sharing its subnet + DHCP pool. Not
-        // bridged (no bridge in the kernel): nothing serves its clients.
-        if (!st.ap.bridge.empty())
-            ap += ", bridged into " + E(st.ap.bridge) + (st.ap.ip.empty() ? std::string() : " (" + E(st.ap.ip) + ")");
-        else if (!st.ap.ip.empty())
-            ap += ", " + E(st.ap.ip);
-        else
-            ap += ", <span class=\"badge warn\">not in the LAN bridge</span>";
-    } else {
-        ap = "<span class=\"badge warn\">not running</span>";
-        std::string why = util::trim(util::read_file("/run/wifi-ap-refused", 512));
-        if (!why.empty()) ap += " <span class=\"muted\">" + E(why) + "</span>";
+    const sysinfo::Iface* si = sta_on ? iface_of(wifi::STA_IF) : nullptr;
+    std::string sta_gw;
+    if (st.sta.connected) {
+        auto git = net.gateway_of.find(wifi::STA_IF);
+        if (git != net.gateway_of.end()) sta_gw = git->second;
     }
-    h = R(std::move(h), "__AP_CELL__", ap);
+    std::string sta_rxtx = "—";
+    if (si) {
+        sta_rxtx = (si->rx.empty() ? std::string("0") : E(si->rx)) + " / " +
+                   (si->tx.empty() ? std::string("0") : E(si->tx));
+    }
+    std::string sta_rows;
+    if (!sta_on)
+        sta_rows += "<tr><th>State</th><td id=\"w-sta-state\"><span class=\"badge\">off</span></td></tr>\n";
+    else if (st.sta.connected)
+        sta_rows += "<tr><th>State</th><td id=\"w-sta-state\"><span class=\"badge ok\">CONNECTED</span></td></tr>\n";
+    else if (!wifi::has_sta_networks())
+        sta_rows += "<tr><th>State</th><td id=\"w-sta-state\"><span class=\"badge\">not configured</span></td></tr>\n";
+    else
+        sta_rows += "<tr><th>State</th><td id=\"w-sta-state\"><span class=\"badge warn\">not connected</span></td></tr>\n";
+    sta_rows += "<tr><th>Network</th><td id=\"w-sta-ssid\">" +
+        ((st.sta.connected && !st.sta.ssid.empty()) ? E(st.sta.ssid) : std::string("—")) +
+        "</td></tr>\n";
+    sta_rows += "<tr><th>Signal</th><td id=\"w-sta-signal\">" +
+        ((st.sta.connected && !st.sta.signal.empty()) ? E(st.sta.signal) + " dBm" : std::string("—")) +
+        "</td></tr>\n";
+    sta_rows += "<tr><th>Band</th><td id=\"w-sta-band\">" +
+        ((st.sta.connected && !st.sta.band.empty()) ? E(st.sta.band) + " GHz" : std::string("—")) +
+        "</td></tr>\n";
+    sta_rows += "<tr><th>Channel</th><td id=\"w-sta-channel\">" +
+        ((st.sta.connected && !st.sta.channel.empty()) ? E(st.sta.channel) : std::string("—")) +
+        "</td></tr>\n";
+    sta_rows += "<tr><th>Width</th><td id=\"w-sta-width\">" +
+        ((st.sta.connected && !st.sta.width.empty()) ? E(st.sta.width) + " MHz" : std::string("—")) +
+        "</td></tr>\n";
+    sta_rows += "<tr><th>Standard</th><td id=\"w-sta-standard\">" +
+        ((st.sta.connected && !st.sta.standard.empty()) ? E(st.sta.standard) : std::string("—")) +
+        "</td></tr>\n";
+    sta_rows += "<tr><th>Security</th><td id=\"w-sta-security\">" +
+        ((st.sta.connected && !st.sta.security.empty()) ? E(st.sta.security) : std::string("—")) +
+        "</td></tr>\n";
+    sta_rows += "<tr><th>Address</th><td id=\"w-sta-ip\">" +
+        ((st.sta.connected && si && !si->addrs.empty()) ? E(join_addrs(si->addrs))
+         : ((st.sta.connected && !st.sta.ip.empty()) ? E(st.sta.ip) : std::string("—"))) +
+        "</td></tr>\n";
+    sta_rows += "<tr><th>Gateway</th><td id=\"w-sta-gw\">" +
+        ((st.sta.connected && !sta_gw.empty()) ? E(sta_gw) : std::string("—")) +
+        "</td></tr>\n";
+    sta_rows += "<tr><th>MAC</th><td id=\"w-sta-mac\">" +
+        ((si && !si->mac.empty()) ? E(si->mac) : std::string("—")) +
+        "</td></tr>\n";
+    sta_rows += "<tr><th>RX / TX</th><td id=\"w-sta-rxtx\">" + sta_rxtx + "</td></tr>\n";
 
-    // TX power cell
-    std::string tx = "configured <span class=\"badge\">" + E(st.tx_power) + "</span>";
-    if (st.sta.connected && !st.sta.txpower.empty()) tx += " · STA " + E(st.sta.txpower) + " dBm";
-    if (st.ap.active && !st.ap.txpower.empty())      tx += " · AP " + E(st.ap.txpower) + " dBm";
-    h = R(std::move(h), "__TXPOWER_CELL__", tx);
+    const sysinfo::Iface* ai = (ap_on && st.ap.active) ? iface_of(st.ap.iface) : nullptr;
+    std::string ap_rxtx = "—";
+    if (ai) {
+        ap_rxtx = (ai->rx.empty() ? std::string("0") : E(ai->rx)) + " / " +
+                  (ai->tx.empty() ? std::string("0") : E(ai->tx));
+    }
+    std::string ap_rows;
+    if (!ap_on)
+        ap_rows += "<tr><th>State</th><td id=\"w-ap-state\"><span class=\"badge\">off</span></td></tr>\n";
+    else if (st.ap.active)
+        ap_rows += "<tr><th>State</th><td id=\"w-ap-state\"><span class=\"badge ok\">UP</span></td></tr>\n";
+    else
+        ap_rows += "<tr><th>State</th><td id=\"w-ap-state\"><span class=\"badge warn\">not running</span></td></tr>\n";
+    ap_rows += "<tr><th>SSID</th><td id=\"w-ap-ssid\">" +
+        (ap_on && st.ap.active && !st.ap.ssid.empty() ? E(st.ap.ssid) : std::string("—")) +
+        "</td></tr>\n";
+    ap_rows += "<tr><th>Interface</th><td id=\"w-ap-iface\">" +
+        (ap_on && st.ap.active && !st.ap.iface.empty() ? E(st.ap.iface) : std::string("—")) +
+        "</td></tr>\n";
+    ap_rows += "<tr><th>Clients</th><td id=\"w-ap-clients\">" +
+        (ap_on && st.ap.active ? std::to_string(st.ap.clients) : std::string("—")) +
+        "</td></tr>\n";
+    ap_rows += "<tr><th>Band</th><td id=\"w-ap-band\">" +
+        (ap_on && st.ap.active && !st.ap.band.empty() ? E(st.ap.band) + " GHz" : std::string("—")) +
+        "</td></tr>\n";
+    ap_rows += "<tr><th>Channel</th><td id=\"w-ap-channel\">" +
+        (ap_on && st.ap.active && !st.ap.channel.empty() ? E(st.ap.channel) : std::string("—")) +
+        "</td></tr>\n";
+    ap_rows += "<tr><th>Width</th><td id=\"w-ap-width\">" +
+        (ap_on && st.ap.active && !st.ap.width.empty() ? E(st.ap.width) + " MHz" : std::string("—")) +
+        "</td></tr>\n";
+    ap_rows += "<tr><th>Standard</th><td id=\"w-ap-standard\">" +
+        (ap_on && st.ap.active && !st.ap.standard.empty() ? E(st.ap.standard) : std::string("—")) +
+        "</td></tr>\n";
+    ap_rows += "<tr><th>Security</th><td id=\"w-ap-security\">" +
+        (ap_on && st.ap.active && !st.ap.security.empty() ? E(st.ap.security) : std::string("—")) +
+        "</td></tr>\n";
+    ap_rows += "<tr><th>LAN address</th><td id=\"w-ap-ip\">" +
+        (ap_on && st.ap.active && !st.ap.ip.empty() ? E(st.ap.ip) : std::string("—")) +
+        "</td></tr>\n";
+    ap_rows += "<tr><th>Bridge</th><td id=\"w-ap-bridge\">" +
+        (ap_on && st.ap.active && !st.ap.bridge.empty() ? E(st.ap.bridge) : std::string("—")) +
+        "</td></tr>\n";
+    ap_rows += "<tr><th>MAC</th><td id=\"w-ap-mac\">" +
+        ((ai && !ai->mac.empty()) ? E(ai->mac) : std::string("—")) +
+        "</td></tr>\n";
+    ap_rows += "<tr><th>RX / TX</th><td id=\"w-ap-rxtx\">" + ap_rxtx + "</td></tr>\n";
+
+    h = R(std::move(h), "__WIFI_STA_ROWS__", sta_rows);
+    h = R(std::move(h), "__WIFI_AP_ROWS__", ap_rows);
+
+    // One list of known networks: the primary one (edited by the form above)
+    // plus the extras. wpa_supplicant treats them as one pool and falls back
+    // to the next one when the current signal disappears.
+    std::string net_rows;
+    std::string primary_ssid = cfg["sta_ssid"];
+    auto net_state = [&](const std::string& ssid) {
+        bool on = st.sta.connected && !st.sta.ssid.empty() && st.sta.ssid == ssid;
+        return on ? std::string("<span class=\"badge ok\">CONNECTED</span>")
+                  : std::string("<span class=\"badge\">saved</span>");
+    };
+    if (!primary_ssid.empty()) {
+        net_rows += "<tr><td><strong>" + E(primary_ssid) + "</strong></td><td>" +
+                    E(wifi::security_label(cfg["sta_security"])) + "</td><td>" +
+                    "<span class=\"net-state\" data-ssid=\"" + E(primary_ssid) + "\">" +
+                    net_state(primary_ssid) + "</span></td><td>" +
+                    "<button type=\"button\" class=\"btn\" onclick=\"editPrimary()\">Edit</button>"
+                    "</td></tr>\n";
+    }
+    auto extras = wifi::read_extra_networks();
+    for (size_t i = 0; i < extras.size(); ++i) {
+        net_rows += "<tr><td><strong>" + E(extras[i].ssid) + "</strong></td><td>" +
+                    E(wifi::security_label(extras[i].security)) + "</td><td>" +
+                    "<span class=\"net-state\" data-ssid=\"" + E(extras[i].ssid) + "\">" +
+                    net_state(extras[i].ssid) + "</span></td><td>" +
+                    "<form method=\"post\" action=\"" + base +
+                    "/wifi/net/delete\" class=\"inline\">"
+                    "<input type=\"hidden\" name=\"idx\" value=\"" +
+                    std::to_string(i) + "\">"
+                    "<button type=\"submit\" class=\"btn-danger\">Delete</button></form>"
+                    "</td></tr>\n";
+    }
+    if (net_rows.empty())
+        net_rows = "<tr><td colspan=\"4\" class=\"muted\">No networks configured</td></tr>\n";
+    h = R(std::move(h), "__WIFI_NET_ROWS__", net_rows);
 
     // ---- Mode toggles ----
     h = R(std::move(h), "__STA_CHECKED__", sta_on ? "checked" : "");
     h = R(std::move(h), "__AP_CHECKED__",  ap_on  ? "checked" : "");
     h = R(std::move(h), "__SCAN_DISABLED__", sta_on ? "" : "disabled");
-    h = R(std::move(h), "__STA_OFF_NOTE__", sta_on ? "" :
-        "<p class=\"muted\">STA mode is off.</p>");
-    h = R(std::move(h), "__AP_OFF_NOTE__", ap_on ? "" :
-        "<p class=\"muted\">AP mode is off.</p>");
 
-    // Join-section concurrent note
-    std::string note;
-    if (concurrent) {
-        note = "<p class=\"muted\">Concurrent mode is on: the client follows the\n"
-               "  hotspot's band and the hotspot inherits the client's channel and width\n"
-               "  (single radio). Switch to STA-only (AP off) to use the other band.</p>";
-    }
-    h = R(std::move(h), "__CONCURRENT_NOTE__", note);
 
     // ---- STA settings ----
     // Security and band are properties of the scanned BSS, not operator
@@ -344,7 +427,26 @@ void wifi_connect(const Request& req, Response& res) {
     std::string band = util::trim(req.f("sta_band"));
     if (band != "2.4" && band != "5") band = "auto";
     bool hidden = req.f("sta_hidden") == "on";
+
+    auto cur = wifi::read_conf();
+    bool connect_action = req.f("do") == "connect";
+    // ui_mode=1 forms carry the toggle; older clients always enabled STA.
+    bool sta_on = connect_action ? true
+                 : ((req.f("ui_mode") == "1") ? (req.f("sta_enable") == "on") : true);
+    bool ap_on = (cur["mode"] == "ap" || cur["mode"] == "sta+ap");
+
+    bool has_extra = !wifi::read_extra_networks().empty();
     if (ssid.empty()) {
+        psk.clear();
+        security = "wpa2";
+        band = "auto";
+        hidden = false;
+    } else if (security == "open") {
+        psk.clear();
+    } else if (psk.empty() && ssid == cur["sta_ssid"]) {
+        psk = cur["sta_psk"];
+    }
+    if (sta_on && ssid.empty() && !has_extra) {
         render::redirect_flash(res, wifi_redirect(), "error", "SSID required");
         return;
     }
@@ -356,15 +458,17 @@ void wifi_connect(const Request& req, Response& res) {
         render::redirect_flash(res, wifi_redirect(), "error", "SSID is at most 32 bytes");
         return;
     }
-    if (security == "open") {
-        psk.clear();                       // open network: no key at all
-    } else if (psk.size() < 8 || psk.size() > 63) {
+    if (!ssid.empty() && !psk.empty() && (psk.size() < 8 || psk.size() > 63)) {
         render::redirect_flash(res, wifi_redirect(), "error",
             "WiFi password must be 8-63 characters (choose Open for a network without a password)");
         return;
     }
-    auto cur = wifi::read_conf();
-    std::string mode = (cur["mode"] == "ap" || cur["mode"] == "sta+ap") ? "sta+ap" : "sta";
+    if (!ssid.empty() && sta_on && security != "open" && psk.empty()) {
+        render::redirect_flash(res, wifi_redirect(), "error",
+            "WiFi password is required for an encrypted network");
+        return;
+    }
+    std::string mode = (sta_on && ap_on) ? "sta+ap" : sta_on ? "sta" : ap_on ? "ap" : "off";
     if (!wifi::write_conf({{"mode", mode}, {"sta_ssid", ssid}, {"sta_psk", psk},
                            {"sta_security", security}, {"sta_band", band},
                            {"sta_hidden", hidden ? "1" : ""}})) {
@@ -372,15 +476,22 @@ void wifi_connect(const Request& req, Response& res) {
         return;
     }
     wifi::apply();
+    if (!sta_on) {
+        render::redirect_flash(res, wifi_redirect(), "success", "WiFi settings saved — STA mode is off.");
+        return;
+    }
     // Joining still works with a weak stored hotspot PSK — S35wifi just keeps
     // the AP off (and logs why). Say so instead of a silent missing hotspot.
     std::string note = wan_note();
+    std::string what = connect_action
+        ? (ssid.empty() ? std::string("Connecting…") : "Connecting to '" + ssid + "'…")
+        : std::string("WiFi settings saved.");
     if (mode == "sta+ap" && !wifi::ap_psk_ok(cur["ap_psk"]))
         render::redirect_flash(res, wifi_redirect(), "warn",
-            "Connecting to '" + ssid + "'… The hotspot stays off until you set a hotspot password (8-63 characters) below." + note);
+            what + " The hotspot stays off until you set a hotspot password (8-63 characters) below." + note);
     else
         render::redirect_flash(res, wifi_redirect(), note.empty() ? "success" : "warn",
-            "Connecting to '" + ssid + "'…" + note);
+            what + note);
 }
 
 void wifi_ap(const Request& req, Response& res) {
@@ -393,6 +504,13 @@ void wifi_ap(const Request& req, Response& res) {
     std::string width = util::trim(req.f("ap_width"));
     std::string chan = util::trim(req.f("ap_channel"));
     bool hidden = req.f("ap_hidden") == "on";
+
+    auto cur = wifi::read_conf();
+    bool sta_on = (cur["mode"] == "sta" || cur["mode"] == "sta+ap");
+    // Older clients did not carry the toggle; their AP state stays unchanged.
+    bool ap_on = (req.f("ui_mode") == "1")
+        ? (req.f("ap_enable") == "on")
+        : (cur["mode"] == "ap" || cur["mode"] == "sta+ap");
 
     if (security.empty()) security = "wpa3";
     if (security != "wpa2" && security != "wpa3" && security != "wpa2+wpa3") {
@@ -439,11 +557,8 @@ void wifi_ap(const Request& req, Response& res) {
     }
     // A blank SSID is allowed: S35wifi then names the hotspot after the
     // device hostname (the field above already shows that name).
-    // A running hotspot must always have a good password; while AP mode is
-    // off an empty password is allowed (the mode toggle is what refuses to
-    // switch it on without one), but a typed bad value is still rejected.
-    auto cur = wifi::read_conf();
-    bool ap_on = (cur["mode"] == "ap" || cur["mode"] == "sta+ap");
+    // Enabling the hotspot requires a good password; a bad typed value is
+    // rejected even while it stays off.
     if (ap_on || !psk.empty()) {
         std::string why = ap_psk_problem(psk);
         if (!why.empty()) {
@@ -453,7 +568,8 @@ void wifi_ap(const Request& req, Response& res) {
     }
     // ap_htmode is the pre-ap_width knob: keep it in sync for older readers.
     std::string htmode = (width == "40") ? "ht40" : "ht20";
-    if (!wifi::write_conf({{"ap_ssid", ssid}, {"ap_psk", psk},
+    std::string mode = (sta_on && ap_on) ? "sta+ap" : ap_on ? "ap" : sta_on ? "sta" : "off";
+    if (!wifi::write_conf({{"mode", mode}, {"ap_ssid", ssid}, {"ap_psk", psk},
                            {"ap_security", security}, {"ap_band", band},
                            {"ap_standard", standard}, {"ap_width", width},
                            {"ap_channel", chan}, {"ap_htmode", htmode},
@@ -462,7 +578,8 @@ void wifi_ap(const Request& req, Response& res) {
         return;
     }
     wifi::apply();
-    render::redirect_flash(res, wifi_redirect(), "success", "AP settings applied");
+    render::redirect_flash(res, wifi_redirect(), "success",
+        ap_on ? "AP settings applied: hotspot on." : "AP settings applied: hotspot off.");
 }
 
 void wifi_mode(const Request& req, Response& res) {
@@ -470,9 +587,9 @@ void wifi_mode(const Request& req, Response& res) {
     auto cur = wifi::read_conf();
     std::string mode = util::trim(req.f("mode"));
     std::string only = util::trim(req.f("only"));
-    // New UI: one toggle per card. "only" says which card's checkbox was
-    // submitted, so the other mode keeps its current state; the legacy
-    // mode=<off|sta|ap|sta+ap> form still works unchanged.
+    // Legacy toggle endpoint (cached pages, external forms): "only" says
+    // which mode was submitted, so the other one keeps its state;
+    // mode=<off|sta|ap|sta+ap> still works unchanged.
     if (mode.empty()) {
         bool sta = (cur["mode"] == "sta" || cur["mode"] == "sta+ap");
         bool ap  = (cur["mode"] == "ap"  || cur["mode"] == "sta+ap");
@@ -514,6 +631,159 @@ void wifi_mode(const Request& req, Response& res) {
     std::string note = (mode == "sta" || mode == "sta+ap") ? wan_note() : std::string();
     render::redirect_flash(res, wifi_redirect(), note.empty() ? "success" : "warn",
                            "WiFi modes: " + label + "." + note);
+}
+
+void wifi_net_add(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, false)) return;
+    wifi::Network n;
+    n.ssid = util::trim(req.f("ssid"));
+    n.psk = req.f("psk");
+    n.security = util::trim(req.f("security"));
+    n.hidden = req.f("hidden") == "on";
+    std::string err;
+    if (!wifi::add_extra_network(n, err)) {
+        render::redirect_flash(res, wifi_redirect(), "error", "Network: " + err);
+        return;
+    }
+    wifi::apply();
+    render::redirect_flash(res, wifi_redirect(), "success",
+        "Network '" + n.ssid + "' added.");
+}
+
+void wifi_net_delete(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, false)) return;
+    int idx = atoi(req.f("idx").c_str());
+    std::string err;
+    if (!wifi::delete_extra_network(idx, err)) {
+        render::redirect_flash(res, wifi_redirect(), "error", "Network: " + err);
+        return;
+    }
+    wifi::apply();
+    render::redirect_flash(res, wifi_redirect(), "success", "Network deleted.");
+}
+
+// Connect to a network chosen in the scan table (or typed into the manual
+// dialog). The chosen network becomes the primary one; the previous primary
+// moves to the fallback list. That is what makes an explicit Connect win:
+// wpa_supplicant prefers the primary, so merely appending a lower-priority
+// network would leave the box on the old one.
+void wifi_net_connect(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, false)) return;
+    std::string ssid = util::trim(req.f("ssid"));
+    std::string psk = req.f("psk");
+    std::string security = norm_sta_security(util::trim(req.f("security")));
+    bool manual = req.f("manual") == "1";
+    bool hidden = req.f("hidden") == "on";
+
+    if (ssid.empty()) {
+        render::redirect_flash(res, wifi_redirect(), "error", "SSID required");
+        return;
+    }
+    if (ssid.size() > 32 || !wifi::conf_value_ok(ssid)) {
+        render::redirect_flash(res, wifi_redirect(), "error", BAD_FIELD_MSG);
+        return;
+    }
+
+    auto cfg = wifi::read_conf();
+    std::string old_ssid = cfg["sta_ssid"];
+    std::string old_psk = cfg["sta_psk"];
+    std::string old_sec = norm_sta_security(cfg["sta_security"]);
+    bool old_hidden = cfg["sta_hidden"] == "1";
+
+    auto extras = wifi::read_extra_networks();
+    int extra_idx = -1;
+    for (size_t i = 0; i < extras.size(); ++i) {
+        if (extras[i].ssid == ssid) { extra_idx = (int)i; break; }
+    }
+    bool is_primary = !old_ssid.empty() && ssid == old_ssid;
+
+    // A blank password keeps the stored one for a known network; a manual
+    // add without a password means an open network.
+    if (psk.empty() && security != "open") {
+        if (is_primary) psk = old_psk;
+        else if (extra_idx >= 0) psk = extras[extra_idx].psk;
+        else if (manual) security = "open";
+        else {
+            render::redirect_flash(res, wifi_redirect(), "error",
+                "WiFi password is required for an encrypted network");
+            return;
+        }
+    }
+    if (security == "open") psk.clear();
+    if (!wifi::conf_value_ok(psk)) {
+        render::redirect_flash(res, wifi_redirect(), "error", BAD_FIELD_MSG);
+        return;
+    }
+    if (!psk.empty() && (psk.size() < 8 || psk.size() > 63)) {
+        render::redirect_flash(res, wifi_redirect(), "error",
+            "WiFi password must be 8-63 characters (leave it blank for an open network)");
+        return;
+    }
+
+    std::string mode = cfg["mode"];
+    if (mode != "sta" && mode != "sta+ap")
+        mode = (mode == "ap") ? "sta+ap" : "sta";
+
+    if (is_primary) {
+        if (!wifi::write_conf({{"mode", mode}, {"sta_ssid", ssid}, {"sta_psk", psk},
+                               {"sta_security", security}, {"sta_band", "auto"},
+                               {"sta_hidden", hidden ? "1" : ""}})) {
+            render::redirect_flash(res, wifi_redirect(), "error", "Could not save the WiFi config");
+            return;
+        }
+    } else {
+        wifi::Network chosen;
+        chosen.ssid = ssid;
+        chosen.psk = psk;
+        chosen.security = security;
+        chosen.hidden = hidden;
+        if (extra_idx >= 0) {
+            chosen.hidden = extras[extra_idx].hidden || hidden;
+            extras.erase(extras.begin() + extra_idx);
+        }
+        if (!old_ssid.empty()) {
+            // Keep the previous primary as the first fallback. Skip it if its
+            // stored password could not form a valid network block anyway.
+            bool old_ok = old_sec == "open" ||
+                          (old_psk.size() >= 8 && old_psk.size() <= 63 &&
+                           wifi::conf_value_ok(old_psk));
+            if (old_ok) {
+                wifi::Network old;
+                old.ssid = old_ssid;
+                old.psk = old_psk;
+                old.security = old_sec;
+                old.hidden = old_hidden;
+                extras.insert(extras.begin(), old);
+            }
+        }
+        if (extras.size() > 8) {
+            render::redirect_flash(res, wifi_redirect(), "error",
+                "At most 8 networks can be saved");
+            return;
+        }
+        if (!wifi::write_conf({{"mode", mode}, {"sta_ssid", chosen.ssid},
+                               {"sta_psk", chosen.psk}, {"sta_security", chosen.security},
+                               {"sta_band", "auto"},
+                               {"sta_hidden", chosen.hidden ? "1" : ""}})) {
+            render::redirect_flash(res, wifi_redirect(), "error", "Could not save the WiFi config");
+            return;
+        }
+        std::string err;
+        if (!wifi::write_extra_networks(extras, err)) {
+            render::redirect_flash(res, wifi_redirect(), "error", "Network: " + err);
+            return;
+        }
+    }
+
+    wifi::apply();
+    std::string what = "Connecting to '" + ssid + "'…";
+    std::string note = wan_note();
+    if (mode == "sta+ap" && !wifi::ap_psk_ok(cfg["ap_psk"]))
+        render::redirect_flash(res, wifi_redirect(), "warn",
+            what + " The hotspot stays off until you set a hotspot password (8-63 characters) below." + note);
+    else
+        render::redirect_flash(res, wifi_redirect(), note.empty() ? "success" : "warn",
+            what + note);
 }
 
 void wifi_txpower(const Request& req, Response& res) {

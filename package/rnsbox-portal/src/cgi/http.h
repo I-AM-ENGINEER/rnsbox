@@ -86,6 +86,9 @@ struct Response {
     std::string content_type = "text/html; charset=utf-8";
     std::vector<std::string> headers;   // extra raw headers ("Set-Cookie: ...")
     std::string body;
+    // The handler already emitted the header block and is streaming raw bytes
+    // (console output). main() must not call send() again.
+    bool streamed = false;
 
     void set_cookie(const std::string& raw) { headers.push_back("Set-Cookie: " + raw); }
     void redirect(const std::string& location) { status = "302 Found"; headers.push_back("Location: " + location); body.clear(); }

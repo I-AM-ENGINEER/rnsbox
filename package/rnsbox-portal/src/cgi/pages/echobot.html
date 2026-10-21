@@ -3,13 +3,12 @@
 <section class="card" id="echobot">
   <h3>Echo Bot</h3>
 
-  <form method="post" action="__BASE__/echobot/toggle" class="inline"
-        style="display:flex;align-items:center;gap:8px;margin:0 0 10px">
-    <input type="checkbox" name="enabled" id="echobot-enabled" __ECHOBOT_CHECKED__
-           onchange="this.form.submit()">
-    <label for="echobot-enabled" style="margin:0">Enable echo bot
+  <div style="display:flex;align-items:center;gap:8px;margin:0 0 10px">
+    <input type="checkbox" name="enabled" id="echobot-enabled" form="echobot-settings"
+           __ECHOBOT_CHECKED__>
+    <label class="check" for="echobot-enabled" style="margin:0">Enable echo bot
       <span class="muted">— announces on start, then every interval; echoes messages</span></label>
-  </form>
+  </div>
 
   <table class="kv">
     <tr><th>Service</th><td>__ECHOBOT_STATUS__</td></tr>
@@ -50,7 +49,7 @@
   </div>
 
   <h4>Settings</h4>
-  <form method="post" action="__BASE__/echobot/save">
+  <form method="post" action="__BASE__/echobot/save" id="echobot-settings">
     <label>Name <span class="muted">(empty = <code>echo bot &lt;hostname&gt;</code>)</span>
       <input type="text" name="name" value="__ECHOBOT_NAME_VALUE__" maxlength="48">
     </label>
@@ -61,7 +60,5 @@
     <div class="time-actions">
       <button type="submit" class="btn-primary">Save &amp; apply</button>
     </div>
-    <p class="muted">Saving applies at once by restarting the bot. A start is refused while free RAM is below
-    <code>min_free_mb</code> (40 MB) — that floor protects rnsd from the OOM killer.</p>
   </form>
 </section>

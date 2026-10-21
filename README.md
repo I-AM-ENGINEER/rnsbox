@@ -78,9 +78,11 @@ Build host: a Linux machine set up for Buildroot (the upstream repo's
   resident RAM) on `http://10.42.0.1/` for network,
   Reticulum, WiFi and system settings — including setting the clock from your
   browser and configuring NTP servers, handy on a board with no RTC (an
-  optional DS3231 keeps time powered-off where wired). It is the
-  single source of truth for the generated `nftables` ruleset (boot and
-  live-apply both call the same module).
+  optional DS3231 keeps time powered-off where wired). A **Console** tab gives
+  the admin shell in the browser over a real PTY, and a **NomadNet** tab runs
+  the NomadNet TUI the same way; either can open full-window in its own browser
+  tab. It is the single source of truth for the generated `nftables` ruleset
+  (boot and live-apply both call the same module).
 - Optional **NomadNet** LXMF / pages node (off by default) and **WiFi**
   STA/AP support where the board has a radio (AIC8800 on the Nano-e *W*,
   brcmfmac on the Pi).
@@ -124,7 +126,8 @@ then point a `TCPClientInterface` at the modem on **port 8001**.
 build.sh          one-command builder: ./build.sh <board> [lite|dvd|all]
 board/<vendor>/   per-board files: kernel fragments, boot config, rootfs
                   overlay (init scripts, /etc), image assembly
-configs/          one defconfig per board
+configs/          base.config + boards/<board>.config (source of truth);
+                  rnsbox_<board>_defconfig is generated from them
 package/          SHARED packages: rnsbox-portal, python-rns, python-lxmf,
                   python-nomadnet — one copy for every board
 scripts/          lite/dvd packaging + client-disc helpers
@@ -134,11 +137,13 @@ LICENSE           MIT (the RNSBox delta)
 README.md         this file
 ```
 
-**Adding a board:** `configs/rnsbox_<board>_defconfig` + `board/<vendor>/<board>/`
-(copy the shape from an existing board; keep board differences in configs,
-not in code forks) + a small entry in `build.sh` + one line in the CI matrix.
-A new shared package goes to `package/<name>/` once and is instantly
-available to every board.
+**Adding a board:** `configs/boards/<board>.config` (board delta only) +
+`board/<vendor>/<board>/` (copy the shape from an existing board; keep board
+differences in configs, not in code forks) + a small entry in `build.sh` +
+one line in the CI matrix. Then run `scripts/gen-defconfigs.sh` to produce
+`configs/rnsbox_<board>_defconfig`. Shared selections live in
+`configs/base.config` — see `configs/README.md`. A new shared package goes to
+`package/<name>/` once and is instantly available to every board.
 
 ## Hardware
 

@@ -13,8 +13,10 @@
 #include "sysinfo.h"
 #include "updatecheck.h"
 #include "util.h"
+#include "wifi.h"
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <sys/stat.h>
 #include <string>
 #include <vector>
@@ -85,18 +87,6 @@ static std::string iface_json(const sysinfo::Iface* i) {
            "\",\"addrs\":" + str_array_json(i->addrs) + "}";
 }
 
-// --- LAN (/run/lan-iface: br-lan, or usb0 when the bridge couldn't be made) ---
-// The LAN card shows the LAN iface (it holds 10.42.0.1/24) plus, for the
-// bridge, one entry per port: usb0 always, the hotspot iface while an AP is up.
-struct LanPort { std::string name, role; const sysinfo::Iface* i; };
-
-static std::vector<LanPort> lan_ports(const sysinfo::Network& net, const std::string& lan_if) {
-    std::vector<LanPort> out;
-    for (const auto& p : sysinfo::bridge_ports(lan_if))
-        out.push_back({p, sysinfo::lan_port_role(p), find_iface(net, p)});
-    return out;
-}
-
 // An administratively down interface (WiFi off by default, no cable on a
 // spare port) is a normal state, not an error: neutral badge. Red is kept
 // for states that actually mean something is wrong (e.g. dormant/unknown).
@@ -106,31 +96,6 @@ static std::string state_badge(const sysinfo::Iface* i) {
     if (st == "down" || st == "DOWN" || st == "lowerlayerdown" || st == "notpresent")
         return "<span class=\"badge\">" + E(st) + "</span>";
     return "<span class=\"badge err\">" + E(st) + "</span>";
-}
-
-// "usb0 [UP] USB-C · wlan1 [UP] WiFi hotspot" — same markup as the patch() JS.
-static std::string ports_html(const std::vector<LanPort>& ports) {
-    if (ports.empty()) return "(none)";
-    std::string o;
-    for (size_t k = 0; k < ports.size(); ++k) {
-        if (k) o += " &middot; ";
-        o += E(ports[k].name) + " " + state_badge(ports[k].i);
-        if (!ports[k].role.empty()) o += " <span class=\"muted\">" + E(ports[k].role) + "</span>";
-    }
-    return o;
-}
-
-static std::string ports_json(const std::vector<LanPort>& ports) {
-    std::string o = "[";
-    for (size_t k = 0; k < ports.size(); ++k) {
-        if (k) o += ",";
-        const sysinfo::Iface* i = ports[k].i;
-        o += "{\"name\":\"" + JE(ports[k].name) +
-             "\",\"role\":\"" + JE(ports[k].role) +
-             "\",\"state\":\"" + JE(i ? i->state : std::string()) + "\"}";
-    }
-    o += "]";
-    return o;
 }
 
 // --- HaLow card + live-status script (verbatim port of the old template) ---
@@ -311,6 +276,120 @@ static std::string default_pass_banner(const std::string& base) {
     return s;
 }
 
+static bool read_soc_temp(double& c) {
+    for (int i = 0; i < 4; ++i) {
+        std::string s = util::trim(util::read_file(
+            "/sys/class/thermal/thermal_zone" + std::to_string(i) + "/temp", 64));
+        if (s.empty()) continue;
+        long mc = strtol(s.c_str(), nullptr, 10);
+        if (mc > -100000 && mc < 200000) { c = mc / 1000.0; return true; }
+    }
+    return false;
+}
+
+static std::string wifi_card_html(const std::string& base, const sysinfo::Network& net) {
+    wifi::Status st = wifi::status();
+    if (!st.present) return std::string();
+    bool sta_on = (st.mode == "sta" || st.mode == "sta+ap");
+    bool ap_on = (st.mode == "ap" || st.mode == "sta+ap");
+
+    std::string sta_state;
+    if (!sta_on) {
+        sta_state = "<span class=\"badge\">off</span>";
+    } else if (st.sta.connected) {
+        sta_state = "<span class=\"badge ok\">CONNECTED</span>";
+    } else if (!wifi::has_sta_networks()) {
+        sta_state = "<span class=\"badge\">not configured</span>";
+    } else {
+        sta_state = "<span class=\"badge warn\">not connected</span>";
+    }
+    std::string sta_ssid = (st.sta.connected && !st.sta.ssid.empty()) ? E(st.sta.ssid) : "—";
+    std::string sta_signal = (st.sta.connected && !st.sta.signal.empty())
+        ? E(st.sta.signal) + " dBm" : std::string("—");
+
+    // Same interface data the WAN/LAN cards use, so the WiFi card shows the
+    // address with its prefix, the gateway, MAC and counters instead of a bare
+    // address from `ip_of()`. The STA iface exists while STA mode is on even
+    // when it has no link, so MAC/RX/TX stay visible then.
+    const sysinfo::Iface* sta_if = sta_on ? find_iface(net, wifi::STA_IF) : nullptr;
+    std::string sta_addr = "—";
+    if (st.sta.connected) {
+        if (sta_if && !sta_if->addrs.empty()) sta_addr = join_esc(sta_if->addrs);
+        else if (!st.sta.ip.empty()) sta_addr = E(st.sta.ip);
+    }
+    std::string sta_gw = "—";
+    if (st.sta.connected) {
+        auto it = net.gateway_of.find(wifi::STA_IF);
+        if (it != net.gateway_of.end() && !it->second.empty()) sta_gw = E(it->second);
+    }
+    std::string sta_mac = (sta_if && !sta_if->mac.empty()) ? E(sta_if->mac) : "—";
+    std::string sta_rxtx = "—";
+    if (sta_if) {
+        std::string rx = sta_if->rx.empty() ? std::string("0") : E(sta_if->rx);
+        std::string tx = sta_if->tx.empty() ? std::string("0") : E(sta_if->tx);
+        sta_rxtx = rx + " / " + tx;
+    }
+    // While eth0 carries the default route, wlan0 is a connected second
+    // uplink with its own DHCP lease. Say so: two addresses on one subnet are
+    // otherwise easy to read as a bug.
+    std::string sta_note;
+    if (st.sta.connected && !net.default_dev.empty() && net.default_dev != wifi::STA_IF) {
+        sta_note = "<p class=\"muted\" style=\"margin:6px 0 0\">Secondary uplink: the active default route is " +
+                   E(net.default_dev) +
+                   (net.default_gateway.empty() ? std::string() : " (" + E(net.default_gateway) + ")") +
+                   ".</p>";
+    }
+
+    std::string ap_state;
+    if (!ap_on) {
+        ap_state = "<span class=\"badge\">off</span>";
+    } else if (st.ap.active) {
+        ap_state = "<span class=\"badge ok\">UP</span>";
+    } else {
+        ap_state = "<span class=\"badge warn\">not running</span>";
+    }
+    std::string ap_ssid = (ap_on && st.ap.active && !st.ap.ssid.empty()) ? E(st.ap.ssid) : "—";
+    std::string ap_clients = (ap_on && st.ap.active) ? std::to_string(st.ap.clients) : "—";
+    std::string ap_ip = (ap_on && st.ap.active && !st.ap.ip.empty()) ? E(st.ap.ip) : "—";
+    const sysinfo::Iface* ap_if = (st.ap.active && !st.ap.iface.empty())
+        ? find_iface(net, st.ap.iface) : nullptr;
+    std::string ap_bridge = (ap_if && !st.ap.bridge.empty()) ? E(st.ap.bridge) : "—";
+    std::string ap_mac = (ap_if && !ap_if->mac.empty()) ? E(ap_if->mac) : "—";
+    std::string ap_rxtx = "—";
+    if (ap_if) {
+        std::string rx = ap_if->rx.empty() ? std::string("0") : E(ap_if->rx);
+        std::string tx = ap_if->tx.empty() ? std::string("0") : E(ap_if->tx);
+        ap_rxtx = rx + " / " + tx;
+    }
+
+    return "<section class=\"card\" id=\"wifi-sta-card\">\n"
+           "  <h3>WiFi STA (wlan0)</h3>\n"
+           "  <table class=\"kv\">\n"
+           "    <tr><th>State</th><td id=\"d-wifi-sta-state\">" + sta_state + "</td></tr>\n"
+           "    <tr><th>Network</th><td id=\"d-wifi-sta-ssid\">" + sta_ssid + "</td></tr>\n"
+           "    <tr><th>Signal</th><td id=\"d-wifi-sta-signal\">" + sta_signal + "</td></tr>\n"
+           "    <tr><th>Address</th><td id=\"d-wifi-sta-addr\">" + sta_addr + "</td></tr>\n"
+           "    <tr><th>Gateway</th><td id=\"d-wifi-sta-gw\">" + sta_gw + "</td></tr>\n"
+           "    <tr><th>MAC</th><td id=\"d-wifi-sta-mac\">" + sta_mac + "</td></tr>\n"
+           "    <tr><th>RX / TX</th><td id=\"d-wifi-sta-rxtx\">" + sta_rxtx + "</td></tr>\n"
+           "  </table>\n" + sta_note +
+           "  <p class=\"cardfoot\"><a class=\"btn\" href=\"" + base + "/wifi#sta\">Manage &rarr;</a></p>\n"
+           "</section>\n"
+           "<section class=\"card\" id=\"wifi-ap-card\">\n"
+           "  <h3>WiFi AP</h3>\n"
+           "  <table class=\"kv\">\n"
+           "    <tr><th>State</th><td id=\"d-wifi-ap-state\">" + ap_state + "</td></tr>\n"
+           "    <tr><th>SSID</th><td id=\"d-wifi-ap-ssid\">" + ap_ssid + "</td></tr>\n"
+           "    <tr><th>Clients</th><td id=\"d-wifi-ap-clients\">" + ap_clients + "</td></tr>\n"
+           "    <tr><th>LAN address</th><td id=\"d-wifi-ap-ip\">" + ap_ip + "</td></tr>\n"
+           "    <tr><th>Bridge</th><td id=\"d-wifi-ap-bridge\">" + ap_bridge + "</td></tr>\n"
+           "    <tr><th>MAC</th><td id=\"d-wifi-ap-mac\">" + ap_mac + "</td></tr>\n"
+           "    <tr><th>RX / TX</th><td id=\"d-wifi-ap-rxtx\">" + ap_rxtx + "</td></tr>\n"
+           "  </table>\n"
+           "  <p class=\"cardfoot\"><a class=\"btn\" href=\"" + base + "/wifi#ap\">Manage &rarr;</a></p>\n"
+           "</section>\n";
+}
+
 // ---- GET / : server-rendered dashboard ----
 void dashboard_page(const Request& req, Response& res) {
     if (!web::require_auth(req, res, false)) return;
@@ -337,6 +416,22 @@ void dashboard_page(const Request& req, Response& res) {
     h = R(std::move(h), "__LOAD__",     E(sys.load[0]) + " / " + E(sys.load[1]) + " / " + E(sys.load[2]));
     h = R(std::move(h), "__CLOCK__",    clock_badge(sysinfo::clock_source()));
 
+    // SoC thermal zone when the kernel exposes one; otherwise the DS3231 die
+    // sensor. Read once per page load, never on the 1 s data refresh.
+    double temp_c = 0;
+    bool has_temp = read_soc_temp(temp_c);
+    if (!has_temp) {
+        sysinfo::Rtc rtc = sysinfo::rtc_status();
+        if (rtc.has_temp) { temp_c = rtc.temp_mc / 1000.0; has_temp = true; }
+    }
+    std::string temp = "—";
+    if (has_temp) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%.2f &deg;C", temp_c);
+        temp = buf;
+    }
+    h = R(std::move(h), "__TEMP__", temp);
+
     // RAM meter
     h = R(std::move(h), "__RAM_USED__",      std::to_string(sys.mem.used_mb));
     h = R(std::move(h), "__RAM_TOTAL__",     std::to_string(sys.mem.total_mb));
@@ -351,6 +446,7 @@ void dashboard_page(const Request& req, Response& res) {
     h = R(std::move(h), "__WAN__", E(sysinfo::wan_label(wan.interface, net)));
     h = R(std::move(h), "__WAN_STATE__", state_badge(wif));
     h = R(std::move(h), "__WAN_ADDR__", (wif && !wif->addrs.empty()) ? join_esc(wif->addrs) : "(none)");
+    h = R(std::move(h), "__WAN_MAC__",  (wif && !wif->mac.empty()) ? E(wif->mac) : "(none)");
     std::string wgw = sysinfo::wan_gateway(wan.interface, net);
     h = R(std::move(h), "__WAN_GW__",   wgw.empty() ? "(none)" : E(wgw));
     h = R(std::move(h), "__WAN_DNS__",  net.dns.empty() ? "(none)" : join_esc(net.dns));
@@ -360,31 +456,59 @@ void dashboard_page(const Request& req, Response& res) {
         h = R(std::move(h), "__WAN_RXTX__", rx + " / " + tx);
     }
 
-    // LAN card. br-lan exists (and holds 10.42.0.1/24) from boot on, whether
-    // or not a USB host or hotspot client is attached, so the card is always
-    // there; its State follows the bridge (UP once any port has a link). Ports
-    // row only for a bridge — the usb0 fallback is the whole LAN by itself.
+    // LAN: the bridge and the USB-C port are separate cards. br-lan holds
+    // 10.42.0.1/24 and aggregates its ports; usb0 is one of those ports (its
+    // own MAC and counters, no address of its own). When the bridge could not
+    // be made, usb0 is the whole LAN and carries the address.
     std::string lan;
     if (lif) {
         std::string addr = lif->addrs.empty() ? std::string("(none)") : join_esc(lif->addrs);
+        std::string mac = lif->mac.empty() ? std::string("(none)") : E(lif->mac);
         std::string rx = lif->rx.empty() ? std::string("0") : E(lif->rx);
         std::string tx = lif->tx.empty() ? std::string("0") : E(lif->tx);
-        std::string ports;
-        if (lif->bridge)
-            ports = "      <tr><th>Ports</th><td id=\"d-lan-ports\">" + ports_html(lan_ports(net, lan_if)) + "</td></tr>\n";
-        lan =
-            "<section class=\"card\">\n"
-            "    <h3>USB-NCM (" + E(lan_if) + ")</h3>\n"
-            "    <table class=\"kv\">\n"
-            "      <tr><th>State</th><td id=\"d-lan-state\">" + state_badge(lif) + "</td></tr>\n"
-            "      <tr><th>Address</th><td id=\"d-lan-addr\">" + addr + "</td></tr>\n" +
-            ports +
-            "      <tr><th>MAC</th><td>" + E(lif->mac) + "</td></tr>\n"
-            "      <tr><th>RX / TX</th><td id=\"d-lan-rxtx\">" + rx + " / " + tx + "</td></tr>\n"
-            "    </table>\n"
-            "  </section>";
+        if (lif->bridge) {
+            lan =
+                "<section class=\"card\">\n"
+                "    <h3>LAN bridge (" + E(lan_if) + ")</h3>\n"
+                "    <table class=\"kv\">\n"
+                "      <tr><th>State</th><td id=\"d-lan-state\">" + state_badge(lif) + "</td></tr>\n"
+                "      <tr><th>Address</th><td id=\"d-lan-addr\">" + addr + "</td></tr>\n"
+                "      <tr><th>MAC</th><td id=\"d-lan-mac\">" + mac + "</td></tr>\n"
+                "      <tr><th>RX / TX</th><td id=\"d-lan-rxtx\">" + rx + " / " + tx + "</td></tr>\n"
+                "    </table>\n"
+                "    <p class=\"cardfoot\"><a class=\"btn\" href=\"" + base + "/network\">Manage &rarr;</a></p>\n"
+                "  </section>";
+            if (const sysinfo::Iface* usb = find_iface(net, "usb0")) {
+                std::string urx = usb->rx.empty() ? std::string("0") : E(usb->rx);
+                std::string utx = usb->tx.empty() ? std::string("0") : E(usb->tx);
+                lan +=
+                    "<section class=\"card\">\n"
+                    "    <h3>USB-NCM (" + E(usb->name) + ")</h3>\n"
+                    "    <table class=\"kv\">\n"
+                    "      <tr><th>State</th><td id=\"d-usb-state\">" + state_badge(usb) + "</td></tr>\n"
+                    "      <tr><th>Bridge</th><td>" + E(lan_if) + " (port)</td></tr>\n"
+                    "      <tr><th>MAC</th><td id=\"d-usb-mac\">" + E(usb->mac) + "</td></tr>\n"
+                    "      <tr><th>RX / TX</th><td id=\"d-usb-rxtx\">" + urx + " / " + utx + "</td></tr>\n"
+                    "    </table>\n"
+                    "    <p class=\"cardfoot\"><a class=\"btn\" href=\"" + base + "/network\">Manage &rarr;</a></p>\n"
+                    "  </section>";
+            }
+        } else {
+            lan =
+                "<section class=\"card\">\n"
+                "    <h3>USB-NCM (" + E(lan_if) + ")</h3>\n"
+                "    <table class=\"kv\">\n"
+                "      <tr><th>State</th><td id=\"d-lan-state\">" + state_badge(lif) + "</td></tr>\n"
+                "      <tr><th>Address</th><td id=\"d-lan-addr\">" + addr + "</td></tr>\n"
+                "      <tr><th>MAC</th><td id=\"d-lan-mac\">" + mac + "</td></tr>\n"
+                "      <tr><th>RX / TX</th><td id=\"d-lan-rxtx\">" + rx + " / " + tx + "</td></tr>\n"
+                "    </table>\n"
+                "    <p class=\"cardfoot\"><a class=\"btn\" href=\"" + base + "/network\">Manage &rarr;</a></p>\n"
+                "  </section>";
+        }
     }
     h = R(std::move(h), "__LAN_CARD__", lan);
+    h = R(std::move(h), "__WIFI_CARD__", wifi_card_html(base, net));
 
     // Reticulum card
     std::string rstat;
@@ -404,6 +528,9 @@ void dashboard_page(const Request& req, Response& res) {
     else if (!u.latest.empty() && u.error.empty())
         ver += " <span class=\"badge ok\">up to date</span>";
     h = R(std::move(h), "__RNSD_VERSION__", ver);
+
+    // Echo Bot card — only when enabled in /etc/rnsbox/echobot.conf
+    h = R(std::move(h), "__ECHOBOT_CARD__", echobot_dashboard_card(base));
 
     // HaLow card + script — present only when SLIP is enabled
     h = R(std::move(h), "__HALOW_CARD__",   slip_on ? halow_card_html(base)  : std::string());
@@ -474,7 +601,7 @@ void dashboard_data(const Request& req, Response& res) {
     J += "\"wan_label\":\"" + JE(sysinfo::wan_label(wan.interface, net)) + "\",";
     J += "\"wan_if\":" + iface_json(wif) + ",";
     J += "\"lan_if\":" + iface_json(lif) + ",";
-    J += "\"lan_ports\":" + ports_json(lan_ports(net, lan_if)) + ",";
+    J += "\"usb_if\":" + ((lif && lif->bridge) ? iface_json(find_iface(net, "usb0")) : std::string("{}")) + ",";
     J += "\"gateway\":\"" + JE(sysinfo::wan_gateway(wan.interface, net)) + "\",";
     J += "\"dns\":" + str_array_json(net.dns) + ",";
     J += "\"clock_source\":\"" + JE(sysinfo::clock_source()) + "\",";

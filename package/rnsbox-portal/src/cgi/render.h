@@ -36,6 +36,14 @@ std::string layout(const http::Request& req, http::Response& res,
 std::string login_layout(const http::Request& req, http::Response& res,
                           const std::string& content);
 
+// Standalone full-window page (no topbar/sidebar/footer): the terminal tabs'
+// "Open in new tab" view. `content` is already-escaped HTML.
+std::string full_page(const std::string& title, const std::string& content);
+
+// Cache-busting build stamp for static assets (style.css, term.js), derived
+// from this binary's build time.
+const std::string& asset_version();
+
 // POST-redirect-GET with a one-shot flash. `category` is "success"|"error"|
 // "warn"; `msg` is shown once on the next page. Sets the flash cookie + 302.
 void redirect_flash(http::Response& res, const std::string& location,

@@ -1,0 +1,22 @@
+<link rel="stylesheet" href="/xterm/xterm.css?v=5.5.0">
+
+__TERM_HEADING__
+
+<section class="card console-card" id="term-card"
+         data-base="__TERM_BASE__" data-api="__TERM_API__">
+  <div class="term-bar">
+    <span class="term-dot" id="term-dot"></span>
+    <span class="term-name">__TERM_TITLE__</span>
+    <span class="term-status" id="term-status">connecting…</span>
+    <span class="term-actions">
+      __TERM_FULL_BTN__
+      <button type="button" class="btn" id="term-reconnect">Reconnect</button>
+      <button type="button" class="btn" id="term-clear">Clear</button>
+    </span>
+  </div>
+  <div class="term-wrap" id="term-wrap"><div id="term"></div></div>
+</section>
+
+<script src="/xterm/xterm.js?v=5.5.0"></script>
+<script src="/xterm/addon-fit.js?v=0.10.0"></script>
+<script src="/term.js?v=__TERM_JSV__"></script>

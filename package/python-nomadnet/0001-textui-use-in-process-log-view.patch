@@ -1,0 +1,30 @@
+From: RNSBox <rnsbox@localhost>
+Date: Wed, 21 Oct 2026 22:40:00 +0300
+Subject: [PATCH] textui: use the in-process log view on all platforms
+
+urwid.Terminal runs tail(1) on a private PTY for the Log tab. Tearing that
+vterm down while switching tabs can raise from os.read() and terminate the
+whole TUI (observed on the SG2000 mainline board), and the extra process,
+PTY and continuous redraw are costly on small routers. The in-process
+last-N-lines view is already used on win32; use it everywhere.
+---
+ nomadnet/ui/textui/Log.py | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+--- a/nomadnet/ui/textui/Log.py
++++ b/nomadnet/ui/textui/Log.py
+@@ -78,10 +78,10 @@
+ 
+ 
+ def log_widget(app, platform=sys.platform):
+-    if platform == "win32":
+-        return LogTail(app)
+-    else:
+-        return LogTerminal(app)
++    # The in-process last-N view avoids urwid.Terminal's tail child: tearing
++    # that vterm down can crash the TUI when switching tabs, and a PTY +
++    # process per Log tab is costly on small routers.
++    return LogTail(app)
+ 
+ # https://stackoverflow.com/a/34029605/3713120
+ def _tail(f_name, n, offset=0):

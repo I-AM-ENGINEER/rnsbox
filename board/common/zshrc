@@ -1,5 +1,9 @@
 # RNSBox shell defaults for the web console and SSH.
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# UTF-8 for Cyrillic input, cursor movement and filenames. C.UTF-8 is built
+# into glibc (2.35+) and musl; no extra locale files are needed.
+export LANG="${LANG:-C.UTF-8}"
+export LC_CTYPE="${LC_CTYPE:-C.UTF-8}"
 PS1='%F{green}%n@%m%f:%F{blue}%~%f# '
 alias ll='ls -l'
 alias la='ls -la'

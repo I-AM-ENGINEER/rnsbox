@@ -2,6 +2,7 @@
 // AJAX JSON endpoints (rnsd status / live HaLow modem). Faithful port of the
 // old Flask reticulum() view + its POST/AJAX routes.
 #include "routes.h"
+#include "json.h"
 #include "render.h"
 #include "web.h"
 #include "store.h"
@@ -9,6 +10,7 @@
 #include "updatecheck.h"
 #include "util.h"
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -121,6 +123,23 @@ static bool truthy(const std::string& s) {
     return !(v == "no" || v == "0" || v == "false" || v == "off" || v.empty());
 }
 
+// Turn the helper's raw error into the one sentence an operator can act on.
+static std::string update_error_hint(const std::string& e) {
+    std::string low = e;
+    for (char& c : low) c = (char)tolower((unsigned char)c);
+    if (low.find("certificate_verify_failed") != std::string::npos ||
+        low.find("certificate verify failed") != std::string::npos)
+        return "TLS certificate verification failed — the image has no CA certificates";
+    if (low.find("timed out") != std::string::npos ||
+        low.find("timeout") != std::string::npos)
+        return "the update source timed out (WAN blocked or source unreachable)";
+    if (low.find("name or service not known") != std::string::npos ||
+        low.find("getaddrinfo") != std::string::npos)
+        return "DNS resolution failed";
+    if (e.empty()) return "unknown error";
+    return e.size() > 140 ? e.substr(0, 140) + "…" : e;
+}
+
 // ===================== rnsd down-watchdog (S46wanwatch step 2a) ============
 // The watchdog syncs+reboots when rnsd has been continuously absent for
 // down_limit seconds despite wanwatch's 10 s kicks. Config is portal-editable
@@ -160,6 +179,19 @@ static RnsdMonConf rnsdmon_read_conf() {
         }
     }
     return c;
+}
+
+static bool rnsdmon_write(bool enabled, long limit, std::string& err) {
+    bool known = false;
+    for (long v : RNSDMON_LIMITS) if (v == limit) { known = true; break; }
+    if (!known) { err = "unsupported down_limit"; return false; }
+    std::string conf = "enabled=" + std::string(enabled ? "yes" : "no") +
+                       "\ndown_limit=" + std::to_string(limit) + "\n";
+    if (!util::write_file_atomic(RNSDMON_CONF, conf, 0644)) {
+        err = "could not write the config";
+        return false;
+    }
+    return true;
 }
 
 static std::string rnsdmon_fill(std::string h) {
@@ -355,32 +387,25 @@ static std::string bt_status_html(const BtState& b) {
 }
 
 // Rows of the TCP client interface editor: one editable line per
-// [[...]] type = TCPClientInterface stanza (inputs tied to the row's update
-// form through the HTML form= attribute).
+// [[...]] type = TCPClientInterface stanza, all inside the card's single form.
 static std::string tcp_clients_rows(const std::string& base) {
     auto list = store::read_tcp_clients();
-    if (list.empty())
-        return "<tr><td colspan=\"4\" class=\"muted\">None declared — add one below "
-               "(the HaLow quick-add and the raw config editor write here too).</td></tr>";
     std::string rows;
     for (size_t i = 0; i < list.size(); ++i) {
         const auto& t = list[i];
-        std::string fid = "tcpe" + std::to_string(i);
+        std::string idx = std::to_string(i);
         rows +=
             "<tr>"
-            "<td><input form=\"" + fid + "\" type=\"text\" name=\"name\" value=\"" + E(t.name) +
+            "<td><input type=\"text\" name=\"name_" + idx + "\" value=\"" + E(t.name) +
             "\" maxlength=\"48\" title=\"the [[section]] name in the rnsd config\"></td>"
-            "<td><input form=\"" + fid + "\" type=\"text\" name=\"host\" value=\"" + E(t.host) +
-            "\" maxlength=\"253\"></td>"
-            "<td><input form=\"" + fid + "\" type=\"number\" name=\"port\" value=\"" + E(t.port) +
-            "\" min=\"1\" max=\"65535\"></td>"
-            "<td>"
-            "<form id=\"" + fid + "\" method=\"post\" action=\"" + base + "/reticulum/tcpclient/update\" class=\"inline\">"
-            "<input type=\"hidden\" name=\"idx\" value=\"" + std::to_string(i) + "\">"
-            "<button type=\"submit\" class=\"btn\">Save &amp; apply</button></form> "
-            "<form method=\"post\" action=\"" + base + "/reticulum/tcpclient/delete\" class=\"inline\">"
-            "<input type=\"hidden\" name=\"idx\" value=\"" + std::to_string(i) + "\">"
-            "<button type=\"submit\" class=\"btn-danger\">Delete</button></form>"
+            "<td><input type=\"text\" name=\"host_" + idx + "\" value=\"" + E(t.host) +
+            "\" maxlength=\"253\" required></td>"
+            "<td><input type=\"number\" name=\"port_" + idx + "\" value=\"" + E(t.port) +
+            "\" min=\"1\" max=\"65535\" required></td>"
+            "<td class=\"tcp-actions\">"
+            "<button type=\"submit\" class=\"btn-danger\" formaction=\"" + base +
+            "/reticulum/tcpclient/delete\" name=\"idx\" value=\"" + idx +
+            "\" formnovalidate>Delete</button>"
             "</td></tr>";
     }
     return rows;
@@ -412,9 +437,14 @@ void reticulum_page(const Request& req, Response& res) {
     std::string uerror    = u.error;
     bool update_available = u.update_available;
     long checked_at       = u.checked_at;
+    std::string downloaded = u.downloaded_version;
+    long downloaded_at     = u.downloaded_at;
+    bool wheel_exists = !downloaded.empty() &&
+        ::access(("/var/lib/rnsbox/rns-" + downloaded + ".whl").c_str(), F_OK) == 0;
+    bool download_ready = update_available && downloaded == latest && wheel_exists;
 
-    std::string ucv = util::conf_get(store::CRON_FILE, "update_check");
-    bool auto_update = truthy(ucv.empty() ? "yes" : ucv);   // default on
+    bool auto_update  = store::read_update_check();   // default on
+    bool auto_install = store::read_update_install(); // default off
 
     std::string h = render::page_file("reticulum");
     h = R(std::move(h), "__BASE__", base);
@@ -445,21 +475,46 @@ void reticulum_page(const Request& req, Response& res) {
         chk += " <span class=\"muted\">— paused: the clock isn't set (HTTPS needs a correct date); "
                "set it under Settings &rarr; Time &amp; Clock</span>";
     else if (!uerror.empty())
-        chk += " <span class=\"muted\">— last attempt failed (offline?)</span>";
+        chk += " <span class=\"muted\">— last attempt failed: " +
+               E(update_error_hint(uerror)) + "</span>";
+    else if (!u.source.empty())
+        chk += " <span class=\"muted\">— via " + E(u.source) + "</span>";
     h = R(std::move(h), "__UPDATE_CHECK_LINE__", chk);
 
-    std::string apply_form;
+    std::string dline = update_available ? "no update downloaded" : "—";
+    if (!downloaded.empty()) {
+        dline = "rns " + E(downloaded) + " downloaded";
+        if (downloaded_at > 0) {
+            char buf[64]; time_t t = (time_t)downloaded_at; struct tm g;
+            gmtime_r(&t, &g);
+            strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M UTC", &g);
+            dline += " at " + std::string(buf);
+        }
+        if (!wheel_exists)           dline += " — wheel missing, download again";
+        else if (download_ready)     dline += " — ready to install";
+        else if (update_available)   dline += " (latest is " + E(latest) + ")";
+        else                         dline += " (installed version is current)";
+    }
+    h = R(std::move(h), "__UPDATE_DOWNLOAD_LINE__", dline);
+
+    // Manual update controls: check, download and install are separate
+    // actions; install stays disabled until the matching wheel is on disk.
+    std::string update_buttons;
     if (update_available) {
         std::string le = E(latest);
-        // Async button (see doUpdate() in reticulum.html): fetch + spinner, no
-        // page navigation, so a long in-place apply never blank-hangs or lands
-        // the browser on a phantom-logout page.
-        apply_form =
-            "<button type=\"button\" class=\"btn-primary\" onclick=\"doUpdate('applyupdate', this, true)\">Update rnsd to " + le + " now</button>";
+        std::string dl_label = download_ready ? "Download again" : ("Download rns " + le);
+        update_buttons =
+            "<button type=\"button\" class=\"btn\" onclick=\"doUpdate('downloadupdate', this, false)\">" +
+            dl_label + "</button> " +
+            "<button type=\"button\" class=\"btn-primary\"" +
+            (download_ready ? std::string()
+                            : " disabled title=\"Download the update first\"") +
+            " onclick=\"doUpdate('installupdate', this, true)\">Install rns " + le + " now</button>";
     }
-    h = R(std::move(h), "__APPLY_UPDATE_FORM__", apply_form);
+    h = R(std::move(h), "__UPDATE_BUTTONS__", update_buttons);
 
     h = R(std::move(h), "__AUTO_UPDATE_CHECKED__", auto_update ? "checked" : "");
+    h = R(std::move(h), "__AUTO_INSTALL_CHECKED__", auto_install ? "checked" : "");
 
     std::string opts = "<option value=\"0\" " + std::string(days == 0 ? "selected" : "") + ">None (default)</option>";
     for (int d = 1; d <= 7; ++d)
@@ -467,6 +522,7 @@ void reticulum_page(const Request& req, Response& res) {
                 (days == d ? "selected" : "") + ">every " + std::to_string(d) +
                 " day" + (d > 1 ? "s" : "") + "</option>";
     h = R(std::move(h), "__RESTART_DAYS_OPTIONS__", opts);
+    h = R(std::move(h), "__RNSD_RESTART_TIME__", E(store::read_rnsd_restart_time()));
 
     std::string link;
     if (slst.up)
@@ -542,8 +598,10 @@ void reticulum_page(const Request& req, Response& res) {
             "          <option value=\"yes\" __BT_EC_YES__>Yes — also connect to advertising peers</option>\n"
             "        </select></label>\n"
             "    </div>\n"
-            "    <button type=\"submit\" class=\"btn-primary\" style=\"margin-top:10px\">Save &amp; apply</button>\n"
-            "    <span class=\"muted\">saving restarts rnsd — active links reconnect on their own</span>\n"
+            "    <div class=\"form-actions\" style=\"margin-top:10px\">\n"
+            "      <span class=\"muted\">saving restarts rnsd — active links reconnect on their own</span>\n"
+            "      <button type=\"submit\" class=\"btn-primary\">Save &amp; apply</button>\n"
+            "    </div>\n"
             "  </form>\n"
             "  <h4 style=\"margin-top:16px\">Connected devices</h4>\n"
             "  <table class=\"data\"><thead><tr><th>Name</th><th>Address</th></tr></thead>\n"
@@ -586,6 +644,7 @@ void reticulum_page(const Request& req, Response& res) {
     h = R(std::move(h), "__ECHOBOT_CARDS__", echobot_cards(base));
     h = R(std::move(h), "__RNSH_ACCESS_CARDS__", access_cards(base));
     h = R(std::move(h), "__TCP_CLIENTS_ROWS__", tcp_clients_rows(base));
+    h = R(std::move(h), "__TCP_CLIENTS_COUNT__", std::to_string(store::read_tcp_clients().size()));
     h = R(std::move(h), "__CONFIG__",        E(cfg));
 
     res.body = render::layout(req, res, "Reticulum", "reticulum", h);
@@ -709,8 +768,10 @@ void reticulum_restart(const Request& req, Response& res) {
 void reticulum_autorestart(const Request& req, Response& res) {
     if (!web::require_auth(req, res, false)) return;
     int days = atoi(req.f("days").c_str());
+    std::string time = util::trim(req.f("time"));
+    if (time.empty()) time = store::read_rnsd_restart_time();
     std::string err;
-    if (!store::write_rnsd_restart_days(days, err)) {
+    if (!store::write_rnsd_restart_days(days, time, err)) {
         render::redirect_flash(res, ret_redirect(), "error", "Bad input: " + err);
         return;
     }
@@ -719,7 +780,7 @@ void reticulum_autorestart(const Request& req, Response& res) {
         render::redirect_flash(res, ret_redirect(), "success", "rnsd auto-restart disabled.");
     else
         render::redirect_flash(res, ret_redirect(), "success",
-            "rnsd will auto-restart every " + std::to_string(days) + " day(s) at 04:00.");
+            "rnsd will auto-restart every " + std::to_string(days) + " day(s) at " + time + ".");
 }
 
 void reticulum_rnsdwatchdog(const Request& req, Response& res) {
@@ -729,11 +790,9 @@ void reticulum_rnsdwatchdog(const Request& req, Response& res) {
     bool known = false;
     for (long v : RNSDMON_LIMITS) if (v == limit) { known = true; break; }
     if (!known) limit = 3600;
-    std::string conf = "enabled=" + std::string(enabled ? "yes" : "no") +
-                       "\ndown_limit=" + std::to_string(limit) + "\n";
-    if (!util::write_file_atomic(RNSDMON_CONF, conf, 0644)) {
-        render::redirect_flash(res, ret_redirect(), "error",
-            "Watchdog: could not write the config.");
+    std::string err;
+    if (!rnsdmon_write(enabled, limit, err)) {
+        render::redirect_flash(res, ret_redirect(), "error", "Watchdog: " + err + ".");
         return;
     }
     // No service reload: S46wanwatch re-reads the file on every 10 s tick.
@@ -837,9 +896,16 @@ static void tcp_client_apply_msg(Response& res, bool ok, const std::string& err,
 
 void reticulum_tcpclient_add(const Request& req, Response& res) {
     if (!web::require_auth(req, res, false)) return;
+    std::string name = util::trim(req.f("new_name"));
+    std::string host = util::trim(req.f("new_host"));
+    std::string port = util::trim(req.f("new_port"));
+    if (name.empty() && host.empty() && port.empty()) {
+        name = util::trim(req.f("name"));
+        host = util::trim(req.f("host"));
+        port = util::trim(req.f("port"));
+    }
     std::string err;
-    bool ok = store::add_tcp_client(util::trim(req.f("name")), util::trim(req.f("host")),
-                                    util::trim(req.f("port")), err);
+    bool ok = store::add_tcp_client(name, host, port, err);
     tcp_client_apply_msg(res, ok, err, "TCP client interface added");
 }
 
@@ -849,6 +915,21 @@ void reticulum_tcpclient_update(const Request& req, Response& res) {
     bool ok = store::update_tcp_client(atoi(req.f("idx").c_str()), util::trim(req.f("name")),
                                        util::trim(req.f("host")), util::trim(req.f("port")), err);
     tcp_client_apply_msg(res, ok, err, "TCP client interface saved");
+}
+
+void reticulum_tcpclient_save(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, false)) return;
+    int n = atoi(req.f("count").c_str());
+    std::vector<store::TcpClientIface> list;
+    for (int i = 0; i < n; ++i) {
+        std::string idx = std::to_string(i);
+        list.push_back({req.f(("name_" + idx).c_str()),
+                        req.f(("host_" + idx).c_str()),
+                        req.f(("port_" + idx).c_str())});
+    }
+    std::string err;
+    bool ok = store::save_tcp_clients(list, err);
+    tcp_client_apply_msg(res, ok, err, "TCP client interfaces saved");
 }
 
 void reticulum_tcpclient_delete(const Request& req, Response& res) {
@@ -897,11 +978,50 @@ void reticulum_autoupdate(const Request& req, Response& res) {
         std::string("Automatic update checks ") + (enabled ? "enabled (daily)." : "disabled."));
 }
 
-// checkupdate / applyupdate — ASYNC JSON endpoints (the reticulum.html doUpdate()
-// spinner calls these via fetch). They shell out to the python updatecheck helper
-// and return {"ok":bool,"reload":bool,"message":"..."}. Auth failure is a JSON 401
-// (require_auth json=true), so the page shows "session expired" instead of
-// navigating to a login page mid-update.
+// One Save & apply for the whole Maintenance block: daily check/download,
+// optional automatic install, rnsd auto-restart and the down-watchdog. The
+// settings live in two files (cron.conf, rnsdmon.conf); cron.conf is written
+// once so a cron tick never sees half of the schedule.
+void reticulum_maintenance(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, false)) return;
+
+    bool auto_update = req.f("auto_update") == "on";
+    bool auto_install = req.f("auto_install") == "on";
+    if (!auto_update) auto_install = false;   // install needs the daily check
+    int days = atoi(req.f("days").c_str());
+    std::string time = util::trim(req.f("time"));
+    if (time.empty()) time = store::read_rnsd_restart_time();
+    std::string err;
+    if (!store::write_cron_settings(days, time, auto_update, auto_install, err)) {
+        render::redirect_flash(res, ret_redirect(), "error",
+            "Maintenance settings: " + err + ".");
+        return;
+    }
+
+    bool watchdog = req.f("enabled") == "on";
+    long limit = strtol(req.f("limit").c_str(), nullptr, 10);
+    bool known = false;
+    for (long v : RNSDMON_LIMITS) if (v == limit) { known = true; break; }
+    if (!known) limit = 3600;
+    if (!rnsdmon_write(watchdog, limit, err)) {
+        render::redirect_flash(res, ret_redirect(), "error", "Watchdog: " + err + ".");
+        return;
+    }
+
+    web::run_init("S84cron", "reload");
+    render::redirect_flash(res, ret_redirect(), "success",
+        "Maintenance settings saved (check/download " +
+        std::string(auto_update ? "on" : "off") + ", auto-install " +
+        std::string(auto_install ? "on" : "off") + ", auto-restart, watchdog).");
+}
+
+// checkupdate / downloadupdate / installupdate — ASYNC JSON endpoints (the
+// reticulum.html doUpdate() spinner calls these via fetch). They shell out to
+// the python updatecheck helper and return {"ok":bool,"reload":bool,
+// "message":"..."}. Auth failure is a JSON 401 (require_auth json=true), so the
+// page shows "session expired" instead of navigating to a login page
+// mid-update. Download and install are deliberately separate: the wheel is
+// fetched/verified first, then installed with a restart+rollback.
 static void update_json(Response& res, bool ok, bool reload, const std::string& message) {
     res.content_type = "application/json";
     res.body = std::string("{\"ok\":") + (ok ? "true" : "false") +
@@ -936,18 +1056,45 @@ void reticulum_checkupdate(const Request& req, Response& res) {
         update_json(res, true, true, "rnsd is up to date (" + (installed.empty() ? "unknown" : installed) + ").");
 }
 
-void reticulum_applyupdate(const Request& req, Response& res) {
+void reticulum_downloadupdate(const Request& req, Response& res) {
     if (!web::require_auth(req, res, true)) return;
     if (!clock_trusted()) {
-        update_json(res, false, false, std::string("Can't update: ") + NO_CLOCK);
+        update_json(res, false, false, std::string("Can't download the update: ") + NO_CLOCK);
         return;
     }
-    // Long: pip install + rnsd restart, with a rollback on failure. Budgets nest
-    // (arithmetic in updatecheck.py, above APPLY_BUDGET): the helper finishes
-    // inside 270 s + python start-up, we give it 285 s, and uhttpd's script /
-    // network timeouts are 300 s (S81router). A kill mid-pip would leave RNS
-    // uninstalled, so keep them in step if any of the three changes.
-    auto rr = util::run({"/usr/bin/python3", "/usr/lib/rnsbox/updatecheck.py", "apply"}, "", 285);
+    auto rr = util::run({"/usr/bin/python3", "/usr/lib/rnsbox/updatecheck.py", "download"}, "", 150);
+    std::string j = rr.out;
+    if (j.find("version") == std::string::npos && j.find("error") == std::string::npos) {
+        update_json(res, false, false, "Download failed — no answer from the update helper.");
+        return;
+    }
+    bool ok = json_true(j, "ok");
+    std::string ver = json_str(j, "version");
+    std::string src = json_str(j, "source");
+    std::string uerror = json_str(j, "error");
+    if (ok)
+        update_json(res, true, true,
+            "rns " + ver + " downloaded" + (src.empty() ? "" : " from " + src) +
+            " and verified — ready to install.");
+    else
+        update_json(res, false, false, "Download failed: " +
+            (uerror.empty() ? "unknown error" : uerror) + ".");
+}
+
+void reticulum_installupdate(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, true)) return;
+    // No clock check: the wheel is already on disk and verified; installing it
+    // and restarting rnsd does not need TLS or a correct date.
+    // Long: extract the wheel, restart rnsd, wait up to two minutes for it to
+    // come up, and roll back on failure. Budgets nest (see updatecheck.py):
+    // the helper finishes inside 270 s + python start-up; we give it 285 s;
+    // uhttpd's script/network timeouts are 300 s (S81router).
+    auto rr = util::run({"/usr/bin/python3", "/usr/lib/rnsbox/updatecheck.py", "install"}, "", 285);
+    if (rr.timed_out) {
+        update_json(res, false, false,
+            "Install timed out — the helper may still be rolling back; check rnsd on the next load.");
+        return;
+    }
     std::string j = rr.out;
     bool ok = json_true(j, "ok");
     bool rolled = json_true(j, "rolled_back");
@@ -957,9 +1104,17 @@ void reticulum_applyupdate(const Request& req, Response& res) {
     if (ok)
         update_json(res, true, true, "rnsd updated " + from + " → " + to + " and restarted.");
     else if (rolled)
-        update_json(res, false, false, "Update failed (" + uerror + ") — reverted to " + from + ".");
+        update_json(res, false, false,
+            "Install failed (" + uerror + ") — rolled back to " + from + ".");
     else
-        update_json(res, false, false, "Update not applied: " + (uerror.empty() ? "unknown error" : uerror) + ".");
+        update_json(res, false, false,
+            "Update not installed: " + (uerror.empty() ? "unknown error" : uerror) + ".");
+}
+
+// Legacy endpoint used by older cached pages: install the already-downloaded
+// wheel. The current page uses downloadupdate + installupdate separately.
+void reticulum_applyupdate(const Request& req, Response& res) {
+    reticulum_installupdate(req, res);
 }
 
 
@@ -1176,119 +1331,192 @@ void reticulum_bluetooth_peers(const Request& req, Response& res) {
     res.body = out;
 }
 
-// ===================== rnstatus (parsed, cached) =====================
-// rnstatus -a costs a python cold start (~2-5 s on the C906), so the JSON
-// endpoint caches the PARSED result in /run for RNSTATUS_TTL seconds with a
-// flock making concurrent misses single-flight — the page polls it and gets
-// an instant (at most TTL-old) snapshot instead of a console dump.
-constexpr const char* RNSTATUS_CACHE = "/run/rnsbox-rnstatus.json";
-constexpr const char* RNSTATUS_LOCK  = "/run/rnsbox-rnstatus.lock";
+// ===================== rnstatus (JSON, cached) =====================
+// `rnstatus -a -j` costs a python cold start (~2-5 s on the C906), but its
+// JSON is the only complete interface inventory: rnsd's configured interfaces
+// plus every spawned peer/client/listener, several of which carry ':' in the
+// name (TCP endpoints) and were silently dropped by the old text parser.
+// The parsed result is cached in /run for RNSTATUS_TTL seconds with a flock
+// making concurrent misses single-flight — the page polls it and gets an
+// instant (at most TTL-old) snapshot instead of a console dump.
+constexpr const char* RNSTATUS_CACHE = "/run/rnsbox-rnstatus-v2.json";
+constexpr const char* RNSTATUS_LOCK  = "/run/rnsbox-rnstatus-v2.lock";
 constexpr int RNSTATUS_TTL = 5;   // seconds
+// A mesh node can run a lot of interfaces (every discovered AutoInterface
+// peer is one); rnstatus's JSON is ~1-2 KB per interface, so allow 1 MB.
+constexpr size_t RNSTATUS_MAX = 1024 * 1024;
 
 struct IfStat {
-    std::string name, details, status, mode, rate, mtu;
+    std::string name, details, type, full_name, hash, parent;
+    std::string status, mode, rate, mtu;
     std::string clients, peers, serving;
     std::string tx, tx_rate, rx, rx_rate;
 };
 
-// "↑1.92 MB    0 bps" (or the ↓ continuation) -> bytes + rate. The arrows
-// are UTF-8 (E2 86 91/93); skip any leading non-ASCII, then two tokens.
-static void traffic_tokens(const std::string& v, std::string& bytes, std::string& rate) {
-    std::string t = util::trim(v);
-    size_t b = 0;
-    while (b < t.size() && (unsigned char)t[b] >= 0x80) ++b;
-    t = t.substr(b);
-    // "1.92 MB    0 bps" — value+unit, then value+unit. Split on whitespace
-    // runs; with >=4 tokens the unit belongs to each value, with 2 the bare
-    // values carry no unit.
-    std::vector<std::string> tok;
-    size_t i = 0;
-    while (i < t.size()) {
-        size_t e = t.find_first_of(" \t", i);
-        if (e == std::string::npos) e = t.size();
-        std::string w = t.substr(i, e - i);
-        if (!w.empty()) tok.push_back(w);
-        i = e + 1;
+// Formatting mirrors RNS.prettysize()/prettyspeed() and rnstatus's
+// speed_str(), so the web table reads exactly like the CLI.
+static std::string pretty_size(double num, const char* suffix = "B") {
+    if (std::strcmp(suffix, "b") == 0) num *= 8.0;
+    static const char* units[] = {"", "K", "M", "G", "T", "P", "E", "Z", "Y"};
+    int u = 0;
+    while ((num >= 1000.0 || num <= -1000.0) && u < 8) { num /= 1000.0; ++u; }
+    char buf[64];
+    if (u == 0) snprintf(buf, sizeof(buf), "%.0f %s%s", num, units[u], suffix);
+    else        snprintf(buf, sizeof(buf), "%.2f %s%s", num, units[u], suffix);
+    return buf;
+}
+
+static std::string pretty_speed(double bits_per_sec) {
+    return pretty_size(bits_per_sec / 8.0, "b") + "ps";
+}
+
+static std::string pretty_bitrate(double bits_per_sec) {
+    static const char* units[] = {"", "k", "M", "G", "T", "P", "E", "Z", "Y"};
+    int u = 0;
+    while ((bits_per_sec >= 1000.0 || bits_per_sec <= -1000.0) && u < 8) {
+        bits_per_sec /= 1000.0;
+        ++u;
     }
-    if (tok.size() >= 4) {
-        bytes = tok[0] + " " + tok[1];
-        for (size_t k = 2; k < tok.size(); ++k) { if (k > 2) rate += " "; rate += tok[k]; }
-    } else if (tok.size() >= 2) {
-        bytes = tok[0];
-        for (size_t k = 1; k < tok.size(); ++k) { if (k > 1) rate += " "; rate += tok[k]; }
-    } else if (tok.size() == 1) {
-        bytes = tok[0];
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%.2f %sbps", bits_per_sec, units[u]);
+    return buf;
+}
+
+// RNS.prettytime(), non-compact and without fractional seconds.
+static std::string pretty_uptime(double seconds) {
+    if (seconds < 0) seconds = 0;
+    long long s = (long long)seconds;
+    long long d = s / 86400; s %= 86400;
+    long long h = s / 3600;  s %= 3600;
+    long long m = s / 60;    s %= 60;
+    std::string o;
+    auto add = [&](long long v, const char* unit) {
+        if (!v) return;
+        if (!o.empty()) o += " ";
+        o += std::to_string(v) + unit;
+    };
+    add(d, "d"); add(h, "h"); add(m, "m"); add(s, "s");
+    return o.empty() ? "0s" : o;
+}
+
+// Names come from str(interface) and can carry NUL/control bytes
+// (LocalClientInterface's socket path starts with \0). Drop them before the
+// value reaches JSON/HTML; the class part of the full name is used instead.
+static std::string clean_text(const std::string& s) {
+    std::string o;
+    o.reserve(s.size());
+    for (unsigned char c : s)
+        if (c >= 0x20 && c != 0x7f) o.push_back((char)c);
+    return o;
+}
+
+static std::string mode_name(long long m) {
+    switch (m) {
+        case 2:  return "Point-to-Point";
+        case 3:  return "Access Point";
+        case 4:  return "Roaming";
+        case 5:  return "Boundary";
+        case 6:  return "Gateway";
+        case 7:  return "Internal";
+        default: return "Full";
     }
 }
 
 static bool rnstatus_parse(const std::string& out, std::vector<IfStat>& ifs,
                            std::string& thash, std::string& tupt, std::string& tstate) {
-    IfStat cur;
-    bool have = false;
-    auto flush = [&]() {
-        if (have) { ifs.push_back(cur); cur = IfStat(); have = false; }
-    };
-    size_t pos = 0;
-    while (pos <= out.size()) {
-        size_t e = out.find('\n', pos);
-        std::string ln = out.substr(pos, e == std::string::npos ? std::string::npos : e - pos);
-        pos = (e == std::string::npos) ? out.size() + 1 : e + 1;
-        if (!ln.empty() && ln.back() == '\r') ln.pop_back();
-        // Interface header: " Name[Details]" — one leading space, a bracket.
-        if (ln.size() > 1 && ln[0] == ' ' && ln[1] != ' ' && ln.find('[') != std::string::npos
-            && ln.find(':') == std::string::npos) {
-            flush();
-            std::string head = util::trim(ln);
-            size_t ob = head.find('[');
-            size_t cb = head.rfind(']');
-            cur.name = util::trim(head.substr(0, ob));
-            if (cb != std::string::npos && cb > ob)
-                cur.details = head.substr(ob + 1, cb - ob - 1);
-            have = true;
-            continue;
+    json::Value root;
+    std::string err;
+    bool parsed = false;
+    // util::run() merges stderr into stdout, so skip any warning prefix.
+    size_t start = out.find('{');
+    while (start != std::string::npos) {
+        if (json::parse(out.substr(start), root, err) && root.is_object() &&
+            root.find("interfaces") != nullptr) {
+            parsed = true;
+            break;
         }
-        std::string t = util::trim(ln);
-        // rnstatus separates blocks with a blank line; the transport tail
-        // ("Transport Instance <hash> running") only parses as a top-level
-        // line once the last interface block is closed.
-        if (t.empty()) { flush(); continue; }
-        if (!have) {
-            if (t.rfind("Transport Instance", 0) == 0) {
-                size_t a = t.find('<'), b = t.find('>', a);
-                if (a != std::string::npos && b != std::string::npos) thash = t.substr(a + 1, b - a - 1);
-                tstate = t;
-            } else if (t.rfind("Uptime is", 0) == 0) {
-                tupt = t.substr(9);
-                tupt = util::trim(tupt);
-            }
-            continue;
-        }
-        // "    Key   : value"
-        size_t colon = ln.find(':');
-        if (ln.compare(0, 4, "    ") == 0 && colon != std::string::npos && colon > 4) {
-            std::string k = util::trim(ln.substr(0, colon));
-            std::string v = util::trim(ln.substr(colon + 1));
-            if (k == "Status") cur.status = v;
-            else if (k == "Mode") cur.mode = v;
-            else if (k == "Rate") {
-                // "1.00 Gbps, MTU 262144"
-                size_t m = v.find("MTU");
-                if (m != std::string::npos) {
-                    cur.mtu = util::trim(v.substr(m + 3));
-                    cur.rate = util::trim(v.substr(0, m));
-                    if (!cur.rate.empty() && cur.rate.back() == ',') cur.rate.pop_back();
-                } else cur.rate = v;
-            }
-            else if (k == "Clients") cur.clients = v;
-            else if (k == "Peers") cur.peers = v;         // "0 reachable"
-            else if (k == "Serving") cur.serving = v;
-            else if (k == "Traffic") traffic_tokens(v, cur.tx, cur.tx_rate);
-        } else if (!t.empty() && (unsigned char)t[0] >= 0x80) {
-            // continuation line of Traffic: the ↓ (rx) half
-            traffic_tokens(t, cur.rx, cur.rx_rate);
-        }
+        start = out.find('{', start + 1);
     }
-    flush();
+    const json::Value* arr = parsed ? root.find("interfaces") : nullptr;
+    if (!arr || !arr->is_array()) return false;
+
+    auto str_of = [](const json::Value& v, const char* key) {
+        const json::Value* x = v.find(key);
+        return x ? x->as_string() : std::string();
+    };
+    const json::Value* x = nullptr;
+
+    for (const json::Value& v : arr->arr) {
+        if (!v.is_object()) continue;
+        IfStat f;
+        f.full_name = clean_text(str_of(v, "name"));
+        f.type      = clean_text(str_of(v, "type"));
+        std::string raw_short = str_of(v, "short_name");
+        std::string short_name = clean_text(raw_short);
+
+        size_t ob = f.full_name.find('[');
+        size_t cb = f.full_name.rfind(']');
+        std::string bracket;
+        if (ob != std::string::npos && cb != std::string::npos && cb > ob)
+            bracket = f.full_name.substr(ob + 1, cb - ob - 1);
+
+        // Spawned interfaces (AutoInterfacePeer, ...) have no name of their
+        // own; LocalClientInterface's name embeds a NUL-prefixed socket path.
+        // Fall back to the class part of the full form in both cases.
+        if (short_name.empty() || short_name == "None" || short_name != raw_short)
+            short_name = util::trim(f.full_name.substr(0, ob == std::string::npos
+                                                            ? f.full_name.size() : ob));
+        if (short_name.empty()) short_name = "?";
+
+        // The daemon's local listener: "Shared Instance[/run/...socket]".
+        bool shared = f.full_name.rfind("Shared Instance[", 0) == 0;
+        f.name = shared ? "Shared instance" : short_name;
+
+        if (!bracket.empty()) {
+            std::string d = bracket;
+            if (d == short_name) d.clear();
+            else if (d.compare(0, short_name.size() + 1, short_name + "/") == 0)
+                d = d.substr(short_name.size() + 1);
+            f.details = clean_text(d);
+        }
+
+        x = v.find("status");
+        f.status = (x && x->as_bool(false)) ? "Up" : "Down";
+        if ((x = v.find("gravity")) && x->is_number() && x->num != 0)
+            f.status += ", gravity " + std::to_string(x->as_int(0));
+
+        // Every interface has a mode; when the config omits it Reticulum uses
+        // the default full mode. rnstatus's text form hides it for a few
+        // interface classes, but the portal shows it for all of them.
+        x = v.find("mode");
+        f.mode = mode_name(x ? x->as_int(1) : 1);
+
+        if ((x = v.find("bitrate")) && x->is_number()) f.rate = pretty_bitrate(x->num);
+        if ((x = v.find("mtu")) && x->is_number())     f.mtu  = std::to_string(x->as_int(0));
+
+        long long clients = -1;
+        if ((x = v.find("clients")) && x->is_number()) clients = x->as_int(0);
+        if (shared) {
+            // clients includes the rnstatus process asking right now.
+            f.serving = std::to_string(clients > 0 ? clients - 1 : 0);
+        } else if (clients >= 0) {
+            f.clients = std::to_string(clients);
+        }
+        if ((x = v.find("peers")) && x->is_number()) f.peers = std::to_string(x->as_int(0));
+
+        f.tx      = pretty_size(v.find("txb") ? v.find("txb")->as_number(0) : 0);
+        f.tx_rate = pretty_speed(v.find("txs") ? v.find("txs")->as_number(0) : 0);
+        f.rx      = pretty_size(v.find("rxb") ? v.find("rxb")->as_number(0) : 0);
+        f.rx_rate = pretty_speed(v.find("rxs") ? v.find("rxs")->as_number(0) : 0);
+
+        f.hash   = clean_text(str_of(v, "hash"));
+        f.parent = clean_text(str_of(v, "parent_interface_name"));
+        ifs.push_back(std::move(f));
+    }
+
+    if ((x = root.find("transport_id")) && x->is_string())      thash = x->str;
+    if ((x = root.find("transport_uptime")) && x->is_number())  tupt  = pretty_uptime(x->num);
+    if (!thash.empty()) tstate = "running";
     return !ifs.empty() || !thash.empty();
 }
 
@@ -1297,7 +1525,7 @@ static bool rnstatus_fresh(std::string& out) {
     if (::stat(RNSTATUS_CACHE, &st) != 0) return false;
     time_t now = ::time(nullptr);
     if (st.st_mtime > now || now - st.st_mtime >= RNSTATUS_TTL) return false;
-    out = util::read_file(RNSTATUS_CACHE, 256 * 1024);
+    out = util::read_file(RNSTATUS_CACHE, RNSTATUS_MAX);
     std::string t = util::trim(out);
     return !t.empty() && t[0] == '{';
 }
@@ -1311,10 +1539,10 @@ static long rnstatus_age() {
     return (long)(now - st.st_mtime);
 }
 
-// Run `rnstatus -a`, parse, rewrite the cache. Shared by the synchronous
-// path and the stale-while-revalidate child.
+// Run `rnstatus -a -j`, normalise, rewrite the cache. Shared by the
+// synchronous path and the stale-while-revalidate child.
 static std::string rnstatus_collect(bool* ok) {
-    util::RunResult rr = util::run({"/usr/bin/rnstatus", "-a"}, "", 25);
+    util::RunResult rr = util::run({"/usr/bin/rnstatus", "-a", "-j"}, "", 25, RNSTATUS_MAX);
     std::vector<IfStat> ifs;
     std::string thash, tupt, tstate;
     if (!rnstatus_parse(rr.out, ifs, thash, tupt, tstate)) {
@@ -1322,12 +1550,16 @@ static std::string rnstatus_collect(bool* ok) {
         return "{\"error\":\"rnstatus returned nothing (is rnsd running?)\"}";
     }
     if (ok) *ok = true;
-    std::string o = "{\"age\":" + std::to_string(::time(nullptr)) + ",\"interfaces\":[";
+    std::string o = "{\"v\":2,\"age\":" + std::to_string(::time(nullptr)) + ",\"interfaces\":[";
     for (size_t i = 0; i < ifs.size(); ++i) {
         const IfStat& f = ifs[i];
         if (i) o += ",";
         o += "{\"name\":\"" + http::json_escape(f.name) +
              "\",\"details\":\"" + http::json_escape(f.details) +
+             "\",\"type\":\"" + http::json_escape(f.type) +
+             "\",\"full_name\":\"" + http::json_escape(f.full_name) +
+             "\",\"hash\":\"" + http::json_escape(f.hash) +
+             "\",\"parent\":\"" + http::json_escape(f.parent) +
              "\",\"status\":\"" + http::json_escape(f.status) +
              "\",\"mode\":\"" + http::json_escape(f.mode) +
              "\",\"rate\":\"" + http::json_escape(f.rate) +
@@ -1349,7 +1581,7 @@ static std::string rnstatus_collect(bool* ok) {
 
 // GET /reticulum/rnstatus.json — the parsed interface table.
 //
-// rnstatus -a costs a python cold start (5-10 s on this CPU), so a request
+// rnstatus -a -j costs a python cold start (5-10 s on this CPU), so a request
 // never waits for it: ANY parseable snapshot is served IMMEDIATELY, no
 // matter how old (the table shows when it was taken), and a detached child
 // refreshes it when it is older than RNSTATUS_TTL (non-blocking lock:
@@ -1363,7 +1595,7 @@ void reticulum_rnstatus(const Request& req, Response& res) {
 
     long age = rnstatus_age();
     if (age >= 0) {
-        std::string stale = util::read_file(RNSTATUS_CACHE, 256 * 1024);
+        std::string stale = util::read_file(RNSTATUS_CACHE, RNSTATUS_MAX);
         std::string t = util::trim(stale);
         if (!t.empty() && t[0] == '{') {
             if (age >= RNSTATUS_TTL) {
@@ -1408,7 +1640,7 @@ void reticulum_rnstatus(const Request& req, Response& res) {
 // themselves. Needle matches anywhere in the interface's JSON object (e.g.
 // "BLE" hits name BLEInterface / details "BLE Interface").
 bool rnstatus_interface_traffic(const char* needle, std::string& tx, std::string& rx) {
-    std::string j = util::read_file(RNSTATUS_CACHE, 256 * 1024);
+    std::string j = util::read_file(RNSTATUS_CACHE, RNSTATUS_MAX);
     size_t p = 0;
     while ((p = j.find("{\"name\":", p)) != std::string::npos) {
         size_t e = j.find('}', p);

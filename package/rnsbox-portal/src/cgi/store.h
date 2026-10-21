@@ -63,10 +63,16 @@ bool delete_openport(int idx);
 WanConfig read_wan();
 bool write_wan(const WanConfig& cfg, std::string& err);         // validates all fields; dns may be comma- or space-separated
 
-// --- cron (rnsd auto-restart), preserving the update_check key ---
+// --- cron (rnsd auto-restart + update policy) ---
 int  read_rnsd_restart_days();                 // 0..7 (0 = off)
-bool write_rnsd_restart_days(int days, std::string& err);
+std::string read_rnsd_restart_time();          // HH:MM (default 04:00)
+bool read_update_check();                      // update_check (default yes)
+bool read_update_install();                    // update_install (default no)
+bool write_rnsd_restart_days(int days, const std::string& time, std::string& err);
 bool write_update_check(bool enabled, std::string& err);   // cron.conf update_check=yes|no
+// Schedule + update policy in one atomic write (the Maintenance form).
+bool write_cron_settings(int days, const std::string& time, bool update_check,
+                         bool update_install, std::string& err);
 
 // --- reticulum config (raw text editor) ---
 std::string read_reticulum_config();
@@ -156,6 +162,7 @@ bool add_tcp_client(const std::string& name, const std::string& host,
                     const std::string& port, std::string& err);
 bool update_tcp_client(int idx, const std::string& name, const std::string& host,
                        const std::string& port, std::string& err);
+bool save_tcp_clients(const std::vector<TcpClientIface>& list, std::string& err);
 bool delete_tcp_client(int idx, std::string& err);
 
 // --- Bluetooth LE transport (the [[BLE Interface]] stanza) ---

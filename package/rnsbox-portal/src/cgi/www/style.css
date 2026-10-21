@@ -1,5 +1,6 @@
 /* RNSBox portal — OpenWrt-inspired admin UI */
 :root {
+  color-scheme: light;
   --bg:        #f3f4f6;
   --card:      #ffffff;
   --text:      #1f2937;
@@ -18,12 +19,14 @@
   --panel-border: #cdeee2;
   --hover:     #fafbfc;
   --heading:   #0d3e54;      /* card headings / brand text */
+  --check:     #0f7fa8;      /* checked checkbox/radio fill */
   --mono:      ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
 
 /* ---- Dark theme (toggle in the top bar; falls back to the system
       preference; persisted in localStorage 'rnsbox-theme') ---- */
 html[data-theme="dark"] {
+  color-scheme: dark;
   --bg:        #0f1720;
   --card:      #1a2530;
   --text:      #dbe2ea;
@@ -40,6 +43,7 @@ html[data-theme="dark"] {
   --panel-border: #263744;
   --hover:     #22303d;
   --heading:   #85c8e8;
+  --check:     #38bdf8;
 }
 html[data-theme="dark"] .topbar { box-shadow: 0 1px 0 rgba(0,0,0,0.5); }
 html[data-theme="dark"] .login-box { box-shadow: 0 10px 40px rgba(0,0,0,0.6); }
@@ -64,14 +68,18 @@ strong { font-weight: 600; }
 
 /* ---- Top bar ---- */
 .topbar {
+  background: var(--primary);
+  color: #fff;
+  box-shadow: 0 1px 0 rgba(0,0,0,0.1);
+}
+.topbar-inner {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: var(--primary);
-  color: #fff;
-  padding: 0 18px;
+  max-width: 1320px;
   height: 52px;
-  box-shadow: 0 1px 0 rgba(0,0,0,0.1);
+  margin: 0 auto;
+  padding: 0 18px;
 }
 .topbar .brand { display: flex; align-items: baseline; gap: 10px; }
 .topbar .logo { color: var(--accent); font-size: 20px; line-height: 1; }
@@ -95,7 +103,13 @@ strong { font-weight: 600; }
 .topbar .logout:hover { background: var(--primary-2); text-decoration: none; }
 
 /* ---- Layout ---- */
-.page { display: flex; min-height: calc(100vh - 52px); }
+.page {
+  display: flex;
+  min-height: calc(100vh - 52px);
+  width: 100%;
+  max-width: 1320px;
+  margin: 0 auto;
+}
 .sidebar {
   background: #1f2937;
   width: 200px;
@@ -120,7 +134,7 @@ strong { font-weight: 600; }
   border-left-color: var(--accent);
 }
 
-.content { flex: 1; padding: 22px 28px; max-width: 1200px; }
+.content { flex: 1; min-width: 0; padding: 22px 28px; }
 .content h2 { margin: 0 0 14px; font-size: 22px; font-weight: 600; }
 .content h3 { margin: 0 0 12px; font-size: 16px; font-weight: 600; color: var(--heading); }
 .content h4 { margin: 18px 0 6px; font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
@@ -135,13 +149,15 @@ strong { font-weight: 600; }
 }
 .dash-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 0 0 6px; }
 .dash-head h2 { margin: 0; }
+.card > p { max-width: 80ch; }
 
 .cards {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 14px;
 }
-.cards .card { margin-bottom: 0; }
+.cards .card { margin-bottom: 0; display: flex; flex-direction: column; }
+.cards .card > .cardfoot { margin-top: auto; padding-top: 12px; }
 
 /* ---- Tables ---- */
 table.kv { width: 100%; border-collapse: collapse; }
@@ -150,10 +166,15 @@ table.kv th {
   font-weight: 500;
   color: var(--muted);
   text-align: left;
-  width: 32%;
+  width: 1%;
+  padding-right: 24px;
   white-space: nowrap;
 }
-table.kv td { color: var(--text); }
+table.kv td {
+  color: var(--text);
+  text-align: right;
+  overflow-wrap: anywhere;
+}
 table.kv tr + tr th, table.kv tr + tr td { border-top: 1px solid var(--border); }
 
 table.data {
@@ -176,12 +197,26 @@ table.data td {
   vertical-align: middle;
 }
 table.data tr:hover td { background: var(--hover); }
+table.data th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+table.data th.sortable:hover { color: var(--text); }
+table.data th .sort-arrow {
+  display: inline-block;
+  width: 1.1em;
+  color: var(--accent);
+  opacity: 0.3;
+  font-size: 10px;
+}
+table.data th.sorted .sort-arrow { opacity: 1; }
 /* TCP client interface editor: compact inputs inside table cells (tied to
    the row's update form through the HTML form= attribute). */
 table.data td input[type=text], table.data td input[type=number] {
   max-width: 180px;
   margin: 0;
 }
+table.tcp-table td input[type=text],
+table.tcp-table td input[type=number] { width: 100%; max-width: 100%; }
+table.tcp-table td:last-child { width: 1%; white-space: nowrap; }
+table.tcp-table .tcp-add-row td { border-top: 2px solid var(--border); }
 
 /* ---- Badges ---- */
 .badge {
@@ -201,22 +236,34 @@ table.data td input[type=text], table.data td input[type=number] {
 .badge.tcp  { background: var(--tcp); }
 .badge.udp  { background: var(--udp); }
 
+/* WiFi status: STA and AP side by side. */
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 28px;
+}
+.status-col > h4 { margin-top: 0; }
+@media (max-width: 760px) {
+  .status-grid { grid-template-columns: 1fr; }
+}
+
 /* ---- Forms ---- */
 label {
   display: block;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
   font-size: 13px;
   color: var(--muted);
 }
-label > input,
+/* Keep checkboxes/radios inline; only text controls become blocks. */
+label > input:not([type=checkbox]):not([type=radio]),
 label > select,
 label > textarea {
   display: block;
-  margin-top: 4px;
+  margin-top: 5px;
 }
-input[type=text], input[type=password], input[type=number], select, textarea {
+input[type=text], input[type=password], input[type=number], input[type=time], select, textarea {
   border: 1px solid var(--border);
-  border-radius: 3px;
+  border-radius: 4px;
   padding: 7px 10px;
   font: inherit;
   background: var(--card);
@@ -224,10 +271,43 @@ input[type=text], input[type=password], input[type=number], select, textarea {
   width: 100%;
   max-width: 360px;
 }
+input[type=checkbox], input[type=radio] {
+  width: 15px;
+  height: 15px;
+  margin: 0 7px 0 0;
+  vertical-align: -3px;
+  accent-color: var(--check);
+  flex: none;
+}
+label.check {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  width: fit-content;
+  max-width: 100%;
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+label.check input { margin: 2px 0 0; }
+::placeholder { color: var(--muted); opacity: 0.7; }
 input:focus, select:focus, textarea:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(16,187,255,0.15);
+  box-shadow: 0 0 0 3px rgba(16,187,255,0.16);
+}
+/* Chrome/Edge paint autofilled fields with a yellow background of their own;
+   inset shadow + text fill keeps them on the portal's palette (the login
+   credentials otherwise leak into unrelated fields such as the WiFi SSID). */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus,
+input:-webkit-autofill:active {
+  -webkit-box-shadow: 0 0 0 1000px var(--card) inset !important;
+  -webkit-text-fill-color: var(--text) !important;
+  caret-color: var(--text);
+  transition: background-color 600000s 0s, color 600000s 0s;
 }
 textarea {
   font-family: var(--mono);
@@ -238,12 +318,12 @@ textarea {
   min-height: 200px;
 }
 
-button, .btn, .btn-primary, .btn-danger {
+button, .btn, .btn-primary, .btn-danger, .danger {
   border: 1px solid var(--border);
   background: var(--card);
   color: var(--text);
   padding: 7px 14px;
-  border-radius: 3px;
+  border-radius: 4px;
   cursor: pointer;
   font: inherit;
   font-weight: 500;
@@ -251,17 +331,104 @@ button, .btn, .btn-primary, .btn-danger {
 }
 button:hover, .btn:hover { background: var(--code-bg); text-decoration: none; }
 .btn-primary {
-  background: var(--primary);
+  background: var(--primary-2);
   color: #fff;
-  border-color: var(--primary);
+  border-color: var(--primary-2);
 }
-.btn-primary:hover { background: var(--primary-2); color: #fff; }
-.btn-danger {
+.btn-primary:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #06202b;
+}
+.btn-danger, .danger {
   background: var(--card);
   color: var(--err);
   border-color: var(--err);
 }
-.btn-danger:hover { background: var(--err); color: #fff; }
+.btn-danger:hover, .danger:hover { background: var(--err); color: #fff; }
+button:focus-visible, .btn:focus-visible, a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+form:not(.inline):not(.logout-form) > button[type=submit] { display: block; margin-left: auto; }
+.msg { font-size: 13px; color: var(--muted); }
+.btnrow { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+.btnrow form { margin: 0; }
+.input-group { display: flex; width: 100%; max-width: 360px; margin-top: 5px; }
+.input-group > input {
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+  border-radius: 4px 0 0 4px;
+}
+.input-group > .btn {
+  flex: none;
+  border-radius: 0 4px 4px 0;
+  border-left: 0;
+  padding: 7px 12px;
+}
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px 20px;
+  align-items: start;
+  max-width: 780px;
+}
+.form-grid input,
+.form-grid select { max-width: 100%; }
+.form-grid .input-group { max-width: none; }
+.field-label {
+  display: block;
+  margin-bottom: 5px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.radio-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  align-items: center;
+  min-height: 36px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--card);
+}
+.radio-row label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+.radio-row input { margin: 0; }
+.hint {
+  margin: -2px 0 12px;
+  max-width: 72ch;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.hint:last-child { margin-bottom: 0; }
+.form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 4px;
+}
+.form-actions .muted { margin: 0; }
+.form-actions.txpower { justify-content: space-between; max-width: 780px; }
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+}
 /* The `hidden` attribute must always win — even over author display rules
    like form.inline below. Without this reset, a JS-toggled hidden form (e.g.
    the HaLow "Add to rnsd config" button) stays visible because form.inline's
@@ -271,16 +438,35 @@ form.inline { display: inline; }
 
 .row-form {
   display: flex;
-  gap: 8px;
+  gap: 10px;
   flex-wrap: wrap;
   align-items: center;
-  padding: 10px;
+  padding: 12px 14px;
   background: var(--hover);
   border: 1px solid var(--border);
-  border-radius: 3px;
+  border-radius: 6px;
+}
+.row-form label { margin-bottom: 0; }
+.row-form > .form-actions {
+  flex: 1 0 100%;
+  margin-top: 2px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.row-form-state {
+  flex: 1 0 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
 }
 .row-form input, .row-form select { max-width: 180px; }
+.row-form input[type=time] { width: 120px; }
+.row-form input[type=checkbox], .row-form input[type=radio] { max-width: none; }
 .row-form input[name=comment] { flex: 1; min-width: 180px; max-width: none; }
+table.kv td label, table.data td label { margin-bottom: 0; }
 
 /* ---- Flash ---- */
 .flash {
@@ -395,15 +581,19 @@ body.login-screen { background: var(--primary); }
 
 /* ---- Donate ---- */
 .sitefoot {
+  background: #111827;
+  color: #94a3b8;
+  font-size: 12.5px;
+}
+.sitefoot-inner {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
+  max-width: 1320px;
+  margin: 0 auto;
   padding: 12px 28px;
-  background: #111827;
-  color: #94a3b8;
-  font-size: 12.5px;
 }
 .sitefoot .foot-brand { display: flex; align-items: center; gap: 7px; }
 .sitefoot .foot-brand .logo { color: var(--accent); }
@@ -451,13 +641,15 @@ img.qr {
 .wallet-actions .btn { flex: 1; text-align: center; }
 .copy-btn.copied { background: var(--ok); color: #fff; border-color: var(--ok); }
 
+.console-card { padding: 12px 14px; }
+
 /* ---- Time & Clock (Settings) ---- */
 .timeval { font-family: var(--mono); font-size: 15px; font-weight: 600; }
 textarea.ntp-servers { min-height: 64px; max-width: 360px; }
-.time-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.time-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
 form.ntp-restart { margin-top: 8px; }
 button:disabled, button:disabled:hover { opacity: 0.55; cursor: not-allowed; }
-.btn-primary:disabled:hover { background: var(--primary); }
+.btn-primary:disabled:hover { background: var(--primary-2); }
 
 /* ---- HaLow modem (dashboard summary + Reticulum live block) ---- */
 .cardhead { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
@@ -527,19 +719,152 @@ details.neigh > summary:hover { background: var(--hover); }
 details.neigh .body { border-top: 1px solid var(--border); }
 details.neigh .data { margin: 0; }
 
-/* Console tab: screen PTY snapshot (same HTTP port, no iframe) */
-.term-screen {
-  height: 60vh;
+/* Console tab: xterm.js on a real PTY, streamed over the portal's HTTP port */
+.term-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 9px;
+  margin: 0 0 8px;
+}
+.term-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #8b949e;
+  flex: 0 0 auto;
+}
+.term-dot.ok {
+  background: #2da44e;
+  box-shadow: 0 0 6px rgba(45, 164, 78, 0.75);
+}
+.term-dot.warn { background: #d29922; }
+.term-dot.err  { background: #d1242f; }
+.term-name {
+  display: none;             /* the page heading already names the tab */
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+body.term-full .term-name { display: inline; }
+.term-status {
+  font-size: 13px;
+  color: var(--muted);
+  min-width: 0;
+  flex: 0 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.term-actions {
+  margin-left: auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.term-wrap {
+  height: calc(100vh - 300px);
   min-height: 360px;
-  overflow: auto;
-  margin: 0 0 10px;
-  padding: 10px 12px;
+  padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: #0b141a;
-  color: #d9e7f2;
-  white-space: pre;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12.5px;
-  line-height: 1.35;
+  overflow: hidden;
 }
+html[data-theme="light"] .term-wrap { background: #fbfcfd; }
+.term-wrap #term,
+.term-wrap .xterm { height: 100%; }
+.term-wrap .xterm-viewport { background: transparent !important; }
+.term-hint { margin: 8px 0 0; }
+/* Standalone terminal tab ("Open in new tab"): the page has no topbar or
+   sidebar, and the terminal fills the whole viewport. */
+body.term-full {
+  height: 100vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+body.term-full .console-card {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  margin: 0;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 0;
+  background: var(--bg);
+}
+body.term-full .term-wrap {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 0;
+}
+@media (max-width: 700px) {
+  .term-wrap {
+    height: calc(100vh - 340px);
+    min-height: 280px;
+  }
+  body.term-full .term-wrap { height: auto; min-height: 0; }
+}
+
+/* ---- Small screens (phones / narrow tablets) ---- */
+@media (max-width: 760px) {
+  .topbar-inner { padding: 0 12px; }
+  .topbar .brand-host { display: none; }
+  .page { flex-direction: column; }
+  .sidebar {
+    width: 100%;
+    display: flex;
+    gap: 4px;
+    padding: 8px;
+    overflow-x: auto;
+  }
+  .sidebar a {
+    flex: none;
+    white-space: nowrap;
+    padding: 8px 12px;
+    border-left: 0;
+    border-bottom: 2px solid transparent;
+    border-radius: 4px;
+  }
+  .sidebar a.active {
+    border-left-color: transparent;
+    border-bottom-color: var(--accent);
+  }
+  .content { padding: 16px; }
+  .card { padding: 16px; overflow-x: auto; }
+  .form-grid { grid-template-columns: 1fr; }
+  /* 16px avoids the automatic zoom-on-focus in iOS Safari. */
+  input, select, textarea { font-size: 16px; }
+  .sitefoot-inner { padding: 12px 16px; }
+}
+
+/* ---- modal dialogs (WiFi connect / manual add) ---- */
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+.modal[hidden] { display: none; }
+.modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+}
+.modal-box {
+  position: relative;
+  width: min(420px, 100%);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
+}
+.modal-box h3 { margin: 0 0 16px; }
+.modal-box label { display: block; margin-bottom: 12px; }
+.modal-box .form-actions { margin-top: 18px; }

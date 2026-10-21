@@ -323,6 +323,7 @@ rnsbox_stamp_live_config() {
         -e 's/^# BR2_PACKAGE_OPENSSH_SERVER is not set/BR2_PACKAGE_OPENSSH_SERVER=y/' \
         -e 's/^# BR2_PACKAGE_PYTHON3_PY_ONLY is not set$/# py-only selected at build time (rnsbox_slim_bsp)/' \
         -e 's/^# BR2_PACKAGE_PYTHON3_UNICODEDATA is not set$/BR2_PACKAGE_PYTHON3_UNICODEDATA=y/' \
+        -e '/^BR2_PACKAGE_SCREEN=y$/d' \
         "$live"
     # PY_ONLY has no line of its own to sed when the file never mentioned
     # the py knobs — append the selection at EOF (kconfig takes the last
@@ -396,6 +397,38 @@ rnsbox_slim_bsp() {
     #      password LOCKED at build time - the portal sets it when SSH is
     #      enabled (wired into every cvitek defconfig below).
     cp -f "$HERE/board/common/users.txt" "$bsp/buildroot/board/common/users.txt"
+    #    - the rest of the shared board/common scripts: the stable hostname,
+    #      the unprivileged admin account, the PTY console broker and the zsh
+    #      rc. slim-target.sh installs them from its own directory, so a cold
+    #      patch-flow build must carry them next to it or it silently skips
+    #      every [ -f ] guard and ships without a console/account.
+    for f in S10hostname S10consoleuser S11console; do
+        if [ -f "$HERE/board/common/$f" ]; then
+            cp -f "$HERE/board/common/$f" "$bsp/buildroot/board/common/$f"
+            chmod 0755 "$bsp/buildroot/board/common/$f"
+        fi
+    done
+    if [ -f "$HERE/board/common/zshrc" ]; then
+        cp -f "$HERE/board/common/zshrc" "$bsp/buildroot/board/common/zshrc"
+        chmod 0644 "$bsp/buildroot/board/common/zshrc"
+    fi
+    #    - uhttpd: TCP_NODELAY on accepted sockets. The terminating chunk of a
+    #      CGI response (and every small console-stream chunk) is a separate
+    #      write otherwise, and Nagle+delayed-ACK adds ~40-50 ms each time.
+    #      The upstream/external flow gets the same patch from external.mk.
+    if [ -d "$bsp/buildroot/package/uhttpd" ]; then
+        cp -f "$HERE/board/common/buildroot-patches/uhttpd/"*.patch \
+            "$bsp/buildroot/package/uhttpd/"
+        chmod 0644 "$bsp/buildroot/package/uhttpd/"*.patch
+        # An incremental BSP tree still has .stamp_patched, so copying the
+        # patch above would be a no-op. Drop an unpatched build dir; the next
+        # make re-extracts and applies the package's patches (uhttpd is small).
+        for d in "$bsp"/buildroot/output/build/uhttpd-* \
+                 "$bsp"/buildroot/build/uhttpd-*; do
+            [ -f "$d/client.c" ] || continue
+            grep -q TCP_NODELAY "$d/client.c" || rm -rf "$d"
+        done
+    fi
     # 2. every cvitek defconfig in the tree:
     #    - python3 py-only: the .pyc payload is as big as the .py sources it
     #      duplicates (measured: 61 MB of pyc next to ~55 MB of sources) —
@@ -410,6 +443,10 @@ rnsbox_slim_bsp() {
         sed -i 's/^BR2_PACKAGE_PYTHON3_PY_PYC=y/# BR2_PACKAGE_PYTHON3_PY_PYC is not set\nBR2_PACKAGE_PYTHON3_PY_ONLY=y/' "$dc"
         sed -i 's/^BR2_PACKAGE_PYTHON3_PYC_ONLY=y/# BR2_PACKAGE_PYTHON3_PYC_ONLY is not set\nBR2_PACKAGE_PYTHON3_PY_ONLY=y/' "$dc"
         sed -i 's/^BR2_TARGET_ROOTFS_EXT2_RESBLKS=.*/BR2_TARGET_ROOTFS_EXT2_RESBLKS=1/' "$dc"
+        # the console no longer uses GNU screen (xterm.js streams the PTY
+        # broker over the portal's port 80); drop the package if an older
+        # series left the knob behind
+        sed -i '/^BR2_PACKAGE_SCREEN=y$/d' "$dc"
         sed -i 's#^BR2_ROOTFS_POST_BUILD_SCRIPT=.*#BR2_ROOTFS_POST_BUILD_SCRIPT="board/common/slim-target.sh"#' "$dc"
         # - SSH hardening, mirroring the rpi-universal defconfig: root
         #   login closed + root password locked ('*'), the admin users

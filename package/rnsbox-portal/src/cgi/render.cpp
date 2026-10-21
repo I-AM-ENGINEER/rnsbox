@@ -79,10 +79,10 @@ std::string page_file(const char* name) {
     return util::read_file(pages_dir() + "/" + name + ".html", 256 * 1024);
 }
 
-// Cache-buster for the /style.css link: derived from this binary's build
+// Cache-buster for /style.css and term.js: derived from this binary's build
 // stamp, so every rebuild gives the URL a new query and browsers pick up
-// new CSS without a hard refresh.
-static const std::string& cssv() {
+// new assets without a hard refresh.
+const std::string& asset_version() {
     static const std::string v = [] {
         std::string s = __DATE__ " " __TIME__, o;
         for (char c : s)
@@ -107,10 +107,10 @@ std::string layout(const http::Request& req, http::Response& res,
         {"__TITLE__",    esc(title)},
         {"__HOSTNAME__", esc(host)},
         {"__USER__",     esc(s.user)},
-        {"__CSSV__",     cssv()},
+        {"__CSSV__",     asset_version()},
     };
     // Active-nav: exactly one id gets "active", the rest collapse to "".
-    static const char* ids[] = {"dashboard", "network", "wifi", "reticulum", "console", "updates", "echobot", "settings", "donate", "access"};
+    static const char* ids[] = {"dashboard", "network", "wifi", "reticulum", "console", "nomadnet", "updates", "echobot", "settings", "donate", "access"};
     for (const char* id : ids)
         kv.push_back({std::string("__ACT_") + id + "__",
                       (active && std::string(active) == id) ? "active" : ""});
@@ -126,10 +126,35 @@ std::string login_layout(const http::Request& req, http::Response& res,
         {"__BASE__",     esc(web::base())},
         {"__HOSTNAME__", esc(host)},
         {"__FLASH__",    take_flash(req, res)},
-        {"__CSSV__",     cssv()},
+        {"__CSSV__",     asset_version()},
         {"__CONTENT__",  content},
     };
     return fill(page_file("login_base"), kv);
+}
+
+std::string full_page(const std::string& title, const std::string& content) {
+    std::string host = util::trim(util::read_file("/proc/sys/kernel/hostname", 128));
+    std::string o;
+    o.reserve(content.size() + 1024);
+    o += "<!doctype html>\n<html lang=\"en\">\n<head>\n";
+    o += "  <meta charset=\"utf-8\">\n";
+    o += "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n";
+    o += "  <title>" + esc(title) + " — " + esc(host) + "</title>\n";
+    o += "  <link rel=\"stylesheet\" href=\"/style.css?v=" + asset_version() + "\">\n";
+    o += "  <script>\n"
+         "  // Same theme bootstrap as the chrome's base.html: set before first\n"
+         "  // paint so the full-screen terminal never flashes the wrong palette.\n"
+         "  (function(){\n"
+         "    var t = 'dark';\n"
+         "    try { t = localStorage.getItem('rnsbox-theme') || 'dark'; } catch(e){}\n"
+         "    if (t !== 'light' && t !== 'dark') t = 'dark';\n"
+         "    document.documentElement.setAttribute('data-theme', t);\n"
+         "  })();\n"
+         "  </script>\n";
+    o += "</head>\n<body class=\"term-full\">\n";
+    o += content;
+    o += "\n</body>\n</html>\n";
+    return o;
 }
 
 void redirect_flash(http::Response& res, const std::string& location,

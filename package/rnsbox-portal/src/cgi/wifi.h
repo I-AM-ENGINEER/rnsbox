@@ -5,6 +5,7 @@
 
 #include <string>
 #include <map>
+#include <vector>
 
 namespace wifi {
 
@@ -32,10 +33,18 @@ bool ap_psk_ok(const std::string& psk);
 
 // Live radio status (parsed from `iw`). Used both server-side (wifi_page render)
 // and, serialized, by the /wifi/status AJAX endpoint.
-struct StaStatus { bool connected = false; std::string ssid, signal, ip, width, txpower; };
+struct StaStatus {
+    bool connected = false;
+    std::string ssid, signal, ip, width, txpower, band, standard, channel, security;
+};
 // bridge: the bridge the AP iface is a port of ("" = not bridged); ip: where
 // its clients reach the box — the bridge's address (the port itself has none).
-struct ApStatus  { bool active = false; std::string iface; int clients = 0; std::string bridge, ip, width, txpower; };
+struct ApStatus  {
+    bool active = false;
+    std::string iface;
+    int clients = 0;
+    std::string bridge, ip, width, txpower, band, standard, channel, ssid, security;
+};
 struct Status {
     bool present = false;
     std::string mode;
@@ -46,6 +55,16 @@ struct Status {
 };
 Status status();             // gather live status
 std::string status_json();   // status() serialized to JSON (present/mode/sta/ap/...)
+std::string security_label(const std::string& s);
+
+// Additional STA networks after the primary wifi.conf one (wpa_supplicant
+// tries them in order when the higher-priority primary is not available).
+struct Network { std::string ssid, psk, security; bool hidden = false; };
+std::vector<Network> read_extra_networks();
+bool add_extra_network(const Network& n, std::string& err);
+bool delete_extra_network(int idx, std::string& err);
+bool write_extra_networks(const std::vector<Network>& list, std::string& err);
+bool has_sta_networks();
 
 std::string scan_json();     // JSON array of {ssid,signal,channel,band,security}; band "2.4"|"5"|"6"
 void apply();                // S35wifi restart + S60routing restart
