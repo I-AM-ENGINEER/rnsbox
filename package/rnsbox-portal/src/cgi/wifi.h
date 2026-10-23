@@ -39,10 +39,14 @@ struct StaStatus {
 };
 // bridge: the bridge the AP iface is a port of ("" = not bridged); ip: where
 // its clients reach the box — the bridge's address (the port itself has none).
+struct ApClient {
+    std::string mac, host, ip, signal, connected, rx, tx;
+};
 struct ApStatus  {
     bool active = false;
     std::string iface;
     int clients = 0;
+    std::vector<ApClient> client_list;
     std::string bridge, ip, width, txpower, band, standard, channel, ssid, security;
 };
 struct Status {

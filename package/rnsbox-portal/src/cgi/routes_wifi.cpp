@@ -309,6 +309,23 @@ void wifi_page(const Request& req, Response& res) {
     h = R(std::move(h), "__WIFI_STA_ROWS__", sta_rows);
     h = R(std::move(h), "__WIFI_AP_ROWS__", ap_rows);
 
+    // Connected hotspot clients: what each one is, where it got its lease,
+    // how strong it is and how long it has been up.
+    std::string client_rows;
+    if (ap_on && st.ap.active && !st.ap.client_list.empty()) {
+        for (const auto& c : st.ap.client_list) {
+            client_rows += "<tr><td>" +
+                (c.host.empty() ? std::string("<span class=\"muted\">&mdash;</span>") : E(c.host)) +
+                "</td><td>" + (c.ip.empty() ? std::string("—") : E(c.ip)) +
+                "</td><td>" + (c.signal.empty() ? std::string("—") : E(c.signal) + " dBm") +
+                "</td><td><code>" + E(c.mac) + "</code></td><td>" + E(c.connected) +
+                "</td><td>" + E(c.rx) + " / " + E(c.tx) + "</td></tr>\n";
+        }
+    } else {
+        client_rows = "<tr><td colspan=\"6\" class=\"muted\">No clients connected.</td></tr>\n";
+    }
+    h = R(std::move(h), "__AP_CLIENTS_ROWS__", client_rows);
+
     // One list of known networks: the primary one (edited by the form above)
     // plus the extras. wpa_supplicant treats them as one pool and falls back
     // to the next one when the current signal disappears.

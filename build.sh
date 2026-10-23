@@ -1012,6 +1012,21 @@ if [ "${BUILD_STYLE:-patches}" = external ]; then
             sed -i -e 's|^BR2_GLOBAL_PATCH_DIR=.*|BR2_GLOBAL_PATCH_DIR="'"$pdir"'"|' "$ODIR/.config"
             grep -q '^BR2_GLOBAL_PATCH_DIR=' "$ODIR/.config" || echo "BR2_GLOBAL_PATCH_DIR=\"$pdir\"" >> "$ODIR/.config"
         fi
+        # Python picks its stdlib options at configure time and Buildroot does
+        # not rebuild a package when the kconfig changes. A tree configured
+        # before PYEXPAT was enabled ships without pyexpat/xml, and the BLE
+        # stack (dbus/bluezero import xml.etree) then refuses to start. Drop
+        # the stale tree so the option takes effect.
+        if grep -q '^BR2_PACKAGE_PYTHON3_PYEXPAT=y' "$ODIR/.config"; then
+            _py_xml=
+            for _x in "$ODIR"/target/usr/lib/python3.*/xml; do
+                [ -d "$_x" ] && { _py_xml=$_x; break; }
+            done
+            if [ -z "$_py_xml" ] && ls -d "$ODIR"/build/python3-3.14* >/dev/null 2>&1; then
+                echo ">> python3 was built without PYEXPAT (no xml/ in the target) - rebuilding it"
+                rm -rf "$ODIR"/build/python3-3.14*
+            fi
+        fi
         make -C "$UPSTREAM" O="$ODIR" BR2_EXTERNAL="$EXT" olddefconfig
     }
 

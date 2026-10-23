@@ -110,6 +110,14 @@
       <button type="submit" class="btn-primary">Save &amp; apply</button>
     </div>
   </form>
+
+  <h4 style="margin-top:20px">Connected clients</h4>
+  <table class="data">
+    <thead>
+      <tr><th>Name</th><th>IP</th><th>Signal</th><th>MAC</th><th>Connected</th><th>RX / TX</th></tr>
+    </thead>
+    <tbody id="w-ap-clients-body">__AP_CLIENTS_ROWS__</tbody>
+  </table>
 </section>
 
 <section class="card">
@@ -467,6 +475,25 @@ function syncStandard(){
     setText('w-ap-bridge', (apOn && ap.active && ap.bridge) ? ap.bridge : '—');
     setText('w-ap-mac', (apOn && ap.active && ap.mac) ? ap.mac : '—');
     setText('w-ap-rxtx', (apOn && ap.active) ? ((ap.rx||'0')+' / '+(ap.tx||'0')) : '—');
+    var tb = document.getElementById('w-ap-clients-body');
+    if (tb) {
+      var cl = (apOn && ap.active && Array.isArray(ap.client_list)) ? ap.client_list : [];
+      if (!cl.length) {
+        tb.innerHTML = '<tr><td colspan="6" class="muted">No clients connected.</td></tr>';
+      } else {
+        var ch = '';
+        for (var k = 0; k < cl.length; ++k) {
+          var c = cl[k] || {};
+          ch += '<tr><td>' + (c.host ? esc(c.host) : '<span class="muted">&mdash;</span>') +
+                '</td><td>' + esc(c.ip || '—') +
+                '</td><td>' + (c.signal ? esc(c.signal) + ' dBm' : '—') +
+                '</td><td><code>' + esc(c.mac || '') + '</code></td><td>' +
+                esc(c.connected || '—') + '</td><td>' + esc(c.rx || '0') + ' / ' +
+                esc(c.tx || '0') + '</td></tr>';
+        }
+        tb.innerHTML = ch;
+      }
+    }
     if (st.connected) {
       var fl = document.querySelectorAll('.flash');
       for (var i = 0; i < fl.length; ++i)

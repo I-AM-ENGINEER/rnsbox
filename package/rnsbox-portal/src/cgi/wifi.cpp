@@ -5,8 +5,10 @@
 #include "sysinfo.h"
 #include "web.h"
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <strings.h>
 #include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -181,6 +183,30 @@ static std::string line_value(const std::string& block, const char* prefix) {
 static std::string int_signal(const std::string& s) {
     size_t dot = s.find('.');
     return dot == std::string::npos ? s : s.substr(0, dot);
+}
+
+static std::string first_token(const std::string& s) {
+    size_t p = s.find_first_of(" \t");
+    return p == std::string::npos ? s : s.substr(0, p);
+}
+
+// Human units for the AP client table (station dump reports raw counters).
+static std::string human_bytes(unsigned long long v) {
+    char b[32];
+    if (v >= (1ULL << 30))      snprintf(b, sizeof b, "%.1f GiB", v / 1073741824.0);
+    else if (v >= (1ULL << 20)) snprintf(b, sizeof b, "%.1f MiB", v / 1048576.0);
+    else if (v >= 1024)         snprintf(b, sizeof b, "%.0f KiB", v / 1024.0);
+    else                        snprintf(b, sizeof b, "%llu B", v);
+    return b;
+}
+
+static std::string human_uptime(long s) {
+    char b[32];
+    if (s < 0) return "";
+    if (s >= 3600)      snprintf(b, sizeof b, "%ldh %02ldm", s / 3600, (s % 3600) / 60);
+    else if (s >= 60)   snprintf(b, sizeof b, "%ldm %02lds", s / 60, s % 60);
+    else                snprintf(b, sizeof b, "%lds", s);
+    return b;
 }
 
 struct Net { std::string bssid, ssid, signal, channel, band, security; };
@@ -547,6 +573,57 @@ Status status() {
         s.ap.active = true;
         s.ap.iface = ap_if;
         s.ap.clients = clients;
+        // Per-client detail. Each block starts with "Station <mac> (on <if>)".
+        // Names/IPs come from the one LAN dnsmasq pool (the AP is a bridge
+        // port, so its clients are plain LAN clients).
+        s.ap.client_list.clear();
+        auto leases = sysinfo::dnsmasq_leases();
+        size_t pos = 0;
+        while ((pos = dump.find("Station ", pos)) != std::string::npos) {
+            size_t eol = dump.find('\n', pos);
+            if (eol == std::string::npos) eol = dump.size();
+            std::string head = dump.substr(pos + 8, eol - (pos + 8));
+            size_t next = dump.find("Station ", eol);
+            std::string blk = dump.substr(eol, (next == std::string::npos ? dump.size() : next) - eol);
+            ApClient c;
+            c.mac = head.substr(0, head.find(' '));
+            c.signal = int_signal(first_token(line_value(blk, "signal:")));
+            c.rx = human_bytes(strtoull(line_value(blk, "rx bytes:").c_str(), nullptr, 10));
+            c.tx = human_bytes(strtoull(line_value(blk, "tx bytes:").c_str(), nullptr, 10));
+            std::string ct = line_value(blk, "connected time:");
+            if (!ct.empty()) c.connected = human_uptime(strtol(ct.c_str(), nullptr, 10));
+            for (const auto& l : leases) {
+                if (l.mac.size() == c.mac.size() &&
+                    strncasecmp(l.mac.c_str(), c.mac.c_str(), c.mac.size()) == 0) {
+                    c.ip = l.ip;
+                    c.host = l.name;
+                    break;
+                }
+            }
+            s.ap.client_list.push_back(c);
+            pos = (next == std::string::npos) ? dump.size() : next;
+        }
+        // aic8800's station dump carries no association time (mac80211 does);
+        // hostapd tracks it per STA behind its control interface.
+        if (!s.ap.client_list.empty()) {
+            std::string sta = util::run({"/usr/bin/hostapd_cli", "-i", ap_if, "all_sta"}, "", 3).out;
+            std::string cur;
+            size_t cp = 0;
+            while (cp < sta.size()) {
+                size_t nl = sta.find('\n', cp);
+                std::string ln = sta.substr(cp, nl == std::string::npos ? std::string::npos : nl - cp);
+                cp = (nl == std::string::npos) ? sta.size() : nl + 1;
+                if (ln.size() == 17 && ln[2] == ':' && ln[5] == ':' && ln[8] == ':' &&
+                    ln[11] == ':' && ln[14] == ':') {
+                    cur = ln;
+                } else if (ln.compare(0, 15, "connected_time=") == 0 && !cur.empty()) {
+                    long secs = strtol(ln.c_str() + 15, nullptr, 10);
+                    for (auto& c : s.ap.client_list)
+                        if (strcasecmp(c.mac.c_str(), cur.c_str()) == 0)
+                            c.connected = human_uptime(secs);
+                }
+            }
+        }
         // hostapd (bridge=br-lan) enslaves the AP iface, which then holds no
         // address: its clients reach the box at the bridge's.
         s.ap.bridge = sysinfo::bridge_of(ap_if);
@@ -629,8 +706,21 @@ std::string status_json() {
     }
     if (s.ap.active) {
         const sysinfo::Iface* ai = iface_of(s.ap.iface);
+        std::string cj;
+        for (size_t k = 0; k < s.ap.client_list.size(); ++k) {
+            const auto& c = s.ap.client_list[k];
+            if (k) cj += ",";
+            cj += "{\"mac\":\"" + http::json_escape(c.mac) +
+                  "\",\"host\":\"" + http::json_escape(c.host) +
+                  "\",\"ip\":\"" + http::json_escape(c.ip) +
+                  "\",\"signal\":\"" + http::json_escape(c.signal) +
+                  "\",\"connected\":\"" + http::json_escape(c.connected) +
+                  "\",\"rx\":\"" + http::json_escape(c.rx) +
+                  "\",\"tx\":\"" + http::json_escape(c.tx) + "\"}";
+        }
         o += ",\"ap\":{\"active\":true,\"iface\":\"" + http::json_escape(s.ap.iface) +
              "\",\"clients\":" + std::to_string(s.ap.clients) +
+             ",\"client_list\":[" + cj + "]" +
              ",\"bridge\":\"" + http::json_escape(s.ap.bridge) +
              "\",\"ip\":\"" + http::json_escape(s.ap.ip) +
              "\",\"mac\":\"" + http::json_escape(ai ? ai->mac : "") +

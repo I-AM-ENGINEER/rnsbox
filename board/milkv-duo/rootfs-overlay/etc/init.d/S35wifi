@@ -254,6 +254,8 @@ gen_hostapd_conf() {
 		echo "interface=$iface"
 		echo "bridge=$LAN_BR"
 		echo "driver=nl80211"
+		# hostapd_cli reads the per-STA state (connected_time).
+		echo "ctrl_interface=/var/run/hostapd"
 		echo "ssid=$ssid"
 		if [ "$band" = "5" ]; then echo "hw_mode=a"; else echo "hw_mode=g"; fi
 		# Regulatory hints: hostapd needs its own country for the 5 GHz band,
@@ -468,6 +470,7 @@ ap_bridge_state() {
 # channel, etc.) retry once on a safe fixed channel. Returns 0 if a hostapd
 # is running afterwards.
 _hostapd_up() {
+	mkdir -p /var/run/hostapd 2>/dev/null
 	hostapd -B -P /var/run/hostapd.pid "$HOSTAPD_CONF" >>"$LOG" 2>&1 9>&-
 	sleep 1
 	[ -f /var/run/hostapd.pid ] && kill -0 "$(cat /var/run/hostapd.pid)" 2>/dev/null
