@@ -3,7 +3,7 @@
 <section class="card">
   <h3>rnsd status</h3>
   <table class="kv">
-    <tr><th>State</th><td id="rnsd-state">
+    <tr><th>Status</th><td id="rnsd-state">
       __RNSD_STATE__
     </td></tr>
     <tr><th>Uptime</th><td id="rnsd-uptime">__RNSD_UPTIME__</td></tr>
@@ -11,7 +11,7 @@
     <tr><th>Transport</th><td id="rnsd-transport" class="mono">__RNSD_TRANSPORT__</td></tr>
     <tr><th>Memory</th><td id="rnsd-mem">__RNSD_RSS__</td></tr>
     <tr><th>Version</th><td>
-      Reticulum (rnsd) <strong>__RNS_VERSION__</strong>
+      <strong>__RNS_VERSION__</strong>
       __UPDATE_BADGE__
     </td></tr>
   </table>
@@ -62,10 +62,6 @@
       <select name="limit">
         __RNSDMON_OPTIONS__
       </select>
-      <div class="row-form-state">
-        <span class="muted">Watchdog state</span>
-        <span>__RNSDMON_STATE__</span>
-      </div>
     </div>
 
     <div class="row-form" style="margin-top:10px">
@@ -74,7 +70,7 @@
       <select name="mem_threshold">
         __MEMMON_OPTIONS__
       </select>
-      <span class="muted">of RAM used (total &minus; available)</span>
+      <span class="muted">of RAM used</span>
     </div>
 
     <div class="form-actions">
@@ -104,10 +100,6 @@
 
 <section class="card">
   <h3>HaLow modem (SLIP)</h3>
-  <p class="muted">Optional point-to-point serial link (<code>sl0</code>) to an external
-  WiFi-HaLow RNode modem over a UART. When the modem is reachable, the
-  <strong>Add to rnsd config</strong> button below routes Reticulum through it
-  (a <code>TCPClientInterface</code> named after the modem's hostname). Off by default.</p>
 
   <table class="kv">
     <tr><th>Link (sl0)</th><td>
@@ -134,33 +126,14 @@
     <div class="form-actions" style="margin-top:10px">
       <button type="submit" class="btn-primary">Save &amp; apply</button>
     </div>
-    <p class="muted">Wire a hardware UART to the modem, cross TX&harr;RX, common
-    ground, 3.3&nbsp;V TTL &mdash; pads and device are board-specific (Pi:
-    <code>/dev/serial0</code>; rnsbox CVITEK boards: UART1 = <code>ttyS1</code> on
-    <code>XGPIOA[28]</code>/<code>[29]</code>); see the board README.
-    <strong>Baud must match the modem</strong> &mdash; the factory 2&nbsp;Mbaud is
-    generated exactly on every rnsbox board (96&nbsp;MHz UART clock). The one
-    exception is the classic LicheeRV Nano-e: its 25&nbsp;MHz UART clock tops
-    out below 2&nbsp;Mbaud, use 1500000 there. The IPs must match the modem's
-    SLIP config (defaults <code>192.168.7.2</code> modem /
-    <code>192.168.7.1</code> box).</p>
   </form>
 </section>
 
 <section class="card"__BT_CARD_STYLE__>
   <h3>Bluetooth (BLE)</h3>
-  <p class="muted">Short-range radio transport (typically tens of metres): the box
-  scans for nearby Reticulum BLE peers <em>and</em> accepts inbound connections
-  over its own GATT server, so phones and other nodes reach it with no setup.
-  Runs on the onboard BT controller where the board has one (Zero 2 W via the
-  <code>miniuart-bt</code> firmware overlay; Pi 3/4/5 by default) or any USB BLE
-  dongle. With no adapter it degrades into a logged no-op — rnsd keeps running,
-  everything else is unaffected, and a dongle plugged in later is picked up
-  within 30 seconds. Runs over BlueZ + D-Bus; the BLE link itself is far slower
-  than WiFi (announce pacing adapts automatically).</p>
 
   <table class="kv">
-    <tr><th>Adapter</th><td>__BT_STACK_STATUS__</td></tr>
+    <tr><th>Status</th><td>__BT_STACK_STATUS__</td></tr>
   </table>
 
   __BT_FORM_BLOCK__
@@ -232,7 +205,7 @@
       <label class="check" style="margin:0"><input type="checkbox" name="flow_control" __RNODE_FLOW_CHECKED__> flow control</label>
     </div>
     <div class="form-actions" style="margin-top:10px">
-      <span class="muted">saving restarts rnsd — the modem may be plugged in at any time, rnsd retries the port every 5 s</span>
+      <span class="muted">saving restarts rnsd</span>
       <button type="submit" class="btn-primary">Save &amp; apply</button>
     </div>
   </form>
@@ -520,11 +493,11 @@ function loadRnstatus(){
     // refresh the state badge too (it's free and may have changed since load)
     fetch('__BASE__/reticulum/status').then(function(r){ return r.json(); }).then(function(s){
       st.innerHTML = s.running
-        ? '<span class="badge ok">RUNNING</span> (pid ' + escH(s.pid) + ')'
+        ? '<span class="badge ok">RUNNING</span>'
         : '<span class="badge err">STOPPED</span>';
       var memEl = document.getElementById('rnsd-mem');
       if (memEl) memEl.textContent = (typeof s.rss_mb === 'number' && s.rss_mb >= 0)
-        ? s.rss_mb + ' MB RSS' : '—';
+        ? s.rss_mb + ' MB' : '—';
       if (upEl && !t.uptime && s.uptime) upEl.textContent = 'up ' + s.uptime;
       if (ifEl && !RN_DATA.length && s.interfaces) {
         ifEl.textContent = s.interfaces.enabled + ' enabled of ' + s.interfaces.total;

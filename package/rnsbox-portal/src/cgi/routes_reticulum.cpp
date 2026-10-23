@@ -397,16 +397,11 @@ static bool bt_installed() {
 }
 
 static std::string bt_status_html(const BtState& b) {
-    if (!b.stack)
-        return "<span class=\"badge\">no Bluetooth stack in the kernel</span>";
-    if (!b.hci)
-        return "<span class=\"badge warn\">no adapter</span> <span class=\"muted\">(onboard BT off / no USB dongle yet — rnsd re-probes every 30 s)</span>";
-    std::string o = "<span class=\"badge ok\">" + E(b.hci_name) + " present</span>";
-    o += b.dbus ? " <span class=\"badge ok\">dbus</span>"
-                : " <span class=\"badge err\">dbus down</span>";
-    o += b.daemon ? " <span class=\"badge ok\">bluetoothd</span>"
-                  : " <span class=\"badge err\">bluetoothd down</span>";
-    return o;
+    // The badge the operator needs: is BLE advertising right now.
+    if (!b.stack) return "<span class=\"badge\">no Bluetooth stack</span>";
+    if (!b.hci)   return "<span class=\"badge warn\">no adapter</span>";
+    if (!b.dbus || !b.daemon) return "<span class=\"badge warn\">BlueZ not running</span>";
+    return "<span class=\"badge ok\">advertising</span>";
 }
 
 // Rows of the TCP client interface editor: one editable line per
@@ -516,7 +511,7 @@ void reticulum_page(const Request& req, Response& res) {
     h = R(std::move(h), "__BASE__", base);
 
     h = R(std::move(h), "__RNSD_STATE__", rn.running
-        ? "<span class=\"badge ok\">RUNNING</span> (pid " + E(rn.pid) + ")"
+        ? "<span class=\"badge ok\">RUNNING</span>"
         : "<span class=\"badge err\">STOPPED</span>");
 
     // Simple at-a-glance facts. Uptime comes from the process itself (no
@@ -556,7 +551,7 @@ void reticulum_page(const Request& req, Response& res) {
         : (ic.total ? (std::to_string(ic.enabled) + " enabled of " +
                        std::to_string(ic.total)) : "—"));
     h = R(std::move(h), "__RNSD_RSS__",
-          rn.rss_mb >= 0 ? (std::to_string(rn.rss_mb) + " MB RSS") : "—");
+          rn.rss_mb >= 0 ? (std::to_string(rn.rss_mb) + " MB") : "—");
 
     h = R(std::move(h), "__RNS_VERSION__", E(installed.empty() ? "unknown" : installed));
 
@@ -682,8 +677,7 @@ void reticulum_page(const Request& req, Response& res) {
         bt_form =
             "<form method=\"post\" action=\"" + base + "/reticulum/bluetooth\">\n"
             "    <label style=\"margin:8px 0 0\"><input type=\"checkbox\" name=\"enabled\" "
-            "__BT_ENABLED_CHECKED__> Enable BLE transport (scans for peers AND accepts inbound "
-            "connections over its own GATT server)</label>\n"
+            "__BT_ENABLED_CHECKED__> Enable BLE transport</label>\n"
             "    <div class=\"row-form\" style=\"margin-top:10px\">\n"
             "      <label style=\"margin:0\">Advertised name\n"
             "        <input type=\"text\" name=\"device_name\" value=\"__BT_NAME__\" maxlength=\"16\" "
@@ -703,7 +697,6 @@ void reticulum_page(const Request& req, Response& res) {
             "        </select></label>\n"
             "    </div>\n"
             "    <div class=\"form-actions\" style=\"margin-top:10px\">\n"
-            "      <span class=\"muted\">saving restarts rnsd — active links reconnect on their own</span>\n"
             "      <button type=\"submit\" class=\"btn-primary\">Save &amp; apply</button>\n"
             "    </div>\n"
             "  </form>\n"
