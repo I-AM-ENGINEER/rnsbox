@@ -6,10 +6,14 @@
 #include <ctime>
 #include <fcntl.h>
 #include <unistd.h>
+#ifdef _WIN32
+#include "compat.h"
+#else
 #include <signal.h>
 #include <sys/wait.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#endif
 
 namespace util {
 
@@ -49,6 +53,22 @@ bool write_file_atomic(const std::string& path, const std::string& data, int mod
     if (::rename(tmp.c_str(), path.c_str()) != 0) { ::unlink(tmp.c_str()); return false; }
     return true;
 }
+
+#ifdef _WIN32
+
+// The Windows front end resolves tools and speaks CreateProcess: see
+// win/compat.cpp (the same argv vector, no shell).
+RunResult run(const std::vector<std::string>& argv, const std::string& input,
+              int timeout_s, size_t out_cap) {
+    compat::ProcResult r = compat::run_process(argv, input, timeout_s, out_cap);
+    RunResult rr;
+    rr.exit_code = r.exit_code;
+    rr.timed_out = r.timed_out;
+    rr.out = std::move(r.out);
+    return rr;
+}
+
+#else
 
 // Seconds on CLOCK_MONOTONIC, for run()'s deadline. Not time(): "Sync clock to
 // browser" (date -s), or an NTP step, can run while a child is out, and a
@@ -144,6 +164,8 @@ RunResult run(const std::vector<std::string>& argv, const std::string& input,
     return rr;
 }
 
+#endif  // _WIN32
+
 std::string trim(const std::string& s) {
     size_t a = s.find_first_not_of(" \t\r\n");
     if (a == std::string::npos) return std::string();
@@ -194,6 +216,9 @@ std::string to_hex(const std::string& raw) {
 }
 
 std::string random_hex(size_t nbytes) {
+#ifdef _WIN32
+    return to_hex(compat::random_bytes(nbytes));
+#else
     int fd = ::open("/dev/urandom", O_RDONLY);
     if (fd < 0) return std::string();
     std::string raw; raw.resize(nbytes);
@@ -205,6 +230,7 @@ std::string random_hex(size_t nbytes) {
     }
     ::close(fd);
     return to_hex(raw);
+#endif
 }
 
 bool const_time_eq(const std::string& a, const std::string& b) {

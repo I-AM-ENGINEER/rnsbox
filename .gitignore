@@ -11,3 +11,6 @@ local_docs/
 *.log
 __pycache__/
 *.pyc
+
+# Windows native build output (win/build-win.sh)
+package/rnsbox-portal/src/win/build/

@@ -130,6 +130,8 @@ configs/          base.config + boards/<board>.config (source of truth);
                   rnsbox_<board>_defconfig is generated from them
 package/          SHARED packages: rnsbox-portal, python-rns, python-lxmf,
                   python-nomadnet — one copy for every board
+                  (package/rnsbox-portal/src/win/ builds the same portal
+                  natively for Windows — see its README)
 scripts/          lite/dvd packaging + client-disc helpers
 patches/          the git-am series (vendor-BSP boards only, e.g. licheerv-nano)
 .github/          CI: matrix-build the images on GitHub Actions + Releases
@@ -144,6 +146,23 @@ one line in the CI matrix. Then run `scripts/gen-defconfigs.sh` to produce
 `configs/rnsbox_<board>_defconfig`. Shared selections live in
 `configs/base.config` — see `configs/README.md`. A new shared package goes to
 `package/<name>/` once and is instantly available to every board.
+
+## Windows (native, for development)
+
+The portal also builds as a plain Windows executable — the same C++ routes and
+pages, served by a built-in HTTP server, running on the system Python +
+Reticulum instead of a router image. No VM/WSL; WiFi, routing, the PTY
+consoles and the A/B updater are absent by design.
+
+```bash
+cd package/rnsbox-portal/src
+./win/build-win.sh                      # MSYS2 UCRT64 -> win/build/rnsbox.exe
+cd win/build && ./rnsbox.exe --setup    # finds/installs Python + Reticulum
+./rnsbox.exe                            # http://127.0.0.1:8080/ (admin/admin)
+```
+
+`rnsbox.exe --install-service` (elevated) registers it as a background Windows
+service. Details: `package/rnsbox-portal/src/win/README.md`.
 
 ## Hardware
 

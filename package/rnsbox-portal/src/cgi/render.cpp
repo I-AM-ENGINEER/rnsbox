@@ -2,6 +2,7 @@
 #include "render.h"
 #include "web.h"
 #include "session.h"
+#include "sysinfo.h"
 #include "util.h"
 #include <cstdlib>
 #include <cstring>
@@ -120,7 +121,7 @@ const std::string& asset_version() {
 std::string layout(const http::Request& req, http::Response& res,
                    const std::string& title, const char* active,
                    const std::string& content) {
-    std::string host = util::trim(util::read_file("/proc/sys/kernel/hostname", 128));
+    std::string host = sysinfo::hostname();
     session::Info s = session::check(req.cookie(session::COOKIE_NAME));
 
     // Every value except CONTENT (the route's own, already-escaped HTML) is
@@ -145,6 +146,18 @@ std::string layout(const http::Request& req, http::Response& res,
                        cls + "\">NomadNet</a>";
     }
     kv.push_back({"__NAV_NOMADNET__", nav_nomadnet});
+    // WiFi and the browser console are router features: on Windows there is
+    // no radio and no PTY broker, so their tabs are left out of the nav (the
+    // routes answer 503 if something still links to them).
+    std::string nav_wifi, nav_console;
+#ifndef _WIN32
+    nav_wifi = "<a href=\"" + esc(web::base()) + "/wifi\" class=\"" +
+               std::string((active && std::string(active) == "wifi") ? "active" : "") + "\">WiFi</a>";
+    nav_console = "<a href=\"" + esc(web::base()) + "/console\" class=\"" +
+                  std::string((active && std::string(active) == "console") ? "active" : "") + "\">Console</a>";
+#endif
+    kv.push_back({"__NAV_WIFI__", nav_wifi});
+    kv.push_back({"__NAV_CONSOLE__", nav_console});
     kv.push_back({"__FLASH__", take_flash(req, res)});
     kv.push_back({"__CONTENT__", content});
     return fill(page_file("base"), kv);
@@ -152,7 +165,7 @@ std::string layout(const http::Request& req, http::Response& res,
 
 std::string login_layout(const http::Request& req, http::Response& res,
                          const std::string& content) {
-    std::string host = util::trim(util::read_file("/proc/sys/kernel/hostname", 128));
+    std::string host = sysinfo::hostname();
     Tokens kv = {
         {"__BASE__",     esc(web::base())},
         {"__HOSTNAME__", esc(host)},
@@ -164,7 +177,7 @@ std::string login_layout(const http::Request& req, http::Response& res,
 }
 
 std::string full_page(const std::string& title, const std::string& content) {
-    std::string host = util::trim(util::read_file("/proc/sys/kernel/hostname", 128));
+    std::string host = sysinfo::hostname();
     std::string o;
     o.reserve(content.size() + 1024);
     o += "<!doctype html>\n<html lang=\"en\">\n<head>\n";

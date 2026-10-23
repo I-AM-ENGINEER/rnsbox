@@ -3,6 +3,9 @@
 #include "session.h"
 #include "util.h"
 #include <cstdlib>
+#ifdef _WIN32
+#include "supervisor.h"
+#endif
 
 namespace web {
 
@@ -49,8 +52,13 @@ std::string replace_all(std::string s, const std::string& from, const std::strin
 }
 
 bool run_init(const char* name, const char* arg) {
+#ifdef _WIN32
+    // No sysvinit here: the supervisor owns rnsd and no-ops the rest.
+    return supervisor::run_init(name, arg);
+#else
     std::string path = std::string("/etc/init.d/") + name;
     return util::run({path, arg}, "", 25).exit_code == 0;
+#endif
 }
 
 void json_ok(http::Response& res) {

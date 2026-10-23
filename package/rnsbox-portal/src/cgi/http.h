@@ -92,6 +92,11 @@ struct Response {
 
     void set_cookie(const std::string& raw) { headers.push_back("Set-Cookie: " + raw); }
     void redirect(const std::string& location) { status = "302 Found"; headers.push_back("Location: " + location); body.clear(); }
+
+    // Serialize to a CGI response ("Status: ...", written to stdout by send())
+    // or to a native HTTP/1.1 response (cgi_style=false, used by the Windows
+    // server). Header values are sanitized either way.
+    std::string bytes(bool cgi_style = true) const;
     void send() const;
 };
 

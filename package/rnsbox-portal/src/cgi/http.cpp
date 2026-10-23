@@ -1,6 +1,7 @@
 // http.cpp — see http.h. Defensive CGI parsing for a WAN-facing root service.
 #include "http.h"
 #include <cstdio>
+#include <string>
 #include <cstdlib>
 #include <cstring>
 #include <unistd.h>
@@ -194,17 +195,29 @@ static std::string header_safe(const std::string& s) {
     return o;
 }
 
-void Response::send() const {
+std::string Response::bytes(bool cgi_style) const {
     std::string out;
     out.reserve(body.size() + 256);
-    out += "Status: " + header_safe(status) + "\r\n";
+    if (cgi_style)
+        out += "Status: " + header_safe(status) + "\r\n";
+    else
+        out += "HTTP/1.1 " + header_safe(status) + "\r\n";
     out += "Content-Type: " + header_safe(content_type) + "\r\n";
     for (const auto& h : headers) out += header_safe(h) + "\r\n";
     // Conservative security headers (WAN-facing).
     out += "X-Content-Type-Options: nosniff\r\n";
     out += "X-Frame-Options: DENY\r\n";
+    if (!cgi_style) {
+        out += "Content-Length: " + std::to_string(body.size()) + "\r\n";
+        out += "Connection: close\r\n";
+    }
     out += "\r\n";
     out += body;
+    return out;
+}
+
+void Response::send() const {
+    std::string out = bytes(true);
     ::fwrite(out.data(), 1, out.size(), stdout);
     ::fflush(stdout);
 }

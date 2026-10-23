@@ -1828,6 +1828,12 @@ void reticulum_rnstatus(const Request& req, Response& res) {
         std::string t = util::trim(stale);
         if (!t.empty() && t[0] == '{') {
             if (age >= RNSTATUS_TTL) {
+#ifdef _WIN32
+                // No detached child here: rnstatus is a local Python process
+                // and a cold start is ~1 s, so refresh inline and serve fresh.
+                res.body = with_age_s(rnstatus_collect(nullptr));
+                return;
+#else
                 pid_t pid = ::fork();
                 if (pid == 0) {
                     // Detached refresher: new session; stdio moved to
@@ -1849,6 +1855,7 @@ void reticulum_rnstatus(const Request& req, Response& res) {
                     }
                     _exit(0);
                 }
+#endif
             }
             // Parent: serve the stale snapshot; the poll picks up the fresh
             // one a few seconds later.
