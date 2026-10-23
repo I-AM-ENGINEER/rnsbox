@@ -66,6 +66,8 @@ trap - EXIT
 # RNSBOX_BOARD / RNSBOX_VARIANT are exported by build.sh.
 VARIANT="${RNSBOX_VARIANT:-lite}"
 NEW="${BINARIES_DIR}/sdcard.img"
-TAGGED="${BINARIES_DIR}/rnsbox-${RNSBOX_BOARD:-sg2000-duomodule01-mainline}-${VARIANT}.img"
+SUFFIX=""
+if [ "$VARIANT" != lite ]; then SUFFIX="-$VARIANT"; fi
+TAGGED="${BINARIES_DIR}/rnsbox-${RNSBOX_BOARD:-sg2000-duomodule01-mainline}${SUFFIX}.img"
 cp -f "$NEW" "$TAGGED"
 echo "=================== IMAGE OK [${VARIANT}] $(date) ==================="

@@ -29,7 +29,9 @@ trap - EXIT
 
 VARIANT="${RNSBOX_VARIANT:-lite}"
 NEW="${BINARIES_DIR}/disk.img"
-TAGGED="${BINARIES_DIR}/rnsbox-${RNSBOX_BOARD:-pc-x86_64}-${VARIANT}.img"
+SUFFIX=""
+if [ "$VARIANT" != lite ]; then SUFFIX="-$VARIANT"; fi
+TAGGED="${BINARIES_DIR}/rnsbox-${RNSBOX_BOARD:-pc-x86_64}${SUFFIX}.img"
 cp -f "$NEW" "$TAGGED"
 echo "=================== IMAGE OK [${VARIANT}] $(date) ==================="
 ls -lh "$TAGGED" | awk '{print "  "$5"  "$NF}'

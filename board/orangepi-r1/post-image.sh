@@ -50,6 +50,9 @@ genimage \
 	--config "${BOARD_DIR}/genimage.cfg"
 
 # build.sh exports RNSBOX_BOARD/RNSBOX_VARIANT for the external-tree boards.
-TAGGED="${BINARIES_DIR}/rnsbox-${RNSBOX_BOARD:-orangepi-r1}-${RNSBOX_VARIANT:-lite}.img"
+VARIANT="${RNSBOX_VARIANT:-lite}"
+SUFFIX=""
+if [ "$VARIANT" != lite ]; then SUFFIX="-$VARIANT"; fi
+TAGGED="${BINARIES_DIR}/rnsbox-${RNSBOX_BOARD:-orangepi-r1}${SUFFIX}.img"
 cp -f "${BINARIES_DIR}/sdcard.img" "${TAGGED}"
 echo "post-image: ${TAGGED} ($(stat -c%s "${TAGGED}") bytes)"

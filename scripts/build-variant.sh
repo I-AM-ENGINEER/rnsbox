@@ -65,7 +65,9 @@ $MAKE olddefconfig || { echo "FATAL: olddefconfig"; exit 93; }
 $MAKE || { echo "FATAL: make"; exit 94; }
 
 NEW="$O/images/sdcard.img"
-TAGGED="$O/images/rnsbox-${RNSBOX_BOARD:?RNSBOX_BOARD not set}-$VARIANT.img"
+SUFFIX=""
+if [ "$VARIANT" != lite ]; then SUFFIX="-$VARIANT"; fi
+TAGGED="$O/images/rnsbox-${RNSBOX_BOARD:?RNSBOX_BOARD not set}${SUFFIX}.img"
 cp -f "$NEW" "$TAGGED"
 echo "=================== BUILD OK [$VARIANT] $(date) ==================="
 ls -lh "$TAGGED" | awk '{print "  "$5"  "$NF}'

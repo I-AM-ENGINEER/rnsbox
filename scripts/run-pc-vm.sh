@@ -101,7 +101,7 @@ command -v "$QEMU" >/dev/null || { echo "QEMU '$QEMU' not found (apt install qem
 # ---- locate the image -------------------------------------------------------
 if [ -z "$IMAGE" ]; then
 	for cand in \
-		"$HOME/rnsbox-work/upstream/out/pc-x86_64/images/rnsbox-pc-x86_64-lite.img" \
+		"$HOME/rnsbox-work/upstream/out/pc-x86_64/images/rnsbox-pc-x86_64.img" \
 		./rnsbox-pc-x86_64-*.img; do
 		[ -f "$cand" ] && { IMAGE="$cand"; break; }
 	done

@@ -1008,7 +1008,7 @@ if [ "${BUILD_STYLE:-patches}" = external ]; then
     rnsbox_build
 
     echo ">> done — image(s) under $ODIR/images/"
-    ls -lh "$ODIR/images/rnsbox-$BOARD-$VARIANT.img" 2>/dev/null | tail -2 || true
+    ls -lh "$ODIR/images/rnsbox-$BOARD.img" "$ODIR/images/rnsbox-$BOARD-$VARIANT.img" 2>/dev/null | tail -2 || true
     exit 0
 fi
 

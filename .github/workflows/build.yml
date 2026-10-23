@@ -207,11 +207,14 @@ jobs:
           # flows pack the whole board family). Find them recursively, keep
           # every board's image, normalize: strip the internal -<variant>
           # suffix, prefix with rnsbox- when the packer didn't.
-          mapfile -t IMGS < <(find "$IMGDIR" -name "*-$VARIANT.img" -type f | sort)
-          [ "${#IMGS[@]}" -gt 0 ] || { echo "::error::no *-$VARIANT.img under $IMGDIR"; find "$IMGDIR" -name '*.img' | head; exit 1; }
+          # lite is the default: external-tree packers now drop the suffix,
+          # while the vendor BSP packers keep -lite. Accept both.
+          mapfile -t IMGS < <(find "$IMGDIR" -type f -name "*.img"             \( -name "*-$VARIANT.img" -o -name "rnsbox-$BOARD.img" \) | sort)
+          [ "${#IMGS[@]}" -gt 0 ] || { echo "::error::no image for $BOARD ($VARIANT) under $IMGDIR"; find "$IMGDIR" -name '*.img' | head; exit 1; }
           STAGE="$RUNNER_TEMP/pkg"; rm -rf "$STAGE"; mkdir -p "$STAGE"
           for f in "${IMGS[@]}"; do
-            BASE="$(basename "$f" -"$VARIANT".img)"
+            BASE="$(basename "$f" .img)"
+            BASE="${BASE%-$VARIANT}"
             # BSP packers name images by date+hash ("2026-10-16-05-43-a3912f").
             # The board identity lives in the path — install/soc_<board>/… —
             # so name from that when present (underscores to dashes, drop the
