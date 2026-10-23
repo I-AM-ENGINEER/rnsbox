@@ -308,7 +308,7 @@ index 00000000000..11111111111
 +
 +&{/soc} {
 +	watchdog@3010000 {
-+		compatible = "ice,ice-wdt";
++		compatible = "snps,dw-wdt";
 +		reg = <0x03010000 0x1000>;
 +	};
 +};

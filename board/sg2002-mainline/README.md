@@ -36,13 +36,33 @@ The same EPHY path was verified live on the Duo Module 01 EVB under 7.3:
 
 ## Files
 
-    linux-patches/0001-...   enable gmac0 + mdio mux in the LicheeRV DTS
+    linux-patches/0001-...   Ethernet, SDIO Wi-Fi, USB gadget, user LED/button, saradc
     linux.config             mainline 7.3-rc7 config (same as sg2000)
     boot.its                 FIT: Image.gz + sg2002-licheerv-nano-b.dtb
     genimage.cfg             p1 FAT (fip.bin + boot.sd + gadget flags) + p2 ext4
     post-image.sh            FIT, flags, fip check, genimage
     fip.bin / .sha256        bootloader blob, provenance below
     rootfs-overlay/          tuned fstab + zram/fstrim policy
+
+The shared `board/common/linux-patches/` directory (prepended to
+`BR2_LINUX_KERNEL_PATCH`) adds the CV18xx watchdog and thermal sensor
+nodes plus the SDHCI card-clock fix for every CV1800B/SG2000/SG2002
+board in this tree.
+
+## User I/O, sensors and watchdog
+
+The board DTS exposes the on-board blue user LED (`GPIOA14`,
+`/sys/class/leds/licheerv-nano:blue:user`), the user button (`GPIOA30`,
+active low, `KEY_DISPLAYTOGGLE`) and `saradc`.  The kernel config enables
+`NEW_LEDS`/`LEDS_GPIO` and `INPUT_EVDEV`/`KEYBOARD_GPIO` for them.
+
+The common SoC patch adds `snps,dw-wdt` at `0x3010000`
+(`/dev/watchdog0` with `CONFIG_DW_WATCHDOG`) and the TEMPSEN sensor at
+`0x30e0000` with a `soc-thermal` zone (passive 85 C, hot 95 C, critical
+110 C).  The sensor needs the companion `CV1800_THERMAL` driver patch.
+On this board `GPIOA15` is the bit-banged I2C bus, so it is deliberately
+not used for the speaker enable or Wi-Fi power.
+
 
 ## Build
 

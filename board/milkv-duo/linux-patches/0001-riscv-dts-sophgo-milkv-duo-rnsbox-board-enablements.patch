@@ -1,8 +1,8 @@
 diff --git a/arch/riscv/boot/dts/sophgo/cv1800b-milkv-duo.dts b/arch/riscv/boot/dts/sophgo/cv1800b-milkv-duo.dts
-index 0e6d79e6e..36117e273 100644
+index 0e6d79e..6dcc039 100644
 --- a/arch/riscv/boot/dts/sophgo/cv1800b-milkv-duo.dts
 +++ b/arch/riscv/boot/dts/sophgo/cv1800b-milkv-duo.dts
-@@ -28,8 +28,16 @@ reserved-memory {
+@@ -28,8 +28,16 @@
  		#size-cells = <1>;
  		ranges;
  
@@ -21,9 +21,14 @@ index 0e6d79e6e..36117e273 100644
  			no-map;
  		};
  	};
-@@ -102,6 +110,19 @@ &uart0 {
+@@ -101,7 +109,24 @@
+ 	status = "okay";
  };
  
++&saradc {
++	status = "okay";
++};
++
  &usb {
 -	dr_mode = "host";
 +	/*

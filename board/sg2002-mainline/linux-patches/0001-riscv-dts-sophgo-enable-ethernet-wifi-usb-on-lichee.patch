@@ -1,5 +1,5 @@
 From: RNSBox <rnsbox@localhost>
-Subject: [PATCH] riscv: dts: sophgo: enable Ethernet, SDIO Wi-Fi and USB gadget on the LicheeRV Nano B
+Subject: [PATCH] riscv: dts: sophgo: enable Ethernet, SDIO Wi-Fi, USB gadget and user I/O on the LicheeRV Nano B
 
 The E/WE edition wires the SG2002 internal 10/100 EPHY to the RJ45
 magjack (EPHY_TX/RX pairs through AC coupling); there is no external
@@ -15,20 +15,31 @@ CLK_SD1 card-clock source, and an mmc-pwrseq on GPIOA26 - the pin the
 vendor cvi_board_init drives as WL_REG_ON.  GPIOA15 is the bit-banged
 I2C bus on this board, so it must not be used for Wi-Fi power.
 
-USB: the single USB-C port is used for the RNSBox CDC-NCM gadget.
+USB: the single USB-C port is used for the RNSBox CDC-NCM gadget, so the
+DWC2 controller runs in peripheral mode.
+
+User I/O: the on-board blue user LED is GPIOA14 and the user button is
+GPIOA30 (active low, KEY_DISPLAYTOGGLE).  Enable saradc as well.
+
+The watchdog, thermal sensor and SDHCI clock fix are SoC-level and live
+in the shared board/common/linux-patches (they apply to every CV18xx
+board in this tree).
 
 ---
+diff --git a/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts b/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts
+index b185377..3fcd448 100644
 --- a/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts
 +++ b/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts
-@@ -5,6 +5,7 @@
+@@ -5,6 +5,8 @@
  
  /dts-v1/;
  
 +#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/linux-event-codes.h>
  #include "sg2002.dtsi"
  
  / {
-@@ -26,13 +27,51 @@
+@@ -26,13 +28,72 @@
  	chosen {
  		stdout-path = "serial0:115200n8";
  	};
@@ -38,6 +49,27 @@ USB: the single USB-C port is used for the RNSBox CDC-NCM gadget.
 +		reset-gpios = <&porta 26 GPIO_ACTIVE_LOW>;
 +		power-off-delay-us = <50000>;
 +		post-power-on-delay-ms = <200>;
++	};
++
++	leds {
++		compatible = "gpio-leds";
++
++		user-led {
++			label = "licheerv-nano:blue:user";
++			gpios = <&porta 14 GPIO_ACTIVE_HIGH>;
++			default-state = "off";
++		};
++	};
++
++	gpio-keys {
++		compatible = "gpio-keys";
++
++		user-button {
++			label = "user";
++			linux,code = <KEY_DISPLAYTOGGLE>;
++			debounce-interval = <10>;
++			gpios = <&porta 30 GPIO_ACTIVE_LOW>;
++		};
 +	};
  };
  
@@ -80,7 +112,7 @@ USB: the single USB-C port is used for the RNSBox CDC-NCM gadget.
  	uart0_cfg: uart0-cfg {
  		uart0-pins {
  			pinmux = <PINMUX(PIN_UART0_TX, 0)>,
-@@ -88,6 +127,26 @@
+@@ -88,13 +149,37 @@
  	disable-wp;
  };
  
@@ -107,9 +139,13 @@ USB: the single USB-C port is used for the RNSBox CDC-NCM gadget.
  &uart0 {
  	pinctrl-0 = <&uart0_cfg>;
  	pinctrl-names = "default";
-@@ -95,6 +154,6 @@
+ 	status = "okay";
  };
  
++&saradc {
++	status = "okay";
++};
++
  &usb {
 -	dr_mode = "host";
 +	dr_mode = "peripheral";
