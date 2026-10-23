@@ -33,6 +33,8 @@ static std::string R(std::string s, const std::string& a, const std::string& b) 
 static std::string E(const std::string& s) { return render::esc(s); }
 static std::string ret_redirect() { return web::base() + "/reticulum"; }
 
+static std::string pretty_uptime(double seconds);   // defined with rnstatus below
+
 // ===================== RNS Shell (rnsh) =====================
 
 constexpr const char* RNSH_CONF = "/etc/rnsbox/rnsh.conf";
@@ -106,15 +108,13 @@ static std::string rnsh_fill(std::string h) {
     return h;
 }
 
-// HTTPS to PyPI needs a real date. With no trusted clock (/run/clock-source
-// absent: no NTP, RTC or browser sync yet) TLS fails "certificate is not yet
-// valid", which updatecheck.py records only as "URLError" (reads as offline),
-// and check() would persist a 1970/2000 checked_at. So don't run it at all.
-// (rnsbox-update-check applies the same rule to the cron/boot checks.)
+// HTTPS to PyPI needs a real date. Git over Reticulum (rngit) verifies
+// signatures instead, so update checks work without a clock; only the
+// HTTPS/PyPI fallback pauses (updatecheck.py skips it on its own).
 static bool clock_trusted() { return !sysinfo::clock_source().empty(); }
-static const char NO_CLOCK[] =
-    "the clock isn't set (no NTP, RTC or browser time yet) and HTTPS needs a "
-    "correct date. Set it under Settings → Time & Clock.";
+static const char CLOCK_NOTE[] =
+    "the clock isn't set — rngit (Reticulum) updates still work; the "
+    "HTTPS/PyPI fallback pauses until you set it under Settings → Time & Clock.";
 
 // store._truthy: falsey iff stripped/lowered value in {no,0,false,off,""}.
 static bool truthy(const std::string& s) {
@@ -151,9 +151,12 @@ constexpr const char* RNSDMON_CONF = "/etc/rnsbox/rnsdmon.conf";
 struct RnsdMonConf {
     bool enabled = true;
     long down_limit = 3600;
+    bool mem_enabled = true;       // memory watchdog on by default
+    long mem_threshold = 90;       // restart rnsd above this % of RAM used
 };
 
 static const long RNSDMON_LIMITS[] = { 1800, 3600, 7200, 21600, 43200 };
+static const long MEMWATCH_LIMITS[] = { 50, 55, 60, 65, 70, 75, 80, 85, 90, 95 };
 
 static RnsdMonConf rnsdmon_read_conf() {
     RnsdMonConf c;
@@ -176,17 +179,30 @@ static RnsdMonConf rnsdmon_read_conf() {
                 long l = strtol(v.c_str(), nullptr, 10);
                 if (l >= 300 && l <= 86400) { c.down_limit = l; have_l = true; }
             }
+        } else if (k == "mem_enabled") {
+            c.mem_enabled = truthy(v);
+        } else if (k == "mem_threshold") {
+            if (!v.empty() && v.find_first_not_of("0123456789") == std::string::npos) {
+                long t = strtol(v.c_str(), nullptr, 10);
+                if (t >= 50 && t <= 95) c.mem_threshold = t;
+            }
         }
     }
     return c;
 }
 
-static bool rnsdmon_write(bool enabled, long limit, std::string& err) {
+static bool rnsdmon_write(bool enabled, long limit, bool mem_enabled,
+                          long mem_threshold, std::string& err) {
     bool known = false;
     for (long v : RNSDMON_LIMITS) if (v == limit) { known = true; break; }
     if (!known) { err = "unsupported down_limit"; return false; }
+    bool mknown = false;
+    for (long v : MEMWATCH_LIMITS) if (v == mem_threshold) { mknown = true; break; }
+    if (!mknown) { err = "unsupported mem_threshold"; return false; }
     std::string conf = "enabled=" + std::string(enabled ? "yes" : "no") +
-                       "\ndown_limit=" + std::to_string(limit) + "\n";
+                       "\ndown_limit=" + std::to_string(limit) +
+                       "\nmem_enabled=" + std::string(mem_enabled ? "yes" : "no") +
+                       "\nmem_threshold=" + std::to_string(mem_threshold) + "\n";
     if (!util::write_file_atomic(RNSDMON_CONF, conf, 0644)) {
         err = "could not write the config";
         return false;
@@ -211,6 +227,13 @@ static std::string rnsdmon_fill(std::string h) {
         o += "\n      <option value=\"" + std::to_string(c.down_limit) +
              "\" selected>" + std::to_string(c.down_limit / 60) + " minutes (custom)</option>";
     h = R(std::move(h), "__RNSDMON_OPTIONS__", o);
+
+    h = R(std::move(h), "__MEMMON_CHECKED__", c.mem_enabled ? "checked" : "");
+    std::string mo;
+    for (long v : MEMWATCH_LIMITS)
+        mo += "\n      <option value=\"" + std::to_string(v) + "\" " +
+              (v == c.mem_threshold ? "selected" : "") + ">" + std::to_string(v) + "%</option>";
+    h = R(std::move(h), "__MEMMON_OPTIONS__", mo);
 
     // Live outage state: /run/rnsd-down-since holds the uptime second at
     // which the current continuous outage began (tmpfs, wanwatch-owned).
@@ -413,6 +436,49 @@ static std::string tcp_clients_rows(const std::string& base) {
 
 // ===================== GET render =====================
 
+// Interface sections in [interfaces] of the rnsd config: how many are
+// declared and how many are enabled. The status card's first paint uses this
+// (no python spawn); the rnstatus table below refines it with live state.
+struct IfCount { int total = 0; int enabled = 0; };
+
+static IfCount count_interfaces(const std::string& cfg) {
+    IfCount c;
+    bool in = false, pending = false, cur = true;
+    auto flush = [&]() {
+        if (!pending) return;
+        ++c.total;
+        if (cur) ++c.enabled;
+        pending = false;
+    };
+    size_t p = 0;
+    while (p < cfg.size()) {
+        size_t e = cfg.find('\n', p);
+        if (e == std::string::npos) e = cfg.size();
+        std::string line = util::trim(cfg.substr(p, e - p));
+        p = e + 1;
+        if (line.empty() || line[0] == '#' || line[0] == ';') continue;
+        if (line.size() >= 2 && line[0] == '[' && line[1] == '[') {
+            flush();
+            in = true; cur = true; pending = true;
+            continue;
+        }
+        if (line[0] == '[') {
+            flush();
+            in = (line == "[interfaces]");
+            continue;
+        }
+        if (!in || !pending) continue;
+        size_t eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        if (util::trim(line.substr(0, eq)) != "enabled") continue;
+        std::string v = util::trim(line.substr(eq + 1));
+        for (char& ch : v) ch = (char)::tolower((unsigned char)ch);
+        cur = !(v == "no" || v == "false" || v == "0" || v == "off");
+    }
+    flush();
+    return c;
+}
+
 void reticulum_page(const Request& req, Response& res) {
     if (!web::require_auth(req, res, false)) return;
     std::string base = web::base();
@@ -453,6 +519,45 @@ void reticulum_page(const Request& req, Response& res) {
         ? "<span class=\"badge ok\">RUNNING</span> (pid " + E(rn.pid) + ")"
         : "<span class=\"badge err\">STOPPED</span>");
 
+    // Simple at-a-glance facts. Uptime comes from the process itself (no
+    // rnstatus spawn); the interface count is the config's, refined by the
+    // live rnstatus table once it loads.
+    std::string uptime = "—";
+    if (rn.running && rn.uptime_s >= 0)
+        uptime = "up " + pretty_uptime((double)rn.uptime_s);
+    // The rnstatus snapshot (kept fresh by S83mon/rnsbox-mon) carries the transport
+    // identity and Reticulum's own uptime; read them here so the first paint
+    // is complete instead of showing "—" until the AJAX fetch lands.
+    std::string thash, tupt;
+    int live_ifaces = 0, live_up = 0;
+    if (rn.running) {
+        std::string snap = util::read_file("/run/rnsbox-rnstatus-v2.json", 1024 * 1024);
+        auto field = [&](const char* key) {
+            std::string pat = std::string("\"") + key + "\":\"";
+            size_t p = snap.find(pat);
+            if (p == std::string::npos) return std::string();
+            p += pat.size();
+            size_t e = snap.find('"', p);
+            return e == std::string::npos ? std::string() : snap.substr(p, e - p);
+        };
+        thash = field("hash");
+        tupt  = field("uptime");
+        for (size_t p = 0; (p = snap.find("\"name\":\"", p)) != std::string::npos; p += 8)
+            ++live_ifaces;
+        for (size_t p = 0; (p = snap.find("\"status\":\"Up", p)) != std::string::npos; p += 12)
+            ++live_up;
+    }
+    if (!tupt.empty()) uptime = "up " + tupt;
+    h = R(std::move(h), "__RNSD_UPTIME__", E(uptime));
+    h = R(std::move(h), "__RNSD_TRANSPORT__", thash.empty() ? "—" : E(thash));
+    IfCount ic = count_interfaces(cfg);
+    h = R(std::move(h), "__RNSD_IFACES__", live_ifaces
+        ? (std::to_string(live_ifaces) + " in rnsd · " + std::to_string(live_up) + " up")
+        : (ic.total ? (std::to_string(ic.enabled) + " enabled of " +
+                       std::to_string(ic.total)) : "—"));
+    h = R(std::move(h), "__RNSD_RSS__",
+          rn.rss_mb >= 0 ? (std::to_string(rn.rss_mb) + " MB RSS") : "—");
+
     h = R(std::move(h), "__RNS_VERSION__", E(installed.empty() ? "unknown" : installed));
 
     std::string badge;
@@ -472,8 +577,7 @@ void reticulum_page(const Request& req, Response& res) {
         chk = "not checked yet";
     }
     if (!clock_trusted())
-        chk += " <span class=\"muted\">— paused: the clock isn't set (HTTPS needs a correct date); "
-               "set it under Settings &rarr; Time &amp; Clock</span>";
+        chk += " <span class=\"muted\">— " + E(CLOCK_NOTE) + "</span>";
     else if (!uerror.empty())
         chk += " <span class=\"muted\">— last attempt failed: " +
                E(update_error_hint(uerror)) + "</span>";
@@ -608,6 +712,8 @@ void reticulum_page(const Request& req, Response& res) {
             "  <tbody id=\"bt-peers\"><tr><td colspan=\"2\" class=\"muted\">none</td></tr></tbody></table>\n";
     }
     h = R(std::move(h), "__BT_FORM_BLOCK__", bt_form);
+    h = R(std::move(h), "__BT_CARD_STYLE__",
+          bt_installed() ? "" : " style=\"display:none\"");
     h = R(std::move(h), "__BT_STACK_STATUS__", bt_status_html(bt));
     h = R(std::move(h), "__BT_ENABLED_CHECKED__", (bt_on && bt_installed()) ? "checked" : "");
     // Advertised name defaults to the box hostname, so the node carries one
@@ -659,9 +765,15 @@ void reticulum_status(const Request& req, Response& res) {
     // fallback — no subprocess on this path.
     sysinfo::Rnsd rn = sysinfo::rnsd_status(with_raw);
     store::SlipConfig sl = store::read_slip();
+    IfCount ic = count_interfaces(store::read_reticulum_config());
+    std::string uptime = rn.uptime_s >= 0 ? pretty_uptime((double)rn.uptime_s) : "";
     std::string o = std::string("{\"running\":") + (rn.running ? "true" : "false") +
         ",\"pid\":" + (rn.pid.empty() ? "0" : rn.pid) +
         ",\"rss_mb\":" + std::to_string(rn.rss_mb) +
+        ",\"uptime_s\":" + std::to_string(rn.uptime_s) +
+        ",\"uptime\":\"" + http::json_escape(uptime) + "\"" +
+        ",\"interfaces\":{\"total\":" + std::to_string(ic.total) +
+        ",\"enabled\":" + std::to_string(ic.enabled) + "}" +
         ",\"restart_days\":" + std::to_string(store::read_rnsd_restart_days()) +
         ",\"slip\":{\"enabled\":\"" + http::json_escape(sl.enabled) +
         "\",\"device\":\"" + http::json_escape(sl.device) +
@@ -790,8 +902,10 @@ void reticulum_rnsdwatchdog(const Request& req, Response& res) {
     bool known = false;
     for (long v : RNSDMON_LIMITS) if (v == limit) { known = true; break; }
     if (!known) limit = 3600;
+    // This legacy endpoint has no memory fields: keep the stored settings.
+    RnsdMonConf cur = rnsdmon_read_conf();
     std::string err;
-    if (!rnsdmon_write(enabled, limit, err)) {
+    if (!rnsdmon_write(enabled, limit, cur.mem_enabled, cur.mem_threshold, err)) {
         render::redirect_flash(res, ret_redirect(), "error", "Watchdog: " + err + ".");
         return;
     }
@@ -899,11 +1013,9 @@ void reticulum_tcpclient_add(const Request& req, Response& res) {
     std::string name = util::trim(req.f("new_name"));
     std::string host = util::trim(req.f("new_host"));
     std::string port = util::trim(req.f("new_port"));
-    if (name.empty() && host.empty() && port.empty()) {
-        name = util::trim(req.f("name"));
-        host = util::trim(req.f("host"));
-        port = util::trim(req.f("port"));
-    }
+    // Empty Add must fail validation, not fall back to the first saved row
+    // (the Add button submits the whole table; the old fallback duplicated
+    // that row when the new-name/host/port fields were left blank).
     std::string err;
     bool ok = store::add_tcp_client(name, host, port, err);
     tcp_client_apply_msg(res, ok, err, "TCP client interface added");
@@ -1003,7 +1115,12 @@ void reticulum_maintenance(const Request& req, Response& res) {
     bool known = false;
     for (long v : RNSDMON_LIMITS) if (v == limit) { known = true; break; }
     if (!known) limit = 3600;
-    if (!rnsdmon_write(watchdog, limit, err)) {
+    bool mem_enabled = req.f("mem_enabled") == "on";
+    long mem_threshold = strtol(req.f("mem_threshold").c_str(), nullptr, 10);
+    bool mknown = false;
+    for (long v : MEMWATCH_LIMITS) if (v == mem_threshold) { mknown = true; break; }
+    if (!mknown) mem_threshold = 90;
+    if (!rnsdmon_write(watchdog, limit, mem_enabled, mem_threshold, err)) {
         render::redirect_flash(res, ret_redirect(), "error", "Watchdog: " + err + ".");
         return;
     }
@@ -1012,7 +1129,8 @@ void reticulum_maintenance(const Request& req, Response& res) {
     render::redirect_flash(res, ret_redirect(), "success",
         "Maintenance settings saved (check/download " +
         std::string(auto_update ? "on" : "off") + ", auto-install " +
-        std::string(auto_install ? "on" : "off") + ", auto-restart, watchdog).");
+        std::string(auto_install ? "on" : "off") + ", auto-restart, watchdog, memory watchdog " +
+        std::string(mem_enabled ? ("at " + std::to_string(mem_threshold) + "%").c_str() : "off") + ").");
 }
 
 // checkupdate / downloadupdate / installupdate — ASYNC JSON endpoints (the
@@ -1031,12 +1149,12 @@ static void update_json(Response& res, bool ok, bool reload, const std::string& 
 
 void reticulum_checkupdate(const Request& req, Response& res) {
     if (!web::require_auth(req, res, true)) return;
-    // Before python starts, so no bogus checked_at / error gets persisted.
-    if (!clock_trusted()) {
-        update_json(res, false, false, std::string("Can't check for updates: ") + NO_CLOCK);
-        return;
-    }
-    auto rr = util::run({"/usr/bin/python3", "/usr/lib/rnsbox/updatecheck.py", "check"}, "", 60);
+    // No clock gate: rngit (Git over Reticulum) needs no date; the helper
+    // skips only its HTTPS/PyPI fallback when the clock is untrusted.
+    // Git over Reticulum path+link+manifest can take ~30 s on a slow mesh;
+    // the helper's own rngit probe times out at 60 s, and the PyPI/mirror
+    // fallback fits in the remaining budget.
+    auto rr = util::run({"/usr/bin/python3", "/usr/lib/rnsbox/updatecheck.py", "check"}, "", 120);
     std::string j = rr.out;
     if (j.find("installed") == std::string::npos && j.find("error") == std::string::npos) {
         update_json(res, false, false, "Update check failed — the box may be offline. Last known latest: unknown.");
@@ -1058,11 +1176,11 @@ void reticulum_checkupdate(const Request& req, Response& res) {
 
 void reticulum_downloadupdate(const Request& req, Response& res) {
     if (!web::require_auth(req, res, true)) return;
-    if (!clock_trusted()) {
-        update_json(res, false, false, std::string("Can't download the update: ") + NO_CLOCK);
-        return;
-    }
-    auto rr = util::run({"/usr/bin/python3", "/usr/lib/rnsbox/updatecheck.py", "download"}, "", 150);
+    // rngit needs no clock; the helper skips only the HTTPS/PyPI fallback
+    // when the date is untrusted.
+    // rngit may transfer the wheel over a slow Reticulum link; the helper caps
+    // its rngit attempt at 180 s and skips the HTTP fallback after 120 s.
+    auto rr = util::run({"/usr/bin/python3", "/usr/lib/rnsbox/updatecheck.py", "download"}, "", 250);
     std::string j = rr.out;
     if (j.find("version") == std::string::npos && j.find("error") == std::string::npos) {
         update_json(res, false, false, "Download failed — no answer from the update helper.");
@@ -1240,34 +1358,111 @@ static bool bt_peers_cache_age(time_t& age) {
     return true;
 }
 
-// The BLE transport logs "received identity handshake from dev:AA:BB:..:
-// <hash>" (rnsd.log on BSP images, syslog elsewhere) — an unnamed RPA shows
-// up in the table as its Reticulum identity instead of a bare question mark.
+// The BLE transport logs the peer's Reticulum identity when the handshake
+// completes. The exact wording depends on the role:
+//   "connected to AA:BB:.. as CENTRAL, received identity: <hash>"
+//   "received identity handshake from AA:BB:..: <hash>"
+//   "received identity handshake from central AA:BB:..: <hash>"
+// An unnamed RPA (or a BlueZ name that is just the address) then shows up as
+// its Reticulum identity instead of "?" / a random MAC.
+static std::string ident_hash_prefix(const std::string& s, size_t from) {
+    size_t e = s.find('\n', from);
+    std::string h = util::trim(s.substr(from, e == std::string::npos ? std::string::npos : e - from));
+    size_t c = h.find_first_not_of("0123456789abcdefABCDEF");
+    if (c != std::string::npos) h = h.substr(0, c);
+    return h.size() >= 8 ? h.substr(0, 8) : std::string();
+}
+
+static void add_identity_name(std::map<std::string, std::string>& m, std::string addr, const std::string& hash) {
+    for (char& c : addr) c = (char)toupper((unsigned char)c);
+    if (addr.size() == 17 && !hash.empty()) m[addr] = "RNS " + hash;
+}
+
 static std::map<std::string, std::string> bt_identity_names() {
     std::map<std::string, std::string> m;
-    const char* logs[] = {"/var/log/rnsd.log", "/var/log/messages"};
+    // Older first, current last: the newest handshake wins.
+    const char* logs[] = {"/var/log/messages.0", "/var/log/rnsd.log", "/var/log/messages"};
     for (const char* lg : logs) {
-        std::string s = util::read_file(lg, 192 * 1024);
+        std::string s = util::read_file(lg, 512 * 1024);
         if (s.empty()) continue;
-        const std::string pat = "received identity handshake from dev:";
+
+        // Peripheral role: "received identity handshake from [central ]AA:..: <hash>"
+        const std::string p1 = "received identity handshake from ";
         size_t pos = 0;
-        while ((pos = s.find(pat, pos)) != std::string::npos) {
-            pos += pat.size();
-            // "dev:78:37:EC:8A:11:8C: 35e53f845c9cbca3" — a fixed 17-char
-            // address, then ": " and the 16-byte hash (newest entry wins).
-            if (pos + 19 > s.size()) break;
-            std::string addr = s.substr(pos, 17);
-            if (s[pos + 17] != ':') continue;
-            size_t e = s.find('\n', pos);
-            std::string hash = util::trim(s.substr(pos + 19, e == std::string::npos ? std::string::npos : e - pos - 19));
-            size_t c = hash.find_first_not_of("0123456789abcdef");
-            if (c != std::string::npos) hash = hash.substr(0, c);
-            if (addr.size() == 17 && hash.size() >= 8)
-                m[addr] = "RNS " + hash.substr(0, 8);
+        while ((pos = s.find(p1, pos)) != std::string::npos) {
+            size_t a = pos + p1.size();
+            if (s.compare(a, 8, "central ") == 0) a += 8;
+            pos = a;
+            if (a + 19 > s.size()) break;
+            std::string addr = s.substr(a, 17);
+            if (s[a + 17] != ':' || s[a + 18] != ' ') continue;
+            add_identity_name(m, addr, ident_hash_prefix(s, a + 19));
         }
-        if (!m.empty()) break;
+
+        // Central role: "connected to AA:.. as CENTRAL, received identity: <hash>"
+        const std::string p2 = "connected to ";
+        pos = 0;
+        while ((pos = s.find(p2, pos)) != std::string::npos) {
+            size_t a = pos + p2.size();
+            pos = a;
+            if (a + 18 > s.size()) break;
+            std::string addr = s.substr(a, 17);
+            if (s[a + 17] != ' ' || s.compare(a + 18, 3, "as ") != 0) continue;
+            size_t idp = s.find(", received identity: ", a + 21);
+            if (idp == std::string::npos) continue;
+            add_identity_name(m, addr, ident_hash_prefix(s, idp + 20));
+        }
     }
     return m;
+}
+
+// Fallback for the peers card when bluetoothctl itself is unusable (BlueZ
+// 5.79 on this board can abort on a D-Bus assertion while a peer is doing
+// service discovery). The rnstatus snapshot already contains one
+// BLEPeerInterface per live Reticulum peer; show those instead of a false
+// "none". Their Bluetooth address is not in the snapshot (the name is the
+// Reticulum identity), so the address column is a dash.
+static std::vector<std::pair<std::string, std::string>> bt_rnsstatus_peers() {
+    std::vector<std::pair<std::string, std::string>> out;
+    std::string s = util::read_file("/run/rnsbox-rnstatus-v2.json", 1024 * 1024);
+    if (s.empty()) return out;
+    json::Value root; std::string err;
+    if (!json::parse(s, root, err)) return out;
+    const json::Value* arr = root.find("interfaces");
+    if (!arr || !arr->is_array()) return out;
+    auto str_of = [](const json::Value& v, const char* key) {
+        const json::Value* x = v.find(key);
+        return x ? x->as_string() : std::string();
+    };
+    for (const json::Value& v : arr->arr) {
+        if (!v.is_object()) continue;
+        std::string full = str_of(v, "full_name");
+        std::string type = str_of(v, "type");
+        if (full.find("BLEPeerInterface") == std::string::npos &&
+            type != "BLEPeerInterface") continue;
+        std::string details = str_of(v, "details");
+        std::string hash = str_of(v, "hash");
+        std::string name;
+        if (!details.empty() && details != "Unknown") name = details;
+        else if (!hash.empty()) name = "BLE " + hash.substr(0, 8);
+        else if (!full.empty()) name = full;
+        else name = "BLE peer";
+        out.push_back({name, "—"});
+    }
+    return out;
+}
+
+// BlueZ falls back to the address as the name for an unnamed peer; showing
+// "RNS <hash>" is more useful than "5E-B2-C3-26-BA-84".
+static bool name_looks_like_mac(const std::string& s) {
+    if (s.size() != 17) return false;
+    char sep = s[2];
+    if (sep != ':' && sep != '-') return false;
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (i % 3 == 2) { if (s[i] != sep) return false; }
+        else if (!isxdigit((unsigned char)s[i])) return false;
+    }
+    return true;
 }
 
 void reticulum_bluetooth_peers(const Request& req, Response& res) {
@@ -1281,7 +1476,10 @@ void reticulum_bluetooth_peers(const Request& req, Response& res) {
         if (!cached.empty()) { res.body = cached; return; }
     }
 
-    util::RunResult r = util::run({"/usr/bin/bluetoothctl", "devices", "Connected"}, "", 8);
+    // --timeout makes bluetoothctl exit even while the adapter is scanning;
+    // without it the command can sit in the interactive loop until util::run
+    // kills it, which used to leave the peers table stuck at "none".
+    util::RunResult r = util::run({"/usr/bin/bluetoothctl", "--timeout", "5", "devices", "Connected"}, "", 8);
     std::vector<std::pair<std::string, std::string>> found;
     size_t pos = 0;
     const std::string& s = r.out;
@@ -1304,6 +1502,7 @@ void reticulum_bluetooth_peers(const Request& req, Response& res) {
         std::string cached = util::read_file(BT_PEERS_CACHE, 64 * 1024);
         if (!cached.empty()) { res.body = cached; return; }
     }
+    if (found.empty()) found = bt_rnsstatus_peers();
 
     std::map<std::string, std::string> ident;
     if (!found.empty()) ident = bt_identity_names();
@@ -1312,7 +1511,7 @@ void reticulum_bluetooth_peers(const Request& req, Response& res) {
     bool first = true;
     for (const auto& d : found) {
         std::string name = d.second;
-        if (name.empty()) {
+        if (name.empty() || name_looks_like_mac(name)) {
             auto it = ident.find(d.first);
             if (it != ident.end()) name = it->second;
         }
@@ -1542,12 +1741,18 @@ static long rnstatus_age() {
 // Run `rnstatus -a -j`, normalise, rewrite the cache. Shared by the
 // synchronous path and the stale-while-revalidate child.
 static std::string rnstatus_collect(bool* ok) {
-    util::RunResult rr = util::run({"/usr/bin/rnstatus", "-a", "-j"}, "", 25, RNSTATUS_MAX);
+    // 60 s: a Python cold start plus the shared-instance query is slow on the
+    // 580 MHz boards and slower still while rnsd is busy with the public TCP
+    // clients; 25 s cut it off mid-output and the parse failed.
+    util::RunResult rr = util::run({"/usr/bin/rnstatus", "-a", "-j"}, "", 60, RNSTATUS_MAX);
     std::vector<IfStat> ifs;
     std::string thash, tupt, tstate;
     if (!rnstatus_parse(rr.out, ifs, thash, tupt, tstate)) {
         if (ok) *ok = false;
-        return "{\"error\":\"rnstatus returned nothing (is rnsd running?)\"}";
+        std::string d = rr.out.substr(0, 200);
+        for (char& c : d) if (c == '\n' || c == '\r' || c == '\t') c = ' ';
+        return "{\"error\":\"rnstatus returned nothing (is rnsd running?)\","
+               "\"detail\":\"" + http::json_escape(d) + "\"}";
     }
     if (ok) *ok = true;
     std::string o = "{\"v\":2,\"age\":" + std::to_string(::time(nullptr)) + ",\"interfaces\":[";
@@ -1579,6 +1784,30 @@ static std::string rnstatus_collect(bool* ok) {
     return o;
 }
 
+// Boot-time cache warm-up (S83mon/rnsbox-mon): the first page load after a reboot
+// would otherwise run rnstatus synchronously and sit on "loading…" for the
+// Python cold start plus the shared-instance query.
+bool rnstatus_prewarm() {
+    bool ok = false;
+    (void)rnstatus_collect(&ok);
+    return ok;
+}
+
+// Add "age_s" = seconds since the snapshot was taken. Computed on the server
+// clock, so the RTC-less box's 1970/NTP jumps do not produce a bogus age in
+// the browser. The page shows "updated N s ago" from it.
+static std::string with_age_s(const std::string& j) {
+    size_t p = j.find("\"age\":");
+    if (p == std::string::npos) return j;
+    const char* v = j.c_str() + p + 6;
+    char* end = nullptr;
+    long age = strtol(v, &end, 10);
+    if (end == v) return j;
+    long s = (long)::time(nullptr) - age;
+    if (s < 0) s = 0;
+    return j.substr(0, p) + "\"age_s\":" + std::to_string(s) + "," + j.substr(p);
+}
+
 // GET /reticulum/rnstatus.json — the parsed interface table.
 //
 // rnstatus -a -j costs a python cold start (5-10 s on this CPU), so a request
@@ -1591,7 +1820,7 @@ void reticulum_rnstatus(const Request& req, Response& res) {
     if (!web::require_auth(req, res, true)) return;
     res.content_type = "application/json";
     std::string cached;
-    if (rnstatus_fresh(cached)) { res.body = cached; return; }
+    if (rnstatus_fresh(cached)) { res.body = with_age_s(cached); return; }
 
     long age = rnstatus_age();
     if (age >= 0) {
@@ -1623,7 +1852,7 @@ void reticulum_rnstatus(const Request& req, Response& res) {
             }
             // Parent: serve the stale snapshot; the poll picks up the fresh
             // one a few seconds later.
-            res.body = stale;
+            res.body = with_age_s(stale);
             return;
         }
     }
@@ -1631,8 +1860,8 @@ void reticulum_rnstatus(const Request& req, Response& res) {
     int lfd = ::open(RNSTATUS_LOCK, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
     if (lfd >= 0) ::flock(lfd, LOCK_EX);
     struct LockGuard { int fd; ~LockGuard() { if (fd >= 0) ::close(fd); } } guard{lfd};
-    if (rnstatus_fresh(cached)) { res.body = cached; return; }
-    res.body = rnstatus_collect(nullptr);
+    if (rnstatus_fresh(cached)) { res.body = with_age_s(cached); return; }
+    res.body = with_age_s(rnstatus_collect(nullptr));
 }
 
 // Traffic (tx/rx, pretty strings) of one interface out of the parsed rnstatus
@@ -1701,12 +1930,26 @@ static std::string rnode_fill(std::string h) {
     std::string sel_off = !usb && !ble ? " selected" : "";
     std::string sel_usb = usb ? " selected" : "";
     std::string sel_ble = ble ? " selected" : "";
-    // Short labels only: board names / device paths live in the select's
-    // title and the per-transport field notes, not in the option text.
-    h = R(std::move(h), "__RNODE_TRANSPORT_OPTIONS__",
-          "<option value=\"off\"" + sel_off + ">Off (default)</option>\n"
-          "      <option value=\"usb\"" + sel_usb + ">USB serial</option>\n"
-          "      <option value=\"ble\"" + sel_ble + ">BLE</option>");
+    // An image without the BLE stack gets no BLE option: offering it would
+    // only produce an interface that never starts.
+    bool ble_ok = store::rnode_ble_stack_present();
+    std::string topts =
+        "<option value=\"off\"" + sel_off + ">Off (default)</option>\n"
+        "      <option value=\"usb\"" + sel_usb + ">USB serial</option>";
+    if (ble_ok) topts += "\n      <option value=\"ble\"" + sel_ble + ">BLE</option>";
+    h = R(std::move(h), "__RNODE_TRANSPORT_OPTIONS__", topts);
+    h = R(std::move(h), "__RNODE_TITLE_SUFFIX__", ble_ok ? " (USB / BLE)" : " (USB)");
+    h = R(std::move(h), "__RNODE_INTRO__", ble_ok
+        ? "A local RNode LoRa modem attached to this box — over a USB serial port "
+          "(<code>/dev/ttyACM*</code>, <code>/dev/ttyUSB*</code>; the usual path on "
+          "full-size Raspberry Pis) or over BLE (RNode firmware on nRF52 boards: "
+          "T-Echo, RAK4631). The radio parameters below are written into an "
+          "<code>RNodeInterface</code> section of the rnsd config. Off by default."
+        : "A local RNode LoRa modem attached over a USB serial port "
+          "(<code>/dev/ttyACM*</code>, <code>/dev/ttyUSB*</code>). This image has no "
+          "BLE stack, so only the USB transport is offered. The radio parameters "
+          "below are written into an <code>RNodeInterface</code> section of the rnsd "
+          "config. Off by default.");
 
     // Device field: a datalist over the USB serial devices present right now,
     // so "auto" and a pinned /dev/ttyACM0 are both one click away.

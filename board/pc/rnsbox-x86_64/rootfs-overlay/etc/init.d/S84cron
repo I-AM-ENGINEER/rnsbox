@@ -8,8 +8,8 @@
 # /etc/rnsbox/cron.conf; this script materializes it into the spool.
 #
 # Scheduled tasks: the optional rnsd auto-restart (memory hygiene):
-# rnsd_restart_days=N restarts rnsd every N days at 04:00 (N=0, the default,
-# means no entry), the daily 05:00 rnsd update check (update_check=yes), and
+# rnsd_restart_days=N restarts rnsd every N days at rnsd_restart_time (default 04:00; N=0, the default,
+# means no entry), the daily 05:00 rnsd update check + wheel download (update_check=yes), and
 # always the hourly RTC resync (`S45ntpsync resync`, at :17): the clock
 # re-checked against NTP and written to the RTC, since the kernel's own
 # 11-minute write-back can't be relied on here (see S45ntpsync). It does
@@ -50,6 +50,14 @@ gen_crontab() {
 	days=$(cfg rnsd_restart_days)
 	case "$days" in ''|*[!0-9]*) days=0 ;; esac
 	read_uc
+	rtime=$(cfg rnsd_restart_time)
+	hh=${rtime%%:*}; mm=${rtime#*:}
+	case "$hh" in ''|*[!0-9]*) hh=4 ;; esac
+	case "$mm" in ''|*[!0-9]*) mm=0 ;; esac
+	hh=$(echo "$hh" | sed 's/^0*//'); [ -z "$hh" ] && hh=0
+	mm=$(echo "$mm" | sed 's/^0*//'); [ -z "$mm" ] && mm=0
+	[ "$hh" -le 23 ] 2>/dev/null || hh=4
+	[ "$mm" -le 59 ] 2>/dev/null || mm=0
 	# Built beside the spool (same tmpfs), then renamed in: rename(2) replaces
 	# whatever is at the path instead of following it, and the one directory
 	# change it makes is what tells crond to rescan (next wakeup, <= 60 s).
@@ -63,12 +71,12 @@ gen_crontab() {
 		echo "PATH=/sbin:/usr/sbin:/bin:/usr/bin"
 		if [ "$days" -ge 1 ] 2>/dev/null && [ "$days" -le 7 ]; then
 			# min hour day-of-month month day-of-week  command
-			# every N days at 04:00; kick-restart does nothing after an
+			# every N days at rnsd_restart_time; kick-restart does nothing after an
 			# explicit `S82rnsd stop` (operator or rcK), unlike restart
-			echo "0 4 */$days * * /etc/init.d/S82rnsd kick-restart >> $LOG 2>&1"
+			echo "$mm $hh */$days * * /etc/init.d/S82rnsd kick-restart >> $LOG 2>&1"
 		fi
 		if [ "$uc" = yes ]; then
-			# daily at 05:00: notify-only check for a newer rnsd (offline-safe)
+			# daily at 05:00: check for a newer rnsd and download its wheel (offline-safe)
 			echo "0 5 * * * /usr/sbin/rnsbox-update-check >> $LOG 2>&1"
 		fi
 		# hourly at :17 (clear of the jobs above): clock checked against NTP
@@ -77,10 +85,10 @@ gen_crontab() {
 	} > "$tmp" || { rm -f "$tmp"; return 1; }
 	chmod 600 "$tmp"
 	mv -f "$tmp" "$CRONTAB"
-	[ "$days" -ge 1 ] 2>/dev/null && echo "S84cron: rnsd auto-restart every $days day(s) at 04:00" \
+	[ "$days" -ge 1 ] 2>/dev/null && echo "S84cron: rnsd auto-restart every $days day(s) at $(printf '%02d:%02d' "$hh" "$mm")" \
 	                              || echo "S84cron: rnsd auto-restart disabled"
-	[ "$uc" = yes ] && echo "S84cron: daily rnsd update check enabled" \
-	                || echo "S84cron: rnsd update check disabled"
+	[ "$uc" = yes ] && echo "S84cron: daily rnsd update check/download enabled" \
+	                || echo "S84cron: rnsd update check/download disabled"
 	echo "S84cron: hourly RTC resync from NTP (a no-op without an RTC)"
 }
 

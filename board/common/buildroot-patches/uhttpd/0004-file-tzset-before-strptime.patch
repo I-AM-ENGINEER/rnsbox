@@ -1,0 +1,42 @@
+From: RNSBox <rnsbox@localhost>
+Subject: [PATCH] file: call tzset() before strptime()
+
+musl 1.2.6's strptime() implements %Z as
+
+    strlen(tzname[0])
+
+without calling tzset() first. tzname is only populated by tzset(), so a
+process that never touched localtime() has tzname[0] == NULL and any
+strptime() with %Z dereferences NULL.
+
+uh_file_date2unix() parses If-Modified-Since / If-Unmodified-Since with
+"%a, %d %b %Y %H:%M:%S %Z". A browser sends those headers for cached
+CSS/JS on the second visit, and the NULL read killed uhttpd: the portal
+went dead ("Unable to connect") with a SIGSEGV at strlen(NULL) inside
+strptime(), even though the box itself kept running.
+
+tzset() sets tzname to UTC when TZ and /etc/localtime are absent, and the
+following strptime() then just skips the trailing "GMT" token.
+
+---
+ file.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/file.c b/file.c
+--- a/file.c
++++ b/file.c
+@@ -309,6 +309,14 @@ static time_t uh_file_date2unix(const char *date)
+ {
+ 	struct tm t;
+ 
++	/*
++	 * musl's strptime("%Z") reads tzname[0] without calling tzset();
++	 * tzname stays NULL until tzset() runs, so a request carrying
++	 * If-Modified-Since (date + "GMT") crashed uhttpd on a NULL
++	 * dereference. Populate tzname first (UTC when no zone is set).
++	 */
++	tzset();
++
+ 	memset(&t, 0, sizeof(t));
+ 
+ 	if (strptime(date, "%a, %d %b %Y %H:%M:%S %Z", &t) != NULL)

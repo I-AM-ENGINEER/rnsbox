@@ -1,9 +1,11 @@
 """Check, download and (optionally) install a newer rnsd (the 'rns' package).
 
-Runs periodically from cron (and once, best-effort, at boot): it queries PyPI
-(falling back to a reachable PEP 503 mirror), compares the latest release to
-the installed version, downloads and verifies the wheel, and writes a small
-JSON state file the portal reads.
+Runs periodically from cron (and once, best-effort, at boot). The primary
+source is Git over Reticulum: `rngit release` fetches the latest signed
+manifest and artifact from the official Reticulum release node. If that node
+is unreachable, it falls back to PyPI (and a reachable PEP 503 mirror). It
+compares the latest release to the installed version, downloads and verifies
+the wheel, and writes a small JSON state file the portal reads.
 
 Check and download never touch the installed package. install_downloaded()
 replaces site-packages from the downloaded wheel, restarts rnsd, waits up to
@@ -62,7 +64,10 @@ CA_BUNDLES = (
 # pins the release signing identity (the same one that signed the anchor).
 RNGIT_BIN = "/usr/bin/rngit"
 RNGIT_ANCHOR_SHIPPED = "/usr/share/rnsbox-portal/rns-release.rsm"
+# Release signing identity from the official rns_1.5.7.rsm manifest.
 RNGIT_SIGNER = "bc7291552be7a58f361522990465165c"
+# Matches nothing on purpose: rngit still fetches and validates the latest
+# manifest (which is what a check needs), then reports no matching artifacts.
 RNGIT_PROBE_ARTIFACT = "latest:__rnsbox_probe__"
 RNGIT_WHEEL_ARTIFACT = "latest:rns-*-py3-none-any.whl"
 RNGIT_CHECK_TIMEOUT = 60
@@ -81,6 +86,17 @@ TIMEOUT = 8
 DOWNLOAD_TIMEOUT = 90      # one ~1 MB pure-python wheel, even on a slow WAN
 
 _ssl_ctx = None
+
+
+def _clock_ok():
+    """True when a real date is available for TLS (HTTPS/PyPI). Git over
+    Reticulum (rngit) verifies signatures, not dates, so it works without."""
+    try:
+        if os.path.exists("/run/clock-synced"):
+            return True
+    except OSError:
+        pass
+    return time.time() >= 1600000000     # 2020-09-13
 
 
 def _ssl_context():
@@ -163,8 +179,10 @@ def _rngit_fetch(target, timeout):
     try:
         cmd = [RNGIT_BIN, "release", "--signer", RNGIT_SIGNER,
                anchor, "fetch", target]
+        env = dict(os.environ)
+        env.setdefault("HOME", "/root")   # CGI may run without HOME
         cp = subprocess.run(cmd, cwd=tmp, capture_output=True, text=True,
-                            timeout=timeout)
+                            timeout=timeout, env=env)
         out = (cp.stdout or "") + (cp.stderr or "")
         ver = None
         manifests = sorted(glob.glob(os.path.join(tmp, "rns_*.rsm")))
@@ -408,6 +426,12 @@ def _resolve_release(pkg=PKG, use_rngit=True):
             return _rngit_release()
         except Exception as e:
             errors.append("rngit: %s" % _errstr(e))
+    # HTTPS needs a valid certificate date; rngit does not. With no trusted
+    # clock, stop after the rngit attempt instead of recording a TLS failure.
+    if not _clock_ok():
+        raise RuntimeError("; ".join(errors + [
+            "clock not set - HTTPS fallback skipped (set the clock under "
+            "Settings -> Time & Clock); rngit needs no clock"])[-400:])
     prev = read_state().get("source") or ""
     for host, index in _sources(prev):
         try:
@@ -457,7 +481,8 @@ def check(pkg=PKG):
     state = read_state()           # keep prior 'latest' if this attempt fails
     state.update({"package": pkg,
                   "installed": installed_version(pkg),
-                  "checked_at": int(time.time())})
+                  # 0 = "not checked yet": a 1970 stamp is worse than none.
+                  "checked_at": int(time.time()) if _clock_ok() else 0})
     try:
         rel = _resolve_release(pkg)
         ver = rel["version"]
@@ -692,22 +717,57 @@ def download_update(pkg=PKG):
     res = {"ok": False, "version": None, "source": "", "error": ""}
     installed = installed_version(pkg)
 
+    # Reuse a wheel that is already downloaded and verified for the latest
+    # version (the daily cron runs even when auto-install is off).
+    st0 = read_state()
+    dlv = st0.get("downloaded_version") or ""
+    if (dlv and _newer(dlv, installed) and st0.get("update_available")
+            and dlv == (st0.get("latest") or "")):
+        p = _wheel_path(dlv)
+        if os.path.isfile(p):
+            want = (st0.get("downloaded_sha256") or "").lower()
+            if not want or _file_sha256(p) == want:
+                res.update({"ok": True, "version": dlv,
+                            "source": st0.get("downloaded_source") or
+                                      st0.get("source", "")})
+                return res
+
     # 1) Git over Reticulum: rngit verifies both manifest and artifact.
-    ver, wheel, _manifests, _out, rngit_err = _rngit_fetch(
-        RNGIT_WHEEL_ARTIFACT, RNGIT_DOWNLOAD_TIMEOUT)
-    if ver and wheel:
-        res["version"] = ver
-        res["source"] = "rngit"
-        if not _newer(ver, installed):
-            _record_up_to_date(pkg, installed, ver, "rngit")
-            res["error"] = "already up to date"
+    # If the last check already fell back to PyPI/mirror because rngit was
+    # unreachable, do not burn another long timeout here.
+    prev_source = read_state().get("source") or ""
+    use_rngit = prev_source in ("", "rngit")
+    t0 = time.monotonic()
+    ver = wheel = None
+    rngit_err = ""
+    if use_rngit:
+        ver, wheel, _manifests, _out, rngit_err = _rngit_fetch(
+            RNGIT_WHEEL_ARTIFACT, RNGIT_DOWNLOAD_TIMEOUT)
+        if ver and wheel:
+            res["version"] = ver
+            res["source"] = "rngit"
+            if not _newer(ver, installed):
+                _record_up_to_date(pkg, installed, ver, "rngit")
+                res["error"] = "already up to date"
+                return res
+            _remove_other_wheels(pkg, wheel)
+            _record_downloaded(pkg, installed, ver, "rngit", _file_sha256(wheel))
+            res["ok"] = True
             return res
-        _remove_other_wheels(pkg, wheel)
-        _record_downloaded(pkg, installed, ver, "rngit", _file_sha256(wheel))
-        res["ok"] = True
+        if ver and not wheel:
+            rngit_err = rngit_err or "rngit release has no wheel artifact"
+
+    # A long rngit attempt leaves no room for the HTTP fallback in the same
+    # request; report the rngit failure instead of running past the timeout.
+    if time.monotonic() - t0 > RNGIT_FALLBACK_BUDGET:
+        res["error"] = ("rngit: %s" % (rngit_err or "timed out"))[:400]
+        try:
+            st = read_state()
+            st["error"] = res["error"]
+            _write_state(st)
+        except Exception:
+            pass
         return res
-    if ver and not wheel:
-        rngit_err = rngit_err or "rngit release has no wheel artifact"
 
     # 2) PyPI / reachable mirror fallback.
     try:
@@ -883,8 +943,9 @@ def cron(pkg=PKG):
         print("update-check: %s %s available, download failed (%s)"
               % (st.get("package"), st.get("latest"), dl.get("error")))
         return st
-    print("update-check: %s %s downloaded (installed %s)"
-          % (st.get("package"), st.get("latest"), st.get("installed")))
+    print("update-check: %s %s downloaded via %s (installed %s)"
+          % (st.get("package"), st.get("latest"),
+             dl.get("source") or "?", st.get("installed")))
     if _conf_bool("update_install", False):
         res = install_downloaded(pkg)
         if res.get("ok"):

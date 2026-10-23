@@ -6,6 +6,10 @@
     <tr><th>State</th><td id="rnsd-state">
       __RNSD_STATE__
     </td></tr>
+    <tr><th>Uptime</th><td id="rnsd-uptime">__RNSD_UPTIME__</td></tr>
+    <tr><th>Interfaces</th><td id="rnsd-ifaces">__RNSD_IFACES__</td></tr>
+    <tr><th>Transport</th><td id="rnsd-transport" class="mono">__RNSD_TRANSPORT__</td></tr>
+    <tr><th>Memory</th><td id="rnsd-mem">__RNSD_RSS__</td></tr>
     <tr><th>Version</th><td>
       Reticulum (rnsd) <strong>__RNS_VERSION__</strong>
       __UPDATE_BADGE__
@@ -27,6 +31,9 @@
       __UPDATE_DOWNLOAD_LINE__
     </td></tr>
   </table>
+  <p class="muted" style="margin:8px 0 0">Releases are fetched over Reticulum
+  with <code>rngit</code> and verified against the signed release manifest.
+  PyPI/mirrors are used only when the Reticulum release node is unreachable.</p>
 
   <form method="post" action="__BASE__/reticulum/maintenance">
     <div class="row-form">
@@ -59,6 +66,15 @@
         <span class="muted">Watchdog state</span>
         <span>__RNSDMON_STATE__</span>
       </div>
+    </div>
+
+    <div class="row-form" style="margin-top:10px">
+      <label class="check" style="margin:0"><input type="checkbox" name="mem_enabled" __MEMMON_CHECKED__> Memory watchdog:
+        restart rnsd above</label>
+      <select name="mem_threshold">
+        __MEMMON_OPTIONS__
+      </select>
+      <span class="muted">of RAM used (total &minus; available)</span>
     </div>
 
     <div class="form-actions">
@@ -131,7 +147,7 @@
   </form>
 </section>
 
-<section class="card">
+<section class="card"__BT_CARD_STYLE__>
   <h3>Bluetooth (BLE)</h3>
   <p class="muted">Short-range radio transport (typically tens of metres): the box
   scans for nearby Reticulum BLE peers <em>and</em> accepts inbound connections
@@ -151,12 +167,8 @@
 </section>
 
 <section class="card">
-  <h3>RNode LoRa modem (USB / BLE)</h3>
-  <p class="muted">A local RNode LoRa modem attached to this box — over a USB
-  serial port (<code>/dev/ttyACM*</code>, <code>/dev/ttyUSB*</code>; the usual
-  path on full-size Raspberry Pis) or over BLE (RNode firmware on nRF52 boards:
-  T-Echo, RAK4631). The radio parameters below are written into an
-  <code>RNodeInterface</code> section of the rnsd config. Off by default.</p>
+  <h3>RNode LoRa modem__RNODE_TITLE_SUFFIX__</h3>
+  <p class="muted">__RNODE_INTRO__</p>
 
   <table class="kv">
     <tr><th>Status</th><td id="rnode-live-status">__RNODE_STATUS__</td></tr>
@@ -483,17 +495,39 @@ function loadRnstatus(){
     RN_DATA = d.interfaces || [];
     renderRnstatus();
     var t = d.transport || {};
-    var when = d.age ? ' · updated ' + new Date(d.age * 1000).toTimeString().slice(0, 8) : '';
+    var upEl = document.getElementById('rnsd-uptime');
+    var ifEl = document.getElementById('rnsd-ifaces');
+    var trEl = document.getElementById('rnsd-transport');
+    if (upEl && t.uptime) upEl.textContent = 'up ' + t.uptime;
+    if (ifEl) {
+      var nup = RN_DATA.filter(function(f){ return (f.status || '').indexOf('Up') === 0; }).length;
+      ifEl.textContent = RN_DATA.length + ' in rnsd · ' + nup + ' up';
+    }
+    if (trEl && t.hash) { trEl.textContent = t.hash; trEl.title = t.hash; }
+    var when = '';
+    if (typeof d.age_s === 'number') {
+      var s = d.age_s;
+      var rel = s < 60 ? s + ' s ago'
+              : s < 3600 ? Math.floor(s / 60) + ' min ago'
+              : Math.floor(s / 3600) + ' h ago';
+      when = ' · updated ' + rel;
+    } else if (d.age) {
+      when = ' · updated ' + new Date(d.age * 1000).toTimeString().slice(0, 8);
+    }
     meta.textContent = RN_DATA.length + ' interface' + (RN_DATA.length === 1 ? '' : 's') +
       (t.hash ? ' · transport ' + t.hash : '') +
       (t.uptime ? ' · up ' + t.uptime : '') + when;
     // refresh the state badge too (it's free and may have changed since load)
     fetch('__BASE__/reticulum/status').then(function(r){ return r.json(); }).then(function(s){
-      if (s.running) {
-        st.innerHTML = '<span class="badge ok">RUNNING</span> (pid ' + escH(s.pid) + ')' +
-                       (s.rss_mb ? ' · ' + escH(s.rss_mb) + ' MB RSS' : '');
-      } else {
-        st.innerHTML = '<span class="badge err">STOPPED</span>';
+      st.innerHTML = s.running
+        ? '<span class="badge ok">RUNNING</span> (pid ' + escH(s.pid) + ')'
+        : '<span class="badge err">STOPPED</span>';
+      var memEl = document.getElementById('rnsd-mem');
+      if (memEl) memEl.textContent = (typeof s.rss_mb === 'number' && s.rss_mb >= 0)
+        ? s.rss_mb + ' MB RSS' : '—';
+      if (upEl && !t.uptime && s.uptime) upEl.textContent = 'up ' + s.uptime;
+      if (ifEl && !RN_DATA.length && s.interfaces) {
+        ifEl.textContent = s.interfaces.enabled + ' enabled of ' + s.interfaces.total;
       }
     }).catch(function(){});
   }).catch(function(e){

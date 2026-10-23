@@ -5,18 +5,11 @@
 # or S46wanwatch). The helper is stdlib-only Python (no Flask, no
 # rnsbox_portal package); the C++ portal invokes the same script for the
 # on-demand "Check for updates" / "Download" / "Install" buttons on the
-# Reticulum tab (and refuses them itself while the clock isn't set). Arg
-# defaults to "cron" (check, download the wheel and, if update_install=yes,
+# Reticulum tab. Arg defaults to "cron" (check, download the wheel and, if update_install=yes,
 # install it; prints a human summary); the portal passes "check" / "download" /
 # "install" (JSON output).
 #
-# cron: skipped while the clock isn't trusted (/run/clock-synced, S45ntpsync):
-# HTTPS to PyPI fails "certificate is not yet valid" at a 1970 / ~2000 clock,
-# which the helper would record as an offline error with a 1970 timestamp.
-case "${1:-cron}" in
-cron)	if [ ! -f /run/clock-synced ]; then
-		echo "update-check: skipped - clock not set (no NTP, RTC or browser time yet); HTTPS to PyPI needs a correct date"
-		exit 0
-	fi ;;
-esac
+# No clock gate: rngit (Git over Reticulum) verifies signatures, not dates, so
+# checks work on a box that booted at 1970. updatecheck.py skips only the
+# HTTPS/PyPI fallback when the clock is untrusted.
 exec python3 /usr/lib/rnsbox/updatecheck.py "${1:-cron}"
