@@ -406,7 +406,7 @@ void wifi_page(const Request& req, Response& res) {
     bool wantAuto = cfg["ap_band"] == "auto";
     if (cp.known) {
         if (cp.band24 && cp.band5) {
-            band_radios += radio("auto", "2.4/5 GHz (auto)", wantAuto);
+            band_radios += radio("auto", "Auto (5 GHz, else 2.4)", wantAuto);
             band_radios += radio("2.4", "2.4 GHz", want24);
             band_radios += radio("5", "5 GHz", want5);
         } else if (cp.band24) {
@@ -415,7 +415,7 @@ void wifi_page(const Request& req, Response& res) {
             band_radios += radio("5", "5 GHz (only band)", want5 || wantAuto || want24);
         }
     } else {
-        band_radios += radio("auto", "2.4/5 GHz (auto)", wantAuto);
+        band_radios += radio("auto", "Auto (5 GHz, else 2.4)", wantAuto);
         band_radios += radio("2.4", "2.4 GHz", want24);
         band_radios += radio("5", "5 GHz", want5);
     }

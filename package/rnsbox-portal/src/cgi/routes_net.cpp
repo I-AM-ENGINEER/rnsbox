@@ -110,7 +110,7 @@ void network_page(const Request& req, Response& res) {
     rows.clear();
     auto ops = store::read_openports();
     if (ops.empty()) {
-        rows = "<tr><td colspan=\"4\" class=\"muted\">No open ports &mdash; Ethernet access is closed (the USB-NCM side &mdash; " +
+        rows = "<tr><td colspan=\"4\" class=\"muted\">No open ports &mdash; WAN access is closed (the LAN side &mdash; " +
                lan + " &mdash; stays open).</td></tr>";
     } else {
         for (size_t i = 0; i < ops.size(); ++i) {

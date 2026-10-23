@@ -1,5 +1,5 @@
 <h2>Network</h2>
-<p class="muted">Uplink: <strong>__WAN__</strong> &middot; USB-NCM: <strong>__LAN__</strong> &middot; default gateway: <strong>__GATEWAY__</strong></p>
+<p class="muted">Uplink: <strong>__WAN__</strong> &middot; LAN: <strong>__LAN__</strong> &middot; default gateway: <strong>__GATEWAY__</strong></p>
 
 <section class="card">
   <h3>Default uplink</h3>
@@ -67,11 +67,11 @@
 </section>
 
 <section class="card">
-  <h3>Port forwards (Ethernet → USB-NCM)</h3>
-  <p class="muted">Inbound TCP/UDP traffic arriving on the Ethernet side is DNAT'd to the USB-NCM host:port. The matching FORWARD rule is added automatically.</p>
+  <h3>Port forwards (WAN → LAN)</h3>
+  <p class="muted">Inbound TCP/UDP traffic arriving on the WAN side is DNAT'd to a LAN host:port. The matching FORWARD rule is added automatically.</p>
   <table class="data">
     <thead>
-      <tr><th>Proto</th><th>External port</th><th>USB-NCM target</th><th>Comment</th><th></th></tr>
+      <tr><th>Proto</th><th>External port</th><th>LAN target</th><th>Comment</th><th></th></tr>
     </thead>
     <tbody>
       __FORWARDS_ROWS__
@@ -84,8 +84,8 @@
       <option value="udp">UDP</option>
     </select>
     <input name="wan_port" type="number" min="1" max="65535" placeholder="External port" required>
-    <input name="lan_ip" type="text" placeholder="Target IP" aria-label="USB-NCM target IP"
-           title="USB-NCM host IP, e.g. 10.42.0.10" required>
+    <input name="lan_ip" type="text" placeholder="Target IP" aria-label="LAN target IP"
+           title="LAN host IP, e.g. 10.42.0.10" required>
     <input name="lan_port" type="number" min="1" max="65535" placeholder="Target port" required>
     <input name="comment" type="text" placeholder="comment (optional)">
     <button type="submit" class="btn-primary">Add</button>
@@ -94,7 +94,7 @@
 
 <section class="card">
   <h3>Open ports (services exposed on Ethernet)</h3>
-  <p class="muted">Allows inbound connections on the Ethernet side to services bound on this device. <strong>SSH (22)</strong>, the <strong>web UI (80)</strong> (which also carries the HaLow modem page on 8081) and <strong>rnsd's TCPServerInterface (4242)</strong>, for external Reticulum peers, are open by default &mdash; remove them to close Ethernet access (the USB-NCM side &mdash; <strong>__LAN__</strong>: the USB-C link, plus the WiFi hotspot while it is on &mdash; always stays open).</p>
+  <p class="muted">Allows inbound connections on the WAN side to services bound on this device. <strong>SSH (22)</strong>, the <strong>web UI (80)</strong> (which also carries the HaLow modem page on 8081) and <strong>rnsd's TCPServerInterface (4242)</strong>, for external Reticulum peers, are open by default &mdash; remove them to close WAN access (the LAN side &mdash; <strong>__LAN__</strong>: the USB-C link, plus the WiFi hotspot while it is on &mdash; always stays open).</p>
   <table class="data">
     <thead>
       <tr><th>Proto</th><th>Port</th><th>Comment</th><th></th></tr>
