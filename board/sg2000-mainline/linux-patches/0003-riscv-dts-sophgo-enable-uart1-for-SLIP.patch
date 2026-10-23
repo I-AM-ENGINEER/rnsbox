@@ -1,0 +1,29 @@
+From: rnsbox <rnsbox@localhost>
+Subject: [PATCH] riscv: dts: sophgo: sg2000-duomodule01-evb: enable uart1 for SLIP
+
+The board did not expose /dev/ttyS1 at all: the SoC dtsi leaves uart1
+disabled and no board patch enabled it. Turn it on so S31slip can attach
+the line discipline to the HaLow modem.
+
+The disppll/cam0_200 reclock is deliberately NOT part of this patch: the
+mainline clk driver's disppll set_rate hangs in of_clk_init() before the
+console registers on CV18xx. The vendor bootloader leaves cam0_200 at
+25 MHz, so the UART stays at its 1,562,500 ceiling and slip.conf ships
+1.5 Mbaud until the vendor 768 MHz LUT path is ported to mainline.
+The XGPIOA[28]/[29] fmux is still set by S31slip at boot.
+
+---
+diff --git a/arch/riscv/boot/dts/sophgo/sg2000-duomodule01-evb.dts b/arch/riscv/boot/dts/sophgo/sg2000-duomodule01-evb.dts
+index 28289f0..9f85ed2 100644
+--- a/arch/riscv/boot/dts/sophgo/sg2000-duomodule01-evb.dts
++++ b/arch/riscv/boot/dts/sophgo/sg2000-duomodule01-evb.dts
+@@ -285,3 +285,7 @@
+  * UART clock in a state where its 115200 console is exact, and reprogramming
+  * disppll from Linux was never proven on hardware. The 8250 driver reads the
+  * real rate back from the PLL/divider registers via the clocks property. */
++
++&uart1 {
++	status = "okay";
++};
+-- 
+2.43.0
