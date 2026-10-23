@@ -1,0 +1,40 @@
+From: rnsbox <rnsbox@localhost>
+Subject: [PATCH] riscv: dts: sophgo: cv1800b-milkv-duo: reclock the uarts for exact 2 Mbaud SLIP
+
+The board dts inherited the mainline uart nodes with the SoC default
+clk_cam0_200 rate (25 MHz), so the HaLow SLIP link could not exceed
+1,562,500 baud. Reclock disppll 1188 -> 768 MHz and clk_cam0_200 ->
+disppll/8 = 96 MHz in of_clk_init(), before the 8250 probes; 2 Mbaud
+becomes exact (96M/16/3) and uart0 stays at 115200 (+0.16%).
+
+Enable uart1 for the SLIP modem. The mainline pinctrl driver does not
+model the XGPIOA[28]/[29] pads, so the fmux is set by S31slip at boot
+(same function-1 values the vendor u-boot writes); the runtime path
+works without depending on a kernel pinctrl change.
+
+---
+diff --git a/arch/riscv/boot/dts/sophgo/cv1800b-milkv-duo.dts b/arch/riscv/boot/dts/sophgo/cv1800b-milkv-duo.dts
+index 6dcc039..8cb5daa 100644
+--- a/arch/riscv/boot/dts/sophgo/cv1800b-milkv-duo.dts
++++ b/arch/riscv/boot/dts/sophgo/cv1800b-milkv-duo.dts
+@@ -130,3 +130,18 @@
+ &gmac0 {
+ 	status = "okay";
+ };
++
++/* RNSBox: reclock disppll 1188 -> 768 MHz and clk_cam0_200 -> disppll/8 =
++ * 96 MHz in of_clk_init(), before the 8250 probes, so the modem's factory
++ * 2 Mbaud is exact (96M/16/3). The mainline pinctrl driver does not model
++ * the UART1 pads; S31slip sets the XGPIOA[28]/[29] fmux itself at boot.
++ */
++&clk {
++	assigned-clocks = <&clk CLK_DISPPLL>, <&clk CLK_CAM0_200>;
++	assigned-clock-parents = <0>, <&clk CLK_DISPPLL>;
++	assigned-clock-rates = <768000000>, <96000000>;
++};
++
++&uart1 {
++	status = "okay";
++};
+-- 
+2.43.0
