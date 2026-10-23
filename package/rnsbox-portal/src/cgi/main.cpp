@@ -244,15 +244,6 @@ static void r_login(const http::Request& req, http::Response& res) {
         std::string next = req.f("next");
         bool next_ok = web::is_local_next(next);   // local portal path only (no open redirect)
         if (session::verify_password(user, pass)) {
-            // LAN-only while the factory password is still active: the WAN
-            // must not be able to log in with admin/admin.
-            if (!from_lan(req) && session::default_password_active()) {
-                ::sleep(1);
-                render::redirect_flash(res, web::base() + "/login", "error",
-                    "The factory password may only be used from the LAN (10.42.0.x / USB). "
-                    "Change it in Settings, then WAN access works.");
-                return;
-            }
             res.set_cookie(session::start(user));
             // default: the dashboard. base() and base()+"/" both reach it (an empty
             // PATH_INFO is read as "/"; the nav's Dashboard link uses the slash form)
@@ -296,6 +287,10 @@ int main(int argc, char** argv) {
     // `rnsbox-portal ctflush` (S60routing uplink: WAN=auto switched uplinks).
     if (argc >= 2 && strcmp(argv[1], "ctflush") == 0)
         return conntrack::flush();
+    // `rnsbox-portal rnstatus-refresh` (S83mon: warm the Interfaces
+    // cache after rnsd is up, so the first page load does not block on it).
+    if (argc >= 2 && strcmp(argv[1], "rnstatus-refresh") == 0)
+        return routes::rnstatus_prewarm() ? 0 : 1;
 
     // otherwise: CGI mode (invoked by uhttpd, request in the environment)
     session::ensure_default_auth();

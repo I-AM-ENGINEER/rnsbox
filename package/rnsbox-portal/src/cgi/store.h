@@ -36,6 +36,7 @@ struct OpenPort {
 struct WanConfig {
     std::string interface = "auto";   // auto (eth0 + wlan0, kernel picks by metric) | eth0 | wlan0
     std::string mode = "dhcp";        // dhcp | static
+    std::string nat = "yes";          // yes (masquerade LAN -> WAN) | no (route only)
     std::string address, prefix, gateway, dns;
 };
 

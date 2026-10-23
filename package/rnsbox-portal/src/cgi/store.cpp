@@ -229,6 +229,7 @@ WanConfig read_wan() {
             v = util::trim(v);
             if (k == "interface") c.interface = v;
             else if (k == "mode") c.mode = v;
+            else if (k == "nat") c.nat = v;
             else if (k == "address") c.address = v;
             else if (k == "prefix") c.prefix = v;
             else if (k == "gateway") c.gateway = v;
@@ -240,6 +241,7 @@ WanConfig read_wan() {
     // Same rule as S30eth wan_iface / S60routing read_wan: unknown -> auto.
     if (c.interface != "auto" && c.interface != "eth0" && c.interface != "wlan0") c.interface = "auto";
     if (c.mode != "dhcp" && c.mode != "static") c.mode = "dhcp";
+    if (c.nat != "no") c.nat = "yes";   // absent/unknown -> the default
     return c;
 }
 
@@ -247,6 +249,7 @@ bool write_wan(const WanConfig& in, std::string& err) {
     WanConfig cfg = in;
     if (cfg.interface != "auto" && cfg.interface != "eth0" && cfg.interface != "wlan0") { err = "WAN interface must be auto, eth0 or wlan0"; return false; }
     if (cfg.mode != "dhcp" && cfg.mode != "static") { err = "WAN mode must be dhcp or static"; return false; }
+    if (cfg.nat != "yes" && cfg.nat != "no") { err = "NAT must be yes or no"; return false; }
     if (cfg.mode == "static") {
         if (!conf_value_ok(cfg.address) || !conf_value_ok(cfg.prefix) ||
             !conf_value_ok(cfg.gateway) || !conf_value_ok(cfg.dns)) {
@@ -271,9 +274,12 @@ bool write_wan(const WanConfig& in, std::string& err) {
         "#            wlan0 WiFi client), eth0 (wired RJ45 only) or wlan0 (WiFi\n"
         "#            client only, requires STA mode). Never changed by the box.\n"
         "# mode:      dhcp (lease from upstream) or static.\n"
+        "# nat:       yes = masquerade the LAN out the WAN; no = route it\n"
+        "#            without source NAT (the upstream needs a route back).\n"
         "# Static mode (applied to eth0 by S30eth): address/prefix/gateway/dns.\n";
     o += "interface=" + cfg.interface + "\n";
     o += "mode=" + cfg.mode + "\n";
+    o += "nat=" + cfg.nat + "\n";
     if (cfg.mode == "static") {
         o += "address=" + cfg.address + "\n";
         o += "prefix=" + cfg.prefix + "\n";

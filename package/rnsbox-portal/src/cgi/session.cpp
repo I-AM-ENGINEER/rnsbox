@@ -3,6 +3,8 @@
 #include "util.h"
 #include <openssl/evp.h>
 #include <sys/stat.h>
+#include <fcntl.h>
+#include <vector>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -183,71 +185,107 @@ bool set_password(const std::string& user, const std::string& newpass) {
 }
 
 void revoke_all() {
-    // The session store is a single global token file, so unlinking it ends
-    // every live session. Called after a password change: a session issued
-    // under the old password must not outlive it.
+    // All tokens live in one file: unlinking it ends every live session.
+    // Called after a password change, so a session issued under the old
+    // password cannot outlive it.
     ::unlink(SESSION_FILE);
 }
 
-// ---- session token file: "user\ntoken\nexpiry" ----
-// The file lives on /var/lib (persistent), so a reboot does not log anyone
-// out; expiry is wall-clock, one year. The board has no RTC and boots at 1970
-// until NTP steps it, so a login in that pre-sync window stores expiry 0
-// ("never") — a stamp made at 1970 would otherwise already be in the past.
-static long wall_now() { return (long)::time(nullptr); }
-
+// ---- session token file: one "user<TAB>token" line per login ----
+// No expiry: the operator logs in once and stays logged in (until logout or
+// a password change). Each login appends; logging in on a second device does
+// not invalidate the first. Old 3-line files ("user\ntoken\nexpiry") have no
+// tab and are ignored; the next login supersedes them.
 static std::string cookie(const std::string& token, long max_age) {
     return std::string(COOKIE_NAME) + "=" + token +
            "; HttpOnly; SameSite=Lax; Path=/; Max-Age=" + std::to_string(max_age);
 }
 
-static void write_session(const std::string& user, const std::string& token, long expiry) {
-    std::string body = user + "\n" + token + "\n" + std::to_string(expiry) + "\n";
+static bool append_session(const std::string& user, const std::string& token) {
     ::mkdir("/var/lib/rnsbox", 0700);   // EEXIST is fine
-    util::write_file_atomic(SESSION_FILE, body, 0600);
+    // Bound the file: compact to the last 31 live tokens past 64 KiB.
+    struct stat st;
+    if (::stat(SESSION_FILE, &st) == 0 && st.st_size > 64 * 1024) {
+        std::string body = util::read_file(SESSION_FILE, 512 * 1024);
+        std::vector<std::string> keep;
+        size_t p = 0;
+        while (p < body.size()) {
+            size_t e = body.find('\n', p);
+            if (e == std::string::npos) e = body.size();
+            std::string line = body.substr(p, e - p);
+            if (line.find('\t') != std::string::npos) keep.push_back(line);
+            p = e + 1;
+        }
+        std::string out;
+        size_t from = keep.size() > 31 ? keep.size() - 31 : 0;
+        for (size_t i = from; i < keep.size(); ++i) out += keep[i] + "\n";
+        util::write_file_atomic(SESSION_FILE, out, 0600);
+    }
+    int fd = ::open(SESSION_FILE, O_WRONLY | O_APPEND | O_CREAT, 0600);
+    if (fd < 0) return false;
+    std::string line = user + "\t" + token + "\n";
+    size_t off = 0;
+    while (off < line.size()) {
+        ssize_t n = ::write(fd, line.data() + off, line.size() - off);
+        if (n <= 0) { ::close(fd); return false; }
+        off += static_cast<size_t>(n);
+    }
+    ::close(fd);
+    return true;
 }
 
 std::string start(const std::string& user) {
     std::string token = util::random_hex(24);   // 48 hex chars
-    long now = wall_now();
-    // 0 = no expiry (clock was still at 1970); otherwise a year.
-    long expiry = (now >= 1600000000) ? now + SESSION_TTL : 0;
-    write_session(user, token, expiry);
-    return cookie(token, SESSION_TTL);
+    append_session(user, token);
+    return cookie(token, SESSION_COOKIE_AGE);
 }
 
 std::string clear(const std::string& cookie_token) {
-    // check() only says valid for the holder of the live token, so a cookieless
-    // or stale-cookie /logout leaves the (single, global) session alone.
-    if (check(cookie_token).valid) ::unlink(SESSION_FILE);
+    // Remove only the caller's token; every other browser stays logged in.
+    if (!cookie_token.empty()) {
+        std::string body = util::read_file(SESSION_FILE, 512 * 1024);
+        std::string out;
+        bool removed = false;
+        size_t p = 0;
+        while (p < body.size()) {
+            size_t e = body.find('\n', p);
+            if (e == std::string::npos) e = body.size();
+            std::string line = body.substr(p, e - p);
+            size_t tab = line.find('\t');
+            if (tab != std::string::npos &&
+                util::const_time_eq(cookie_token, line.substr(tab + 1))) {
+                removed = true;
+            } else if (!line.empty()) {
+                out += line + "\n";
+            }
+            p = e + 1;
+        }
+        if (removed) {
+            if (out.empty()) ::unlink(SESSION_FILE);
+            else util::write_file_atomic(SESSION_FILE, out, 0600);
+        }
+    }
     return cookie("", 0);
 }
 
 Info check(const std::string& cookie_token) {
     Info info;
     if (cookie_token.empty()) return info;
-    std::string body = util::read_file(SESSION_FILE, 4096);
-    if (body.empty()) return info;
-    // parse the three lines
-    size_t n1 = body.find('\n');
-    if (n1 == std::string::npos) return info;
-    size_t n2 = body.find('\n', n1 + 1);
-    if (n2 == std::string::npos) return info;
-    std::string user  = body.substr(0, n1);
-    std::string token = body.substr(n1 + 1, n2 - n1 - 1);
-    long expiry = strtol(body.c_str() + n2 + 1, nullptr, 10);
-    // Token first: a request that doesn't hold the live token never touches the
-    // file (no unlink).
-    if (!util::const_time_eq(cookie_token, token)) return info;
-    // expiry 0 = issued before the clock was synced: valid until revoke_all
-    // (password change) or logout. Otherwise wall clock, at most one TTL out —
-    // a further-future stamp can't have come from start().
-    long now = wall_now();
-    if (expiry != 0 && (now < 0 || now >= expiry || expiry > now + SESSION_TTL)) {
-        ::unlink(SESSION_FILE); return info;
+    std::string body = util::read_file(SESSION_FILE, 512 * 1024);
+    size_t p = 0;
+    while (p < body.size()) {
+        size_t e = body.find('\n', p);
+        if (e == std::string::npos) e = body.size();
+        std::string line = body.substr(p, e - p);
+        size_t tab = line.find('\t');
+        if (tab != std::string::npos &&
+            util::const_time_eq(cookie_token, line.substr(tab + 1))) {
+            info.valid = true;
+            info.user = line.substr(0, tab);
+            return info;
+        }
+        p = e + 1;
     }
-    info.valid = true;
-    info.user = user;
     return info;
 }
 
