@@ -230,9 +230,9 @@ table.tcp-table .tcp-add-row td { border-top: 2px solid var(--border); }
   color: #fff;
   background: var(--muted);
 }
-.badge.ok   { background: var(--ok); }
-.badge.warn { background: var(--warn); }
-.badge.err  { background: var(--err); }
+.badge.ok   { background: #15803d; }
+.badge.warn { background: #b45309; }
+.badge.err  { background: #b91c1c; }
 .badge.tcp  { background: var(--tcp); }
 .badge.udp  { background: var(--udp); }
 
