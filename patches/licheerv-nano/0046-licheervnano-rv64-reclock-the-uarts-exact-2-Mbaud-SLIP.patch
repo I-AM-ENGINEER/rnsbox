@@ -1,0 +1,41 @@
+From: rnsbox <rnsbox@localhost>
+Subject: [PATCH] licheervnano-rv64: reclock the uarts — exact 2 Mbaud SLIP
+
+The LicheeRV Nano arm64 and rv64 board dts inherited soph_base's uarts
+verbatim: 8250 with a hardcoded clock-frequency of 25 MHz (FSBL sets
+clk_cam0_200 to 25 MHz at power-on). The SLIP link to the HaLow modem
+therefore topped out at 1,562,500 baud and the shipped default was
+1500000.
+
+Reclock the SoC once, in of_clk_init before any driver probes:
+disppll 1188 -> 768 MHz (needs the enabled LUT row), clk_cam0_200 ->
+disppll/8 = 96 MHz. Every dw-uart is a gate-only child of clk_cam0_200,
+so the 8250 input becomes 96 MHz and the modem's factory 2 Mbaud is
+exact (96M/16/3). &uart1 already takes its rate from the CCF and is
+enabled; the pinmux for XGPIOA[28]/[29] is already programmed by the
+board's u-boot cvi_board_init.c.
+diff --git a/build/boards/sg200x/sg2002_licheervnano_sd/dts_riscv/sg2002_licheervnano_sd.dts b/build/boards/sg200x/sg2002_licheervnano_sd/dts_riscv/sg2002_licheervnano_sd.dts
+index e4eff4f..cdcacb6 100644
+--- a/build/boards/sg200x/sg2002_licheervnano_sd/dts_riscv/sg2002_licheervnano_sd.dts
++++ b/build/boards/sg200x/sg2002_licheervnano_sd/dts_riscv/sg2002_licheervnano_sd.dts
+@@ -80,6 +80,18 @@
+ 	status = "okay";
+ };
+ 
++// RNSBox: reclock disppll 1188 -> 768 MHz and clk_cam0_200 osc/1 ->
++// disppll/8 = 96 MHz (of_clk_init, before any driver probes). Every
++// dw-uart is a gate-only child of clk_cam0_200, so the 8250 input
++// becomes 96 MHz: 2 Mbaud is exact (96M/16/3), 1 Mbaud too (quot 6).
++// The 768 MHz rate needs the enabled LUT entry in the clk driver (this
++// series); without the reclock the SLIP ceiling stays at 1,562,500.
++&clk {
++	assigned-clocks = <&clk CV181X_CLK_DISPPLL>, <&clk CV181X_CLK_CAM0_200>;
++	assigned-clock-parents = <0>, <&clk CV181X_CLK_DISPPLL>;
++	assigned-clock-rates = <768000000>, <96000000>;
++};
++
+ &pwm0 {
+         status = "okay";
+ };
+-- 
+2.43.0

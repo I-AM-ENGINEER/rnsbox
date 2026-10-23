@@ -1,22 +1,8 @@
-From 1da957764817c4554121a0f45e65f0decf7be23c Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: rnsbox <rnsbox@localhost>
-Date: Thu, 15 Oct 2026 00:43:21 +0300
-Subject: [PATCH 07/11] linux: enable the 768 MHz disppll LUT entry
-MIME-Version: 1.0
-Content-Type: text/plain; charset=UTF-8
-Content-Transfer-Encoding: 8bit
+Date: Thu, 15 Oct 2026 19:11:17 +0300
+Subject: [PATCH] kernel: enable the 768 MHz disppll LUT row
 
-cv181x_disppll set_rate is gated by g2_pll_rate_lut: a rate with no LUT
-row returns -ENOENT and the pll silently keeps its previous setting. The
-vendor table only enables 1188 MHz (postdiv=2); the ready-made 768 MHz
-row (csr 0x00108101, ssc_set 419430400 — vendor values) is commented out.
-
-Uncommenting it is the enabler for the board-dts reclock (assigned-clocks
-in the arm64 board dts): disppll 768 MHz -> clk_cam0_200 = disppll/8 =
-96 MHz, which makes 2 Mbaud exact on every dw-uart (96M/16/3, 0.00%
-error) instead of the 1,562,500 ceiling the fixed 25 MHz uart clock
-imposed. Applies to the whole sg200x family (SG2000 and SG2002 share the
-cv181x clk driver).
 ---
  linux_5.10/drivers/clk/cvitek/clk-cv181x.c | 2 +-
  1 file changed, 1 insertion(+), 1 deletion(-)
