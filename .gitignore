@@ -1,6 +1,11 @@
 /dl/
 /out/
 local_docs/
+# local hardware work: flash dumps, extracted rootfs, vendor sources
+/heltec_halow_work/
+# root-level fetched release manifests; the shipped anchor lives in
+# package/rnsbox-portal/src/rns-release.rsm
+/*.rsm
 .tmp-*
 *.expect
 *.log
