@@ -110,6 +110,9 @@
   # restart rnsd to apply.
   [[BLE Interface]]
     type = BLEInterface
+    # Share at most 1% of the link with forwarded announces (RNS
+    # default is 2%); the BLE peer inherits this cap.
+    announce_cap = 1
     # The box is a peripheral-only access point: phones connect to it.
     # Central scanning made it chase every Reticulum advert (including a
     # phone's rotating random addresses) and collide with the phone's own

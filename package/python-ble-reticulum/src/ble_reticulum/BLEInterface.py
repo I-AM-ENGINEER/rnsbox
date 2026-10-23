@@ -2505,6 +2505,12 @@ class BLEPeerInterface(Interface):
         # ifac_size and every inbound packet raises AttributeError, so peers
         # never become visible destinations. Mirror the RNS convention.
         self.ifac_size = getattr(parent, "ifac_size", None)
+        # Same convention as RNS's own AutoInterface: the spawned peer carries
+        # the parent's announce cap.  Without it Transport falls back to the
+        # global 2%, and on a ~50 kbit/s BLE link the announces forwarded from
+        # the TCP uplinks crowd out the peer's own traffic.
+        if getattr(parent, "announce_cap", None) is not None:
+            self.announce_cap = parent.announce_cap
 
         # Set interface mode (required by Transport for routing decisions)
         self.mode = Interface.MODE_FULL  # Full mode: can send and receive

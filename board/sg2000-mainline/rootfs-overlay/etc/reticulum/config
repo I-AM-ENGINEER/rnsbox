@@ -116,12 +116,14 @@
   # restart rnsd to apply.
   [[BLE Interface]]
     type = BLEInterface
+    # Share at most 1% of the link with forwarded announces (RNS
+    # default is 2%); the BLE peer inherits this cap.
+    announce_cap = 1
     enable_central = yes
     enabled = yes
-    # Saver: scan only every 30 s (60 s while a peer is connected) instead of
-    # every 5 s. Central scanning is only for peers that advertise; once the
-    # phones are linked, frequent scans just churn BlueZ/D-Bus connections.
-    power_mode = saver
+    # Balanced: scan every 5 s. Saver (30 s idle / 60 s connected)
+    # made central discovery and reconnects take half a minute.
+    power_mode = balanced
     # The second phone (Xperia 5 II) advertises at -89 dBm; the old -85
     # threshold silently filtered it while the closer phone connected.
     min_rssi = -95
