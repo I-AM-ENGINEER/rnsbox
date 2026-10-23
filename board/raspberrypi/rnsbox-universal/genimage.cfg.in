@@ -12,17 +12,12 @@ image boot.vfat {
 	size = 48M
 }
 
-# A/B whole-OS layout (the rnsbox-sysupdate transactional updater):
-#   p1 boot (FAT, 128M)  : firmware + kernel + DTBs + initramfs + slot state
-#   p2 rootfs_A (512M)   : ships the ext4 (400M, padded); slot A
-#   p3 rootfs_B (512M)   : a copy at flash so both slots boot; the updater
-#                          overwrites the idle slot on each update
-#   p4 data (32M seed)   : persistent state (S03data mounts it, bind-mounts
-#                          /etc/rnsbox etc.); grown to fill the card by
-#                          S02resizefs on first boot
-# The boot FAT is SHARED by both slots; boot files are refreshed in place by
-# the updater transaction (old copies kept on /data, hash-verified, restored
-# on failure). Slot size = the `size = 512M` lines; the ext4 must stay below.
+# Plain single-rootfs layout (same shape as every other RNSBox board):
+#   p1 boot (FAT, 48M)   : firmware + kernel + DTBs + usb.* gadget flags
+#   p2 rootfs (ext4)     : the rootfs image itself; S02resizefs grows p2 to
+#                          fill the card on first boot
+# The A/B dual-slot layout is disabled for now; the two-slot template lives
+# in git history next to the initramfs staging in post-image.sh.
 image sdcard.img {
 	hdimage {
 	}
@@ -33,20 +28,8 @@ image sdcard.img {
 		image = "boot.vfat"
 	}
 
-	partition rootfs_a {
+	partition rootfs {
 		partition-type = 0x83
 		image = "rootfs.ext4"
-		size = 512M
-	}
-
-	partition rootfs_b {
-		partition-type = 0x83
-		image = "rootfs.ext4"
-		size = 512M
-	}
-
-	partition data {
-		partition-type = 0x83
-		size = 32M
 	}
 }

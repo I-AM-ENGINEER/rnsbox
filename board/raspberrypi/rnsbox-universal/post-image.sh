@@ -68,51 +68,17 @@ if [ -f "${BINARIES_DIR}/bcm2837-rpi-3-a-plus.dtb" ] && \
 	      "${BINARIES_DIR}/bcm2710-rpi-3-a-plus.dtb"
 fi
 
-# ---- RNSBox A/B updater: mini initramfs (slot selector) + abselect staging ----
-# /init picks rootfs_A/B from the shared boot FAT state (ab_slot/ab_tries;
-# decision logic sourced from /boot/rnsbox-abselect, else the initramfs copy,
-# else inline — see initramfs/init). Built from the TARGET busybox + the
-# kernel tree's gen_init_cpio (creates /dev/console without root). Any missing
-# ingredient (no gen_init_cpio, no busybox) => no initramfs is shipped and the
-# firmware boots the old single-slot way; the updater's layout probe then
-# reports "reflash needed" instead of silently half-working.
-INITRAMFS_SRC="${BOARD_DIR}/initramfs/init"
-ABSEL_SRC="$(cd "$(dirname "$BOARD_DIR")/../.." && pwd)/package/rnsbox-update/src/abselect"
-GEN_CPIO=$(ls "${BUILD_DIR}"/linux-*/usr/gen_init_cpio 2>/dev/null | head -1)
-if [ -x "${GEN_CPIO}" ] && [ -f "${TARGET_DIR}/bin/busybox" ] && \
-   [ -f "${INITRAMFS_SRC}" ]; then
-	CPIO_LIST="${BINARIES_DIR}/initramfs.list"
-	{
-		echo "dir /bin 0755 0 0"
-		echo "dir /proc 0755 0 0"
-		echo "dir /sys 0755 0 0"
-		echo "dir /dev 0755 0 0"
-		echo "dir /boot 0755 0 0"
-		echo "dir /realroot 0755 0 0"
-		echo "nod /dev/console 0600 0 0 c 5 1"
-		echo "file /init ${INITRAMFS_SRC} 0755 0 0"
-		echo "file /bin/busybox ${TARGET_DIR}/bin/busybox 0755 0 0"
-		[ -f "${ABSEL_SRC}" ] && echo "file /rnsbox-abselect ${ABSEL_SRC} 0755 0 0"
-	} > "${CPIO_LIST}"
-	"${GEN_CPIO}" "${CPIO_LIST}" > "${FW}/initramfs.cpio"
-	if command -v gzip >/dev/null 2>&1; then
-		gzip -9 -c "${FW}/initramfs.cpio" > "${FW}/initramfs.gz" \
-			&& rm -f "${FW}/initramfs.cpio"
-	else
-		# keep the uncompressed cpio; config.txt points at initramfs.gz, so
-		# rename rather than ship nothing (the firmware loads either)
-		mv -f "${FW}/initramfs.cpio" "${FW}/initramfs.gz"
-	fi
-	rm -f "${CPIO_LIST}"
-	echo "post-image: A/B initramfs built ($(stat -c%s "${FW}/initramfs.gz") bytes)"
-else
-	echo "WARNING: A/B initramfs NOT built (missing gen_init_cpio/busybox) — the updater needs this initramfs" >&2
-fi
-# Slot-decision lib also lives on the boot FAT (the initramfs prefers it, so
-# an updater transaction can refresh it together with the kernel).
-if [ -f "${ABSEL_SRC}" ]; then
-	cp -f "${ABSEL_SRC}" "${FW}/rnsbox-abselect"
-fi
+# NOTE: the A/B whole-OS updater (dual rootfs slots + slot-selector
+# initramfs + rnsbox-abselect on the boot FAT) is DISABLED for now — the
+# image ships the plain single-rootfs layout like every other board. The
+# machinery stays in the tree (initramfs/, package/rnsbox-update); to
+# re-enable, restore the initramfs staging here, the `initramfs` line in
+# config.txt and the two-slot genimage template (see git history).
+# The boot.vfat file set globs everything in rpi-firmware/, so an output
+# dir from an A/B-era build would keep shipping the stale selector —
+# actively remove its artifacts.
+rm -f "${FW}/initramfs.gz" "${FW}/initramfs.cpio" "${FW}/rnsbox-abselect" \
+      "${FW}/ab_slot" "${FW}/ab_tries"
 
 # ---- stock raspberrypi image assembly (inlined) ----
 FILES=()

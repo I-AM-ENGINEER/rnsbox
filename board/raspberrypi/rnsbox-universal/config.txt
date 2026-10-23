@@ -7,10 +7,6 @@
 # (start.elf on pi<=4, the SPI-EEPROM bootloader on Pi 5) picks the matching
 # bcm27xx DTB from the boot FAT by itself.
 kernel=Image
-# A/B updater: the mini-initramfs picks rootfs_A/B (see post-image.sh;
-# built from the target busybox + the kernel's gen_init_cpio). If the
-# file is absent the firmware logs a warning and boots as before.
-initramfs initramfs.gz followkernel
 arm_64bit=1
 disable_overscan=1
 # GPIO-header UART available (mini-uart on pi3/4-class; ignored on Pi 5)
