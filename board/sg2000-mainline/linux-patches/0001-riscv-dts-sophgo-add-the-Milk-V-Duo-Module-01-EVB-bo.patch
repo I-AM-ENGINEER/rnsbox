@@ -26,10 +26,10 @@ The pinctrl nodes pin the reset-multiplexed UART0/SD state explicitly.
 ---
 diff --git a/arch/riscv/boot/dts/sophgo/sg2000-duomodule01-evb.dts b/arch/riscv/boot/dts/sophgo/sg2000-duomodule01-evb.dts
 new file mode 100644
-index 00000000000..11111111111
+index 0000000..ff5010d
 --- /dev/null
 +++ b/arch/riscv/boot/dts/sophgo/sg2000-duomodule01-evb.dts
-@@ -0,0 +1,287 @@
+@@ -0,0 +1,294 @@
 +// SPDX-License-Identifier: (GPL-2.0 OR MIT)
 +
 +/dts-v1/;
@@ -136,16 +136,25 @@ index 00000000000..11111111111
 +	};
 +
 +	emmc_cfg: emmc-cfg {
++		emmc-rstn-pins {
++			pinmux = <PINMUX(PIN_EMMC_RSTN, 0)>;
++			bias-pull-up;
++			drive-strength-microamp = <10800>;
++			power-source = <1800>;
++		};
++
 +		emmc-clk-pins {
 +			pinmux = <PINMUX(PIN_EMMC_CLK, 0)>;
 +			bias-pull-up;
-+			power-source = <3300>;
++			drive-strength-microamp = <10800>;
++			power-source = <1800>;
 +		};
 +
 +		emmc-cmd-pins {
 +			pinmux = <PINMUX(PIN_EMMC_CMD, 0)>;
 +			bias-pull-up;
-+			power-source = <3300>;
++			drive-strength-microamp = <10800>;
++			power-source = <1800>;
 +		};
 +
 +		emmc-data-pins {
@@ -154,7 +163,8 @@ index 00000000000..11111111111
 +				 <PINMUX(PIN_EMMC_DAT2, 0)>,
 +				 <PINMUX(PIN_EMMC_DAT3, 0)>;
 +			bias-pull-up;
-+			power-source = <3300>;
++			drive-strength-microamp = <10800>;
++			power-source = <1800>;
 +		};
 +	};
 +
@@ -213,11 +223,8 @@ index 00000000000..11111111111
 +&emmc {
 +	pinctrl-0 = <&emmc_cfg>;
 +	pinctrl-names = "default";
-+	clocks = <&clk CLK_EMMC>, <&clk CLK_AXI4_EMMC>;
++	clocks = <&clk CLK_AXI4_EMMC>, <&clk CLK_EMMC>;
 +	clock-names = "core", "bus";
-+	assigned-clocks = <&clk CLK_EMMC>;
-+	assigned-clock-parents = <&clk CLK_FPLL>;
-+	assigned-clock-rates = <375000000>;
 +	bus-width = <4>;
 +	no-1-8-v;
 +	cap-mmc-hw-reset;
@@ -308,7 +315,7 @@ index 00000000000..11111111111
 +
 +&{/soc} {
 +	watchdog@3010000 {
-+		compatible = "snps,dw-wdt";
++		compatible = "ice,ice-wdt";
 +		reg = <0x03010000 0x1000>;
 +	};
 +};
@@ -319,4 +326,3 @@ index 00000000000..11111111111
 + * real rate back from the PLL/divider registers via the clocks property. */
 -- 
 2.43.0
-
