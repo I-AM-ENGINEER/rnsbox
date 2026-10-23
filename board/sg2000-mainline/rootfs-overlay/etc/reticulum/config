@@ -78,6 +78,13 @@
   # 2026-05-16. Earlier attempts dropped: betweentheborders.com:4242
   # (host off the air at flash time) and rns.beleth.net:4242 (worked
   # at first but swapped out by operator request for the .146 node).
+  # Public Reticulum testnet entrypoint (verified reachable 2026-10-23).
+  [[RNS Moscow (TCP)]]
+    type = TCPClientInterface
+    enabled = yes
+    target_host = rns.moscow
+    target_port = 4242
+
   [[Catz Node (TCP)]]
     type = TCPClientInterface
     enabled = yes
@@ -89,3 +96,42 @@
     enabled = yes
     target_host = 31.129.33.146
     target_port = 4242
+
+  # Bluetooth Low Energy (BLE) transport — short-range mesh radio over the
+  # onboard AIC8800 BT controller (SDIO, hci0; present on every board this
+  # overlay serves). Both roles run: the box advertises its GATT server for
+  # phones that connect to it, and scans for peers that advertise instead
+  # (the Xperia/Columba apps tested here only advertise, so central mode is
+  # what actually links them). The stack under it: BlueZ + D-Bus
+  # (S40bluetoothd) and the vendored ble-reticulum classes, which RNS loads
+  # from /etc/reticulum/interfaces/.
+  #
+  # Without an adapter this is an honest no-op: rnsd runs, all other
+  # interfaces are unaffected, and the log names the reason ("no Bluetooth
+  # adapter (no hci device)"). The probe re-runs every 30 s, so an adapter
+  # that appears later brings BLE up on its own (or restart rnsd from the
+  # portal to retry immediately).
+  #
+  # Enabled by default. Toggle here (or in the portal Reticulum tab) and
+  # restart rnsd to apply.
+  [[BLE Interface]]
+    type = BLEInterface
+    enable_central = yes
+    enabled = yes
+    # Saver: scan only every 30 s (60 s while a peer is connected) instead of
+    # every 5 s. Central scanning is only for peers that advertise; once the
+    # phones are linked, frequent scans just churn BlueZ/D-Bus connections.
+    power_mode = saver
+    # The second phone (Xperia 5 II) advertises at -89 dBm; the old -85
+    # threshold silently filtered it while the closer phone connected.
+    min_rssi = -95
+    # Fast advertising: a scanning phone finds the box within a couple of
+    # scan windows. 100 ms is the portal default.
+    advertise_interval_ms = 100
+    # Advertised name — keep it short, BLE ads have a 31-byte budget.
+    # Leave unset to advertise the service UUID only (the peer learns the
+    # node name from the Reticulum announce anyway).
+    device_name = RNSBox
+    # BLE GATT reality is well below the driver 700 kbit/s guess; pacing
+    # announces/routing on ~50 kbit/s keeps RNS honest about this link.
+    bitrate = 50000

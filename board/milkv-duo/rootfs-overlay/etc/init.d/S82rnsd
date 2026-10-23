@@ -260,8 +260,27 @@ start() {
 	# design anyway.
 	stor="$CFG_DIR/storage"
 	mkdir -p "$stor"
-	if ! grep -q " $stor tmpfs" /proc/mounts; then
-		mount -t tmpfs -o mode=0700,size=16M tmpfs "$stor" 2>/dev/null || true
+	# Size the RAM storage by board RAM. A transport node caches announces
+	# in proportion to its path table (thousands of files on the public
+	# network), so the old 16M filled up and rnsd's ratchet/path writes
+	# started failing with ENOSPC. The 64M-RAM cv1800b stays at 16M; larger
+	# boards get 32M/64M.
+	mem_mb=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo 2>/dev/null)
+	if [ -z "$mem_mb" ] || [ "$mem_mb" -lt 96 ]; then
+		stor_size=16M
+	elif [ "$mem_mb" -lt 128 ]; then
+		stor_size=32M
+	elif [ "$mem_mb" -lt 256 ]; then
+		stor_size=64M
+	elif [ "$mem_mb" -lt 384 ]; then
+		stor_size=96M
+	else
+		stor_size=128M
+	fi
+	if grep -q " $stor tmpfs" /proc/mounts; then
+		mount -o remount,size=$stor_size "$stor" 2>/dev/null || true
+	else
+		mount -t tmpfs -o mode=0700,size=$stor_size tmpfs "$stor" 2>/dev/null || true
 	fi
 
 	# Tighten what an older build (umask 022) or the 0755 overlay left

@@ -27,6 +27,7 @@
 # Config: /etc/rnsbox/wifi.conf (managed by the rnsbox-portal WiFi tab).
 
 CONF=/etc/rnsbox/wifi.conf
+EXTRA_CONF=/etc/rnsbox/wifi-extra.conf
 KO3RD=/mnt/system/ko/3rd
 WPA_CONF=/var/run/wpa_supplicant-wlan0.conf
 HOSTAPD_CONF=/var/run/hostapd.conf
@@ -59,6 +60,13 @@ log() { printf '%s: %s\n' "$(date '+%F %T')" "$*" >> "$LOG"; }
 
 cfg() {
 	grep -E "^[[:space:]]*$1[[:space:]]*=" "$CONF" 2>/dev/null | tail -1 \
+	  | sed -E "s/^[^=]*=[[:space:]]*//" | sed -E 's/[[:space:]]*#.*$//' \
+	  | sed -E 's/[[:space:]]*$//' | tr -d '"'
+}
+
+# read a key from the additional-networks file
+ecfg() {
+	grep -E "^[[:space:]]*$1[[:space:]]*=" "$EXTRA_CONF" 2>/dev/null | tail -1 \
 	  | sed -E "s/^[^=]*=[[:space:]]*//" | sed -E 's/[[:space:]]*#.*$//' \
 	  | sed -E 's/[[:space:]]*$//' | tr -d '"'
 }
@@ -166,44 +174,62 @@ wait_sta_connected() {
 #   security = wpa2 (default) | wpa3 | wpa2+wpa3 | open
 #   WPA3/SAE needs wpa_supplicant built with CONFIG_SAE (the image selects
 #   BR2_PACKAGE_WPA_SUPPLICANT_WPA3).
+# emit_sta_network <ssid> <psk> <hidden> <band> <security> <priority>
+emit_sta_network() {
+	_ssid="$1"; _psk="$2"; _hidden="$3"; _band="$4"; _sec="$5"; _prio="$6"
+	case "$_sec" in open|wpa3|wpa2+wpa3) ;; *) _sec=wpa2 ;; esac
+	echo "network={"
+	echo "    ssid=\"$_ssid\""
+	[ "$_hidden" = "1" ] && echo "    scan_ssid=1"
+	case "$_sec" in
+		open)
+			echo "    key_mgmt=NONE"
+			;;
+		wpa3)
+			echo "    key_mgmt=SAE"
+			echo "    sae_password=\"$_psk\""
+			echo "    ieee80211w=2"
+			;;
+		wpa2+wpa3)
+			echo "    key_mgmt=WPA-PSK SAE"
+			echo "    psk=\"$_psk\""
+			echo "    sae_password=\"$_psk\""
+			echo "    ieee80211w=1"
+			;;
+		*)
+			echo "    key_mgmt=WPA-PSK"
+			echo "    psk=\"$_psk\""
+			;;
+	esac
+	echo "    priority=$_prio"
+	case "$_band" in
+		24) echo "    freq_list=$FREQ_24"; echo "    scan_freq=$FREQ_24" ;;
+		5)  echo "    freq_list=$FREQ_5";  echo "    scan_freq=$FREQ_5"  ;;
+	esac
+	echo "}"
+}
+
 gen_wpa_conf() {
 	ssid="$1"; psk="$2"; hidden="$3"; country="$4"; band="$5"; sec="$6"
 	[ -z "$sec" ] && sec=wpa2
-	case "$sec" in open|wpa3|wpa2+wpa3) ;; *) sec=wpa2 ;; esac
 	{
 		echo "ctrl_interface=/var/run/wpa_supplicant"
 		echo "update_config=1"
 		[ -n "$country" ] && echo "country=$country"
-		echo "network={"
-		echo "    ssid=\"$ssid\""
-		[ "$hidden" = "1" ] && echo "    scan_ssid=1"
-		case "$sec" in
-			open)
-				echo "    key_mgmt=NONE"
-				;;
-			wpa3)
-				echo "    key_mgmt=SAE"
-				echo "    sae_password=\"$psk\""
-				echo "    ieee80211w=2"
-				;;
-			wpa2+wpa3)
-				echo "    key_mgmt=WPA-PSK SAE"
-				echo "    psk=\"$psk\""
-				echo "    sae_password=\"$psk\""
-				echo "    ieee80211w=1"
-				;;
-			*)
-				echo "    key_mgmt=WPA-PSK"
-				echo "    psk=\"$psk\""
-				;;
-		esac
-		# A band pin (concurrent mode) must confine both BSS selection and
-		# background scans, or the single radio can hop off the AP's channel.
-		case "$band" in
-			24) echo "    freq_list=$FREQ_24"; echo "    scan_freq=$FREQ_24" ;;
-			5)  echo "    freq_list=$FREQ_5";  echo "    scan_freq=$FREQ_5"  ;;
-		esac
-		echo "}"
+		[ -n "$ssid" ] && emit_sta_network "$ssid" "$psk" "$hidden" "$band" "$sec" 1000
+		xcount=$(ecfg count)
+		case "$xcount" in ''|*[!0-9]*) xcount=0 ;; esac
+		i=1
+		while [ "$i" -le "$xcount" ]; do
+			xs=$(ecfg "${i}_ssid")
+			if [ -n "$xs" ]; then
+				xp=$(ecfg "${i}_psk")
+				xh=$(ecfg "${i}_hidden")
+				xsec=$(ecfg "${i}_security")
+				emit_sta_network "$xs" "$xp" "$xh" "$band" "$xsec" "$((1000 - i))"
+			fi
+			i=$((i + 1))
+		done
 	} > "$WPA_CONF"
 	chmod 600 "$WPA_CONF"
 }
@@ -383,6 +409,8 @@ apply_txpower() {
 #                 so it is co-band with the AP. Passed only from the sta+ap
 #                 dispatch; sta-only honors sta_band (auto/2.4/5).
 start_sta() {
+	xcount=$(ecfg count)
+	case "$xcount" in ''|*[!0-9]*) xcount=0 ;; esac
 	band=""
 	if [ "$1" = "concurrent" ]; then
 		band=$(ap_band_code)
@@ -390,16 +418,17 @@ start_sta() {
 	ssid=$(cfg sta_ssid); psk=$(cfg sta_psk); hidden=$(cfg sta_hidden); country=$(cfg sta_country)
 	sec=$(cfg sta_security); [ -z "$sec" ] && sec=wpa2
 	case "$sec" in open|wpa3|wpa2+wpa3) ;; *) sec=wpa2 ;; esac
-	if [ -z "$band" ]; then
+	if [ -z "$band" ] && [ "$xcount" -eq 0 ]; then
 		case "$(cfg sta_band)" in
 			2.4) band=24 ;;
 			5)   band=5 ;;
 		esac
 	fi
-	if [ -z "$ssid" ]; then
-		log "STA requested but sta_ssid empty; skipping"
+	if [ -z "$ssid" ] && [ "$xcount" -eq 0 ]; then
+		log "STA requested but no network configured; skipping"
 		return 0
 	fi
+	[ -z "$ssid" ] && psk=""
 	[ "$sec" = "open" ] && psk=""
 	[ -n "$country" ] && iw reg set "$country" 2>/dev/null
 	gen_wpa_conf "$ssid" "$psk" "$hidden" "$country" "$band" "$sec"
@@ -414,8 +443,9 @@ start_sta() {
 	# doesn't keep the caller's stdin either.)
 	wpa_supplicant -B -i "$STA_IF" -c "$WPA_CONF" -P /var/run/wpa_supplicant-wlan0.pid >>"$LOG" 2>&1 9>&-
 	apply_txpower "$STA_IF"
+	[ -d /home/dhcpcd ] || { mkdir -p /home/dhcpcd 2>/dev/null; chown dhcpcd:dhcpcd /home/dhcpcd 2>/dev/null || true; }
 	dhcpcd -b -n "$STA_IF" </dev/null >>"$LOG" 2>&1 9>&- &
-	log "STA started on $STA_IF ssid=$ssid sec=$sec${band:+ band=$band}"
+	log "STA started on $STA_IF ssid=${ssid:-<none>} sec=$sec${band:+ band=$band} extra=$xcount"
 }
 
 # ap_bridge_state <iface> — for the start log line. hostapd exits at init if

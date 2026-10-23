@@ -78,6 +78,13 @@
   # 2026-05-16. Earlier attempts dropped: betweentheborders.com:4242
   # (host off the air at flash time) and rns.beleth.net:4242 (worked
   # at first but swapped out by operator request for the .146 node).
+  # Public Reticulum testnet entrypoint (verified reachable 2026-10-23).
+  [[RNS Moscow (TCP)]]
+    type = TCPClientInterface
+    enabled = yes
+    target_host = rns.moscow
+    target_port = 4242
+
   [[Catz Node (TCP)]]
     type = TCPClientInterface
     enabled = yes
