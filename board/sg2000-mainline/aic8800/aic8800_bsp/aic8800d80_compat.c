@@ -195,7 +195,7 @@ int aicwifi_patch_config_8800d80(struct aic_sdio_dev *sdiodev)
 	}
 	#endif
 
-	printk(KERN_ERR "RNSBOX patchcfg: config_base=%08x str_base=%08x start=%08x cnt=%u\n",
+	printk(KERN_DEBUG "RNSBOX patchcfg: config_base=%08x str_base=%08x start=%08x cnt=%u\n",
 	       config_base, aic_patch_str_base, start_addr,
 	       (unsigned)(patch_cnt + adap_patch_cnt));
 	ret = rwnx_send_dbg_mem_write_req(sdiodev, AIC_PATCH_ADDR(magic_num), AIC_PATCH_MAGIG_NUM);
@@ -238,7 +238,7 @@ int aicwifi_patch_config_8800d80(struct aic_sdio_dev *sdiodev)
 	{
 		struct dbg_mem_read_cfm v = {0};
 		if (!rwnx_send_dbg_mem_read_req(sdiodev, AIC_PATCH_ADDR(pair_count), &v))
-			printk(KERN_ERR "RNSBOX patchcfg verify: pair_count=%08x\n", v.memdata);
+			printk(KERN_DEBUG "RNSBOX patchcfg verify: pair_count=%08x\n", v.memdata);
 	}
 	if (adap_test){
 		int tmp_cnt = patch_cnt + adap_patch_cnt;

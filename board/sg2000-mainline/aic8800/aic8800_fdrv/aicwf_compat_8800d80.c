@@ -59,7 +59,7 @@ int	rwnx_plat_userconfig_load_8800d80(struct rwnx_hw *rwnx_hw)
 
     /* load file */
     size = rwnx_request_firmware_common(rwnx_hw, &dst, filename);
-	printk(KERN_ERR "RNSBOX fw request %s -> size %d\n", filename, size);
+	printk(KERN_DEBUG "RNSBOX fw request %s -> size %d\n", filename, size);
     if (size <= 0) {
             AICWFDBG(LOGERROR, "wrong size of firmware file\n");
             dst = NULL;

@@ -257,7 +257,7 @@ static int cmd_mgr_queue(struct rwnx_cmd_mgr *cmd_mgr, struct rwnx_cmd *cmd)
 		unsigned long tout = msecs_to_jiffies(RWNX_80211_CMD_TIMEOUT_MS * cmd_mgr->queue_sz);
 		if (!wait_for_completion_timeout(&cmd->complete, tout)) {
 			printk(KERN_CRIT"cmd timed-out\n");
-			printk(KERN_CRIT"RNSBOX cmd id=%d flags=%04x\n",
+			printk(KERN_DEBUG "RNSBOX cmd id=%d flags=%04x\n",
 			       cmd->id, cmd->flags);
 			#ifdef AICWF_SDIO_SUPPORT
 			ret = aicwf_sdio_writeb(sdiodev, sdiodev->sdio_reg.wakeup_reg, 2);

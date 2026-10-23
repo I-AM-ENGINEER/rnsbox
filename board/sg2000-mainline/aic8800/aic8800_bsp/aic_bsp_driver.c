@@ -1285,11 +1285,11 @@ int rwnx_plat_bin_fw_upload_android(struct aic_sdio_dev *sdiodev, u32 fw_addr,
 	int err = 0;
 
 	printk("%s\n",__func__);
-	printk(KERN_ERR "RNSBOX fw upload: %s addr=%08x\n", filename, fw_addr);
+	printk(KERN_DEBUG "RNSBOX fw upload: %s addr=%08x\n", filename, fw_addr);
 
 	/* load aic firmware */
 	size = rwnx_load_firmware(&dst, filename, dev);
-	printk(KERN_ERR "RNSBOX fw size=%d\n", size);
+	printk(KERN_DEBUG "RNSBOX fw size=%d\n", size);
 	if (size <= 0) {
 		printk("wrong size of firmware file\n");
 #ifndef CONFIG_FIRMWARE_ARRAY
@@ -1322,17 +1322,17 @@ int rwnx_plat_bin_fw_upload_android(struct aic_sdio_dev *sdiodev, u32 fw_addr,
 		int off, bad = 0;
 
 		if (rwnx_send_dbg_mem_read_req(sdiodev, fw_addr, &rb) == 0)
-			printk(KERN_ERR "RNSBOX fw verify @%08x: chip=%08x file=%08x\n",
+			printk(KERN_DEBUG "RNSBOX fw verify @%08x: chip=%08x file=%08x\n",
 			       fw_addr, rb.memdata, dst[0]);
 		/* stride-2KB sample compare of the whole image + last word */
 		for (off = 2048; off + 4 <= size && bad < 4; off += 2048) {
 			if (rwnx_send_dbg_mem_read_req(sdiodev, fw_addr + off, &rb)) {
-				printk(KERN_ERR "RNSBOX fw sample read fail @%08x\n", fw_addr + off);
+				printk(KERN_DEBUG "RNSBOX fw sample read fail @%08x\n", fw_addr + off);
 				break;
 			}
 			if (rb.memdata != dst[off / 4]) {
 				bad++;
-				printk(KERN_ERR "RNSBOX fw MISMATCH @%08x: chip=%08x file=%08x\n",
+				printk(KERN_DEBUG "RNSBOX fw MISMATCH @%08x: chip=%08x file=%08x\n",
 				       fw_addr + off, rb.memdata, dst[off / 4]);
 			}
 		}
@@ -1341,16 +1341,16 @@ int rwnx_plat_bin_fw_upload_android(struct aic_sdio_dev *sdiodev, u32 fw_addr,
 			if (!rwnx_send_dbg_mem_read_req(sdiodev, fw_addr + last, &rb)) {
 				if (rb.memdata != dst[last / 4]) {
 					bad++;
-					printk(KERN_ERR "RNSBOX fw TAIL MISMATCH @%08x: chip=%08x file=%08x\n",
+					printk(KERN_DEBUG "RNSBOX fw TAIL MISMATCH @%08x: chip=%08x file=%08x\n",
 					       fw_addr + last, rb.memdata, dst[last / 4]);
 				} else {
-					printk(KERN_ERR "RNSBOX fw tail OK @%08x: %08x\n",
+					printk(KERN_DEBUG "RNSBOX fw tail OK @%08x: %08x\n",
 					       fw_addr + last, rb.memdata);
 				}
 			}
 		}
 		if (!bad)
-			printk(KERN_ERR "RNSBOX fw sample verify PASS (%d bytes)\n", size);
+			printk(KERN_DEBUG "RNSBOX fw sample verify PASS (%d bytes)\n", size);
 	}
 
 	if (dst) {
@@ -1736,7 +1736,7 @@ static int aicwifi_start_from_bootrom(struct aic_sdio_dev *sdiodev)
 		if (p) {
 			u32 old = readl(p);
 			writel(0x9, p);
-			printk(KERN_ERR "RNSBOX pwrsw: %08x -> %08x\n", old, readl(p));
+			printk(KERN_DEBUG "RNSBOX pwrsw: %08x -> %08x\n", old, readl(p));
 			iounmap(p);
 		}
 	}
@@ -1751,7 +1751,7 @@ static int aicwifi_start_from_bootrom(struct aic_sdio_dev *sdiodev)
 		for (ci = 0; ci < 0x18; ci++)
 			cccr[ci] = sdio_f0_readb(sdiodev->func, ci, &ce);
 		sdio_release_host(sdiodev->func);
-		printk(KERN_ERR "RNSBOX cccr-pre:"
+		printk(KERN_DEBUG "RNSBOX cccr-pre:"
 		       " %02x %02x %02x %02x %02x %02x %02x %02x"
 		       " %02x %02x %02x %02x %02x %02x %02x %02x"
 		       " %02x %02x %02x %02x %02x %02x %02x %02x (e=%d)\n",
@@ -1771,9 +1771,9 @@ static int aicwifi_start_from_bootrom(struct aic_sdio_dev *sdiodev)
 		sdio_f0_writeb(sdiodev->func, 0x03, 0x02, &ce);
 		ioe = sdio_f0_readb(sdiodev->func, 0x02, &ce);
 		sdio_release_host(sdiodev->func);
-		printk(KERN_ERR "RNSBOX ioe after write 03: %02x (e=%d)\n", ioe, ce);
+		printk(KERN_DEBUG "RNSBOX ioe after write 03: %02x (e=%d)\n", ioe, ce);
 	}
-	printk(KERN_ERR "RNSBOX start_app: addr=%08x bt=%d irq_before=%d\n",
+	printk(KERN_DEBUG "RNSBOX start_app: addr=%08x bt=%d irq_before=%d\n",
 	       fw_addr, boottype, atomic_read(&rnsbox_bsp_irq_cnt));
 	ret = rwnx_send_dbg_start_app_req(sdiodev, fw_addr, boottype, &start_app_cfm);
 	{
@@ -1784,14 +1784,14 @@ static int aicwifi_start_from_bootrom(struct aic_sdio_dev *sdiodev)
 		u8 cccr[0x18];
 
 		mr = aicwf_sdio_readb(sdiodev, sdiodev->sdio_reg.misc_int_status_reg, &misc);
-		printk(KERN_ERR "RNSBOX start_app: ret=%d bootstatus=%08x irq_after=%d misc=%02x mr=%d\n",
+		printk(KERN_DEBUG "RNSBOX start_app: ret=%d bootstatus=%08x irq_after=%d misc=%02x mr=%d\n",
 		       ret, start_app_cfm.bootstatus,
 		       atomic_read(&rnsbox_bsp_irq_cnt), misc, mr);
 		sdio_claim_host(sdiodev->func);
 		for (ci = 0; ci < 0x18; ci++)
 			cccr[ci] = sdio_f0_readb(sdiodev->func, ci, &mr);
 		sdio_release_host(sdiodev->func);
-		printk(KERN_ERR "RNSBOX cccr:"
+		printk(KERN_DEBUG "RNSBOX cccr:"
 		       " %02x %02x %02x %02x %02x %02x %02x %02x"
 		       " %02x %02x %02x %02x %02x %02x %02x %02x"
 		       " %02x %02x %02x %02x %02x %02x %02x %02x (mr=%d)\n",
@@ -1812,7 +1812,7 @@ static int aicwifi_start_from_bootrom(struct aic_sdio_dev *sdiodev)
 		 * jumped and crashed before its first interrupt. */
 		sdiodev->cmd_mgr.state = RWNX_CMD_MGR_STATE_INITED;
 		r2 = rwnx_send_dbg_mem_read_req(sdiodev, 0x40500000, &rb);
-		printk(KERN_ERR "RNSBOX bootrom probe: ret=%d memdata=%08x\n",
+		printk(KERN_DEBUG "RNSBOX bootrom probe: ret=%d memdata=%08x\n",
 		       r2, rb.memdata);
 		return -1;
 	}
@@ -2223,7 +2223,7 @@ int aicbsp_driver_fw_init(struct aic_sdio_dev *sdiodev)
 			aicbsp_firmware_list = fw_8800d80_u01;
 		else if (fw_variant == 2)
 			aicbsp_firmware_list = fw_8800d80_h_u02;
-		printk(KERN_ERR "RNSBOX D80 select: memdata=%08x rev=%u is_h=%u cpmode=%d fw=%s (force=%d)\n",
+		printk(KERN_DEBUG "RNSBOX D80 select: memdata=%08x rev=%u is_h=%u cpmode=%d fw=%s (force=%d)\n",
 		       rd_mem_addr_cfm.memdata, aicbsp_info.chip_rev, is_chip_id_h,
 		       aicbsp_info.cpmode,
 		       aicbsp_firmware_list[aicbsp_info.cpmode].wl_fw, fw_variant);

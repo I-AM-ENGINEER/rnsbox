@@ -2787,7 +2787,7 @@ void aicwf_sdio_hal_irqhandler(struct sdio_func *func)
 	u8 intstatus = 0;
 	u8 byte_len = 0;
 	if ((atomic_inc_return(&rnsbox_irq_cnt) & 0xff) == 1)
-		printk(KERN_ERR "RNSBOX irq#%d rwnx_hw=%px\n",
+		printk(KERN_DEBUG "RNSBOX irq#%d rwnx_hw=%px\n",
 		       atomic_read(&rnsbox_irq_cnt), sdiodev->rwnx_hw);
 	#ifdef CONFIG_PREALLOC_RX_SKB
 	struct rx_buff *pkt = NULL;

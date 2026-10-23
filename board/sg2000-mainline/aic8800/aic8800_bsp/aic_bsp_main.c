@@ -15,7 +15,7 @@
 #define DRV_AUTHOR            "AICSemi"
 #define DRV_VERS_MOD          "1.0"
 
-int aicwf_dbg_level_bsp = LOGERROR|LOGINFO|LOGDEBUG|LOGTRACE;
+int aicwf_dbg_level_bsp = LOGERROR;
 /* Same bits as the fdrv aicwf_dbg_level param: 0 silences the per-SDIO-frame
    AICWFDBG flood (rwnx_send_msg / rwnx_rx_handle_msg) that rotates
    /var/log/messages in under a minute once BLE traffic flows. */

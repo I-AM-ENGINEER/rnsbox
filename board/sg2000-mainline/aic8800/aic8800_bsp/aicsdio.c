@@ -53,7 +53,7 @@ static int rnsbox_chip_reset_set(const char *val, const struct kernel_param *kp)
 		msleep(300);
 		cvi_wlregon(1);
 		msleep(500);
-		printk(KERN_ERR "RNSBOX chip power-cycled via WL_REG_ON\n");
+		printk(KERN_DEBUG "RNSBOX chip power-cycled via WL_REG_ON\n");
 		chip_reset = 0;
 	}
 	return 0;
@@ -133,7 +133,7 @@ static void cvi_sd1_pads_config(void)
 		v |= 0x04;
 		writeb(v, pads + 0xA04 + i * 4);
 	}
-	printk(KERN_ERR "RNSBOX sd1 pads configured\n");
+	printk(KERN_DEBUG "RNSBOX sd1 pads configured\n");
 }
 
 static void cvi_sd1_regdump(void)
@@ -151,7 +151,7 @@ static void cvi_sd1_regdump(void)
 	clk = readw(hc + 0x2C);
 	ctrl0 = readb(hc + 0x28);
 	ctrl2 = readw(hc + 0x3E);
-	printk(KERN_ERR "RNSBOX sd1 regs: 0x200=%08x 0x240=%08x 0x244=%08x 0x24c=%08x clk=%04x ctrl0=%02x ctrl2=%04x\n",
+	printk(KERN_DEBUG "RNSBOX sd1 regs: 0x200=%08x 0x240=%08x 0x244=%08x 0x24c=%08x clk=%04x ctrl0=%02x ctrl2=%04x\n",
 	       readl(hc + 0x200), readl(hc + 0x240), readl(hc + 0x244),
 	       readl(hc + 0x24C), clk, ctrl0, ctrl2);
 	iounmap(hc);
@@ -166,16 +166,16 @@ static void cvi_lpo_fix(void)
 		rtc1 = ioremap(0x050250AC, 4);  /* RTC domain power (wevb ref) */
 		rtc2 = ioremap(0x050260D0, 4);
 		if (!pad || !rtc1 || !rtc2) {
-			printk(KERN_ERR "RNSBOX lpo: ioremap fail\n");
+			printk(KERN_DEBUG "RNSBOX lpo: ioremap fail\n");
 			return;
 		}
 	}
-	printk(KERN_ERR "RNSBOX lpo before: pad=%08x r1=%08x r2=%08x\n",
+	printk(KERN_DEBUG "RNSBOX lpo before: pad=%08x r1=%08x r2=%08x\n",
 	       readl(pad), readl(rtc1), readl(rtc2));
 	writel(0x3, pad);
 	writel(0x2, rtc1);
 	writel(0x3, rtc2);
-	printk(KERN_ERR "RNSBOX lpo after: pad=%08x r1=%08x r2=%08x\n",
+	printk(KERN_DEBUG "RNSBOX lpo after: pad=%08x r1=%08x r2=%08x\n",
 	       readl(pad), readl(rtc1), readl(rtc2));
 }
 
@@ -192,7 +192,7 @@ static void cvi_wifi_wake(int on)
 	/* dw-apb-ggpio porte (AON bank): E7 = WIFI_WAKE, E9 = BT_REG_ON */
 	ddr = readl(porte + 0x04);
 	dr = readl(porte + 0x00);
-	printk(KERN_ERR "RNSBOX porte before: dr=%08x ddr=%08x\n", dr, ddr);
+	printk(KERN_DEBUG "RNSBOX porte before: dr=%08x ddr=%08x\n", dr, ddr);
 	ddr |= BIT(7) | BIT(9);
 	if (on)
 		dr |= BIT(7) | BIT(9);
@@ -200,7 +200,7 @@ static void cvi_wifi_wake(int on)
 		dr &= ~(BIT(7) | BIT(9));
 	writel(ddr, porte + 0x04);
 	writel(dr, porte + 0x00);
-	printk(KERN_ERR "RNSBOX porte after: dr=%08x ddr=%08x (on=%d)\n",
+	printk(KERN_DEBUG "RNSBOX porte after: dr=%08x ddr=%08x (on=%d)\n",
 	       readl(porte + 0x00), readl(porte + 0x04), on);
 }
 
@@ -437,7 +437,7 @@ static int aicwf_sdio_chipmatch(struct aic_sdio_dev *sdio_dev, uint16_t vid, uin
 
 	if (force_chipid >= 0) {
 		sdio_dev->chipid = force_chipid;
-		printk(KERN_ERR "RNSBOX chipmatch: forced chipid=%d (vid=%04x did=%04x)\n",
+		printk(KERN_DEBUG "RNSBOX chipmatch: forced chipid=%d (vid=%04x did=%04x)\n",
 		       force_chipid, vid, did);
 		return 0;
 	}
@@ -966,10 +966,10 @@ int aicwf_sdio_recv_pkt(struct aic_sdio_dev *sdiodev, struct sk_buff *skbbuf,
         sdio_claim_host(sdiodev->func);
         ret = sdio_readsb(sdiodev->func, skbbuf->data, sdiodev->sdio_reg.rd_fifo_addr, size);
         if (ret) {
-            printk(KERN_ERR "RNSBOX readsb(fixed/block) ret=%d, trying incr\n", ret);
+            printk(KERN_DEBUG "RNSBOX readsb(fixed/block) ret=%d, trying incr\n", ret);
             ret = sdio_memcpy_fromio(sdiodev->func, skbbuf->data,
                                      sdiodev->sdio_reg.rd_fifo_addr, size);
-            printk(KERN_ERR "RNSBOX memcpy_fromio(incr/block) ret=%d\n", ret);
+            printk(KERN_DEBUG "RNSBOX memcpy_fromio(incr/block) ret=%d\n", ret);
         }
         sdio_release_host(sdiodev->func);
     } else {
@@ -980,7 +980,7 @@ int aicwf_sdio_recv_pkt(struct aic_sdio_dev *sdiodev, struct sk_buff *skbbuf,
 
 
 	if (ret < 0)
-		printk(KERN_ERR "RNSBOX recv_pkt size=%u ret=%d\n", size, ret);
+		printk(KERN_DEBUG "RNSBOX recv_pkt size=%u ret=%d\n", size, ret);
 	if (ret < 0) {
 		return ret;
 	}
@@ -1239,7 +1239,7 @@ static int aicwf_sdio_tx_msg(struct aic_sdio_dev *sdiodev)
 		if (buffer_cnt > 0 && len < (buffer_cnt * BUFFER_SIZE)) {
 			err = aicwf_sdio_send_pkt(sdiodev, payload, len);
 			if (err)
-				printk(KERN_ERR "RNSBOX send_pkt len=%u err=%d buf_cnt=%d\n",
+				printk(KERN_DEBUG "RNSBOX send_pkt len=%u err=%d buf_cnt=%d\n",
 				       len, err, buffer_cnt);
 			if (err) {
 				sdio_err("aicwf_sdio_send_pkt fail%d\n", err);
@@ -1373,7 +1373,7 @@ static int aicwf_sdio_bus_txmsg(struct device *dev, u8 *msg, uint msglen)
 
 	/* RNSBox: per-message print removed */
 	if (bus_if->state != BUS_UP_ST) {
-		printk(KERN_ERR "RNSBOX txmsg: bus not up, dropped\n");
+		printk(KERN_DEBUG "RNSBOX txmsg: bus not up, dropped\n");
 		sdio_err("bus has stop\n");
 		return -1;
 	}
@@ -1598,7 +1598,7 @@ static int aicwf_sdio_bus_start(struct device *dev)
 	}
 
 	bus_if->state = BUS_UP_ST;
-	printk(KERN_ERR "RNSBOX bus_init: state=BUS_UP_ST\n");
+	printk(KERN_DEBUG "RNSBOX bus_init: state=BUS_UP_ST\n");
 	return ret;
 }
 
@@ -1670,7 +1670,7 @@ static void aicwf_sdio_enq_rxpkt(struct aic_sdio_dev *sdiodev, struct sk_buff *p
 	spin_lock_irqsave(&rx_priv->rxqlock, flags);
 	if (!aicwf_rxframe_enqueue(sdiodev->dev, &rx_priv->rxq, pkt)) {
 		spin_unlock_irqrestore(&rx_priv->rxqlock, flags);
-		printk(KERN_ERR "RNSBOX enq_rxpkt: queue full, dropped\n");
+		printk(KERN_DEBUG "RNSBOX enq_rxpkt: queue full, dropped\n");
 		aicwf_dev_skb_free(pkt);
 		return;
 	}
@@ -1692,7 +1692,7 @@ void aicwf_sdio_hal_irqhandler(struct sdio_func *func)
 	int ret;
 
 	if ((atomic_inc_return(&rnsbox_bsp_irq_cnt) & 0x3f) == 1)
-		printk(KERN_ERR "RNSBOX bsp irq #%d\n",
+		printk(KERN_DEBUG "RNSBOX bsp irq #%d\n",
 		       atomic_read(&rnsbox_bsp_irq_cnt));
 
     //AICWFDBG(LOGDEBUG,"%s bsp enter \r\n", __func__);
@@ -1754,7 +1754,7 @@ void aicwf_sdio_hal_irqhandler(struct sdio_func *func)
         }
 
         if ((atomic_read(&rnsbox_bsp_irq_cnt) & 0x3ff) == 1)
-            printk(KERN_ERR "RNSBOX D80 irqstatus=%02x\n", intstatus);
+            printk(KERN_DEBUG "RNSBOX D80 irqstatus=%02x\n", intstatus);
         if (intstatus > 0) {
             uint8_t intmaskf2 = intstatus | (0x1UL << 3);
             if (intmaskf2 > 120U) { // func2
@@ -2010,7 +2010,7 @@ int aicwf_sdio_func_init(struct aic_sdio_dev *sdiodev)
 		  if (clk > 50000000)
 			clk = 50000000;
 		  host->ios.clock = clk;
-		  printk(KERN_ERR "RNSBOX sdio clock request=%u f_max=%u\n",
+		  printk(KERN_DEBUG "RNSBOX sdio clock request=%u f_max=%u\n",
 			 clk, host->f_max); }
 		host->ops->set_ios(host, &host->ios);
 		sdio_dbg("Set SDIO Clock %d MHz\n", host->ios.clock/1000000);
