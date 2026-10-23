@@ -1,0 +1,33 @@
+#!/bin/sh
+# S10consoleuser — the TTY console logs in as the unprivileged `admin` user.
+#
+# Its unix password mirrors the portal admin password: the image ships the
+# account locked, so seed the factory default admin/admin here. Changing the
+# password in Settings -> Change admin password updates the unix account too.
+# zsh is the login shell when the image has it.
+set -u
+
+# Old images predate BR2_ROOTFS_USERS_TABLES: create the login account here.
+if ! grep -q '^admin:' /etc/passwd 2>/dev/null; then
+	adduser -D -h /home/admin -s /bin/sh admin 2>/dev/null || true
+fi
+mkdir -p /home/admin
+chown admin:admin /home/admin 2>/dev/null || true
+# Suppress zsh's first-run newuser-install menu.
+if [ -f /etc/zsh/zshrc ] && [ ! -e /home/admin/.zshrc ]; then
+	cp /etc/zsh/zshrc /home/admin/.zshrc
+	chown admin:admin /home/admin/.zshrc 2>/dev/null || true
+fi
+
+if [ -x /bin/zsh ] && [ -f /etc/passwd ]; then
+	sed -i 's#^\(admin:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:\)[^:]*#\1/bin/zsh#' /etc/passwd
+fi
+
+sh=$(awk -F: '$1 == "admin" { print $2 }' /etc/shadow 2>/dev/null)
+case "$sh" in
+	""|'!'*|'*'*)
+		# busybox passwd reads the new password twice; -a pins the hash.
+		printf 'admin\nadmin\n' | /usr/bin/passwd -a sha512 admin >/dev/null 2>&1 || true
+		;;
+esac
+exit 0

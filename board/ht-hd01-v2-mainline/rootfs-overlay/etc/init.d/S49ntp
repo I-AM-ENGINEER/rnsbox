@@ -1,0 +1,57 @@
+#!/bin/sh
+# S49ntp — OpenNTPD instead of ISC ntpd.
+#
+# The portal (Settings -> NTP) edits /etc/ntp.conf in ISC syntax ("server
+# <host> iburst") because every other board runs ISC ntpd. OpenNTPD wants
+# "servers <host>", so this wrapper converts the server/pool lines into
+# /run/ntpd.conf on every start and leaves /etc/ntp.conf as the single
+# source of truth. Restarting from the portal keeps working unchanged.
+#
+# The board has no RTC (1970 at boot), so the daemon must STEP the clock, not
+# just slew it. OpenNTPD 6.8 removed -s ("no longer works") and only enables
+# automatic settime when a server is marked `trusted` (or a constraint is
+# configured), hence the "trusted" on every generated servers line. Listening
+# is limited to loopback: this box is a client, not a public time server.
+CONF=/etc/ntp.conf
+GEN=/run/ntpd.conf
+PID=/run/ntpd.pid
+DAEMON=/usr/sbin/ntpd
+
+gen_conf() {
+	mkdir -p /run
+	{
+		echo "# generated from $CONF by S49ntp — do not edit"
+		awk '$1 == "server" || $1 == "pool" { print "servers " $2 " trusted" }' "$CONF" 2>/dev/null
+		echo "listen on 127.0.0.1"
+		echo "listen on ::1"
+	} > "$GEN"
+}
+
+case "${1:-start}" in
+	start)
+		[ -x "$DAEMON" ] || exit 0
+		gen_conf
+		if ! grep -q '^servers ' "$GEN"; then
+			echo "NTP: no servers in $CONF, not starting"
+			exit 0
+		fi
+		printf "Starting openntpd: "
+		"$DAEMON" -f "$GEN" -p "$PID"
+		echo "OK"
+		;;
+	stop)
+		printf "Stopping openntpd: "
+		start-stop-daemon -K -q -p "$PID" 2>/dev/null
+		rm -f "$PID"
+		echo "OK"
+		;;
+	restart|reload)
+		"$0" stop
+		sleep 1
+		"$0" start
+		;;
+	*)
+		echo "Usage: $0 {start|stop|restart}" >&2
+		exit 1
+		;;
+esac

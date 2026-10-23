@@ -1,0 +1,72 @@
+#!/bin/sh
+# S30network — HT-HD01-V2 LAN bridge.
+#
+# eth0 (RJ45 + SR9900 USB-C, one flat MT7628 switch) is the WAN uplink: it is
+# addressed by S30eth from /etc/rnsbox/wan.conf (DHCP or static, NATed LAN ->
+# WAN by S60routing). It is NOT a bridge port: a bridge here would merge the
+# upstream L2 with the LAN, so the upstream's DHCP would answer hotspot
+# clients and they would never get a 10.42.0.x lease of their own.
+#
+# The LAN is the 2.4 GHz AP: hostapd (S35wifi) adds wlanN to br-lan, which
+# carries 10.42.0.1/24 and the dnsmasq pool. The bridge exists before S35wifi
+# starts; if it cannot be created there is no LAN at all (the AP cannot be
+# bridged), so this is logged and the address is left off.
+set -u
+
+LAN_IP=10.42.0.1/24
+BR=br-lan
+LAN_FILE=/run/lan-iface
+
+lan_up() {
+	ip link set "$1" up 2>/dev/null
+	# The bridge netdev derives SG/checksum features from its ports.
+	ethtool -K "$1" sg off tx off rx off 2>/dev/null || true
+	ip link set "$1" multicast on 2>/dev/null
+	ip -4 addr flush dev "$1" 2>/dev/null
+	ip addr add "$LAN_IP" dev "$1" 2>/dev/null
+	printf '%s\n' "$1" > "$LAN_FILE"
+
+	# AutoInterface (Reticulum) uses the LAN's IPv6 link-local address.
+	d=/proc/sys/net/ipv6/conf/$1
+	[ -d "$d" ] || return 0
+	echo 0 > "$d/disable_ipv6" 2>/dev/null
+	echo 0 > "$d/accept_ra" 2>/dev/null
+	echo 0 > "$d/autoconf" 2>/dev/null
+}
+
+start() {
+	ip link set eth0 up 2>/dev/null
+	# The MT7628 FE's checksum offload corrupts TCP payloads with the flat
+	# switch (ARP/ICMP pass, TCP data is dropped by the peer).  Software
+	# checksums are cheap at 100 Mbit on this CPU.
+	ethtool -K eth0 sg off tx off rx off 2>/dev/null || true
+	ip link set eth0 multicast on 2>/dev/null
+
+	if ip link add name "$BR" type bridge 2>/dev/null ||
+	   [ -d "/sys/class/net/$BR/bridge" ]; then
+		b=/sys/class/net/$BR/bridge
+		ip link set "$BR" up
+		# No STP/forward delay: the first DHCP DISCOVER must not be lost.
+		echo 0 > "$b/stp_state" 2>/dev/null
+		echo 0 > "$b/forward_delay" 2>/dev/null
+		[ -e "$b/multicast_snooping" ] &&
+			echo 0 > "$b/multicast_snooping" 2>/dev/null
+		lan_up "$BR"
+	else
+		echo "S30network: cannot create $BR — the hotspot has no LAN bridge" >&2
+		rm -f "$LAN_FILE"
+		return 1
+	fi
+}
+
+stop() {
+	ip -4 addr flush dev "$BR" 2>/dev/null
+	rm -f "$LAN_FILE"
+}
+
+case "${1:-start}" in
+	start)   start ;;
+	stop)    stop ;;
+	restart) stop; start ;;
+	*) echo "Usage: $0 {start|stop|restart}" >&2; exit 1 ;;
+esac

@@ -1,0 +1,10 @@
+# HT-HD01-V2 fstab.  The root is squashfs, mounted by the kernel from
+# /dev/mtdblock4 (root=/dev/mtdblock4 rootfstype=squashfs); there is no
+# /dev/root ext2 entry.  All scratch filesystems are capped so tmpfs cannot
+# eat the 128 MB of RAM.
+proc		/proc		proc	defaults	0	0
+devpts		/dev/pts	devpts	defaults,gid=5,mode=620,ptmxmode=0666	0	0
+tmpfs		/dev/shm	tmpfs	mode=1777,size=2M	0	0
+tmpfs		/tmp		tmpfs	mode=1777,size=8M	0	0
+tmpfs		/run		tmpfs	mode=0755,nosuid,nodev,size=4M	0	0
+sysfs		/sys		sysfs	defaults	0	0

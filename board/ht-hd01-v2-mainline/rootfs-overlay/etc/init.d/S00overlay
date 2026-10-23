@@ -1,0 +1,46 @@
+#!/bin/sh
+# S00overlay — mount the jffs2 data partition and overlay the writable
+# directories on top of the read-only squashfs root.
+#
+# Flash layout (DTS fixed-partitions):
+#   mtd3 kernel, mtd4 rootfs (squashfs), mtd5 overlay (jffs2).
+#
+# The first boot finds an erased mtd5; JFFS2 formats it on mount.  The upper
+# and work directories must be on the same filesystem, hence both under
+# /overlay.  This runs before S01seedrng and before anything writes /etc.
+set -u
+
+DEV=/dev/mtdblock5
+MNT=/overlay
+
+# Only overlay a flash-backed root.  In an initramfs/ramfs boot the writable
+# directories already live in RAM and mtd5 still holds the vendor firmware's
+# overlay, which must not be touched.
+grep -q ' / squashfs ' /proc/mounts 2>/dev/null || exit 0
+
+# RAM-test root (squashfs on /dev/ram0): mtd5 still holds the vendor
+# firmware's overlay, so mounting it would modify flash data we do not own.
+grep -q ' /dev/ram0 ' /proc/mounts 2>/dev/null && exit 0
+
+[ -b "$DEV" ] || exit 0
+mkdir -p "$MNT" 2>/dev/null || true
+mount -t jffs2 "$DEV" "$MNT" 2>/dev/null || exit 0
+
+overlay_dir() {
+	lower="$1"
+	upper="$2"
+
+	[ -d "$lower" ] || return 0
+	# Do not stack a second overlay if S00overlay is run again.
+	grep -q " $lower overlay " /proc/mounts 2>/dev/null && return 0
+
+	mkdir -p "$MNT/$upper" "$MNT/$upper-work" 2>/dev/null || return 0
+	mount -t overlay overlay \
+		-o "lowerdir=$lower,upperdir=$MNT/$upper,workdir=$MNT/$upper-work" \
+		"$lower" 2>/dev/null || true
+}
+
+overlay_dir /etc etc
+overlay_dir /root root
+overlay_dir /home home
+overlay_dir /var/lib var-lib

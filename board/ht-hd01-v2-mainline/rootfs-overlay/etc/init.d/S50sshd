@@ -1,0 +1,68 @@
+#!/bin/sh
+# RNSBox SSH gate — starts Dropbear, and only while the portal says so.
+#
+# The name stays S50sshd because the portal calls `run_init("S50sshd",
+# "restart")` from Settings -> SSH; the daemon behind it is Dropbear (the
+# 64 MB target cannot afford an OpenSSH session per login). The rootfs
+# overlay replaces the package's own S50dropbear (slim-target.sh drops that
+# one when this gate is present), so there is exactly one SSH starter.
+#
+# SSH is OFF unless /etc/rnsbox/ssh.conf says enabled=yes. Login is the
+# unprivileged `admin` user (password set in the portal); -w closes root
+# login, and the root password is locked at build time.
+# Host keys are generated on the first enabled start and live in /etc/dropbear
+# (a persistent overlay in production, regenerated per boot in the RAM test).
+CONF=/etc/rnsbox/ssh.conf
+DROPBEAR=/usr/sbin/dropbear
+DROPBEARKEY=/usr/bin/dropbearkey
+KEYDIR=/etc/dropbear
+PIDFILE=/var/run/dropbear.pid
+# -w: no root logins; -p 22; -P writes the pidfile used by stop; -R only
+# matters if the key generation below somehow failed to leave one behind.
+ARGS="-R -w -p 22 -P $PIDFILE"
+
+ssh_enabled() {
+	[ -f "$CONF" ] || return 1
+	sed -e 's/#.*$//' "$CONF" | grep -iE '^[[:space:]]*enabled[[:space:]]*=[[:space:]]*(yes|on|true|1)[[:space:]]*$' >/dev/null 2>&1
+}
+
+case "${1:-start}" in
+	start)
+		ssh_enabled || exit 0
+		[ -x "$DROPBEAR" ] || exit 0
+		umask 077
+		mkdir -p "$KEYDIR"
+		# Host key up front (like ssh-keygen -A did for OpenSSH): generating
+		# it here makes a failure visible at start instead of "Exit before
+		# auth" on the first connection. ed25519 only — instant even on this
+		# CPU, and every current client negotiates it.
+		if [ ! -f "$KEYDIR/dropbear_ed25519_host_key" ]; then
+			printf "Generating SSH host key: "
+			"$DROPBEARKEY" -t ed25519 -f "$KEYDIR/dropbear_ed25519_host_key" >/dev/null 2>&1 \
+				&& echo "OK" || echo "FAIL"
+		fi
+		printf "Starting dropbear: "
+		"$DROPBEAR" $ARGS >/dev/null 2>&1
+		echo "OK"
+		;;
+	stop)
+		printf "Stopping dropbear: "
+		if [ -f "$PIDFILE" ]; then
+			kill "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null
+			rm -f "$PIDFILE"
+		fi
+		# catch a daemon started before -P (or a stale pidfile)
+		killall dropbear 2>/dev/null
+		echo "OK"
+		;;
+	restart|reload)
+		"$0" stop
+		"$0" start
+		;;
+	*)
+		echo "Usage: $0 {start|stop|restart}" >&2
+		exit 1
+		;;
+esac
+
+exit $?

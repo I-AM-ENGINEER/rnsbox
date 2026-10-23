@@ -1,0 +1,85 @@
+#!/bin/sh
+# zram swap on low-RAM boards.
+#
+# Reticulum's path table grows with every announce; compressing cold pages in
+# RAM is cheaper than an OOM kill. Small boards get an aggressive device:
+# total RAM under 160 MiB -> zram = 70% of RAM (128 MiB -> ~89 MiB), so the
+# uncompressed "hot" set stays small. Larger boards get 50%, capped at 512 MiB.
+# disksize is the uncompressed capacity; the RAM actually used is the
+# compressed payload (LZ4), so 70% does not reserve 70% of RAM.
+#
+# Priority 100 so the kernel prefers zram over any storage-backed swap.
+# Requires CONFIG_SWAP + CONFIG_ZRAM (+ LZ4) and busybox mkswap/swapon.
+
+THRESHOLD_KB=921600        # only boards under 900 MiB
+AGGRESSIVE_KB=163840       # under 160 MiB: 70% of RAM
+total_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null)
+[ -n "$total_kb" ] || exit 0
+[ "$total_kb" -lt "$THRESHOLD_KB" ] || exit 0
+
+start() {
+	# zram uses the crypto API at runtime; make sure the LZ4 modules are
+	# loaded before the device is created (modprobe of zram does not pull
+	# them in on this kernel).
+	modprobe crypto_lz4 2>/dev/null
+	modprobe lz4_compress 2>/dev/null
+	modprobe lz4_decompress 2>/dev/null
+	[ -e /sys/block/zram0 ] || modprobe zram 2>/dev/null
+	[ -e /sys/block/zram0/disksize ] || { echo "zram: no device"; return 0; }
+	# devtmpfs may create the node a moment after the device appears.
+	i=0
+	while [ ! -e /dev/zram0 ] && [ "$i" -lt 20 ]; do
+		sleep 0.2; i=$((i + 1))
+	done
+	[ -e /dev/zram0 ] || { echo "zram: /dev/zram0 missing"; return 0; }
+	if grep -q '^/dev/zram0 ' /proc/swaps 2>/dev/null; then
+		return 0
+	fi
+	# reset picks up a compressor hint set by a previous boot
+	[ -e /sys/block/zram0/reset ] && echo 1 > /sys/block/zram0/reset 2>/dev/null
+
+	if [ "$total_kb" -lt "$AGGRESSIVE_KB" ]; then
+		size=$(( total_kb * 1024 * 70 / 100 ))
+	else
+		size=$(( total_kb * 1024 / 2 ))
+		[ "$size" -gt $((512 * 1024 * 1024)) ] && size=$((512 * 1024 * 1024))
+	fi
+	[ "$size" -lt $((64 * 1024 * 1024)) ] && size=$((64 * 1024 * 1024))
+
+	echo "$size" > /sys/block/zram0/disksize 2>/dev/null || {
+		echo "zram: cannot set disksize ($size)"; return 0; }
+	if ! mkswap /dev/zram0 >/dev/null 2>&1; then
+		echo "zram: mkswap failed"; return 0
+	fi
+	# No -p: this BusyBox swapon has no priority option, and zram is the only
+	# swap device anyway.
+	err=$(swapon /dev/zram0 2>&1)
+	if [ $? -ne 0 ]; then
+		echo "zram: swapon failed: $err"; return 0
+	fi
+	# Low-RAM tuning: prefer swapping anonymous pages over dropping cache, and
+	# read/write zram one page at a time (8-page clusters cost latency on this
+	# CPU). Raising the free-memory watermark makes kswapd push cold pages into
+	# zram *proactively*, so the watchdog does not have to restart rnsd first:
+	# keep ~30% of RAM free (plus a wider low/high margin) and swap the rest.
+	echo 100 > /proc/sys/vm/swappiness 2>/dev/null
+	echo 0   > /proc/sys/vm/page-cluster 2>/dev/null
+	# No raised watermarks: forcing kswapd to keep a large free pool starved
+	# the box (0 MB free, constant reclaim) and did not help. zram fills only
+	# under real pressure, which is exactly when it is needed; the memwatch
+	# at 90% is the last resort, not the first.
+	echo "zram: $((size / 1048576)) MiB swap (RAM ${total_kb} kB)"
+}
+
+stop() {
+	grep -q '^/dev/zram0 ' /proc/swaps 2>/dev/null && swapoff /dev/zram0
+	[ -e /sys/block/zram0/reset ] && echo 1 > /sys/block/zram0/reset 2>/dev/null
+}
+
+case "$1" in
+	start) start ;;
+	stop) stop ;;
+	restart) stop; start ;;
+	*) echo "usage: $0 {start|stop|restart}"; exit 1 ;;
+esac
+exit 0

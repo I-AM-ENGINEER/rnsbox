@@ -1,0 +1,11 @@
+config BR2_PACKAGE_MORSE_DRIVER
+	bool "morse-driver (MM6108 HaLow)"
+	depends on BR2_LINUX_KERNEL
+	help
+	  Morse Micro MM6108 HaLow driver.  Mainline 7.3 only carries the
+	  newer MM8108 driver, so the MM6108 needs this out-of-tree module.
+
+	  https://github.com/MorseMicro/morse_driver
+
+comment "morse-driver needs a Linux kernel to be built"
+	depends on !BR2_LINUX_KERNEL

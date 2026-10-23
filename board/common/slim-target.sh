@@ -53,6 +53,21 @@ fi
 # binary: the console is now a PTY broker streamed to xterm.js on :80.
 rm -f "$T/etc/init.d/S87ttyd" "$T/usr/bin/ttyd" "$T/etc/rnsbox/console.conf" \
       "$T/usr/sbin/rnsbox-console-session" "$T/usr/bin/screen"
+# One SSH starter. Boards that ship the gated S50sshd (Dropbear behind it)
+# must not also run the package's ungated S50dropbear.
+if [ -e "$T/etc/init.d/S50sshd" ] && [ -e "$T/etc/init.d/S50dropbear" ]; then
+	rm -f "$T/etc/init.d/S50dropbear"
+fi
+# The dropbear package ships /etc/dropbear as a DANGLING symlink to
+# /var/run/dropbear (keys ephemeral per boot on a read-only root). Nothing
+# creates the target, so `mkdir -p /etc/dropbear` fails with ENOENT and
+# dropbear cannot write its host key at all. Replace it with a real
+# directory: keys then land in the /etc overlay, persistent in production
+# (the RAM-test harness regenerates them per boot, which is fine).
+if [ -L "$T/etc/dropbear" ]; then
+	rm -f "$T/etc/dropbear"
+	mkdir -p "$T/etc/dropbear"
+fi
 if [ -f "$COMMON_DIR/zshrc" ]; then
 	mkdir -p "$T/etc/zsh"
 	install -m 0644 "$COMMON_DIR/zshrc" "$T/etc/zsh/zshrc"

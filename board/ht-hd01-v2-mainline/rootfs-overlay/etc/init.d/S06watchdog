@@ -1,0 +1,58 @@
+#!/bin/sh
+# S06watchdog — hardware watchdog on the MT7628 WDT (mt7621_wdt).
+#
+# The watchdog@100 node comes from mt7628a.dtsi (compatible
+# "mediatek,mt7621-wdt") and CONFIG_MT7621_WDT is built in, so /dev/watchdog
+# exists as soon as devtmpfs is up. BusyBox's watchdog applet pets it every
+# 5 s; if this process stops (kernel deadlock, wedged init, OOM livelock) the
+# hardware resets the box after 20 s instead of waiting for a power cycle.
+#
+# This is the last-resort reset. Software faults have narrower supervisors:
+# S83mon restarts rnsd, S82rnsd's down-watchdog reboots when rnsd cannot
+# be restarted. A clean `reboot`/`halt` stops the feeder first (S06 scripts
+# run in reverse on shutdown), so an orderly shutdown is not interrupted.
+DAEMON=/sbin/watchdog
+PIDFILE=/var/run/watchdog.pid
+# 60 s, not 20: the 580 MHz single core can sit at 100% for tens of seconds
+# while rnsd parses a burst of announces or a public TCP peer floods it. A
+# short timeout turns that CPU spike into a reset. 60 s is the driver's
+# practical maximum (65 s) and still bounds a real hang to a minute.
+TIMEOUT=60
+INTERVAL=10
+
+case "$1" in
+  start)
+    printf "Starting hardware watchdog: "
+    if [ ! -c /dev/watchdog ]; then
+      echo "no /dev/watchdog (no WDT in DTB)"
+      exit 0
+    fi
+    if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
+      echo "already running"
+      exit 0
+    fi
+    if [ ! -x "$DAEMON" ]; then
+      echo "watchdog applet missing"
+      exit 1
+    fi
+    "$DAEMON" -F -t "$INTERVAL" -T "$TIMEOUT" /dev/watchdog &
+    echo $! > "$PIDFILE"
+    echo "OK"
+    ;;
+  stop)
+    printf "Stopping hardware watchdog: "
+    if [ -f "$PIDFILE" ]; then
+      kill "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null || true
+      rm -f "$PIDFILE"
+    fi
+    echo "OK"
+    ;;
+  restart|reload)
+    "$0" stop
+    "$0" start
+    ;;
+  *)
+    echo "Usage: $0 {start|stop|restart}"
+    exit 1
+    ;;
+esac

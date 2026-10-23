@@ -2,8 +2,14 @@ config BR2_PACKAGE_PYTHON_RNS
 	bool "python-rns"
 	select BR2_PACKAGE_PYTHON3_SSL
 	select BR2_PACKAGE_PYTHON3_ZLIB
-	select BR2_PACKAGE_PYTHON_CRYPTOGRAPHY  # runtime
-	select BR2_PACKAGE_PYTHON_SERIAL        # runtime
+	# Buildroot's Rust cross-compiler has no MIPS target, so the current
+	# python-cryptography (maturin/Rust) cannot be built for mipsel.  Use the
+	# C/OpenSSL 3.3.2 package there instead: RNS detects it and uses OpenSSL
+	# for AES/X25519/Ed25519 instead of its pure-Python fallback.  pyserial is
+	# only imported by the serial interfaces; the HT-HD01-V2 has none.
+	select BR2_PACKAGE_PYTHON_CRYPTOGRAPHY if !BR2_mipsel
+	select BR2_PACKAGE_PYTHON_CRYPTOGRAPHY_LEGACY if BR2_mipsel
+	select BR2_PACKAGE_PYTHON_SERIAL if !BR2_mipsel
 	help
 	  Reticulum Network Stack (RNS) — a self-configuring,
 	  encrypted, resilient mesh networking stack designed to

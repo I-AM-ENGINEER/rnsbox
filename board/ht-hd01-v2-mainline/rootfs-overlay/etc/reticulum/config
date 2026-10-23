@@ -1,0 +1,52 @@
+# Reticulum config — HT-HD01-V2 core image.
+#
+# eth0 (RJ45 + SR9900 USB-C, one flat switch) is the WAN uplink; the 2.4 GHz
+# AP is the LAN bridge (br-lan). AutoInterface finds peers on br-lan's IPv6
+# link-local; the public TCP clients below go out the WAN and the TCP
+# listener accepts inbound peers on 4242.
+
+[reticulum]
+  enable_transport = Yes
+  share_instance = Yes
+  shared_instance_port = 37428
+  instance_control_port = 37429
+  panic_on_interface_error = No
+
+[logging]
+  loglevel = 3
+
+[interfaces]
+
+  [[LAN AutoInterface]]
+    type = AutoInterface
+    enabled = True
+    devices = br-lan, eth0
+    bitrate = 10000000
+
+  [[TCP Server]]
+    type = TCPServerInterface
+    enabled = True
+    listen_ip = 0.0.0.0
+    listen_port = 4242
+
+  # Public Reticulum testnet entrypoints. With the C/OpenSSL crypto backend
+  # (python-cryptography-legacy) the CPU handles all three; they were verified
+  # reachable and exchanging announces on 2026-10-23.
+  [[RNS Moscow (TCP)]]
+    type = TCPClientInterface
+    enabled = yes
+    target_host = rns.moscow
+    target_port = 4242
+
+  [[Catz Node (TCP)]]
+    type = TCPClientInterface
+    enabled = yes
+    target_host = 77.37.146.243
+    target_port = 4242
+
+  [[RNS Node 31.129.33.146]]
+    type = TCPClientInterface
+    enabled = yes
+    target_host = 31.129.33.146
+    target_port = 4242
+

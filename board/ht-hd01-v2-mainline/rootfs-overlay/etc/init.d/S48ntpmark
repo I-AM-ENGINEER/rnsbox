@@ -1,0 +1,40 @@
+#!/bin/sh
+# S48ntpmark — record that ntpd set the wall clock.
+#
+# This board has no S45ntpsync (the generic RTC/NTP provenance script) and no
+# ntpq/ntpstat, so /run/clock-source + /run/clock-synced were never written
+# even though ntpd (-g) had stepped the clock: the portal said "Clock source
+# NONE" and the HTTPS update fallback stayed disabled. Poll for a plausible
+# wall clock after ntpd starts; if the portal's browser sync already claimed
+# the source, leave it alone.
+start() {
+	(
+		i=0
+		while [ "$i" -lt 120 ]; do
+			sleep 5
+			src=$(cat /run/clock-source 2>/dev/null)
+			[ "$src" = "ntp" ] && exit 0
+			[ "$src" = "browser" ] && exit 0
+			now=$(date +%s 2>/dev/null)
+			[ -n "$now" ] || { i=$((i + 1)); continue; }
+			if [ "$now" -ge 1577836800 ] && [ "$now" -lt 4102444800 ]; then
+				printf 'ntp\n' > /run/clock-source.tmp &&
+					mv -f /run/clock-source.tmp /run/clock-source
+				: > /run/clock-synced
+				logger -t ntpmark "wall clock set (NTP)" 2>/dev/null
+				exit 0
+			fi
+			i=$((i + 1))
+		done
+	) </dev/null >/dev/null 2>&1 &
+	echo "clock marker armed"
+}
+
+stop() { :; }
+
+case "${1:-start}" in
+	start)   start ;;
+	stop)    stop ;;
+	restart) stop; start ;;
+	*) echo "Usage: $0 {start|stop|restart}" >&2; exit 1 ;;
+esac

@@ -1,0 +1,15 @@
+config BR2_PACKAGE_PYTHON_CRYPTOGRAPHY_LEGACY
+	bool "python-cryptography (C/OpenSSL, no Rust)"
+	depends on BR2_PACKAGE_PYTHON3
+	select BR2_PACKAGE_PYTHON_CFFI
+	select BR2_PACKAGE_PYTHON_SIX
+	select BR2_PACKAGE_OPENSSL
+	help
+	  cryptography 3.3.2, the last C/OpenSSL release before the Rust
+	  rewrite (3.4).  Buildroot's current python-cryptography uses
+	  maturin/Rust, which has no MIPS cross target, so mipsel boards
+	  would otherwise fall back to RNS's pure-Python AES/Ed25519/X25519.
+
+	  This package installs the same "cryptography" Python module.
+	  RNS's Provider detects it (>= 2.8) and uses OpenSSL for AES,
+	  X25519 and Ed25519 instead of the pure-Python fallback.

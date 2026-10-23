@@ -1,0 +1,4 @@
+# HT-HD01-V2: MM6108 HaLow on SDIO.  morse depends on the dot11ah helpers;
+# modprobe resolves the dependency, listing both keeps the intent explicit.
+morse
+dot11ah

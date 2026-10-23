@@ -1,0 +1,766 @@
+#!/bin/sh
+# S35wifi — onboard WiFi bring-up (MT7603E, built into the kernel).
+#
+# Runs after S30network (eth0 + the LAN bridge br-lan up) and
+# BEFORE S60routing. Order: load modules -> dispatch on mode (off / sta / ap /
+# sta+ap).
+#
+# The hotspot is part of the LAN, not a subnet of its own: hostapd runs with
+# bridge=br-lan, so the AP iface (wlan0 in ap mode, uap0 in sta+ap) joins
+# S30gadget_nic's bridge next to usb0 and has no IP; its clients get
+# 10.42.0.x from the one LAN DHCP pool (dnsmasq on br-lan) and nftables sees
+# them as br-lan. When the AP stops, its iface leaves the bridge (hostapd
+# does it on exit; stop() makes sure — a wlan0 left as a bridge port could
+# never become a STA again, cfg80211 refuses). Without br-lan (/run/lan-iface
+# = usb0: kernel without CONFIG_BRIDGE) the AP is refused, as for a weak PSK.
+# /run/wifi-ap-iface names the AP iface while one is up (the portal's WiFi
+# status reads it).
+#
+# The same 10.42.0.0/24 LAN is on every RNSBox, so another RNSBox's hotspot
+# can't be this box's uplink: dhcpcd refuses DHCP from 10.42.0.0/24
+# (/etc/dhcpcd.conf) and /etc/dhcpcd.exit-hook writes the reason to
+# /run/wifi-sta-conflict for the WiFi tab.
+#
+# If no wlanN appears (radio or firmware fault) we detect
+# that and exit 0 so the same image boots on both SKUs.
+#
+# Config: /etc/rnsbox/wifi.conf (managed by the rnsbox-portal WiFi tab).
+
+CONF=/etc/rnsbox/wifi.conf
+EXTRA_CONF=/etc/rnsbox/wifi-extra.conf
+KO3RD=/mnt/system/ko/3rd
+WPA_CONF=/var/run/wpa_supplicant-wlan0.conf
+HOSTAPD_CONF=/var/run/hostapd.conf
+STA_IF=wlan0
+AP_IF_CONCURRENT=uap0
+LOG=/var/log/wifi.log
+# Present while the AP is refused — weak ap_psk, or no LAN bridge (holds the
+# reason). Lets the refusal be logged once per start/restart instead of on
+# every S36wifiwatch revive attempt (every few seconds in sta+ap; /var/log is
+# tiny).
+AP_REFUSED=/run/wifi-ap-refused
+# The LAN bridge hostapd adds the AP iface to (S30gadget_nic makes it).
+LAN_BR=br-lan
+# Present while the STA's network overlaps the LAN subnet (holds the reason;
+# written and cleared by /etc/dhcpcd.exit-hook).
+STA_CONFLICT=/run/wifi-sta-conflict
+
+# 2.4 GHz channel centre frequencies (ch1..13, MHz). Used to pin the STA
+# (and hostapd's channel list) to 2.4 GHz. The onboard chip is a single radio
+# doing fullmac time-sharing: in concurrent sta+ap the STA and the hotspot
+# must sit on one channel AND one band. A regdom that disallows ch12/13
+# simply never surfaces them in scans, so listing them is harmless.
+FREQ_24="2412 2417 2422 2427 2432 2437 2442 2447 2452 2457 2462 2467 2472"
+# All 5 GHz centre frequencies (including DFS): used to keep a scan or a
+# band-pinned STA inside 5 GHz. The regulatory domain filters DFS at scan
+# time, so listing them is harmless.
+FREQ_5="5180 5200 5220 5240 5260 5280 5300 5320 5500 5520 5540 5560 5580 5600 5620 5640 5660 5680 5700 5720 5745 5765 5785 5805 5825"
+
+log() { printf '%s: %s\n' "$(date '+%F %T')" "$*" >> "$LOG"; }
+
+cfg() {
+	grep -E "^[[:space:]]*$1[[:space:]]*=" "$CONF" 2>/dev/null | tail -1 \
+	  | sed -E "s/^[^=]*=[[:space:]]*//" | sed -E 's/[[:space:]]*#.*$//' \
+	  | sed -E 's/[[:space:]]*$//' | tr -d '"'
+}
+
+# read a key from the additional-networks file
+ecfg() {
+	grep -E "^[[:space:]]*$1[[:space:]]*=" "$EXTRA_CONF" 2>/dev/null | tail -1 \
+	  | sed -E "s/^[^=]*=[[:space:]]*//" | sed -E 's/[[:space:]]*#.*$//' \
+	  | sed -E 's/[[:space:]]*$//' | tr -d '"'
+}
+
+# ap_band_code — "24" or "5" for the hotspot's configured band. Concurrent
+# mode pins the STA to this same band (single radio).
+ap_band_code() {
+	case "$(cfg ap_band)" in
+		5)   echo 5 ;;
+		2.4) echo 24 ;;
+		*)   echo "" ;;   # 2.4/5 auto: STA scans both; the AP follows it
+	esac
+}
+
+# center80 <primary> — 80 MHz centre channel, empty when the primary cannot
+# form an 80 MHz segment (or when ACS picks the channel itself).
+center80() {
+	case "$1" in
+		36|40|44|48)     echo 42 ;;
+		52|56|60|64)     echo 58 ;;
+		100|104|108|112) echo 106 ;;
+		116|120|124|128) echo 122 ;;
+		132|136|140|144) echo 138 ;;
+		149|153|157|161) echo 155 ;;
+		*) echo "" ;;
+	esac
+}
+
+# ap_psk_ok <psk> — hotspot WPA2 passphrase policy (mirrors the portal's
+# wifi::ap_psk_ok): 8..63 printable ASCII and NOT the old published factory
+# default. An empty PSK must never mean "open hotspot" (gen_hostapd_conf would
+# emit no wpa= lines), so it is refused too.
+ap_psk_ok() {
+	_p="$1"
+	[ "$_p" = "changeme123" ] && return 1
+	[ "${#_p}" -ge 8 ] && [ "${#_p}" -le 63 ] || return 1
+	case "$_p" in *[!\ -~]*) return 1 ;; esac
+	return 0
+}
+
+# ap_refuse <reason> — record why the AP is not started; log only the first time.
+ap_refuse() {
+	[ -f "$AP_REFUSED" ] || log "AP NOT started: $*"
+	echo "$*" > "$AP_REFUSED"
+}
+AP_PSK_REASON="ap_psk is empty, not 8-63 printable ASCII chars, or the old published default 'changeme123' — set a hotspot password (8-63 chars) in the portal WiFi tab"
+AP_BR_REASON="no LAN bridge $LAN_BR (/run/lan-iface is not $LAN_BR: kernel without CONFIG_BRIDGE?) — the hotspot is bridged into the LAN and cannot run without it"
+
+# lan_bridged — true if the LAN iface is the bridge (/run/lan-iface, written
+# by S30gadget_nic) and it exists. Checked before hostapd starts: with
+# bridge= naming a missing bridge, hostapd would create one of its own.
+lan_bridged() {
+	_l=
+	{ read -r _l < /run/lan-iface; } 2>/dev/null
+	[ "$_l" = "$LAN_BR" ] && [ -d "/sys/class/net/$LAN_BR/bridge" ]
+}
+
+# in_bridge <iface> — true while <iface> is a port of $LAN_BR.
+in_bridge() {
+	[ -e "/sys/class/net/$LAN_BR/brif/$1" ]
+}
+
+# ap_unbridge <iface> — take a (former) AP iface out of $LAN_BR. hostapd does
+# this itself on a clean exit; this covers a crash / SIGKILL, and a wlan0
+# that must become a STA (cfg80211 won't turn a bridge port into a station).
+ap_unbridge() {
+	in_bridge "$1" || return 0
+	ip link set dev "$1" nomaster 2>>"$LOG" && log "$1 left $LAN_BR"
+}
+
+load_modules() {
+	# MT7603E and cfg80211 are built into the kernel; the firmware is
+	# installed as /lib/firmware/mt7628_e1.bin and mt7628_e2.bin.
+	modprobe mt7603e 2>/dev/null || true
+}
+
+wait_for_iface() {
+	for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do
+		[ -e "/sys/class/net/$STA_IF" ] && return 0
+		sleep 0.5
+	done
+	return 1
+}
+
+# wait_sta_connected <timeout_s>
+# Block until wpa_supplicant reports wpa_state=COMPLETED on the STA (i.e. the
+# STA has associated and a channel is assigned) or the timeout elapses.
+# Used by the sta+ap dispatch so start_ap can read the STA's real channel and
+# bring the AP up co-channel. The old code slept a fixed 2 s, which is far too
+# short for a scan+auth+4-way handshake — start_ap then read an empty channel
+# and fell back to ap_channel, stranding the AP on the wrong channel/band.
+wait_sta_connected() {
+	_to="${1:-20}"; _n=0
+	while [ "$_n" -lt "$_to" ]; do
+		wpa_cli -i "$STA_IF" status 2>/dev/null | grep -q '^wpa_state=COMPLETED' && return 0
+		sleep 1; _n=$((_n + 1))
+	done
+	return 1
+}
+
+# gen_wpa_conf <ssid> <psk> <hidden> <country> <band> <security>
+#   band = "24" | "5" | "" (empty = unrestricted, auto)
+#   security = wpa2 (default) | wpa3 | wpa2+wpa3 | open
+#   WPA3/SAE needs wpa_supplicant built with CONFIG_SAE (the image selects
+#   BR2_PACKAGE_WPA_SUPPLICANT_WPA3).
+# emit_sta_network <ssid> <psk> <hidden> <band> <security> <priority>
+emit_sta_network() {
+	_ssid="$1"; _psk="$2"; _hidden="$3"; _band="$4"; _sec="$5"; _prio="$6"
+	case "$_sec" in open|wpa3|wpa2+wpa3) ;; *) _sec=wpa2 ;; esac
+	echo "network={"
+	echo "    ssid=\"$_ssid\""
+	[ "$_hidden" = "1" ] && echo "    scan_ssid=1"
+	case "$_sec" in
+		open)
+			echo "    key_mgmt=NONE"
+			;;
+		wpa3)
+			echo "    key_mgmt=SAE"
+			echo "    sae_password=\"$_psk\""
+			echo "    ieee80211w=2"
+			;;
+		wpa2+wpa3)
+			echo "    key_mgmt=WPA-PSK SAE"
+			echo "    psk=\"$_psk\""
+			echo "    sae_password=\"$_psk\""
+			echo "    ieee80211w=1"
+			;;
+		*)
+			echo "    key_mgmt=WPA-PSK"
+			echo "    psk=\"$_psk\""
+			;;
+	esac
+	echo "    priority=$_prio"
+	case "$_band" in
+		24) echo "    freq_list=$FREQ_24"; echo "    scan_freq=$FREQ_24" ;;
+		5)  echo "    freq_list=$FREQ_5";  echo "    scan_freq=$FREQ_5"  ;;
+	esac
+	echo "}"
+}
+
+gen_wpa_conf() {
+	ssid="$1"; psk="$2"; hidden="$3"; country="$4"; band="$5"; sec="$6"
+	[ -z "$sec" ] && sec=wpa2
+	{
+		echo "ctrl_interface=/var/run/wpa_supplicant"
+		echo "update_config=1"
+		[ -n "$country" ] && echo "country=$country"
+		[ -n "$ssid" ] && emit_sta_network "$ssid" "$psk" "$hidden" "$band" "$sec" 1000
+		xcount=$(ecfg count)
+		case "$xcount" in ''|*[!0-9]*) xcount=0 ;; esac
+		i=1
+		while [ "$i" -le "$xcount" ]; do
+			xs=$(ecfg "${i}_ssid")
+			if [ -n "$xs" ]; then
+				xp=$(ecfg "${i}_psk")
+				xh=$(ecfg "${i}_hidden")
+				xsec=$(ecfg "${i}_security")
+				emit_sta_network "$xs" "$xp" "$xh" "$band" "$xsec" "$((1000 - i))"
+			fi
+			i=$((i + 1))
+		done
+	} > "$WPA_CONF"
+	chmod 600 "$WPA_CONF"
+}
+
+# gen_hostapd_conf <iface> <ssid> <psk> <chan> <hidden> <width> <force_off> <band> <security> <standard>
+#   The AP always joins the LAN bridge (bridge=$LAN_BR; hostapd adds the iface
+#   after switching it to AP mode, and removes it again on exit).
+#   chan      = a valid channel for band/width, or "auto" (hostapd ACS)
+#   width     = 20 | 40 | 80 (80 MHz only on 5 GHz with ac/ax)
+#   band      = 2.4 | 5
+#   security  = wpa2 | wpa3 | wpa2+wpa3 | open (open: wpa=0, no passphrase)
+#   standard  = auto | n | ac | ax
+#   force_off = HT40+ | HT40- | "" (concurrent mode mirrors the STA offset)
+gen_hostapd_conf() {
+	iface="$1"; ssid="$2"; psk="$3"; chan="$4"; hidden="$5"
+	width="$6"; force_off="$7"; band="$8"; sec="$9"; std="${10}"
+	[ -z "$width" ] && width=20
+	[ -z "$band" ] && band=2.4
+	[ -z "$sec" ] && sec=wpa3
+	[ -z "$std" ] && std=auto
+	{
+		echo "interface=$iface"
+		echo "bridge=$LAN_BR"
+		echo "driver=nl80211"
+		echo "ssid=$ssid"
+		if [ "$band" = "5" ]; then echo "hw_mode=a"; else echo "hw_mode=g"; fi
+		# Regulatory hints: hostapd needs its own country for the 5 GHz band,
+		# and a DFS channel (inherited from a concurrent STA) needs radar
+		# detection enabled.
+		country=$(cfg sta_country)
+		if [ -n "$country" ]; then
+			echo "country_code=$country"
+			echo "ieee80211d=1"
+		fi
+		case "$chan" in
+			52|56|60|64|100|104|108|112|116|120|124|128|132|136|140|144)
+				echo "ieee80211h=1" ;;
+		esac
+		if [ "$chan" = "auto" ]; then
+			# ACS: channel 0 tells hostapd to auto-select in this band.
+			echo "channel=0"
+			echo "acs_num_scans=3"
+		else
+			echo "channel=$chan"
+		fi
+		case "$std" in
+			n)
+				echo "ieee80211n=1"
+				;;
+			ac)
+				echo "ieee80211n=1"
+				echo "ieee80211ac=1"
+				;;
+			ax)
+				echo "ieee80211n=1"
+				[ "$band" = "5" ] && echo "ieee80211ac=1"
+				echo "ieee80211ax=1"
+				;;
+			*)
+				echo "ieee80211n=1"
+				[ "$band" = "5" ] && echo "ieee80211ac=1"
+				;;
+		esac
+		echo "wmm_enabled=1"
+		if [ "$width" = "80" ] && [ "$band" = "5" ]; then
+			# 80 MHz: VHT/HE segment. ACS derives the centre itself; a fixed
+			# primary needs the matching centre channel. The HT40 capability
+			# still describes which half of the 80 MHz segment the primary
+			# occupies.
+			off="$force_off"
+			if [ -z "$off" ]; then
+				case "$chan" in
+					40|48|56|64|104|112|120|128|136|144|153|161) off="HT40-" ;;
+					*) off="HT40+" ;;
+				esac
+			fi
+			if [ "$chan" = "auto" ]; then
+				echo "ht_capab=[$off][SHORT-GI-20][SHORT-GI-40][SHORT-GI-80]"
+				echo "vht_oper_chwidth=1"
+				[ "$std" = "ax" ] && echo "he_oper_chwidth=1"
+			else
+				ctr=$(center80 "$chan")
+				if [ -n "$ctr" ]; then
+					echo "ht_capab=[$off][SHORT-GI-20][SHORT-GI-40][SHORT-GI-80]"
+					echo "vht_oper_chwidth=1"
+					echo "vht_oper_centr_freq_seg0_idx=$ctr"
+					[ "$std" = "ax" ] && echo "he_oper_chwidth=1"
+				else
+					echo "ht_capab=[SHORT-GI-20]"
+				fi
+			fi
+		elif [ "$width" = "40" ]; then
+			off="$force_off"
+			if [ -z "$off" ]; then
+				if [ "$band" = "5" ]; then
+					case "$chan" in
+						36|44|52|60|100|108|116|124|132|140|149|157) off="HT40+" ;;
+						40|48|56|64|104|112|120|128|136|144|153|161) off="HT40-" ;;
+						*) off="HT40+" ;;
+					esac
+				else
+					case "$chan" in
+						1|2|3|4) off="HT40+" ;;
+						5|6|7|8|9|10|11|12|13) off="HT40-" ;;
+						*) off="HT40-" ;;
+					esac
+				fi
+			fi
+			echo "ht_capab=[$off][SHORT-GI-20][SHORT-GI-40]"
+			if [ "$std" = "ac" ] || [ "$std" = "ax" ]; then
+				echo "vht_oper_chwidth=0"
+			fi
+			[ "$std" = "ax" ] && echo "he_oper_chwidth=0"
+		else
+			echo "ht_capab=[SHORT-GI-20]"
+			if [ "$std" = "ac" ] || [ "$std" = "ax" ]; then
+				echo "vht_oper_chwidth=0"
+			fi
+			[ "$std" = "ax" ] && echo "he_oper_chwidth=0"
+		fi
+		echo "ignore_broadcast_ssid=${hidden:-0}"
+		echo "auth_algs=1"
+		case "$sec" in
+			open)
+				echo "wpa=0"
+				;;
+			wpa3)
+				echo "wpa=2"
+				echo "wpa_key_mgmt=SAE"
+				echo "sae_password=$psk"
+				echo "ieee80211w=2"
+				echo "rsn_pairwise=CCMP"
+				;;
+			wpa2+wpa3)
+				echo "wpa=2"
+				echo "wpa_key_mgmt=WPA-PSK SAE"
+				echo "wpa_passphrase=$psk"
+				echo "sae_password=$psk"
+				echo "ieee80211w=1"
+				echo "rsn_pairwise=CCMP"
+				;;
+			*)
+				echo "wpa=2"
+				echo "wpa_passphrase=$psk"
+				echo "wpa_key_mgmt=WPA-PSK"
+				echo "rsn_pairwise=CCMP"
+				;;
+		esac
+	} > "$HOSTAPD_CONF"
+	chmod 600 "$HOSTAPD_CONF"
+}
+
+# apply_txpower <iface>
+# Sets WiFi TX power on the (already-up) interface from `tx_power` in wifi.conf.
+#   auto / max / empty -> iw set txpower auto: The onboard chip set_tx_power
+#       AUTOMATIC path requests 0x7f = the chip's silicon ceiling, regardless
+#       of the regulatory database (world regdom caps 2.4 GHz at 20 dBm, which
+#       is already above the D80's ~18 dBm OFDM limit, so regdb never binds).
+#   <int dBm>          -> iw set txpower fixed (dBm x100 = mBm). Firmware still
+#       applies per-rate EVM backoff below this, so it acts as a cap. Falls
+#       back to `limit` if the driver rejects `fixed`.
+# The onboard chip is a single radio; we still set per-vif (wlan0 and wlan1) explicitly.
+apply_txpower() {
+	_if="$1"; tp=$(cfg tx_power); [ -z "$tp" ] && tp=auto
+	case "$tp" in
+		auto|max)
+			iw dev "$_if" set txpower auto 2>>"$LOG" ;;
+		*[!0-9]*|"")
+			iw dev "$_if" set txpower auto 2>>"$LOG" ;;
+		*)
+			iw dev "$_if" set txpower fixed "$((tp*100))" 2>>"$LOG" \
+			  || iw dev "$_if" set txpower limit "$((tp*100))" 2>>"$LOG" ;;
+	esac
+	now=$(iw dev "$_if" info 2>/dev/null | sed -n 's/.*txpower //p' | head -1)
+	log "txpower($_if): requested=$tp actual=${now:-?}"
+}
+
+# start_sta [concurrent]
+#   concurrent -> pin the STA to the hotspot's configured band ("24" or "5")
+#                 so it is co-band with the AP. Passed only from the sta+ap
+#                 dispatch; sta-only honors sta_band (auto/2.4/5).
+start_sta() {
+	xcount=$(ecfg count)
+	case "$xcount" in ''|*[!0-9]*) xcount=0 ;; esac
+	band=""
+	if [ "$1" = "concurrent" ]; then
+		band=$(ap_band_code)
+	fi
+	ssid=$(cfg sta_ssid); psk=$(cfg sta_psk); hidden=$(cfg sta_hidden); country=$(cfg sta_country)
+	sec=$(cfg sta_security); [ -z "$sec" ] && sec=wpa2
+	case "$sec" in open|wpa3|wpa2+wpa3) ;; *) sec=wpa2 ;; esac
+	if [ -z "$band" ] && [ "$xcount" -eq 0 ]; then
+		case "$(cfg sta_band)" in
+			2.4) band=24 ;;
+			5)   band=5 ;;
+		esac
+	fi
+	if [ -z "$ssid" ] && [ "$xcount" -eq 0 ]; then
+		log "STA requested but no network configured; skipping"
+		return 0
+	fi
+	[ -z "$ssid" ] && psk=""
+	[ "$sec" = "open" ] && psk=""
+	[ -n "$country" ] && iw reg set "$country" 2>/dev/null
+	gen_wpa_conf "$ssid" "$psk" "$hidden" "$country" "$band" "$sec"
+	# Normally a no-op: stop() unbridged an AP-mode wlan0 already.
+	ap_unbridge "$STA_IF"
+	ip link set "$STA_IF" up 2>/dev/null
+	# 9>&- closes the /run/wifi.lock fd (held by the caller) for the daemon, so
+	# a long-lived wpa_supplicant can't pin the lock after S35wifi exits and
+	# deadlock the next invocation (portal apply / watchdog). Same for dhcpcd
+	# and hostapd below. (wpa_supplicant -B and hostapd -B detach onto
+	# /dev/null themselves; the backgrounded dhcpcd gets </dev/null so it
+	# doesn't keep the caller's stdin either.)
+	wpa_supplicant -B -i "$STA_IF" -c "$WPA_CONF" -P /var/run/wpa_supplicant-wlan0.pid >>"$LOG" 2>&1 9>&-
+	apply_txpower "$STA_IF"
+	[ -d /home/dhcpcd ] || { mkdir -p /home/dhcpcd 2>/dev/null; chown dhcpcd:dhcpcd /home/dhcpcd 2>/dev/null || true; }
+	dhcpcd -b -n "$STA_IF" </dev/null >>"$LOG" 2>&1 9>&- &
+	log "STA started on $STA_IF ssid=${ssid:-<none>} sec=$sec${band:+ band=$band} extra=$xcount"
+}
+
+# ap_bridge_state <iface> — for the start log line. hostapd exits at init if
+# it can't add the iface to the bridge, so "not in" should never show.
+ap_bridge_state() {
+	if in_bridge "$1"; then echo "bridged into $LAN_BR"; else echo "NOT in $LAN_BR - hotspot clients get no LAN"; fi
+}
+
+# Bring up hostapd; if it exits within ~1s (ACS survey unsupported, bad
+# channel, etc.) retry once on a safe fixed channel. Returns 0 if a hostapd
+# is running afterwards.
+_hostapd_up() {
+	hostapd -B -P /var/run/hostapd.pid "$HOSTAPD_CONF" >>"$LOG" 2>&1 9>&-
+	sleep 1
+	[ -f /var/run/hostapd.pid ] && kill -0 "$(cat /var/run/hostapd.pid)" 2>/dev/null
+}
+
+start_ap() {
+	iface="$1"
+	ssid=$(cfg ap_ssid); psk=$(cfg ap_psk); chan=$(cfg ap_channel)
+	# Blank ap_ssid = the device hostname: the out-of-the-box hotspot is
+	# named after the box (rnsbox-xxxxxx) and follows S10uuid's rename.
+	if [ -z "$ssid" ]; then ssid="$(hostname)"; log "ap_ssid empty - naming the hotspot after the hostname ($ssid)"; fi
+	hidden=$(cfg ap_hidden)
+	band_cfg=$(cfg ap_band)
+	# What this radio actually supports (mt7603e: 2.4 GHz HT only, no 5 GHz,
+	# no VHT/HE). `auto` must not pick 5 GHz on a 2.4-only chip.
+	phy="$(iw phy 2>/dev/null)"
+	has_5g=0; has_ht=0; has_vht=0; has_he=0
+	printf '%s' "$phy" | grep -qE '\* (49[0-9]{2}|5[0-9]{3}|58[0-9]{2})(\.[0-9]+)? MHz' && has_5g=1
+	printf '%s' "$phy" | grep -qE 'HT20|HT40' && has_ht=1
+	printf '%s' "$phy" | grep -q 'VHT Capabilities' && has_vht=1
+	printf '%s' "$phy" | grep -qE 'HE MAC Capabilities|HE Iftypes' && has_he=1
+	auto_band=0
+	case "$band_cfg" in
+		5)   if [ "$has_5g" = 1 ]; then band=5; else band=2.4; log "ap: 5 GHz not supported by this radio, using 2.4 GHz"; fi ;;
+		2.4) band=2.4 ;;
+		*)   if [ "$has_5g" = 1 ]; then band=5; auto_band=1; else band=2.4; fi ;;
+	esac
+	std=$(cfg ap_standard); [ -z "$std" ] && std=auto
+	width=$(cfg ap_width)
+	if [ -z "$width" ]; then
+		case "$(cfg ap_htmode)" in ht40) width=40 ;; *) width=20 ;; esac
+	fi
+	sec=$(cfg ap_security); [ -z "$sec" ] && sec=wpa3
+	case "$sec" in open|wpa2|wpa3|wpa2+wpa3) ;; *) sec=wpa3 ;; esac
+	case "$std" in auto|n|ac|ax) ;; *) std=auto ;; esac
+	case "$width" in 20|40|80) ;; *) width=20 ;; esac
+	# Normalize combinations hostapd/the radio cannot do.
+	if [ "$band" = "2.4" ] && [ "$std" = "ac" ]; then std=auto; fi
+	if [ "$band" != "5" ] && [ "$width" = "80" ]; then width=20; fi
+	if [ "$width" = "80" ] && [ "$std" != "ac" ] && [ "$std" != "ax" ]; then width=20; fi
+	[ "$std" = "ac" ] && [ "$has_vht" = 0 ] && std=auto
+	[ "$std" = "ax" ] && [ "$has_he" = 0 ] && std=auto
+	[ "$width" = "40" ] && [ "$has_ht" = 0 ] && width=20
+	[ "$width" = "80" ] && [ "$has_vht" = 0 ] && [ "$has_he" = 0 ] && width=20
+
+	if [ "$sec" != "open" ] && ! ap_psk_ok "$psk"; then
+		ap_refuse "$AP_PSK_REASON"
+		rm -f /run/wifi-ap-iface      # no AP: don't let the portal think one is up
+		return 0
+	fi
+	if ! lan_bridged; then
+		ap_refuse "$AP_BR_REASON"
+		rm -f /run/wifi-ap-iface
+		return 0
+	fi
+	rm -f "$AP_REFUSED"
+	[ -z "$chan" ] && chan=auto
+	# Channel must belong to the selected band and support the width.
+	case "$band" in
+		5)
+			case "$chan" in
+				auto) ;;
+				36|40|44|48|149|153|157|161|165) ;;
+				*) chan=36 ;;
+			esac
+			;;
+		*)
+			case "$chan" in
+				auto) ;;
+				[1-9]|1[0-3]) ;;
+				*) chan=6 ;;
+			esac
+			;;
+	esac
+	if [ "$width" = "80" ] && [ "$chan" != "auto" ]; then
+		case "$chan" in 36|40|44|48|149|153|157|161) ;; *) width=20 ;; esac
+	fi
+	if [ "$width" = "40" ] && [ "$band" = "5" ] && [ "$chan" = "165" ]; then width=20; fi
+
+	# Concurrent STA+AP: single radio, so the AP must share the STA's exact
+	# channel, band and width. Read the STA's live operating state; when it is
+	# not associated yet, the configured AP settings stay in effect and the
+	# watchdog re-syncs once it joins.
+	ap_sec_off=""
+	if [ "$iface" = "$AP_IF_CONCURRENT" ]; then
+		if [ ! -e "/sys/class/net/$iface" ]; then
+			iw dev "$STA_IF" interface add "$iface" type __ap 2>>"$LOG"
+		fi
+		sta_info=$(iw dev "$STA_IF" info 2>/dev/null)
+		sta_chan=$(echo "$sta_info"  | sed -n 's/.*channel \([0-9]\+\).*/\1/p' | head -1)
+		sta_freq=$(echo "$sta_info"  | sed -n 's/.*channel [0-9]* (\([0-9]\+\) MHz).*/\1/p' | head -1)
+		sta_width=$(echo "$sta_info" | sed -n 's/.*width: \([0-9]\+\) MHz.*/\1/p' | head -1)
+		sta_cf1=$(echo "$sta_info"   | sed -n 's/.*center1: \([0-9]\+\) MHz.*/\1/p' | head -1)
+		if [ -n "$sta_chan" ]; then
+			chan="$sta_chan"
+			case "$sta_freq" in
+				24??|25??) band=2.4 ;;
+				5???|58??) band=5 ;;
+			esac
+			case "$sta_width" in
+				80) [ "$band" = "5" ] && width=80 ;;
+				40) width=40 ;;
+				*)  width=20 ;;
+			esac
+			# Advertise a standard that can carry the inherited width.
+			if [ "$width" = "80" ] && [ "$std" != "ac" ] && [ "$std" != "ax" ]; then
+				std=ac
+			fi
+			if [ "$width" = "40" ] && [ -n "$sta_freq" ] && [ -n "$sta_cf1" ]; then
+				if [ "$sta_cf1" -gt "$sta_freq" ]; then ap_sec_off="HT40+"; else ap_sec_off="HT40-"; fi
+			fi
+			# The STA's channel implies its band; a 2.4 GHz channel needs the
+			# 2.4 GHz hostapd mode even if the configured band was 5.
+			if [ "$band" = "2.4" ]; then
+				case "$chan" in
+					auto|[1-9]|1[0-3]) ;;
+					*) chan=6 ;;
+				esac
+			else
+				case "$chan" in
+					auto|36|40|44|48|149|153|157|161|165) ;;
+					*) chan=36 ;;
+				esac
+			fi
+			[ "$chan" = "auto" ] && { [ "$band" = "5" ] && chan=36 || chan=6; }
+			auto_band=0   # the AP follows the live STA; no 2.4 auto fallback
+		fi
+		log "concurrent mode: AP inherits STA ch=$chan band=$band width=${sta_width:-20}MHz std=$std off=${ap_sec_off:-none}"
+	fi
+
+	gen_hostapd_conf "$iface" "$ssid" "$psk" "$chan" "$hidden" "$width" "$ap_sec_off" "$band" "$sec" "$std"
+	# No IP on the AP iface: it is a bridge port. The flush clears anything
+	# the iface held in its previous role (e.g. an old image's hotspot
+	# address).
+	ip addr flush dev "$iface" 2>/dev/null
+	ip link set "$iface" up 2>/dev/null
+
+	if _hostapd_up; then
+		echo "$iface" > /run/wifi-ap-iface
+		apply_txpower "$iface"
+		log "AP started on $iface ssid=$ssid ch=$chan band=$band width=$width std=$std sec=$sec $(ap_bridge_state "$iface")"
+	else
+		# Fallback: ACS / 40/80 MHz / 5 GHz may be unsupported by the driver.
+		# Drop to 20 MHz in the same band; in concurrent mode keep the STA's
+		# channel (single radio must stay co-channel).
+		fb_band="$band"
+		case "$band" in
+			5) fb_chan=36 ;;
+			*) fb_chan=6 ;;
+		esac
+		[ "$iface" = "$AP_IF_CONCURRENT" ] && [ -n "$sta_chan" ] && fb_chan="$sta_chan"
+		log "AP failed on ch=$chan band=$band width=$width — retrying ch$fb_chan 20 MHz"
+		gen_hostapd_conf "$iface" "$ssid" "$psk" "$fb_chan" "$hidden" 20 "" "$fb_band" "$sec" n
+		if _hostapd_up; then
+			echo "$iface" > /run/wifi-ap-iface
+			apply_txpower "$iface"
+			log "AP started on $iface ssid=$ssid ch=$fb_chan band=$fb_band width=20 std=n $(ap_bridge_state "$iface") (fallback)"
+		elif [ "$auto_band" = 1 ] && [ "$iface" != "$AP_IF_CONCURRENT" ]; then
+			# 2.4/5 auto and 5 GHz could not start: keep the hotspot alive on
+			# 2.4 GHz. Concurrent mode never falls back here (the STA is the
+			# band/channel master and the watchdog re-syncs the AP).
+			log "auto band: 5 GHz AP failed — retrying 2.4 GHz ch6 20 MHz"
+			gen_hostapd_conf "$iface" "$ssid" "$psk" 6 "$hidden" 20 "" 2.4 "$sec" n
+			if _hostapd_up; then
+				echo "$iface" > /run/wifi-ap-iface
+				apply_txpower "$iface"
+				log "AP started on $iface ssid=$ssid ch=6 band=2.4 width=20 std=n $(ap_bridge_state "$iface") (2.4 fallback)"
+			else
+				log "AP failed on 2.4 GHz too — see hostapd output above"
+			fi
+		else
+			log "AP failed to start even on ch$fb_chan 20 MHz — see hostapd output above"
+		fi
+	fi
+}
+
+start() {
+	mkdir -p /var/log /var/run
+	# wifi.conf holds sta_psk/ap_psk: keep it root-only. The portal writes it
+	# 0600; this narrows copies left 0644 by older images (go-rwx only ever
+	# removes bits, so an even stricter mode is kept).
+	[ -f "$CONF" ] && chmod go-rwx "$CONF" 2>/dev/null
+	rm -f "$AP_REFUSED"     # fresh start/restart: log a PSK refusal once again
+	mode=$(cfg mode); [ -z "$mode" ] && mode=off
+
+	load_modules
+	if ! wait_for_iface; then
+		log "no $STA_IF after module load — non-W board or driver fault; exiting"
+		exit 0
+	fi
+
+	case "$mode" in
+		off)    log "mode=off — radio idle"; ip link set "$STA_IF" down 2>/dev/null ;;
+		sta)    start_sta ;;
+		ap)     start_ap "$STA_IF" ;;
+		sta+ap)
+			# Single radio: bring the STA up FIRST (pinned to 2.4 GHz), wait for
+			# it to actually associate so start_ap can read its real channel and
+			# sit co-channel. If the STA doesn't associate in time (e.g. the
+			# upstream is 5 GHz-only, or just slow), we still start the AP on
+			# ap_channel — the hotspot is the priority — and S36wifiwatch
+			# re-syncs the AP to the STA's channel if/when it later joins.
+			start_sta concurrent
+			# A weak ap_psk (or no LAN bridge) refuses only the AP (start_ap
+			# logs why); the STA above keeps working. No point waiting 20 s
+			# for it in that case.
+			if ap_psk_ok "$(cfg ap_psk)" && lan_bridged; then
+				if wait_sta_connected 20; then
+					log "STA associated — starting co-channel AP"
+				else
+					log "STA not associated after 20s — starting AP on ap_channel (AP priority); watchdog re-syncs when STA joins"
+				fi
+			fi
+			start_ap "$AP_IF_CONCURRENT"
+			;;
+		*)      log "unknown mode '$mode' — treating as off" ;;
+	esac
+}
+
+stop() {
+	[ -f /var/run/hostapd.pid ] && { kill "$(cat /var/run/hostapd.pid)" 2>/dev/null; rm -f /var/run/hostapd.pid; }
+	[ -f /var/run/wpa_supplicant-wlan0.pid ] && { kill "$(cat /var/run/wpa_supplicant-wlan0.pid)" 2>/dev/null; rm -f /var/run/wpa_supplicant-wlan0.pid; }
+	killall hostapd wpa_supplicant 2>/dev/null
+	dhcpcd -x "$STA_IF" 2>/dev/null
+	# Drop the STA's DNS from openresolv, and the uplink-overlap note (no-ops
+	# if dhcpcd's STOP hooks already did).
+	resolvconf -d "$STA_IF.dhcp" -f 2>/dev/null
+	rm -f "$STA_CONFLICT"
+	# The AP iface leaves the LAN bridge. hostapd removes it on a clean exit,
+	# but it may still be exiting or have died without doing so: a wlan0
+	# (AP-only mode) left as a port would bridge whatever it joins next into
+	# the LAN — and as a port it can't become a STA at all. uap0 leaves by
+	# being deleted.
+	ap_unbridge "$STA_IF"
+	iw dev "$AP_IF_CONCURRENT" del 2>/dev/null
+	# Nothing of wlan0's old role (a lease dhcpcd -x didn't drop) carries over.
+	ip addr flush dev "$STA_IF" 2>/dev/null
+	rm -f /run/wifi-ap-iface
+}
+
+# Serialize all radio state transitions on one lock so a portal-triggered
+# `restart` (wifi.py apply()) and the S36wifiwatch `ap_restart` can never init
+# hostapd on uap0 at the same instant — The onboard chip fullmac driver then returns
+# `nl80211: Match already configured` and the AP fails to come up. The lock is
+# held on fd 9 for the life of this invocation and released on exit; a
+# concurrent S35wifi call blocks here until the in-flight one finishes.
+case "${1:-start}" in
+	start|stop|restart|ap_restart|ap_ensure)
+		exec 9>/run/wifi.lock && flock 9 2>/dev/null || true ;;
+esac
+
+case "${1:-start}" in
+	start)   start ;;
+	stop)    stop ;;
+	restart) stop; sleep 1; start ;;
+	ap_restart)
+		# Re-establish ONLY the concurrent AP without touching the STA — used by
+		# S36wifiwatch to revive the hotspot if the firmware dropped it on STA
+		# loss, and to re-sync the AP's channel when the STA reconnects. start_ap
+		# re-reads the STA's live channel (or falls back to ap_channel if the STA
+		# is down), so it does the right thing in both cases.
+		load_modules
+		[ -f /var/run/hostapd.pid ] && { kill "$(cat /var/run/hostapd.pid)" 2>/dev/null; rm -f /var/run/hostapd.pid; }
+		killall hostapd 2>/dev/null
+		sleep 1
+		start_ap "$AP_IF_CONCURRENT"
+		;;
+	ap_ensure)
+		# Idempotent "revive": bring the concurrent AP up ONLY if it isn't
+		# already running. Used by S36wifiwatch's hostapd-down path so that if it
+		# blocked on the lock behind a deliberate `restart` (portal apply), it
+		# finds the AP already up once the lock releases and does nothing —
+		# instead of a redundant teardown/rebuild (one avoidable blip). The
+		# channel re-sync path still uses ap_restart (always restarts).
+		if ! pidof hostapd >/dev/null 2>&1; then
+			# Refused PSK / no bridge: bail before load_modules (which sleeps
+			# 1 s) — the watchdog calls this every few seconds while hostapd
+			# is absent.
+			if ! ap_psk_ok "$(cfg ap_psk)"; then
+				ap_refuse "$AP_PSK_REASON"
+				exit 0
+			fi
+			if ! lan_bridged; then
+				ap_refuse "$AP_BR_REASON"
+				exit 0
+			fi
+			load_modules
+			start_ap "$AP_IF_CONCURRENT"
+		fi
+		;;
+	scan)
+		ip link set "$STA_IF" up 2>/dev/null
+		iw dev "$STA_IF" scan 2>/dev/null | awk '
+			/^BSS/ {if(ssid)printf "%s\t%s\t%s\n",ssid,sig,sec; ssid="";sig="";sec="open"}
+			/SSID: / {s=$0; sub(/^[[:space:]]*SSID: /,"",s); ssid=s}
+			/signal: / {sig=$2}
+			/RSN:|WPA:/ {sec="secured"}
+			END {if(ssid)printf "%s\t%s\t%s\n",ssid,sig,sec}'
+		;;
+	status)
+		echo "mode: $(cfg mode)"
+		iw dev 2>/dev/null | grep -E 'Interface|ssid|type'
+		;;
+	*) echo "Usage: $0 {start|stop|restart|scan|status}" >&2; exit 1 ;;
+esac

@@ -1,0 +1,40 @@
+--- a/src/_cffi_src/openssl/err.py
++++ b/src/_cffi_src/openssl/err.py
+@@ -40,7 +40,6 @@
+ void ERR_put_error(int, int, int, const char *, int);
+ 
+ int ERR_GET_LIB(unsigned long);
+-int ERR_GET_FUNC(unsigned long);
+ int ERR_GET_REASON(unsigned long);
+ 
+ """
+--- a/src/_cffi_src/openssl/fips.py
++++ b/src/_cffi_src/openssl/fips.py
+@@ -13,16 +13,10 @@
+ """
+ 
+ FUNCTIONS = """
+-int FIPS_mode_set(int);
+-int FIPS_mode(void);
+ """
+ 
+ CUSTOMIZATIONS = """
+-#if CRYPTOGRAPHY_IS_LIBRESSL
+ static const long Cryptography_HAS_FIPS = 0;
+ int (*FIPS_mode_set)(int) = NULL;
+ int (*FIPS_mode)(void) = NULL;
+-#else
+-static const long Cryptography_HAS_FIPS = 1;
+-#endif
+ """
+--- a/src/cryptography/hazmat/bindings/openssl/binding.py
++++ b/src/cryptography/hazmat/bindings/openssl/binding.py
+@@ -43,7 +43,7 @@
+             break
+ 
+         err_lib = lib.ERR_GET_LIB(code)
+-        err_func = lib.ERR_GET_FUNC(code)
++        err_func = 0
+         err_reason = lib.ERR_GET_REASON(code)
+ 
+         errors.append(_OpenSSLError(code, err_lib, err_func, err_reason))

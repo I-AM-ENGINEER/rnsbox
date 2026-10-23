@@ -1,0 +1,6 @@
+# RNSBox buildroot users table for the HT-HD01-V2.
+#
+# admin — unprivileged operator account for SSH and the serial console.
+# The password is locked at build time; S10consoleuser seeds admin/admin on
+# first boot and the portal can change it.  /bin/sh (no zsh in the core image).
+admin -1 admin -1 ! /home/admin /bin/sh - Admin account

@@ -1,0 +1,12 @@
+config BR2_PACKAGE_MT7628_ESW
+	bool "mt7628-esw (built-in switch init)"
+	depends on BR2_LINUX_KERNEL
+	help
+	  Minimal platform driver that initialises the MT7628 built-in
+	  Ethernet switch the way OpenWrt's esw_rt3050 driver does: VLAN 0
+	  flat, all present ports untagged, CPU port a member.  Without it
+	  mainline receives broadcast/multicast from the switch but not
+	  unicast (ARP replies never reach the CPU).
+
+comment "mt7628-esw needs a Linux kernel to be built"
+	depends on !BR2_LINUX_KERNEL

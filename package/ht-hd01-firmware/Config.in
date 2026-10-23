@@ -1,0 +1,7 @@
+config BR2_PACKAGE_HT_HD01_FIRMWARE
+	bool "HT-HD01-V2 firmware blobs"
+	help
+	  Vendor firmware for the HT-HD01-V2: the MM6108 HaLow image and
+	  the HD01_v2 board configuration, plus the MT7628 2.4 GHz WMAC
+	  firmware.  These are proprietary blobs; they are installed for
+	  local device operation only.

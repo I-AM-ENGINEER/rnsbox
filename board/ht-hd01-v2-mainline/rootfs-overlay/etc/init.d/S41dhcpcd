@@ -1,0 +1,6 @@
+#!/bin/sh
+# The HT-HD01-V2 LAN is static (S30network: br-lan 10.42.0.1/24).  The
+# dhcpcd package's default init script starts a global daemon that waits for
+# wlan0 carrier and races the static br-lan address.  STA mode is the only
+# DHCP client this board needs, and S35wifi starts dhcpcd itself on wlan0.
+exit 0
