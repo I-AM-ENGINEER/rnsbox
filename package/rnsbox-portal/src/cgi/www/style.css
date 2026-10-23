@@ -654,8 +654,8 @@ img.qr {
 
 /* ---- Time & Clock (Settings) ---- */
 .timeval { font-family: var(--mono); font-size: 15px; font-weight: 600; }
-textarea.ntp-servers { min-height: 64px; max-width: 360px; }
-.time-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+textarea.ntp-servers { min-height: 64px; width: 100%; max-width: 520px; }
+.time-actions { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
 form.ntp-restart { margin-top: 8px; }
 button:disabled, button:disabled:hover { opacity: 0.55; cursor: not-allowed; }
 .btn-primary:disabled:hover { background: var(--primary-2); }

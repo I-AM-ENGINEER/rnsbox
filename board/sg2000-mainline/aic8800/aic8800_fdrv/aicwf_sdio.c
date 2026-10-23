@@ -2779,16 +2779,12 @@ static void aicwf_sdio_enq_rxpkt(struct aic_sdio_dev *sdiodev, struct sk_buff *p
 
 #define SDIO_OTHER_INTERRUPT (0x1ul << 7)
 
-static atomic_t rnsbox_irq_cnt = ATOMIC_INIT(0);
 void aicwf_sdio_hal_irqhandler(struct sdio_func *func)
 {
 	struct aicwf_bus *bus_if = dev_get_drvdata(&func->dev);
 	struct aic_sdio_dev *sdiodev = bus_if->bus_priv.sdio;
 	u8 intstatus = 0;
 	u8 byte_len = 0;
-	if ((atomic_inc_return(&rnsbox_irq_cnt) & 0xff) == 1)
-		printk(KERN_DEBUG "RNSBOX irq#%d rwnx_hw=%px\n",
-		       atomic_read(&rnsbox_irq_cnt), sdiodev->rwnx_hw);
 	#ifdef CONFIG_PREALLOC_RX_SKB
 	struct rx_buff *pkt = NULL;
 	#else

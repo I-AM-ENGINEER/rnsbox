@@ -2920,7 +2920,6 @@ static int rwnx_cfg80211_del_station_compat(struct wiphy *wiphy,
     if (params)
         mac = params->mac;
 #endif
-    printk("%s: %pM\n", __func__, mac);
 
 	do {
 		spin_lock_bh(&rwnx_hw->cb_lock);

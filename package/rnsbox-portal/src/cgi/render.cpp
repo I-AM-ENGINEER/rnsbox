@@ -121,6 +121,9 @@ const std::string& asset_version() {
 std::string layout(const http::Request& req, http::Response& res,
                    const std::string& title, const char* active,
                    const std::string& content) {
+    // Pages are rendered server-side and carry the asset version; never let a
+    // browser reuse an old HTML page (it would pin an old term.js/style.css).
+    res.headers.push_back("Cache-Control: no-store");
     std::string host = sysinfo::hostname();
     session::Info s = session::check(req.cookie(session::COOKIE_NAME));
 
@@ -165,6 +168,7 @@ std::string layout(const http::Request& req, http::Response& res,
 
 std::string login_layout(const http::Request& req, http::Response& res,
                          const std::string& content) {
+    res.headers.push_back("Cache-Control: no-store");
     std::string host = sysinfo::hostname();
     Tokens kv = {
         {"__BASE__",     esc(web::base())},

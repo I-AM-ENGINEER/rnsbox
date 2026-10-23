@@ -197,14 +197,20 @@ void wifi_page(const Request& req, Response& res) {
     h = R(std::move(h), "__BASE__", base);
 
     // ---- Status ----
-    // "off" is a normal operating state (radio idle), not an error: neutral
-    // badge. An enabled mode gets the green badge; the connection cells below
-    // carry the actual success/failure state.
+    // The badge shows what is LIVE, not what is configured: "STA+AP" only when
+    // both links are actually up, "IDLE" when the mode is enabled but neither
+    // came up (no uplink associated, hotspot stopped).
+    bool sta_live = st.sta.connected;
+    bool ap_live  = st.ap.active;
     std::string mode_badge;
     if (m.empty() || m == "off")
         mode_badge = "<span class=\"badge\">off</span>";
+    else if (sta_live || ap_live)
+        mode_badge = "<span class=\"badge ok\">" +
+                     std::string(sta_live && ap_live ? "STA+AP" :
+                                 sta_live ? "STA" : "AP") + "</span>";
     else
-        mode_badge = "<span class=\"badge ok\">" + E(m) + "</span>";
+        mode_badge = "<span class=\"badge warn\">IDLE</span>";
 
     h = R(std::move(h), "__WIFI_MODE_BADGE__", mode_badge);
 

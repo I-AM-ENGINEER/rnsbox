@@ -533,7 +533,7 @@ static std::string ap_iface() {
     if (sysinfo::ifname_ok(a) && !util::read_file("/sys/class/net/" + a + "/ifindex", 32).empty())
         return a;
     for (const auto& p : sysinfo::bridge_ports(sysinfo::lan_iface()))
-        if (p.compare(0, 4, "wlan") == 0) return p;
+        if (p.compare(0, 4, "wlan") == 0 || p.compare(0, 3, "uap") == 0) return p;
     return "";
 }
 

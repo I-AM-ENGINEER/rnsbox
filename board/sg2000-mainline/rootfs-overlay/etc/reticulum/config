@@ -119,10 +119,13 @@
     # Share at most 1% of the link with forwarded announces (RNS
     # default is 2%); the BLE peer inherits this cap.
     announce_cap = 1
-    enable_central = yes
+    # Peripheral-only, like the other boards: with central mode on, the box
+    # chased every advertising phone (their addresses rotate) and collided
+    # with the phone's own connection attempts - the link never stayed up.
+    enable_central = no
     enabled = yes
     # Balanced: scan every 5 s. Saver (30 s idle / 60 s connected)
-    # made central discovery and reconnects take half a minute.
+    # made discovery and reconnects take half a minute.
     power_mode = balanced
     # The second phone (Xperia 5 II) advertises at -89 dBm; the old -85
     # threshold silently filtered it while the closer phone connected.
