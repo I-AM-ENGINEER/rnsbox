@@ -120,6 +120,9 @@ jobs:
         with:
           path: rnsbox
 
+      - name: Verify generated defconfigs are current
+        run: rnsbox/scripts/gen-defconfigs.sh --check
+
       - name: Prepare scratch on /mnt (the roomy disk)
         run: |
           sudo mkdir -p /mnt/rnsbox/upstream /mnt/rnsbox/out /mnt/dl /mnt/tmp

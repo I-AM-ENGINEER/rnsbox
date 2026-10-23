@@ -412,10 +412,10 @@ rnsbox_slim_bsp() {
         cp -f "$HERE/board/common/zshrc" "$bsp/buildroot/board/common/zshrc"
         chmod 0644 "$bsp/buildroot/board/common/zshrc"
     fi
-    #    - uhttpd: TCP_NODELAY on accepted sockets. The terminating chunk of a
-    #      CGI response (and every small console-stream chunk) is a separate
-    #      write otherwise, and Nagle+delayed-ACK adds ~40-50 ms each time.
-    #      The upstream/external flow gets the same patch from external.mk.
+    #    - uhttpd: TCP_NODELAY on accepted sockets, and tzset() before the
+    #      strptime("%Z") that parses If-Modified-Since (musl leaves tzname
+    #      NULL, so a browser's cached-CSS request killed the server). The
+    #      upstream/external flow gets the same patches from external.mk.
     if [ -d "$bsp/buildroot/package/uhttpd" ]; then
         cp -f "$HERE/board/common/buildroot-patches/uhttpd/"*.patch \
             "$bsp/buildroot/package/uhttpd/"
@@ -426,7 +426,9 @@ rnsbox_slim_bsp() {
         for d in "$bsp"/buildroot/output/build/uhttpd-* \
                  "$bsp"/buildroot/build/uhttpd-*; do
             [ -f "$d/client.c" ] || continue
-            grep -q TCP_NODELAY "$d/client.c" || rm -rf "$d"
+            if ! grep -q TCP_NODELAY "$d/client.c" || ! grep -q 'tzset();' "$d/file.c"; then
+                rm -rf "$d"
+            fi
         done
     fi
     # 2. every cvitek defconfig in the tree:
@@ -898,6 +900,11 @@ rnsbox_build() {
 
 # ---- external-tree flow (rpi-universal) -------------------------------------------
 if [ "${BUILD_STYLE:-patches}" = external ]; then
+    # configs/rnsbox_*_defconfig are generated from configs/base.config +
+    # configs/boards/*.config. A stale copy silently builds the wrong
+    # userspace, so fail before the expensive clone/build.
+    "$HERE/scripts/gen-defconfigs.sh" --check
+
     SHORT=$(echo "$UPSTREAM_COMMIT" | cut -c1-8)
     UPSTREAM_BASE="${UPSTREAM_BASE:-$HOME/rnsbox-work/upstream}"
     UPSTREAM="$UPSTREAM_BASE/buildroot-$SHORT"
@@ -946,6 +953,16 @@ if [ "${BUILD_STYLE:-patches}" = external ]; then
     ODIR="${ODIR:-$UPSTREAM_BASE/out/$BOARD}"
     export BR2_DL_DIR="$DL"
     mkdir -p "$DL" "$ODIR"
+
+    # Shared packages are SITE_METHOD=local: buildroot rsyncs them into
+    # output/build/<pkg>-<ver> ONCE at extract time and never again, so an
+    # incremental external build happily recompiles a STALE copy (this is
+    # how a "fresh" RPi/EVB image shipped a week-old portal). Drop the
+    # extracted copies and their stamps; the next make re-extracts them
+    # from $EXT. Same rule as the patch-series flow below.
+    for p in rnsbox-update rnsbox-portal python-rns python-lxmf python-nomadnet python-ble-reticulum rnsbox-python-bluezero; do
+        rm -rf "$ODIR"/build/"$p"-* 2>/dev/null || :
+    done
 
     # The env var only feeds the kconfig DEFAULT for BR2_DL_DIR — 2026.02
     # keeps "$(TOPDIR)/dl" in .config, silently pulling downloads into the
