@@ -990,8 +990,9 @@ if [ "${BUILD_STYLE:-patches}" = external ]; then
     # incremental external build happily recompiles a STALE copy (this is
     # how a "fresh" RPi/EVB image shipped a week-old portal). Drop the
     # extracted copies and their stamps; the next make re-extracts them
-    # from $EXT. Same rule as the patch-series flow below.
-    for p in rnsbox-update rnsbox-portal python-rns python-lxmf python-nomadnet python-ble-reticulum rnsbox-python-bluezero; do
+    # from $EXT. Same rule as the patch-series flow below. aic8800 is the
+    # out-of-tree WiFi driver source shipped in board/sg2000-mainline/.
+    for p in rnsbox-update rnsbox-portal python-rns python-lxmf python-nomadnet python-ble-reticulum rnsbox-python-bluezero aic8800; do
         rm -rf "$ODIR"/build/"$p"-* 2>/dev/null || :
     done
 
@@ -1005,6 +1006,37 @@ if [ "${BUILD_STYLE:-patches}" = external ]; then
     }
 
     rnsbox_track_latest_rns "$EXT" "$DL"
+
+    # Buildroot writes BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE into build/linux-*/
+    # only when it configures the tree, so a hand-edited .config survives every
+    # later build. That is how the Module 01 EVB once shipped a kernel with the
+    # C906 errata/vector/extensions switched off: u-boot printed "Starting
+    # kernel ..." and the board went silent. When the tree disagrees with the
+    # board config on a user-selectable option, throw the tree away so the
+    # board config wins again.
+    rnsbox_drop_stale_kernel_config() {
+        local kdir cfg opt want have stale kcfg
+        kdir=$(ls -d "$ODIR"/build/linux-* 2>/dev/null | head -n1)
+        [ -n "$kdir" ] && [ -f "$kdir/.config" ] || return 0
+        kcfg=$(sed -n 's/^BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE="\(.*\)"/\1/p' "$ODIR/.config" | head -n1)
+        [ -n "$kcfg" ] && [ -f "$kcfg" ] || return 0
+        stale=""
+        for opt in CONFIG_RISCV_ISA_V CONFIG_ERRATA_THEAD CONFIG_RISCV_DMA_NONCOHERENT \
+                   CONFIG_RISCV_ISA_ZBC CONFIG_RISCV_NONSTANDARD_CACHE_OPS CONFIG_DEVMEM; do
+            want=$(grep -E "^${opt}(=| is not set)" "$kcfg" | head -n1)
+            [ -n "$want" ] || continue
+            have=$(grep -E "^${opt}=" "$kdir/.config" | head -n1)
+            [ -n "$have" ] || have="# ${opt} is not set"
+            [ "$want" = "$have" ] || stale="$stale $opt"
+        done
+        if [ -n "$stale" ]; then
+            echo ">> kernel .config disagrees with $(basename "$kcfg") on$stale" >&2
+            echo ">> discarding $kdir so the board config is applied again" >&2
+            rm -rf "$kdir"
+        fi
+    }
+    rnsbox_drop_stale_kernel_config
+
     rnsbox_build
 
     echo ">> done — image(s) under $ODIR/images/"
