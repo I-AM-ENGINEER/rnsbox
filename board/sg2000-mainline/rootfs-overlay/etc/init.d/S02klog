@@ -1,0 +1,12 @@
+#!/bin/sh
+# The vendor fip.bin's u-boot boots with `release loglevel=0` baked into
+# the bootargs (RELEASE defined in the SDK build) and CONFIG_ENV_IS_NOWHERE
+# — no uEnv.txt can override them. Re-open the kernel console from userspace,
+# but only at warnings/errors: probe failures stay visible, while the AIC
+# WiFi driver's LOGDEBUG flood no longer saturates ttyS0 (the pr/ttyS0
+# printk thread was burning ~40% CPU).
+case "$1" in
+	start|reload)
+		dmesg -n 4
+		;;
+esac

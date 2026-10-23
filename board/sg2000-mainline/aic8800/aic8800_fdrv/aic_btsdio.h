@@ -36,14 +36,38 @@
 
 #define AICBT_DBG_FLAG          1
 
+/* The BT-SDIO hot path (btsdio_work / send_frame / skb type) fires per HCI
+   frame and used to printk unconditionally - at BLE throughput that flooded
+   syslog fast enough to rotate /var/log/messages every ~30 s and evict every
+   other daemon's log. Route the chatty levels through the fdrv
+   aicwf_dbg_level module param (same bits as aicwf_debug.h); errors stay
+   unconditional. Extern declared here because aicwf_debug.h has no include
+   guard, and btsdio.c does not pull it in. */
+extern int aicwf_dbg_level;
+
+#ifndef LOGERROR
+#define LOGERROR		0x0001
+#define LOGINFO			0x0002
+#define LOGDEBUG		0x0008
+#endif
+
 #if AICBT_DBG_FLAG
-#define AICBT_DBG(fmt, arg...) printk( "aic_btsdio: " fmt "\n" , ## arg)
+#define AICBT_DBG(fmt, arg...) \
+do {	if (aicwf_dbg_level & LOGDEBUG)	\
+		printk("aic_btsdio: " fmt "\n", ## arg);	\
+} while (0)
 #else
 #define AICBT_DBG(fmt, arg...)
 #endif
 
-#define AICBT_INFO(fmt, arg...) printk("aic_btsdio: " fmt "\n" , ## arg)
-#define AICBT_WARN(fmt, arg...) printk("aic_btsdio: " fmt "\n" , ## arg)
+#define AICBT_INFO(fmt, arg...) \
+do {	if (aicwf_dbg_level & LOGINFO)	\
+		printk("aic_btsdio: " fmt "\n", ## arg);	\
+} while (0)
+#define AICBT_WARN(fmt, arg...) \
+do {	if (aicwf_dbg_level & LOGERROR)	\
+		printk("aic_btsdio: " fmt "\n", ## arg);	\
+} while (0)
 #define AICBT_ERR(fmt, arg...) printk("aic_btsdio: " fmt "\n" , ## arg)
 
 #if LINUX_VERSION_CODE > KERNEL_VERSION(3, 4, 0)

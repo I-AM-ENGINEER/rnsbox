@@ -711,7 +711,7 @@ class BLEInterface(Interface):
         self.cleanup_timer = threading.Timer(30.0, self._periodic_cleanup_task)
         self.cleanup_timer.daemon = True
         self.cleanup_timer.start()
-        RNS.log(f"{self} cleanup timer started (30s interval)", RNS.LOG_WARNING)
+        RNS.log(f"{self} cleanup timer started (30s interval)", RNS.LOG_DEBUG)
 
     def _periodic_cleanup_task(self):
         """
@@ -726,7 +726,7 @@ class BLEInterface(Interface):
         if not self.online:
             return  # Don't reschedule if interface is offline
 
-        RNS.log(f"{self} periodic cleanup running, pending identity connections: {len(self._pending_identity_connections)}", RNS.LOG_WARNING)
+        RNS.log(f"{self} periodic cleanup running, pending identity connections: {len(self._pending_identity_connections)}", RNS.LOG_DEBUG)
 
         with self.frag_lock:
             total_cleaned = 0
@@ -1223,10 +1223,19 @@ class BLEInterface(Interface):
                 RNS.log(f"{self} received duplicate identity handshake from {address} (already known via callback)", RNS.LOG_DEBUG)
                 return True  # Consume the data, don't pass to reassembler
             else:
-                # 16 bytes but doesn't match known identity - log warning but still consume
-                # to avoid passing identity-like data to the reassembler
-                RNS.log(f"{self} received 16-byte data from {address} that differs from known identity, consuming as handshake", RNS.LOG_WARNING)
-                return True  # Consume to prevent reassembler errors
+                # Identity is already established for this address, so this
+                # 16-byte packet is DATA, not a handshake: the handshake was
+                # either already consumed at connect time or came via the
+                # driver callback. Consuming it here silently ate every
+                # 16-byte fragment a peer sent at small MTU (they piled up as
+                # "differs from known identity" warnings while the peer's
+                # reassembly starved at 2/N fragments and timed out). Route
+                # it to the normal data path; a reassembler is created on
+                # demand there. A genuine identity change cannot be missed:
+                # a reconnect updates the mapping via _device_connected_callback
+                # before any further data is processed.
+                RNS.log(f"{self} 16-byte data from {address} differs from known identity, treating as data", RNS.LOG_DEBUG)
+                return False
 
         try:
             # Store central's identity
@@ -1975,6 +1984,10 @@ class BLEInterface(Interface):
         """
         # Compute lookup key using identity hash
         identity_hash = self._compute_identity_hash(peer_identity)
+        # A peer port usually has no Bluetooth name; show its Reticulum
+        # identity in rnstatus/logs instead of a bare "Unknown".
+        if not name or name == "Unknown":
+            name = f"RNS {identity_hash[:8]}"
 
         # Use lock to prevent race condition where two threads create interfaces
         # for the same identity simultaneously (e.g., central and peripheral callbacks)
@@ -2086,10 +2099,14 @@ class BLEInterface(Interface):
         # HIGH #2: Lock ordering - get reassembler reference with frag_lock, release before processing
         # This prevents holding frag_lock during reassembly which could block other threads
         with self.frag_lock:
-            if frag_key not in self.reassemblers:
-                RNS.log(f"{self} no reassembler for {peer_address} (key: {frag_key[:16]}), dropping data", RNS.LOG_WARNING)
-                return
-            reassembler = self.reassemblers[frag_key]
+            reassembler = self.reassemblers.get(frag_key)
+            if reassembler is None:
+                # A link can deliver fragments before the connect-time setup
+                # created its reassembler (or after the cleanup dropped it).
+                # Build it here instead of losing the first packets.
+                reassembler = BLEReassembler(timeout=self.connection_timeout)
+                self.reassemblers[frag_key] = reassembler
+                RNS.log(f"{self} created reassembler on demand for {peer_address} (key: {frag_key[:16]})", RNS.LOG_DEBUG)
 
         # Process fragment without holding lock (reassemblers are per-peer, no contention)
         try:
@@ -2223,11 +2240,13 @@ class BLEInterface(Interface):
         # Attempt reassembly
         complete_packet = None
         with self.frag_lock:
-            if frag_key not in self.reassemblers:
-                RNS.log(f"{self} no reassembler for {sender_address}, dropping data", RNS.LOG_WARNING)
-                return
-
-            reassembler = self.reassemblers[frag_key]
+            reassembler = self.reassemblers.get(frag_key)
+            if reassembler is None:
+                # Same race as the central path: a central that connected
+                # before its reassembler was registered must not lose data.
+                reassembler = BLEReassembler(timeout=self.connection_timeout)
+                self.reassemblers[frag_key] = reassembler
+                RNS.log(f"{self} created reassembler on demand for {sender_address} (key: {frag_key[:16]})", RNS.LOG_DEBUG)
 
         try:
             # Ensure data is bytes (bluezero may pass different types)

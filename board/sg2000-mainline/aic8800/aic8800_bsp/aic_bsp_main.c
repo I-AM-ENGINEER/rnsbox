@@ -16,6 +16,10 @@
 #define DRV_VERS_MOD          "1.0"
 
 int aicwf_dbg_level_bsp = LOGERROR|LOGINFO|LOGDEBUG|LOGTRACE;
+/* Same bits as the fdrv aicwf_dbg_level param: 0 silences the per-SDIO-frame
+   AICWFDBG flood (rwnx_send_msg / rwnx_rx_handle_msg) that rotates
+   /var/log/messages in under a minute once BLE traffic flows. */
+module_param(aicwf_dbg_level_bsp, int, 0660);
 
 struct semaphore aicbsp_probe_semaphore;
 

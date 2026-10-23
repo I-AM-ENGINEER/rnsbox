@@ -190,15 +190,15 @@ if BLUEZERO_AVAILABLE:
         bluezero 0.9.1 exposes no advertising-interval knobs and BlueZ's
         default (~1.3 s) makes a scanning phone wait seconds before the box
         shows up. dbus-python only dispatches methods decorated in a class
-        body, hence the re-decorated GetAll returning the extra properties
-        (uint16 milliseconds, honoured by bluetoothd >= 5.56).
+        body, hence the re-decorated GetAll returning the extra properties.
+        BlueZ takes both as uint32 milliseconds and converts to its 0.625 ms
+        advertising units itself; bluetoothd 5.56..5.72 ignores them unless
+        experimental features are enabled, 5.79+ always honours them.
         """
 
         def __init__(self, advert_id, ad_type, interval_ms):
             super().__init__(advert_id, ad_type)
-            # BlueZ expresses advertising intervals in 0.625 ms units
-            # (0x0020..0x4000 = 20 ms .. 10.24 s).
-            self._interval_units = max(0x20, min(int(round(interval_ms * 8 / 5)), 0x4000))
+            self._interval_ms = max(20, min(int(interval_ms), 10000))
 
         # The base bluezero GetAll lives on org.freedesktop.DBus.Properties
         # (DBUS_PROP_IFACE) with in_signature='s'; dbus-python dispatches by
@@ -211,8 +211,8 @@ if BLUEZERO_AVAILABLE:
         def GetAll(self, interface_name):
             response = super().GetAll(interface_name)
             if interface_name == _bz_constants.LE_ADVERTISEMENT_IFACE:
-                response['MinInterval'] = _dbus_types.UInt16(self._interval_units)
-                response['MaxInterval'] = _dbus_types.UInt16(self._interval_units)
+                response['MinInterval'] = _dbus_types.UInt32(self._interval_ms)
+                response['MaxInterval'] = _dbus_types.UInt32(self._interval_ms)
             return response
 else:
     FastAdvertisement = None

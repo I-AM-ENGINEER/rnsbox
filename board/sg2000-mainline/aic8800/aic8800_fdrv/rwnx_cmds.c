@@ -566,8 +566,6 @@ void aicwf_set_cmd_tx(void *dev, struct lmac_msg *msg, uint len)
 #endif
 	buffer = bus->cmd_buf;
 
-	printk(KERN_ERR "RNSBOX set_cmd_tx msg_id=%d len=%u bus_state=%d sdio_state=%d\n",
-	       msg->id, len, bus->state, sdiodev->state);
 	memset(buffer, 0, CMD_BUF_MAX);
 	buffer[0] = (len+4) & 0x00ff;
 	buffer[1] = ((len+4) >> 8) &0x0f;

@@ -90,3 +90,26 @@ software; the UART transport is a fallback only.
 
 Modules built by this repo's sg2000-mainline flow:
 `aic8800_bsp.ko`, `aic8800_fdrv.ko` (and `aic8800_btlpm.ko`, unloaded).
+
+## Debug log flood (fixed 2026-10-22)
+
+The vendor driver ships with both debug levels wide open — fdrv
+`aicwf_dbg_level=1039` (module param), bsp `aicwf_dbg_level_bsp` (was not
+even a module param) — and the BT-SDIO glue printed per HCI frame
+unconditionally (`AICBT_*` raw printks in `aic_btsdio.h`, plus a per-command
+`RNSBOX set_cmd_tx` printk in `rwnx_cmds.c`). At BLE throughput that
+flooded syslog fast enough to rotate /var/log/messages every ~30 s (evicting
+every other daemon's log) and burned ~40% CPU in the printk/console thread
+on the single C906 — enough to starve dropbear.
+
+Fixes, all three needed:
+  1. `aic_btsdio.h`: AICBT_DBG/INFO/WARN now gated on fdrv's
+     `aicwf_dbg_level` (AICBT_ERR stays unconditional).
+  2. `rwnx_cmds.c`: the per-command `RNSBOX set_cmd_tx` printk removed.
+  3. `aic_bsp_main.c`: `aicwf_dbg_level_bsp` exposed as a module param.
+
+Runtime quieting (all write 0 to both params, since insmod bypasses
+modprobe.d): `root/wifi.sh` right after each insmod, `/etc/init.d/S36aicquiet`
+as a boot-time backstop, and `/etc/modprobe.d/aic8800-debug.conf` for any
+future modprobe-based load. The LicheeRV Nano (sg2002-mainline) overlay
+carries the same three files and shares this driver source.
