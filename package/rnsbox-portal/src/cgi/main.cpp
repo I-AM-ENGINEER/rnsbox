@@ -245,6 +245,11 @@ static void r_login(const http::Request& req, http::Response& res) {
         std::string next = req.f("next");
         bool next_ok = web::is_local_next(next);   // local portal path only (no open redirect)
         if (session::verify_password(user, pass)) {
+            // One password for the box: SSH logs in as the unix `admin` user,
+            // so keep its hash in step with the portal password the operator
+            // just typed. (Changing the password does the same.)
+            util::run({"/usr/bin/passwd", "-a", "sha512", "admin"},
+                      pass + "\n" + pass + "\n", 15);
             res.set_cookie(session::start(user));
             // default: the dashboard. base() and base()+"/" both reach it (an empty
             // PATH_INFO is read as "/"; the nav's Dashboard link uses the slash form)

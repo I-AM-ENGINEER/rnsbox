@@ -69,37 +69,18 @@ static std::string rtc_html(const sysinfo::Rtc& rtc) {
 
 // ---- SSH card fragments ----
 
-// Status line: running (sshd alive) / disabled (the shipped default) /
-// stopped (enabled=yes but not running — e.g. sshd crashed or was killed).
-static std::string ssh_status_html() {
-    store::SshConfig c = store::read_ssh();
+static bool ssh_running() {
     util::RunResult pid = util::run({"/bin/pidof", "sshd"}, "", 5, 4096);
-    bool running = pid.exit_code == 0 && !util::trim(pid.out).empty();
-    if (running)  return "<span class=\"badge ok\">running</span>";
-    if (!c.enabled) return "<span class=\"badge err\">disabled</span>";
-    return "<span class=\"badge warn\">stopped</span>";
+    return pid.exit_code == 0 && !util::trim(pid.out).empty();
 }
 
-// True once the `admin` unix user has a usable (non-locked, non-empty)
-// password hash in /etc/shadow. The account is shipped locked (the image's
-// users table sets the hash field to '!'); the SSH card sets the first
-// password. Field 2 of the shadow line: '!', '*' or empty all mean no login.
-static bool admin_unix_password_set() {
-    std::string data = util::read_file("/etc/shadow");
-    size_t i = 0;
-    while (i < data.size()) {
-        size_t nl = data.find('\n', i);
-        if (nl == std::string::npos) nl = data.size();
-        std::string ln = data.substr(i, nl - i);
-        i = nl + 1;
-        if (ln.compare(0, 6, "admin:") != 0) continue;
-        size_t c1 = ln.find(':');
-        size_t c2 = (c1 == std::string::npos) ? std::string::npos : ln.find(':', c1 + 1);
-        if (c1 == std::string::npos || c2 == std::string::npos) return false;
-        std::string hash = ln.substr(c1 + 1, c2 - c1 - 1);
-        return !(hash.empty() || hash == "!" || hash[0] == '!' || hash == "*");
-    }
-    return false;
+// Status line: running (sshd alive) / disabled / stopped (enabled=yes but not
+// running — e.g. sshd crashed or was killed).
+static std::string ssh_status_html() {
+    store::SshConfig c = store::read_ssh();
+    if (ssh_running()) return "<span class=\"badge ok\">running</span>";
+    if (!c.enabled) return "<span class=\"badge err\">disabled</span>";
+    return "<span class=\"badge warn\">stopped</span>";
 }
 
 // ---- USB port role card ----
@@ -243,14 +224,12 @@ void settings_page(const Request& req, Response& res) {
     // USB role card (empty unless the board is OTG-capable — see usb_state()).
     h = R(std::move(h), "__USB_SECTION__", usb_section_html(usb_state()));
 
-    // SSH card
+    // SSH card. The checkbox reflects reality: sshd may be running from an
+    // unconditional init even when the gate file was missing.
     store::SshConfig ssh = store::read_ssh();
     h = R(std::move(h), "__SSH_STATUS__", ssh_status_html());
-    h = R(std::move(h), "__SSH_ENABLED_ATTR__", ssh.enabled ? " checked" : "");
-    h = R(std::move(h), "__SSH_PASS_NOTE__", admin_unix_password_set()
-          ? "<span class=\"muted\">A password is set for SSH user <code>admin</code>; "
-            "leave the fields blank to keep it.</span>"
-          : "");
+    h = R(std::move(h), "__SSH_ENABLED_ATTR__",
+          (ssh.enabled || ssh_running()) ? " checked" : "");
 
     res.body = render::layout(req, res, "Settings", "settings", h);
 }
@@ -291,69 +270,18 @@ void settings_password(const Request& req, Response& res) {
 void ssh_set(const Request& req, Response& res) {
     if (!web::require_auth(req, res, false)) return;
     bool enable = req.f("enabled") == "on";
-
-    if (!enable) {
-        std::string err;
-        if (!store::write_ssh(false, err)) {
-            render::redirect_flash(res, settings_redirect(), "error", "Could not write /etc/rnsbox/ssh.conf; SSH not changed.");
-            return;
-        }
-        // The gate script stops a running sshd and (with enabled=no) does not
-        // start one; `restart` also covers the boot-time argument convention.
-        web::run_init("S50sshd", "restart");
-        render::redirect_flash(res, settings_redirect(), "success",
-            "SSH disabled: sshd stopped and stays off across reboots.");
-        return;
-    }
-
-    // Enabling (or re-saving while enabled): the SSH login is the unprivileged
-    // `admin` unix user, whose password the operator sets here. Both fields
-    // blank keeps the password set by an earlier save (if there is one).
-    std::string p1 = req.f("sshpass");
-    std::string p2 = req.f("sshpass2");
-    bool have_pw = !p1.empty() || !p2.empty();
-    if (!have_pw && !admin_unix_password_set()) {
-        render::redirect_flash(res, settings_redirect(), "error",
-            "SSH user admin has no password yet — enter one (twice) to enable SSH.");
-        return;
-    }
-    if (have_pw) {
-        if (p1 != p2) {
-            render::redirect_flash(res, settings_redirect(), "error", "SSH passwords do not match; nothing was saved.");
-            return;
-        }
-        if (p1.size() < 6) {
-            render::redirect_flash(res, settings_redirect(), "error", "SSH password must be at least 6 characters; nothing was saved.");
-            return;
-        }
-        // Control chars (CR/LF above all) must never reach passwd's stdin.
-        if (!util::is_single_line_clean(p1)) {
-            render::redirect_flash(res, settings_redirect(), "error", "SSH password contains control characters; nothing was saved.");
-            return;
-        }
-        // busybox passwd reads the new password twice from stdin; -a sha512
-        // pins the hash format regardless of the image's busybox default.
-        // (This image has no chpasswd applet; passwd is the same backend.)
-        util::RunResult r = util::run({"/usr/bin/passwd", "-a", "sha512", "admin"},
-                                      p1 + "\n" + p1 + "\n", 15);
-        p1.clear(); p2.clear();   // don't linger longer than needed
-        if (r.exit_code != 0 || !admin_unix_password_set()) {
-            render::redirect_flash(res, settings_redirect(), "error",
-                "Could not set the admin password (passwd failed); SSH not enabled.");
-            return;
-        }
-    }
-
     std::string err;
-    if (!store::write_ssh(true, err)) {
-        render::redirect_flash(res, settings_redirect(), "error", "Could not write /etc/rnsbox/ssh.conf; SSH not enabled.");
+    if (!store::write_ssh(enable, err)) {
+        render::redirect_flash(res, settings_redirect(), "error",
+            "Could not write /etc/rnsbox/ssh.conf; SSH not changed.");
         return;
     }
+    // The gate script starts or stops sshd; `restart` also covers the
+    // boot-time argument convention.
     web::run_init("S50sshd", "restart");
     render::redirect_flash(res, settings_redirect(), "success",
-        "SSH enabled: log in as user admin (not root — root login is closed). "
-        "SSH answers on the USB-NCM side; the Ethernet side stays closed unless tcp 22 is "
-        "opened under Network -> Open ports.");
+        enable ? "SSH enabled: log in as admin with the web admin password."
+               : "SSH disabled: sshd stopped and stays off across reboots.");
 }
 
 void hostname_set(const Request& req, Response& res) {
