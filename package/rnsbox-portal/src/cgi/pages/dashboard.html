@@ -40,7 +40,7 @@ __DEFAULT_PASS_WARN__
   <section class="card">
     <h3><span id="d-wan-label">__WAN__</span></h3>
     <table class="kv">
-      <tr><th>State</th><td id="d-wan-state">__WAN_STATE__</td></tr>
+      <tr><th>Status</th><td id="d-wan-state">__WAN_STATE__</td></tr>
       <tr><th>Address</th><td id="d-wan-addr">__WAN_ADDR__</td></tr>
       <tr><th>MAC</th><td id="d-wan-mac">__WAN_MAC__</td></tr>
       <tr><th>Gateway</th><td id="d-wan-gw">__WAN_GW__</td></tr>
@@ -58,6 +58,7 @@ __DEFAULT_PASS_WARN__
     <h3>Reticulum</h3>
     <table class="kv">
       <tr><th>Status</th><td id="d-rnsd-status">__RNSD_STATUS__</td></tr>
+      <tr><th>Memory</th><td id="d-rnsd-mem">__RNSD_MEM__</td></tr>
       <tr><th>Uptime</th><td id="d-rnsd-uptime">__RNSD_UPTIME__</td></tr>
       <tr><th>Version</th><td id="d-rnsd-version">__RNSD_VERSION__</td></tr>
     </table>
@@ -131,10 +132,11 @@ __HALOW_SCRIPT__
       setText('d-usb-rxtx', (uif.rx||'0')+' / '+(uif.tx||'0'));
     }
     setHTML('d-rnsd-status', rn.running
-      ? '<span class="badge ok">RUNNING</span> (pid '+esc(rn.pid)+')'+(rn.rss_mb?' · '+esc(rn.rss_mb)+' MB RSS':'')
+      ? '<span class="badge ok">RUNNING</span>'
       : '<span class="badge err">STOPPED</span>');
+    setText('d-rnsd-mem', rn.running && rn.rss_mb ? rn.rss_mb+' MB' : '—');
     setText('d-rnsd-uptime', (rn.uptime_s >= 0 && rn.uptime) ? 'up '+rn.uptime : '—');
-    var vh='Reticulum (rnsd) <strong>'+esc(up.installed||'unknown')+'</strong>';
+    var vh='<strong>'+esc(up.installed||'unknown')+'</strong>';
     if(up.update_available) vh+=' <span class="badge warn">update available: '+esc(up.latest)+'</span>';
     else if(up.latest && !up.error) vh+=' <span class="badge ok">up to date</span>';
     setHTML('d-rnsd-version', vh);
@@ -156,7 +158,6 @@ __HALOW_SCRIPT__
       setHTML('d-wifi-ap-state', '<span class="badge">no radio</span>');
       setText('d-wifi-ap-ssid', '—');
       setText('d-wifi-ap-clients', '—');
-      setText('d-wifi-ap-ip', '—');
       setText('d-wifi-ap-bridge', '—');
       setText('d-wifi-ap-mac', '—');
       setText('d-wifi-ap-rxtx', '—');
@@ -187,7 +188,6 @@ __HALOW_SCRIPT__
     }
     setText('d-wifi-ap-ssid', (apOn && ap.active && ap.ssid) ? ap.ssid : '—');
     setText('d-wifi-ap-clients', (apOn && ap.active) ? String(ap.clients || 0) : '—');
-    setText('d-wifi-ap-ip', (apOn && ap.active && ap.ip) ? ap.ip : '—');
     setText('d-wifi-ap-bridge', (apOn && ap.active && ap.bridge) ? ap.bridge : '—');
     setText('d-wifi-ap-mac', (apOn && ap.active && ap.mac) ? ap.mac : '—');
     setText('d-wifi-ap-rxtx', (apOn && ap.active) ? ((ap.rx||'0')+' / '+(ap.tx||'0')) : '—');

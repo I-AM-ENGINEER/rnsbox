@@ -43,6 +43,38 @@ void network_page(const Request& req, Response& res) {
     h = R(std::move(h), "__SEL_AUTO__",  w.interface == "auto"  ? "selected" : "");
     h = R(std::move(h), "__SEL_ETH0__",  w.interface == "eth0"  ? "selected" : "");
     h = R(std::move(h), "__SEL_WLAN0__", w.interface == "wlan0" ? "selected" : "");
+    h = R(std::move(h), "__CHK_AUTO__",  w.interface == "auto"  ? "checked" : "");
+    h = R(std::move(h), "__CHK_ETH0__",  w.interface == "eth0"  ? "checked" : "");
+    h = R(std::move(h), "__CHK_WLAN0__", w.interface == "wlan0" ? "checked" : "");
+
+    // Live state of every interface the uplink choice can involve, so the
+    // operator picks by what is actually up instead of by guessing names.
+    auto iface_row = [&](const std::string& name, const std::string& role) -> std::string {
+        const sysinfo::Iface* it = nullptr;
+        for (const auto& i : net.ifaces)
+            if (i.name == name) { it = &i; break; }
+        if (!it) return std::string();
+        std::string st = (it->state == "up")
+            ? std::string("<span class=\"badge ok\">UP</span>")
+            : "<span class=\"badge\">" + E(it->state.empty() ? "down" : it->state) + "</span>";
+        std::string addrs;
+        for (size_t k = 0; k < it->addrs.size(); ++k) {
+            if (k) addrs += ", ";
+            addrs += E(it->addrs[k]);
+        }
+        if (addrs.empty()) addrs = "<span class=\"muted\">no address</span>";
+        std::string g;
+        auto git = net.gateway_of.find(name);
+        if (git != net.gateway_of.end()) g = E(git->second);
+        return "<tr><td><strong>" + E(name) + "</strong><br><span class=\"muted\">" + role +
+               "</span></td><td>" + st + "</td><td>" + addrs + "</td><td>" +
+               (g.empty() ? std::string("&mdash;") : g) + "</td></tr>";
+    };
+    std::string ifrows;
+    ifrows += iface_row("eth0", "Ethernet — wired uplink");
+    ifrows += iface_row("wlan0", "WiFi client — uplink when associated");
+    ifrows += iface_row(lan_if, "LAN — USB-NCM and hotspot clients");
+    h = R(std::move(h), "__WAN_IFACE_ROWS__", ifrows);
     bool is_static = (w.mode == "static");
     h = R(std::move(h), "__SEL_DHCP__",   is_static ? "" : "selected");
     h = R(std::move(h), "__SEL_STATIC__", is_static ? "selected" : "");
@@ -133,20 +165,6 @@ void network_page(const Request& req, Response& res) {
                 "<td>" + E(i.mtu) + "</td><td>" + E(i.rx) + " / " + E(i.tx) + "</td></tr>";
     }
     h = R(std::move(h), "__IFACES_ROWS__", rows);
-
-    // DHCP leases — substituted LAST: the names come from LAN clients, and a
-    // hostname spelled like a __TOKEN__ must not get expanded by a later pass.
-    rows.clear();
-    auto leases = sysinfo::dnsmasq_leases();
-    if (leases.empty()) {
-        rows = "<tr><td colspan=\"4\" class=\"muted\">No active leases.</td></tr>";
-    } else {
-        for (const auto& l : leases) {
-            rows += "<tr><td>" + E(l.ip) + "</td><td><code>" + E(l.mac) + "</code></td>"
-                    "<td>" + E(l.name) + "</td><td>" + E(l.length) + "</td></tr>";
-        }
-    }
-    h = R(std::move(h), "__LEASES_ROWS__", rows);
 
     res.body = render::layout(req, res, "Network", "network", h);
 }

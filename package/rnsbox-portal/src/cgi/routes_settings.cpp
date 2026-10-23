@@ -140,6 +140,17 @@ static UsbState usb_state() {
     }
     s.capable = (cap == "yes") || (cap.empty() && usb_capable_fallback());
     s.active = util::trim(util::conf_get(store::USB_STATE_FILE, "active"));
+    // S07usbmode writes the state file at boot, before the gadget NIC exists,
+    // so "active" is stale for the rest of the session. Ask it again once the
+    // link is up; usb0 with carrier is ground truth for device mode.
+    if (s.active.empty() || s.active == "unknown") {
+        util::run({"/etc/init.d/S07usbmode", "status"}, "", 5);
+        s.active = util::trim(util::conf_get(store::USB_STATE_FILE, "active"));
+    }
+    if (s.active.empty() || s.active == "unknown") {
+        if (util::trim(util::read_file("/sys/class/net/usb0/carrier", 8)) == "1")
+            s.active = "device";
+    }
     if (s.active.empty()) s.active = s.mode;
     s.platform = util::trim(util::conf_get(store::USB_STATE_FILE, "platform"));
     return s;

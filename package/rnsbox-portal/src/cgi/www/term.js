@@ -43,7 +43,13 @@
     scrollback: 5000,
     fontSize: 13,
     lineHeight: 1.2,
-    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, "DejaVu Sans Mono", monospace',
+    // NomadNet/urwid draw UI ornaments from the whole Unicode BMP: rounded
+    // box corners (U+256D..U+2570), ❬❭, ⧖, ∿ and emoji.  Consolas has no
+    // glyphs for several of them, so keep monospace for the cell grid and let
+    // the symbol/emoji faces fill in the gaps.
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, "Cascadia Mono", ' +
+                '"DejaVu Sans Mono", "Noto Sans Mono", "Segoe UI Symbol", ' +
+                '"Segoe UI Emoji", "Apple Color Emoji", monospace',
     theme: currentTheme(),
     allowTransparency: false
   });

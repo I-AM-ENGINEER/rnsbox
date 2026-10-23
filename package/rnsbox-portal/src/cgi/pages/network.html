@@ -3,25 +3,33 @@
 
 <section class="card">
   <h3>Default uplink</h3>
-  <p class="muted">Which interface reaches the internet, and how it gets its
-  address. The forwarding rules and the open ports follow this choice.
-  <strong>Automatic</strong> (the default) uses <strong>eth0</strong> while it
-  has a cable and an address and the WiFi client otherwise, switching by itself
-  when the cable goes in or out. <strong>eth0</strong> or <strong>wlan0</strong>
-  pins the uplink to that one interface; the box never changes your choice.
-  The WiFi client needs to be connected (WiFi tab → mode <em>sta</em> or
-  <em>sta+ap</em>) and is always DHCP-addressed by the WiFi stack — the static
-  fields below apply to <strong>eth0</strong> only.</p>
+  <p class="muted">The interface that reaches the internet; the forwarding
+  rules and the open ports follow this choice. <strong>Automatic</strong>
+  (recommended) uses the wired link while it has a cable and an address and
+  falls back to the WiFi client, switching by itself when the cable goes in or
+  out. Pinning one interface means the box never switches on its own. The WiFi
+  client must be connected (WiFi tab → mode <em>sta</em> or <em>sta+ap</em>)
+  and is always DHCP-addressed by the WiFi stack, so the static fields below
+  apply to Ethernet only.</p>
+  <table class="data">
+    <thead>
+      <tr><th>Interface</th><th>Status</th><th>Address</th><th>Gateway</th></tr>
+    </thead>
+    <tbody>
+      __WAN_IFACE_ROWS__
+    </tbody>
+  </table>
   <form method="post" action="__BASE__/network/wan">
     <div class="form-grid">
-      <label>Interface
-        <select name="wan">
-          <option value="auto"  __SEL_AUTO__>Automatic — Ethernet when plugged in, else WiFi client</option>
-          <option value="eth0"  __SEL_ETH0__>Ethernet (eth0) only</option>
-          <option value="wlan0" __SEL_WLAN0__>WiFi client (wlan0) only</option>
-        </select>
-      </label>
-      <label>Addressing
+      <div>
+        <span class="field-label">Use as internet uplink</span>
+        <div class="radio-row">
+          <label><input type="radio" name="wan" value="auto"  __CHK_AUTO__> Automatic (recommended)</label>
+          <label><input type="radio" name="wan" value="eth0"  __CHK_ETH0__> Ethernet only</label>
+          <label><input type="radio" name="wan" value="wlan0" __CHK_WLAN0__> WiFi client only</label>
+        </div>
+      </div>
+      <label>Addressing (Ethernet)
         <select name="wan_mode" id="wan_mode" onchange="wanModeToggle()">
           <option value="dhcp"   __SEL_DHCP__>DHCP (automatic)</option>
           <option value="static" __SEL_STATIC__>Static IP</option>
@@ -105,20 +113,6 @@
     <input name="comment" type="text" placeholder="comment (optional)">
     <button type="submit" class="btn-primary">Add</button>
   </form>
-</section>
-
-<section class="card">
-  <h3>USB-NCM clients (DHCP leases)</h3>
-  <p class="muted">The USB-NCM host and WiFi hotspot clients share one subnet
-  (10.42.0.0/24) and one DHCP pool; the box is 10.42.0.1 on both.</p>
-  <table class="data">
-    <thead>
-      <tr><th>IP</th><th>MAC</th><th>Name</th><th>Lease (s)</th></tr>
-    </thead>
-    <tbody>
-      __LEASES_ROWS__
-    </tbody>
-  </table>
 </section>
 
 <section class="card">

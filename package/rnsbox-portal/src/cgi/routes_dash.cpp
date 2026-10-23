@@ -362,7 +362,6 @@ static std::string wifi_card_html(const std::string& base, const sysinfo::Networ
     }
     std::string ap_ssid = (ap_on && st.ap.active && !st.ap.ssid.empty()) ? E(st.ap.ssid) : "—";
     std::string ap_clients = (ap_on && st.ap.active) ? std::to_string(st.ap.clients) : "—";
-    std::string ap_ip = (ap_on && st.ap.active && !st.ap.ip.empty()) ? E(st.ap.ip) : "—";
     const sysinfo::Iface* ap_if = (st.ap.active && !st.ap.iface.empty())
         ? find_iface(net, st.ap.iface) : nullptr;
     std::string ap_bridge = (ap_if && !st.ap.bridge.empty()) ? E(st.ap.bridge) : "—";
@@ -377,7 +376,7 @@ static std::string wifi_card_html(const std::string& base, const sysinfo::Networ
     return "<section class=\"card\" id=\"wifi-sta-card\">\n"
            "  <h3>WiFi STA (wlan0)</h3>\n"
            "  <table class=\"kv\">\n"
-           "    <tr><th>State</th><td id=\"d-wifi-sta-state\">" + sta_state + "</td></tr>\n"
+           "    <tr><th>Status</th><td id=\"d-wifi-sta-state\">" + sta_state + "</td></tr>\n"
            "    <tr><th>Network</th><td id=\"d-wifi-sta-ssid\">" + sta_ssid + "</td></tr>\n"
            "    <tr><th>Signal</th><td id=\"d-wifi-sta-signal\">" + sta_signal + "</td></tr>\n"
            "    <tr><th>Address</th><td id=\"d-wifi-sta-addr\">" + sta_addr + "</td></tr>\n"
@@ -390,10 +389,9 @@ static std::string wifi_card_html(const std::string& base, const sysinfo::Networ
            "<section class=\"card\" id=\"wifi-ap-card\">\n"
            "  <h3>WiFi AP</h3>\n"
            "  <table class=\"kv\">\n"
-           "    <tr><th>State</th><td id=\"d-wifi-ap-state\">" + ap_state + "</td></tr>\n"
+           "    <tr><th>Status</th><td id=\"d-wifi-ap-state\">" + ap_state + "</td></tr>\n"
            "    <tr><th>SSID</th><td id=\"d-wifi-ap-ssid\">" + ap_ssid + "</td></tr>\n"
            "    <tr><th>Clients</th><td id=\"d-wifi-ap-clients\">" + ap_clients + "</td></tr>\n"
-           "    <tr><th>LAN address</th><td id=\"d-wifi-ap-ip\">" + ap_ip + "</td></tr>\n"
            "    <tr><th>Bridge</th><td id=\"d-wifi-ap-bridge\">" + ap_bridge + "</td></tr>\n"
            "    <tr><th>MAC</th><td id=\"d-wifi-ap-mac\">" + ap_mac + "</td></tr>\n"
            "    <tr><th>RX / TX</th><td id=\"d-wifi-ap-rxtx\">" + ap_rxtx + "</td></tr>\n"
@@ -494,7 +492,7 @@ void dashboard_page(const Request& req, Response& res) {
                 "<section class=\"card\">\n"
                 "    <h3>LAN bridge (" + E(lan_if) + ")</h3>\n"
                 "    <table class=\"kv\">\n"
-                "      <tr><th>State</th><td id=\"d-lan-state\">" + state_badge(lif) + "</td></tr>\n"
+                "      <tr><th>Status</th><td id=\"d-lan-state\">" + state_badge(lif) + "</td></tr>\n"
                 "      <tr><th>Address</th><td id=\"d-lan-addr\">" + addr + "</td></tr>\n"
                 "      <tr><th>MAC</th><td id=\"d-lan-mac\">" + mac + "</td></tr>\n"
                 "      <tr><th>RX / TX</th><td id=\"d-lan-rxtx\">" + rx + " / " + tx + "</td></tr>\n"
@@ -508,7 +506,7 @@ void dashboard_page(const Request& req, Response& res) {
                     "<section class=\"card\">\n"
                     "    <h3>USB-NCM (" + E(usb->name) + ")</h3>\n"
                     "    <table class=\"kv\">\n"
-                    "      <tr><th>State</th><td id=\"d-usb-state\">" + state_badge(usb) + "</td></tr>\n"
+                    "      <tr><th>Status</th><td id=\"d-usb-state\">" + state_badge(usb) + "</td></tr>\n"
                     "      <tr><th>Bridge</th><td>" + E(lan_if) + " (port)</td></tr>\n"
                     "      <tr><th>MAC</th><td id=\"d-usb-mac\">" + E(usb->mac) + "</td></tr>\n"
                     "      <tr><th>RX / TX</th><td id=\"d-usb-rxtx\">" + urx + " / " + utx + "</td></tr>\n"
@@ -521,7 +519,7 @@ void dashboard_page(const Request& req, Response& res) {
                 "<section class=\"card\">\n"
                 "    <h3>USB-NCM (" + E(lan_if) + ")</h3>\n"
                 "    <table class=\"kv\">\n"
-                "      <tr><th>State</th><td id=\"d-lan-state\">" + state_badge(lif) + "</td></tr>\n"
+                "      <tr><th>Status</th><td id=\"d-lan-state\">" + state_badge(lif) + "</td></tr>\n"
                 "      <tr><th>Address</th><td id=\"d-lan-addr\">" + addr + "</td></tr>\n"
                 "      <tr><th>MAC</th><td id=\"d-lan-mac\">" + mac + "</td></tr>\n"
                 "      <tr><th>RX / TX</th><td id=\"d-lan-rxtx\">" + rx + " / " + tx + "</td></tr>\n"
@@ -536,18 +534,20 @@ void dashboard_page(const Request& req, Response& res) {
     // Reticulum card
     std::string rstat;
     if (rnsd.running) {
-        rstat = "<span class=\"badge ok\">RUNNING</span> (pid " + E(rnsd.pid) + ")";
-        if (rnsd.rss_mb > 0) rstat += " &middot; " + std::to_string(rnsd.rss_mb) + " MB RSS";
+        rstat = "<span class=\"badge ok\">RUNNING</span>";
     } else {
         rstat = "<span class=\"badge err\">STOPPED</span>";
     }
     h = R(std::move(h), "__RNSD_STATUS__", rstat);
+    h = R(std::move(h), "__RNSD_MEM__",
+          rnsd.running ? (rnsd.rss_mb > 0 ? std::to_string(rnsd.rss_mb) + " MB" : std::string("—"))
+                       : std::string("—"));
     h = R(std::move(h), "__RNSD_UPTIME__",
           rnsd.running && rnsd.uptime_s >= 0 ? "up " + fmt_uptime(rnsd.uptime_s) : "—");
     // Installed version (cheap dist-info read) + optional update badge — mirrors
     // the reticulum card and the /dashboard/data JS.
     updatecheck::State u = updatecheck::display();
-    std::string ver = "Reticulum (rnsd) <strong>" + E(u.installed.empty() ? "unknown" : u.installed) + "</strong>";
+    std::string ver = "<strong>" + E(u.installed.empty() ? "unknown" : u.installed) + "</strong>";
     if (u.update_available)
         ver += " <span class=\"badge warn\">update available: " + E(u.latest) + "</span>";
     else if (!u.latest.empty() && u.error.empty())
@@ -571,11 +571,9 @@ void dashboard_page(const Request& req, Response& res) {
             std::string card = ble_card_html(base);
             std::string bstat;
             if (::stat("/sys/class/bluetooth/hci0", &st) == 0)
-                bstat = "<span class=\"badge ok\">advertising</span> "
-                        "<span class=\"muted\">hci0 up · GATT server + scanning</span>";
+                bstat = "<span class=\"badge ok\">advertising</span>";
             else
-                bstat = "<span class=\"badge warn\">no adapter</span> "
-                        "<span class=\"muted\">BLE enabled but no hci device</span>";
+                bstat = "<span class=\"badge warn\">no adapter</span>";
             card = web::replace_all(std::move(card), "__BLE_STATUS__", bstat);
             h = R(std::move(h), "__BLE_CARD__", card);
         } else {
