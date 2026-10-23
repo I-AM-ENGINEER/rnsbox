@@ -288,12 +288,11 @@ Caps caps() {
 std::string scan_json() {
     if (!present())
         return "{\"nets\":[],\"error\":\"no WiFi radio detected\"}";
-    auto cfg = read_conf();
-    // Scanning is a client-mode operation. Refuse it while STA is disabled
-    // (mode off/ap): bringing wlan0 up and scanning would hop the single
-    // radio away from the hotspot for no reason.
-    if (cfg["mode"] != "sta" && cfg["mode"] != "sta+ap")
-        return "{\"nets\":[],\"error\":\"STA mode is off — enable it above to scan\"}";
+    // Scanning is allowed in every mode: the first thing a user does on a
+    // fresh box is scan, and requiring a saved STA network first left the
+    // Scan button disabled with no way to find an SSID.  The radio hops
+    // off-channel for the scan; on the full-MAC drivers the AP keeps
+    // beaconing and resumes its channel afterwards.
     const char* iw = iw_path();
     if (!iw)
         return "{\"nets\":[],\"error\":\"iw is not installed on this image\"}";

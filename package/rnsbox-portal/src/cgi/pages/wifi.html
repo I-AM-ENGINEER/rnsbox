@@ -86,6 +86,9 @@
       <label>Security
         <select name="ap_security">__AP_SECURITY_OPTIONS__</select>
       </label>
+      <label>Country (regulatory)
+        <select name="sta_country">__COUNTRY_OPTIONS__</select>
+      </label>
       <div>
         <span class="field-label">Band</span>
         <div class="radio-row">
@@ -232,7 +235,6 @@ document.getElementById('ssid').addEventListener('input', function(){
 var scanTimer=null, scanStopped=false, scanDeadline=0, scanFound={};
 function scanKey(n){ return (n.bssid||'')+'|'+(n.ssid||'')+'|'+(n.band||'')+'|'+(n.channel||''); }
 function doScan(){
-  if(!STA_ENABLED) return;
   scanStopped=false; scanFound={}; scanDeadline=Date.now()+5*60*1000;
   document.getElementById('scanstop').style.display='';
   var tbl=document.getElementById('scantbl');
@@ -414,7 +416,7 @@ function syncStandard(){
       setText('w-ap-clients', '—'); setText('w-ap-band', '—');
       setText('w-ap-channel', '—'); setText('w-ap-width', '—');
       setText('w-ap-standard', '—'); setText('w-ap-security', '—');
-      setText('w-ap-ip', '—'); setText('w-ap-bridge', '—');
+      setText('w-ap-bridge', '—');
       setText('w-ap-mac', '—'); setText('w-ap-rxtx', '—');
       return;
     }
@@ -462,7 +464,6 @@ function syncStandard(){
     setText('w-ap-width', (apOn && ap.active && ap.width) ? ap.width + ' MHz' : '—');
     setText('w-ap-standard', (apOn && ap.active && ap.standard) ? ap.standard : '—');
     setText('w-ap-security', (apOn && ap.active && ap.security) ? ap.security : '—');
-    setText('w-ap-ip', (apOn && ap.active && ap.ip) ? ap.ip : '—');
     setText('w-ap-bridge', (apOn && ap.active && ap.bridge) ? ap.bridge : '—');
     setText('w-ap-mac', (apOn && ap.active && ap.mac) ? ap.mac : '—');
     setText('w-ap-rxtx', (apOn && ap.active) ? ((ap.rx||'0')+' / '+(ap.tx||'0')) : '—');

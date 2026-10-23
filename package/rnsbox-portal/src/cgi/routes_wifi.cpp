@@ -54,6 +54,42 @@ static std::string band_options(const std::string& cur, bool with_auto) {
     return o;
 }
 
+// Regulatory domain for both roles. Empty ("world") keeps the driver's own
+// channel set and lets S35wifi restrict it to channels every client accepts;
+// a country makes hostapd filter ACS and lets 5 GHz operate legally.
+static std::string country_options(const std::string& cur) {
+    static const struct { const char* code; const char* name; } list[] = {
+        {"RU", "Russia"},        {"US", "United States"}, {"GB", "United Kingdom"},
+        {"DE", "Germany"},       {"FR", "France"},        {"IT", "Italy"},
+        {"ES", "Spain"},         {"PT", "Portugal"},      {"NL", "Netherlands"},
+        {"BE", "Belgium"},       {"CH", "Switzerland"},   {"AT", "Austria"},
+        {"PL", "Poland"},        {"CZ", "Czechia"},       {"SK", "Slovakia"},
+        {"HU", "Hungary"},       {"RO", "Romania"},       {"BG", "Bulgaria"},
+        {"GR", "Greece"},        {"HR", "Croatia"},       {"SI", "Slovenia"},
+        {"EE", "Estonia"},       {"LV", "Latvia"},        {"LT", "Lithuania"},
+        {"FI", "Finland"},       {"SE", "Sweden"},        {"NO", "Norway"},
+        {"DK", "Denmark"},       {"IE", "Ireland"},       {"IS", "Iceland"},
+        {"UA", "Ukraine"},       {"BY", "Belarus"},       {"KZ", "Kazakhstan"},
+        {"TR", "Turkey"},        {"IL", "Israel"},        {"AE", "United Arab Emirates"},
+        {"SA", "Saudi Arabia"},  {"IN", "India"},         {"CN", "China"},
+        {"JP", "Japan"},         {"KR", "South Korea"},   {"TW", "Taiwan"},
+        {"HK", "Hong Kong"},     {"SG", "Singapore"},     {"MY", "Malaysia"},
+        {"TH", "Thailand"},      {"VN", "Vietnam"},       {"ID", "Indonesia"},
+        {"PH", "Philippines"},   {"AU", "Australia"},     {"NZ", "New Zealand"},
+        {"CA", "Canada"},        {"MX", "Mexico"},        {"BR", "Brazil"},
+        {"AR", "Argentina"},     {"CL", "Chile"},         {"CO", "Colombia"},
+        {"ZA", "South Africa"},  {"EG", "Egypt"},         {"NG", "Nigeria"},
+        {"KE", "Kenya"},
+    };
+    std::string o = opt("", "Auto — world (default)", cur);
+    for (const auto& c : list) {
+        std::string code = c.code;
+        o += "<option value=\"" + code + "\"" + (code == cur ? " selected" : "") + ">" +
+             code + " — " + c.name + "</option>";
+    }
+    return o;
+}
+
 // Only the standards this radio reports. mt7603e: HT only -> no ac/ax.
 // Unknown hardware (iw missing) keeps the full list rather than lying by
 // omission.
@@ -185,13 +221,13 @@ void wifi_page(const Request& req, Response& res) {
     }
     std::string sta_rows;
     if (!sta_on)
-        sta_rows += "<tr><th>State</th><td id=\"w-sta-state\"><span class=\"badge\">off</span></td></tr>\n";
+        sta_rows += "<tr><th>Status</th><td id=\"w-sta-state\"><span class=\"badge\">off</span></td></tr>\n";
     else if (st.sta.connected)
-        sta_rows += "<tr><th>State</th><td id=\"w-sta-state\"><span class=\"badge ok\">CONNECTED</span></td></tr>\n";
+        sta_rows += "<tr><th>Status</th><td id=\"w-sta-state\"><span class=\"badge ok\">CONNECTED</span></td></tr>\n";
     else if (!wifi::has_sta_networks())
-        sta_rows += "<tr><th>State</th><td id=\"w-sta-state\"><span class=\"badge\">not configured</span></td></tr>\n";
+        sta_rows += "<tr><th>Status</th><td id=\"w-sta-state\"><span class=\"badge\">not configured</span></td></tr>\n";
     else
-        sta_rows += "<tr><th>State</th><td id=\"w-sta-state\"><span class=\"badge warn\">not connected</span></td></tr>\n";
+        sta_rows += "<tr><th>Status</th><td id=\"w-sta-state\"><span class=\"badge warn\">not connected</span></td></tr>\n";
     sta_rows += "<tr><th>Network</th><td id=\"w-sta-ssid\">" +
         ((st.sta.connected && !st.sta.ssid.empty()) ? E(st.sta.ssid) : std::string("—")) +
         "</td></tr>\n";
@@ -233,11 +269,11 @@ void wifi_page(const Request& req, Response& res) {
     }
     std::string ap_rows;
     if (!ap_on)
-        ap_rows += "<tr><th>State</th><td id=\"w-ap-state\"><span class=\"badge\">off</span></td></tr>\n";
+        ap_rows += "<tr><th>Status</th><td id=\"w-ap-state\"><span class=\"badge\">off</span></td></tr>\n";
     else if (st.ap.active)
-        ap_rows += "<tr><th>State</th><td id=\"w-ap-state\"><span class=\"badge ok\">UP</span></td></tr>\n";
+        ap_rows += "<tr><th>Status</th><td id=\"w-ap-state\"><span class=\"badge ok\">UP</span></td></tr>\n";
     else
-        ap_rows += "<tr><th>State</th><td id=\"w-ap-state\"><span class=\"badge warn\">not running</span></td></tr>\n";
+        ap_rows += "<tr><th>Status</th><td id=\"w-ap-state\"><span class=\"badge warn\">not running</span></td></tr>\n";
     ap_rows += "<tr><th>SSID</th><td id=\"w-ap-ssid\">" +
         (ap_on && st.ap.active && !st.ap.ssid.empty() ? E(st.ap.ssid) : std::string("—")) +
         "</td></tr>\n";
@@ -261,9 +297,6 @@ void wifi_page(const Request& req, Response& res) {
         "</td></tr>\n";
     ap_rows += "<tr><th>Security</th><td id=\"w-ap-security\">" +
         (ap_on && st.ap.active && !st.ap.security.empty() ? E(st.ap.security) : std::string("—")) +
-        "</td></tr>\n";
-    ap_rows += "<tr><th>LAN address</th><td id=\"w-ap-ip\">" +
-        (ap_on && st.ap.active && !st.ap.ip.empty() ? E(st.ap.ip) : std::string("—")) +
         "</td></tr>\n";
     ap_rows += "<tr><th>Bridge</th><td id=\"w-ap-bridge\">" +
         (ap_on && st.ap.active && !st.ap.bridge.empty() ? E(st.ap.bridge) : std::string("—")) +
@@ -314,7 +347,7 @@ void wifi_page(const Request& req, Response& res) {
     // ---- Mode toggles ----
     h = R(std::move(h), "__STA_CHECKED__", sta_on ? "checked" : "");
     h = R(std::move(h), "__AP_CHECKED__",  ap_on  ? "checked" : "");
-    h = R(std::move(h), "__SCAN_DISABLED__", sta_on ? "" : "disabled");
+    h = R(std::move(h), "__SCAN_DISABLED__", "");
 
 
     // ---- STA settings ----
@@ -339,6 +372,9 @@ void wifi_page(const Request& req, Response& res) {
     h = R(std::move(h), "__AP_SSID__", E(ap_ssid));
     h = R(std::move(h), "__AP_PSK__",  E(cfg["ap_psk"]));
     h = R(std::move(h), "__AP_SECURITY_OPTIONS__", security_options(cfg["ap_security"], true));
+    std::string country = util::trim(cfg["sta_country"]);
+    if (country == "00") country.clear();
+    h = R(std::move(h), "__COUNTRY_OPTIONS__", country_options(country));
 
     // Bands/standards/widths come from `iw phy`, not from a generic list: an
     // MT7628/mt7603e shows 2.4 GHz only and no ac/ax, while a 5 GHz radio
@@ -551,6 +587,18 @@ void wifi_ap(const Request& req, Response& res) {
     std::string width = util::trim(req.f("ap_width"));
     std::string chan = util::trim(req.f("ap_channel"));
     bool hidden = req.f("ap_hidden") == "on";
+    std::string country = util::trim(req.f("sta_country"));
+    std::string cu;
+    for (char c : country)
+        if (!std::isspace((unsigned char)c)) cu += (char)std::toupper((unsigned char)c);
+    country = cu;
+    if (!country.empty() &&
+        (country.size() != 2 || !std::isalpha((unsigned char)country[0]) ||
+         !std::isalpha((unsigned char)country[1]) || country == "00")) {
+        render::redirect_flash(res, wifi_redirect(), "error",
+            "Country must be a two-letter code (or Auto for the world regdomain)");
+        return;
+    }
 
     auto cur = wifi::read_conf();
     bool sta_on = (cur["mode"] == "sta" || cur["mode"] == "sta+ap");
@@ -670,7 +718,8 @@ void wifi_ap(const Request& req, Response& res) {
                            {"ap_security", security}, {"ap_band", band},
                            {"ap_standard", standard}, {"ap_width", width},
                            {"ap_channel", chan}, {"ap_htmode", htmode},
-                           {"ap_hidden", hidden ? "1" : ""}})) {
+                           {"ap_hidden", hidden ? "1" : ""},
+                           {"sta_country", country}})) {
         render::redirect_flash(res, wifi_redirect(), "error", "Could not save the WiFi config");
         return;
     }

@@ -992,7 +992,9 @@ if [ "${BUILD_STYLE:-patches}" = external ]; then
     # extracted copies and their stamps; the next make re-extracts them
     # from $EXT. Same rule as the patch-series flow below. aic8800 is the
     # out-of-tree WiFi driver source shipped in board/sg2000-mainline/.
-    for p in rnsbox-update rnsbox-portal python-rns python-lxmf python-nomadnet python-ble-reticulum rnsbox-python-bluezero aic8800; do
+    # hostapd: board/common/buildroot-patches/hostapd patches the nl80211
+    # driver (monitor-less AP mgmt frames), which is only applied at extract.
+    for p in rnsbox-update rnsbox-portal python-rns python-lxmf python-nomadnet python-ble-reticulum rnsbox-python-bluezero aic8800 hostapd; do
         rm -rf "$ODIR"/build/"$p"-* 2>/dev/null || :
     done
 
@@ -1002,6 +1004,14 @@ if [ "${BUILD_STYLE:-patches}" = external ]; then
     rnsbox_pin_dl() {
         sed -i -e 's|^BR2_DL_DIR=.*|BR2_DL_DIR="'"$DL"'"|' "$ODIR/.config"
         grep -q '^BR2_DL_DIR=' "$ODIR/.config" || echo "BR2_DL_DIR=\"$DL\"" >> "$ODIR/.config"
+        # Out-of-tree package patches (hostapd) live in board/common. Buildroot
+        # only reads this list from .config, and the defconfig we just imported
+        # does not know about the external tree's absolute path.
+        local pdir="$EXT/board/common/buildroot-patches"
+        if [ -d "$pdir" ]; then
+            sed -i -e 's|^BR2_GLOBAL_PATCH_DIR=.*|BR2_GLOBAL_PATCH_DIR="'"$pdir"'"|' "$ODIR/.config"
+            grep -q '^BR2_GLOBAL_PATCH_DIR=' "$ODIR/.config" || echo "BR2_GLOBAL_PATCH_DIR=\"$pdir\"" >> "$ODIR/.config"
+        fi
         make -C "$UPSTREAM" O="$ODIR" BR2_EXTERNAL="$EXT" olddefconfig
     }
 

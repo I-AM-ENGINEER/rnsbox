@@ -260,9 +260,19 @@ gen_hostapd_conf() {
 		# and a DFS channel (inherited from a concurrent STA) needs radar
 		# detection enabled.
 		country=$(cfg sta_country)
+		case "$country" in 00) country= ;; esac
 		if [ -n "$country" ]; then
 			echo "country_code=$country"
 			echo "ieee80211d=1"
+		elif [ "$band" = "5" ]; then
+			# No country: keep ACS/manual channels in UNII-1 (36..48, no
+			# DFS), which is legal in every country this image targets.
+			echo "chanlist=5180-5240"
+		else
+			# Channel 14 (2484 MHz) is Japan-only, but the chip's world
+			# regdomain lists it: ACS picks the quietest channel and a
+			# hotspot there is then invisible to every other client.
+			echo "chanlist=2412-2472"
 		fi
 		case "$chan" in
 			52|56|60|64|100|104|108|112|116|120|124|128|132|136|140|144)

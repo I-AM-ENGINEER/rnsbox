@@ -1,0 +1,75 @@
+From: rnsbox <rnsbox@localhost>
+Subject: [PATCH] nl80211: fall back to nl80211 mgmt frames when the monitor
+ interface cannot be created
+
+hostapd picks the monitor-interface path when the driver does not support
+NL80211_CMD_PROBE_CLIENT or NL80211_FEATURE_SK_TX_STATUS.  Full-MAC drivers
+such as aic8800 advertise a monitor interface mode but still refuse to
+create one while a data/AP vif exists ("Monitor+Data interface support
+(MON_DATA) disabled"), so nl80211_create_monitor_interface() fails with
+-EOPNOTSUPP.
+
+The compatibility fallback then set device_ap_sme = 1, which is wrong for
+these drivers: they still drive the AP MLME from userspace.  setup_ap()
+skipped both the monitor path and the nl80211 mgmt-frame subscription, so
+hostapd transmitted beacons but never received a single auth/assoc frame -
+clients could see the SSID and failed to associate.
+
+Treat the missing monitor interface as "use NL80211_CMD_FRAME instead":
+clear use_monitor and subscribe to the AP management frames.  A real
+monitor-interface creation error (not -EOPNOTSUPP) still aborts setup.
+--- a/src/drivers/driver_nl80211.c
++++ b/src/drivers/driver_nl80211.c
+@@ -6142,10 +6142,6 @@
+ 	if (!drv->device_ap_sme)
+ 		wpa_driver_nl80211_probe_req_report(bss, 0);
+ 
+-	if (!drv->device_ap_sme && !drv->use_monitor)
+-		if (nl80211_mgmt_subscribe_ap(bss))
+-			return -1;
+-
+ 	if (drv->device_ap_sme && !drv->use_monitor)
+ 		if (nl80211_mgmt_subscribe_ap_dev_sme(bss))
+ 			wpa_printf(MSG_DEBUG,
+@@ -6153,9 +6149,18 @@
+ 
+ 	if (!drv->device_ap_sme && drv->use_monitor &&
+ 	    nl80211_create_monitor_interface(drv) &&
+-	    !drv->device_ap_sme)
++	    drv->use_monitor)
+ 		return -1;
+ 
++	/*
++	 * nl80211_create_monitor_interface() cleared use_monitor when the
++	 * driver refused the monitor interface (-EOPNOTSUPP): keep userspace
++	 * MLME and receive management frames over NL80211_CMD_FRAME.
++	 */
++	if (!drv->device_ap_sme && !drv->use_monitor)
++		if (nl80211_mgmt_subscribe_ap(bss))
++			return -1;
++
+ 	if (drv->device_ap_sme &&
+ 	    wpa_driver_nl80211_probe_req_report(bss, 1) < 0) {
+ 		wpa_printf(MSG_DEBUG, "nl80211: Failed to enable "
+--- a/src/drivers/driver_nl80211_monitor.c
++++ b/src/drivers/driver_nl80211_monitor.c
+@@ -385,14 +385,14 @@
+ 
+ 	if (drv->monitor_ifidx == -EOPNOTSUPP) {
+ 		/*
+-		 * This is backward compatibility for a few versions of
+-		 * the kernel only that didn't advertise the right
+-		 * attributes for the only driver that then supported
+-		 * AP mode w/o monitor -- ath6kl.
++		 * The driver advertises monitor mode but cannot create the
++		 * interface next to a data/AP vif (e.g. aic8800 full-MAC).
++		 * Keep userspace MLME and switch to management frames over
++		 * NL80211_CMD_FRAME instead of claiming device AP SME.
+ 		 */
+ 		wpa_printf(MSG_DEBUG, "nl80211: Driver does not support "
+ 			   "monitor interface type - try to run without it");
+-		drv->device_ap_sme = 1;
++		drv->use_monitor = 0;
+ 	}
+ 
+ 	if (drv->monitor_ifidx < 0)

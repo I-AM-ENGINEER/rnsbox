@@ -138,9 +138,27 @@ ap_unbridge() {
 }
 
 load_modules() {
-	# brcmfmac is built into the RNSBox kernel; firmware comes from the
-	# brcmfmac-sdio-firmware-rpi NVRAM package. modprobe is a no-op when
-	# built-in.
+	# The SG2000/SG2002 boards carry an AIC8800D80 on SDIO1: an out-of-tree
+	# module pair that must be insmoded after the LPO/RTC + WL_REG_ON pulse
+	# (/root/wifi.sh, built by BR2_PACKAGE_AIC8800). Run it here, in the
+	# background, so wait_for_iface below returns as soon as wlan0 appears
+	# instead of blocking on the script's trailing settle sleep. Skipped
+	# once wlan0 exists: a portal apply or the watchdog must not reset a
+	# live chip.
+	if [ -x /root/wifi.sh ]; then
+		# rv64 kernels build cfg80211/rfkill/bluetooth in; the arm64 ones
+		# build them as modules, and the AIC modules link against all
+		# three (fullmac cfg80211 + hci over SDIO). modprobe is then a
+		# no-op on rv64.
+		modprobe rfkill 2>/dev/null || true
+		modprobe cfg80211 2>/dev/null || true
+		modprobe bluetooth 2>/dev/null || true
+		[ -e "/sys/class/net/$STA_IF" ] || /root/wifi.sh >/dev/null 2>&1 &
+		return 0
+	fi
+	# RPi-class boards: brcmfmac is built into the kernel and the firmware
+	# comes from the brcmfmac-sdio-firmware-rpi NVRAM package. modprobe is a
+	# no-op when built-in.
 	modprobe brcmfmac 2>/dev/null || true
 	modprobe cfg80211 2>/dev/null || true
 }
@@ -260,9 +278,19 @@ gen_hostapd_conf() {
 		# and a DFS channel (inherited from a concurrent STA) needs radar
 		# detection enabled.
 		country=$(cfg sta_country)
+		case "$country" in 00) country= ;; esac
 		if [ -n "$country" ]; then
 			echo "country_code=$country"
 			echo "ieee80211d=1"
+		elif [ "$band" = "5" ]; then
+			# No country: keep ACS/manual channels in UNII-1 (36..48, no
+			# DFS), which is legal in every country this image targets.
+			echo "chanlist=5180-5240"
+		else
+			# Channel 14 (2484 MHz) is Japan-only, but the chip's world
+			# regdomain lists it: ACS picks the quietest channel and a
+			# hotspot there is then invisible to every other client.
+			echo "chanlist=2412-2472"
 		fi
 		case "$chan" in
 			52|56|60|64|100|104|108|112|116|120|124|128|132|136|140|144)
