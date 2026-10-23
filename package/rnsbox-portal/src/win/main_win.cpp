@@ -5,7 +5,7 @@
 // It serves the same portal the router' uhttpd serves, from the same C++ route
 // handlers (cgi/dispatch.cpp): server-rendered pages, POST-redirect-GET forms,
 // JSON endpoints. There is no GUI and no installer dependency — start it (or
-// register it as a service) and open http://127.0.0.1:8080/ in a browser.
+// register it as a service) and open http://127.0.0.1:8040/ in a browser.
 //
 // Reticulum is not bundled: the exe uses the system Python + `rns` when they
 // are present, and --setup offers to install them. rnsd is supervised as a
@@ -43,10 +43,15 @@ namespace {
 
 const char* APP_BASE = "/cgi-bin/portal";
 
+// Picked once, at random, outside the crowded 808x block (every dev server,
+// proxy and container in the world defaults to 8080-8089). Baked into the
+// build so the URL is the same on every machine; --listen overrides it.
+constexpr int DEFAULT_PORT = 8040;
+
 struct Options {
     std::string root;
     std::string host = "127.0.0.1";
-    int port = 8080;
+    int port = DEFAULT_PORT;
     bool start_rnsd = true;
     bool doctor = false;
     bool setup = false;
@@ -497,14 +502,17 @@ Options parse_args(int argc, char** argv) {
             std::string v = next();
             size_t c = v.rfind(':');
             if (c == std::string::npos) {
-                o.port = atoi(v.c_str());
+                if (!v.empty() && v.find_first_not_of("0123456789") == std::string::npos)
+                    o.port = atoi(v.c_str());
+                else
+                    o.host = v;
             } else {
                 o.host = v.substr(0, c);
                 o.port = atoi(v.substr(c + 1).c_str());
                 if (o.host.empty()) o.host = "0.0.0.0";
                 if (o.host == "*") o.host = "0.0.0.0";
             }
-            if (o.port <= 0 || o.port > 65535) o.port = 8080;
+            if (o.port <= 0 || o.port > 65535) o.port = DEFAULT_PORT;
         }
         else if (a == "--no-rnsd") o.start_rnsd = false;
         else if (a == "--doctor") o.doctor = true;
@@ -516,7 +524,7 @@ Options parse_args(int argc, char** argv) {
             std::printf(
                 "rnsbox.exe — RNSBox portal for Windows\n"
                 "\n"
-                "  --listen ADDR:PORT   listen address (default 127.0.0.1:8080)\n"
+                "  --listen ADDR:PORT   listen address (default 127.0.0.1:8040)\n"
                 "  --root DIR           config/data root (default %%ProgramData%%\\RNSBox)\n"
                 "  --no-rnsd            do not start the Reticulum daemon\n"
                 "  --setup              install Python/Reticulum if missing (asks first)\n"
@@ -722,7 +730,7 @@ static bool install_service(const Options& opt) {
     }
     SERVICE_DESCRIPTIONA desc{};
     desc.lpDescription = const_cast<char*>(
-        "RNSBox portal: web UI for Reticulum on http://127.0.0.1:8080/");
+        "RNSBox portal: web UI for Reticulum on http://127.0.0.1:8040/");
     ChangeServiceConfig2A(svc, SERVICE_CONFIG_DESCRIPTION, &desc);
     CloseServiceHandle(svc);
     CloseServiceHandle(sc);

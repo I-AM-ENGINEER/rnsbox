@@ -6,9 +6,9 @@ straight from the shared C++ route handlers. No VM, no WSL, no GUI: start it
 
 ```
 rnsbox.exe --setup                 # find/install Python + Reticulum (asks first)
-rnsbox.exe                         # serve on http://127.0.0.1:8080/
+rnsbox.exe                         # serve on http://127.0.0.1:8040/
 rnsbox.exe --root D:\rnsbox        # own config tree
-rnsbox.exe --listen 0.0.0.0:8080   # expose to the LAN (change the password!)
+rnsbox.exe --listen 0.0.0.0:8040   # expose to the LAN (change the password!)
 ```
 
 Default login: **admin / admin**.
@@ -90,11 +90,15 @@ sc start rnsbox
 The service runs without a console and logs to
 `<root>\var\log\portal.log`. `--uninstall-service` stops and removes it.
 The exe implements the SCM handshake itself, so no NSSM/sc.exe wrapper is
-needed. Browsing to `http://127.0.0.1:8080/` works while the service runs.
+needed. Browsing to `http://127.0.0.1:8040/` works while the service runs.
 
 ## Notes and limits
 
-- The listener binds `127.0.0.1` by default. `--listen 0.0.0.0:8080` exposes
+- The default port is **8040** — one random pick in 80xx, deliberately outside
+  8080-8089 (where every dev server, proxy and container defaults). It is
+  compiled in, so every machine gets the same URL; `--listen ADDR:PORT`
+  overrides it.
+- The listener binds `127.0.0.1` by default. `--listen 0.0.0.0:8040` exposes
   the admin UI to the network; the portal's Host allowlist (IP literals and
   `localhost` only) and same-origin/CSRF checks still apply.
 - Opening TCP 4242 and UDP 29716/29717 in Windows Firewall is what lets peers

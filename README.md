@@ -158,7 +158,7 @@ consoles and the A/B updater are absent by design.
 cd package/rnsbox-portal/src
 ./win/build-win.sh                      # MSYS2 UCRT64 -> win/build/rnsbox.exe
 cd win/build && ./rnsbox.exe --setup    # finds/installs Python + Reticulum
-./rnsbox.exe                            # http://127.0.0.1:8080/ (admin/admin)
+./rnsbox.exe                            # http://127.0.0.1:8040/ (admin/admin)
 ```
 
 `rnsbox.exe --install-service` (elevated) registers it as a background Windows
