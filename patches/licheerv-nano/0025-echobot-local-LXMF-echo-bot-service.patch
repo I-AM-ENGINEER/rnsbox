@@ -86,7 +86,7 @@ index 0000000..5989eae
 +		v=$(grep -E '^[[:space:]]*enabled[[:space:]]*=' "$CONF" 2>/dev/null \
 +		      | tail -1 | sed -E 's/^[[:space:]]*enabled[[:space:]]*=[[:space:]]*//' \
 +		      | tr -d '"' | tr -d "'" | tr '[:upper:]' '[:lower:]' | awk '{print $1}')
-+		case "$v" in no|false|0|off) enabled="no" ;; esac
++		case "$v" in yes|true|1|on) enabled="yes" ;; esac
 +		m=$(grep -E '^[[:space:]]*min_free_mb[[:space:]]*=' "$CONF" 2>/dev/null \
 +		      | tail -1 | sed -E 's/^[[:space:]]*min_free_mb[[:space:]]*=[[:space:]]*//' \
 +		      | tr -d '"' | tr -d "'" | awk '{print $1}')

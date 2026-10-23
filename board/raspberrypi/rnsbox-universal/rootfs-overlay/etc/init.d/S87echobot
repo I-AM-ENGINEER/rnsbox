@@ -5,10 +5,9 @@
 # by default, /etc/rnsbox/echobot.conf `interval=`) and echoes every message
 # back — the fastest "is this box reachable?" check from any LXMF client
 # (NomadNet: Conversations -> the address on the portal's Echo bot tab).
-# Unlike lxmd/nomadnet this ships ENABLED: it is the headline out-of-the-box
-# feature, its cost is one announce a day plus a small python process, and the
-# RAM floor below turns "tight box" into "bot off" — never "rnsd OOM-killed".
-# Disable with the portal's Echo bot tab (or enabled=no here) + restart.
+# This ships DISABLED: enable it from the portal's Echo bot tab when you want
+# it. Its cost is one announce a day plus a small python process, and the RAM
+# floor below turns "tight box" into "bot off" — never "rnsd OOM-killed".
 #
 # Runs AFTER S82rnsd so it attaches to rnsd's *shared* Reticulum instance
 # (--rnsconfig is baked into the script: /etc/reticulum) instead of starting a
@@ -48,13 +47,13 @@ STOP_WAIT=10   # s the daemon gets to persist LXMF state and exit after TERM
 
 # --- read the enable flag + RAM floor (flat key=value, no shell sourcing) ---
 read_conf() {
-	enabled="yes"
+	enabled="no"
 	min_free_mb=40
 	if [ -r "$CONF" ]; then
 		v=$(grep -E '^[[:space:]]*enabled[[:space:]]*=' "$CONF" 2>/dev/null \
 		      | tail -1 | sed -E 's/^[[:space:]]*enabled[[:space:]]*=[[:space:]]*//' \
 		      | tr -d '"' | tr -d "'" | tr '[:upper:]' '[:lower:]' | awk '{print $1}')
-		case "$v" in no|false|0|off) enabled="no" ;; esac
+		case "$v" in yes|true|1|on) enabled="yes" ;; esac
 		m=$(grep -E '^[[:space:]]*min_free_mb[[:space:]]*=' "$CONF" 2>/dev/null \
 		      | tail -1 | sed -E 's/^[[:space:]]*min_free_mb[[:space:]]*=[[:space:]]*//' \
 		      | tr -d '"' | tr -d "'" | awk '{print $1}')
