@@ -21,8 +21,10 @@
 
 namespace nftgen {
 
+// nat=false omits the WAN source-NAT (masquerade) rule; LAN -> WAN is still
+// forwarded, so the upstream must route 10.42.0.0/24 back to this box.
 std::string generate(const std::vector<std::string>& wan_ifaces, const std::vector<std::string>& lan_ifaces,
-                     bool with_ipv6 = true);
+                     bool with_ipv6 = true, bool nat = true);
 
 // CLI: parse --wan a[,b]/--lan[/--no-ipv6] from argv, print the ruleset to stdout.
 // Without --lan: the LAN iface from /run/lan-iface (sysinfo::lan_iface() —

@@ -16,6 +16,7 @@ std::string hostname();
 struct Mem {
     bool ok = false;
     long total_mb = 0, avail_mb = 0, used_mb = 0, buffcache_mb = 0;
+    long swap_total_mb = 0, swap_used_mb = 0;   // zram on the small boards
     double used_pct = 0.0;
 };
 struct Summary {
@@ -23,6 +24,7 @@ struct Summary {
     std::string load[3];      // 1/5/15-min load strings
     Mem mem;
     std::string kernel;       // osrelease
+    std::string device;       // /proc/device-tree/model (board name)
 };
 Summary summary();
 
@@ -58,6 +60,7 @@ struct Rnsd {
     bool running = false;
     std::string pid;          // empty when not running
     long rss_mb = -1;         // -1 = unknown
+    long uptime_s = -1;       // process age from /proc/<pid>/stat; -1 = unknown
     std::string raw;          // rnstatus -a block (only when with_raw)
 };
 Rnsd rnsd_status(bool with_raw = false);

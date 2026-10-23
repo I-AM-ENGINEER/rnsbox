@@ -76,7 +76,7 @@
         <input type="text" name="ap_ssid" value="__AP_SSID__" maxlength="32"
                autocomplete="off" autocapitalize="none" spellcheck="false">
       </label>
-      <label>Password (8–63 characters — required)
+      <label>Password (8–63 characters; ignored with Open)
         <span class="input-group">
           <input type="password" id="ap_psk" name="ap_psk" value="__AP_PSK__" minlength="8" maxlength="63"
                  autocomplete="new-password" autocapitalize="none" spellcheck="false">
@@ -89,9 +89,7 @@
       <div>
         <span class="field-label">Band</span>
         <div class="radio-row">
-          <label><input type="radio" name="ap_band" value="auto" __AP_BAND_AUTO_CHECKED__> 2.4/5 GHz (auto)</label>
-          <label><input type="radio" name="ap_band" value="2.4" __AP_BAND_24_CHECKED__> 2.4 GHz</label>
-          <label><input type="radio" name="ap_band" value="5" __AP_BAND_5_CHECKED__> 5 GHz</label>
+          __AP_BAND_RADIOS__
         </div>
       </div>
       <label>Wi-Fi standard
@@ -327,8 +325,8 @@ function renderScan(){
   });
 }
 
-var CH24=[1,2,3,4,5,6,7,8,9,10,11,12,13];
-var CH5=[36,40,44,48,149,153,157,161,165];
+var CH24=__CH24_JS__;
+var CH5=__CH5_JS__;
 function apBand(){
   var el=document.querySelector('input[name="ap_band"]:checked');
   return el?el.value:'auto';

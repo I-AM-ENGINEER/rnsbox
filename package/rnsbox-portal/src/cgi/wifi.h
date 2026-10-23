@@ -57,6 +57,19 @@ Status status();             // gather live status
 std::string status_json();   // status() serialized to JSON (present/mode/sta/ap/...)
 std::string security_label(const std::string& s);
 
+// What the radio can actually do, parsed from `iw phy` at request time: the
+// portal renders only the bands/standards/widths/channels this board has
+// (e.g. MT7628/mt7603e is 2.4 GHz 802.11n only; no 5 GHz, no ac/ax).
+// known=false when iw is absent or the output has no Frequencies blocks; the
+// UI then falls back to the full option set (unknown hardware, not a lie).
+struct Caps {
+    bool known = false;
+    bool band24 = false, band5 = false, band6 = false;
+    bool ht = false, vht = false, he = false;
+    std::vector<int> ch24, ch5;
+};
+Caps caps();
+
 // Additional STA networks after the primary wifi.conf one (wpa_supplicant
 // tries them in order when the higher-priority primary is not available).
 struct Network { std::string ssid, psk, security; bool hidden = false; };

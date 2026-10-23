@@ -46,6 +46,9 @@ void network_page(const Request& req, Response& res) {
     bool is_static = (w.mode == "static");
     h = R(std::move(h), "__SEL_DHCP__",   is_static ? "" : "selected");
     h = R(std::move(h), "__SEL_STATIC__", is_static ? "selected" : "");
+    bool nat_off = (w.nat == "no");
+    h = R(std::move(h), "__SEL_NAT_YES__", nat_off ? "" : "selected");
+    h = R(std::move(h), "__SEL_NAT_NO__",  nat_off ? "selected" : "");
     h = R(std::move(h), "__WAN_STATIC_DISPLAY__", is_static ? "" : "display:none");
     h = R(std::move(h), "__WAN_ADDRESS__", E(w.address));
     h = R(std::move(h), "__WAN_PREFIX__",  E(w.prefix.empty() ? "24" : w.prefix));
@@ -161,6 +164,7 @@ void wan_set(const Request& req, Response& res) {
     store::WanConfig c;
     c.interface = iface;
     c.mode = mode;
+    c.nat = util::trim(req.f("wan_nat")) == "no" ? "no" : "yes";
     if (mode == "static") {
         c.address = util::trim(req.f("wan_address"));
         c.prefix  = util::trim(req.f("wan_prefix"));

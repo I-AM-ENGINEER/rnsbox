@@ -10,6 +10,7 @@ __DEFAULT_PASS_WARN__
     <h3>System</h3>
     <table class="kv">
       <tr><th>Hostname</th><td>__HOSTNAME__</td></tr>
+      <tr><th>Device</th><td>__DEVICE__</td></tr>
       <tr><th>Kernel</th><td>__KERNEL__</td></tr>
       <tr><th>Uptime</th><td id="d-uptime">__UPTIME__</td></tr>
       <tr><th>Temperature</th><td>__TEMP__</td></tr>
@@ -26,6 +27,13 @@ __DEFAULT_PASS_WARN__
     <p class="muted" id="d-ram-note" style="margin-top:4px">
       __RAM_PCT__% used &middot; __RAM_BUFFCACHE__ MB buff/cache (reclaimable)
     </p>
+    <div class="meter-label" style="margin-top:10px">
+      <span>Swap (zram)</span>
+      <span id="d-swap-label">__SWAP_LABEL__</span>
+    </div>
+    <div class="meter">
+      <div class="meter-fill __SWAP_FILL_CLASS__" id="d-swap-fill" style="width: __SWAP_PCT__%"></div>
+    </div>
     <p class="cardfoot"><a class="btn" href="__BASE__/settings">Manage &rarr;</a></p>
   </section>
 
@@ -50,6 +58,7 @@ __DEFAULT_PASS_WARN__
     <h3>Reticulum</h3>
     <table class="kv">
       <tr><th>Status</th><td id="d-rnsd-status">__RNSD_STATUS__</td></tr>
+      <tr><th>Uptime</th><td id="d-rnsd-uptime">__RNSD_UPTIME__</td></tr>
       <tr><th>Version</th><td id="d-rnsd-version">__RNSD_VERSION__</td></tr>
     </table>
     <p class="cardfoot"><a class="btn" href="__BASE__/reticulum">Manage &rarr;</a></p>
@@ -96,6 +105,11 @@ __HALOW_SCRIPT__
       var f=$('d-ram-fill'); if(f){ f.style.width=pct+'%'; f.className='meter-fill '+(pct>=90?'crit':pct>=75?'warn':'ok'); }
       setText('d-ram-note', pct+'% used · '+m.buffcache_mb+' MB buff/cache (reclaimable)');
     }
+    var st=m.swap_total_mb||0, su=m.swap_used_mb||0;
+    var sp=st?Math.round(1000*su/st)/10:0;
+    setText('d-swap-label', st?(su+' / '+st+' MB'):'(none)');
+    var sf=$('d-swap-fill');
+    if(sf){ sf.style.width=sp+'%'; sf.className='meter-fill '+(sp>=90?'crit':sp>=75?'warn':'ok'); }
     if(d.wan_label) setText('d-wan-label', d.wan_label);
     setHTML('d-wan-state', stateBadge(wif.state));
     setText('d-wan-addr', (wif.addrs&&wif.addrs.length)?wif.addrs.join(', '):'(none)');
@@ -119,6 +133,7 @@ __HALOW_SCRIPT__
     setHTML('d-rnsd-status', rn.running
       ? '<span class="badge ok">RUNNING</span> (pid '+esc(rn.pid)+')'+(rn.rss_mb?' · '+esc(rn.rss_mb)+' MB RSS':'')
       : '<span class="badge err">STOPPED</span>');
+    setText('d-rnsd-uptime', (rn.uptime_s >= 0 && rn.uptime) ? 'up '+rn.uptime : '—');
     var vh='Reticulum (rnsd) <strong>'+esc(up.installed||'unknown')+'</strong>';
     if(up.update_available) vh+=' <span class="badge warn">update available: '+esc(up.latest)+'</span>';
     else if(up.latest && !up.error) vh+=' <span class="badge ok">up to date</span>';

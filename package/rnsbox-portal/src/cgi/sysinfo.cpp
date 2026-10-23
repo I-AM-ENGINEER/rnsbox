@@ -176,7 +176,33 @@ Summary summary() {
         s.mem.buffcache_mb = (bc + 512) / 1024;
         s.mem.used_pct = (double)((int)(1000.0 * used / total + 0.5)) / 10.0;
     }
+    long stotal = meminfo_kb(mi, "SwapTotal:");
+    long sfree = meminfo_kb(mi, "SwapFree:");
+    if (stotal > 0 && sfree >= 0) {
+        s.mem.swap_total_mb = (stotal + 512) / 1024;
+        s.mem.swap_used_mb = ((stotal - sfree) + 512) / 1024;
+    }
     s.kernel = slurp_trim("/proc/sys/kernel/osrelease");
+    // Board name from the DT model (NUL-terminated). Fall back to the
+    // compatible string when a DTS omits model.
+    std::string dev = slurp("/proc/device-tree/model");
+    size_t nul = dev.find('\0');
+    if (nul != std::string::npos) dev.resize(nul);
+    dev = util::trim(dev);
+    if (dev.empty()) {
+        dev = slurp("/proc/device-tree/compatible");
+        nul = dev.find('\0');
+        if (nul != std::string::npos) dev.resize(nul);
+        dev = util::trim(dev);
+    }
+    // The vendor DTB used by the 6.6 kernel harness reports the Morse Micro
+    // EVK name ("MorseMicro EKH03"); the product is the Heltec HT-HD01 HaLow
+    // Dongle V2. Show the product name for either until the production DTB
+    // carries it in `model`.
+    if (dev.find("EKH03") != std::string::npos ||
+        dev.find("MorseMicro") != std::string::npos)
+        dev = "HT-HD01 HaLow Dongle V2";
+    s.device = dev;
     return s;
 }
 
@@ -332,12 +358,31 @@ static std::string find_rnsd_pid() {
     return "";
 }
 
+// Age of a live process from /proc/<pid>/stat field 22 (starttime, in clock
+// ticks since boot) and /proc/uptime. -1 when either read fails.
+static long process_uptime_s(const std::string& pid) {
+    std::string stat = slurp("/proc/" + pid + "/stat");
+    size_t rp = stat.rfind(')');
+    if (rp == std::string::npos) return -1;
+    // After "pid (comm)" the fields start at field 3 (state), so starttime
+    // (field 22) is token 19.
+    std::vector<std::string> f = split_ws(stat.substr(rp + 1));
+    if (f.size() <= 19) return -1;
+    long long ticks = strtoll(f[19].c_str(), nullptr, 10);
+    long hz = sysconf(_SC_CLK_TCK);
+    if (hz <= 0 || ticks <= 0) return -1;
+    double up = strtod(slurp("/proc/uptime").c_str(), nullptr);
+    long s = (long)(up - (double)ticks / hz);
+    return s < 0 ? 0 : s;
+}
+
 Rnsd rnsd_status(bool with_raw) {
     Rnsd r;
     std::string pid = find_rnsd_pid();
     if (!pid.empty()) {
         r.running = true;
         r.pid = pid;
+        r.uptime_s = process_uptime_s(pid);
         std::string st = slurp("/proc/" + pid + "/status");
         size_t p = st.find("VmRSS:");
         if (p != std::string::npos) r.rss_mb = strtol(st.c_str() + p + 6, nullptr, 10) / 1024;

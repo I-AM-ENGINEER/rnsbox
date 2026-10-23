@@ -27,6 +27,12 @@
           <option value="static" __SEL_STATIC__>Static IP</option>
         </select>
       </label>
+      <label>Outbound NAT
+        <select name="wan_nat" title="NAT: LAN clients (10.42.0.x) share the WAN address. No NAT: the LAN is routed to the upstream, which then needs a static route back to 10.42.0.0/24.">
+          <option value="yes" __SEL_NAT_YES__>NAT — LAN clients use the WAN address (default)</option>
+          <option value="no"  __SEL_NAT_NO__>No NAT — route 10.42.0.0/24 to the upstream</option>
+        </select>
+      </label>
     </div>
     <div id="wan_static" class="form-grid" style="__WAN_STATIC_DISPLAY__">
       <label>IP address

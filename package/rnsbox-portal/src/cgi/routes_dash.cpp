@@ -60,6 +60,18 @@ static std::string fmt_pct(double p) {
     char buf[32]; snprintf(buf, sizeof(buf), "%.1f", p); return buf;
 }
 
+// Process age for the dashboard card; -1 = unknown (rnsd not running).
+static std::string fmt_uptime(long s) {
+    if (s < 0) return "—";
+    char buf[64];
+    long d = s / 86400, h = (s % 86400) / 3600, m = (s % 3600) / 60, sec = s % 60;
+    if (d)      snprintf(buf, sizeof(buf), "%ldd %ldh %ldm", d, h, m);
+    else if (h) snprintf(buf, sizeof(buf), "%ldh %ldm", h, m);
+    else if (m) snprintf(buf, sizeof(buf), "%ldm %lds", m, sec);
+    else        snprintf(buf, sizeof(buf), "%lds", sec);
+    return buf;
+}
+
 // /run/clock-source as a badge (the full picture is on the Settings tab). Same
 // labels as the /dashboard/data patch() below.
 static std::string clock_badge(const std::string& src) {
@@ -411,6 +423,7 @@ void dashboard_page(const Request& req, Response& res) {
 
     // System card
     h = R(std::move(h), "__HOSTNAME__", E(sysinfo::hostname()));
+    h = R(std::move(h), "__DEVICE__",   E(sys.device.empty() ? "unknown" : sys.device));
     h = R(std::move(h), "__KERNEL__",   E(sys.kernel));
     h = R(std::move(h), "__UPTIME__",   E(sys.uptime));
     h = R(std::move(h), "__LOAD__",     E(sys.load[0]) + " / " + E(sys.load[1]) + " / " + E(sys.load[2]));
@@ -441,6 +454,16 @@ void dashboard_page(const Request& req, Response& res) {
     const char* rclass = pct >= 90 ? "crit" : pct >= 75 ? "warn" : "ok";
     h = R(std::move(h), "__RAM_FILL_CLASS__", rclass);
     h = R(std::move(h), "__RAM_PCT__", fmt_pct(pct));
+    double spct = sys.mem.swap_total_mb > 0
+        ? 100.0 * sys.mem.swap_used_mb / sys.mem.swap_total_mb : 0.0;
+    h = R(std::move(h), "__SWAP_LABEL__",
+          sys.mem.swap_total_mb > 0
+              ? std::to_string(sys.mem.swap_used_mb) + " / " +
+                std::to_string(sys.mem.swap_total_mb) + " MB"
+              : std::string("(none)"));
+    h = R(std::move(h), "__SWAP_PCT__", fmt_pct(spct));
+    h = R(std::move(h), "__SWAP_FILL_CLASS__",
+          spct >= 90 ? "crit" : spct >= 75 ? "warn" : "ok");
 
     // WAN card
     h = R(std::move(h), "__WAN__", E(sysinfo::wan_label(wan.interface, net)));
@@ -519,6 +542,8 @@ void dashboard_page(const Request& req, Response& res) {
         rstat = "<span class=\"badge err\">STOPPED</span>";
     }
     h = R(std::move(h), "__RNSD_STATUS__", rstat);
+    h = R(std::move(h), "__RNSD_UPTIME__",
+          rnsd.running && rnsd.uptime_s >= 0 ? "up " + fmt_uptime(rnsd.uptime_s) : "—");
     // Installed version (cheap dist-info read) + optional update badge — mirrors
     // the reticulum card and the /dashboard/data JS.
     updatecheck::State u = updatecheck::display();
@@ -591,12 +616,16 @@ void dashboard_data(const Request& req, Response& res) {
         J += "\"avail_mb\":" + std::to_string(sys.mem.avail_mb) + ",";
         J += "\"used_mb\":" + std::to_string(sys.mem.used_mb) + ",";
         J += "\"buffcache_mb\":" + std::to_string(sys.mem.buffcache_mb) + ",";
+        J += "\"swap_total_mb\":" + std::to_string(sys.mem.swap_total_mb) + ",";
+        J += "\"swap_used_mb\":" + std::to_string(sys.mem.swap_used_mb) + ",";
         J += "\"used_pct\":" + fmt_pct(sys.mem.used_pct);
     }
     J += "}},";
     J += "\"rnsd\":{\"running\":" + std::string(rnsd.running ? "true" : "false");
     J += ",\"pid\":"    + (rnsd.pid.empty()  ? std::string("null") : rnsd.pid);
     J += ",\"rss_mb\":" + (rnsd.rss_mb >= 0  ? std::to_string(rnsd.rss_mb) : std::string("null"));
+    J += ",\"uptime_s\":" + std::to_string(rnsd.uptime_s);
+    J += ",\"uptime\":\"" + JE(rnsd.uptime_s >= 0 ? fmt_uptime(rnsd.uptime_s) : std::string()) + "\"";
     J += "},";
     J += "\"wan_label\":\"" + JE(sysinfo::wan_label(wan.interface, net)) + "\",";
     J += "\"wan_if\":" + iface_json(wif) + ",";

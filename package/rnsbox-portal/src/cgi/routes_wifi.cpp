@@ -6,11 +6,13 @@
 #include "wifi.h"
 #include "sysinfo.h"
 #include "util.h"
+#include <algorithm>
 #include <cctype>
 #include <cstdlib>
 #include <initializer_list>
 #include <map>
 #include <string>
+#include <vector>
 
 using http::Request;
 using http::Response;
@@ -31,8 +33,8 @@ static std::string opt(const std::string& v, const std::string& label, const std
     return "<option value=\"" + v + "\"" + (v == cur ? " selected" : "") + ">" + label + "</option>";
 }
 
-// WPA2-PSK / WPA3-SAE / transition, plus open for a client network. The
-// hotspot always requires a passphrase (no open AP).
+// WPA2-PSK / WPA3-SAE / transition, plus open when allow_open (the operator
+// can run an open hotspot; S35wifi's hostapd generator supports it).
 static std::string security_options(const std::string& cur, bool allow_open) {
     std::string o;
     // WPA3 first: it is the hotspot default. "WPA3-PSK" is what users call
@@ -52,11 +54,15 @@ static std::string band_options(const std::string& cur, bool with_auto) {
     return o;
 }
 
-static std::string standard_options(const std::string& cur) {
-    return opt("auto", "Auto (driver default)", cur) +
-           opt("n", "Wi-Fi 4 (802.11n)", cur) +
-           opt("ac", "Wi-Fi 5 (802.11ac)", cur) +
-           opt("ax", "Wi-Fi 6 (802.11ax)", cur);
+// Only the standards this radio reports. mt7603e: HT only -> no ac/ax.
+// Unknown hardware (iw missing) keeps the full list rather than lying by
+// omission.
+static std::string standard_options(const std::string& cur, const wifi::Caps& c) {
+    std::string o = opt("auto", "Auto (driver default)", cur);
+    if (c.ht  || !c.known) o += opt("n",  "Wi-Fi 4 (802.11n)", cur);
+    if (c.vht || !c.known) o += opt("ac", "Wi-Fi 5 (802.11ac)", cur);
+    if (c.he  || !c.known) o += opt("ax", "Wi-Fi 6 (802.11ax)", cur);
+    return o;
 }
 
 static bool is_5g_chan(int n) {
@@ -86,14 +92,17 @@ static bool channel_valid(const std::string& band, const std::string& chan,
     return true;
 }
 
-static std::string channel_options(const std::string& band, const std::string& cur) {
+static std::string channel_options(const std::string& band, const std::string& cur,
+                                   const wifi::Caps& cp) {
     std::string o = opt("auto", "auto (ACS)", cur);
     if (band == "5") {
-        for (int c : {36, 40, 44, 48, 149, 153, 157, 161, 165})
-            o += opt(std::to_string(c), std::to_string(c), cur);
+        std::vector<int> ch = cp.ch5;
+        if (ch.empty()) ch = {36, 40, 44, 48, 149, 153, 157, 161, 165};
+        for (int c : ch) o += opt(std::to_string(c), std::to_string(c), cur);
     } else if (band == "2.4") {
-        for (int c = 1; c <= 13; ++c)
-            o += opt(std::to_string(c), std::to_string(c), cur);
+        std::vector<int> ch = cp.ch24;
+        if (ch.empty()) { for (int c = 1; c <= 13; ++c) ch.push_back(c); }
+        for (int c : ch) o += opt(std::to_string(c), std::to_string(c), cur);
     }
     return o;
 }
@@ -104,7 +113,7 @@ static std::string norm_sta_security(const std::string& s) {
 }
 
 static std::string norm_ap_security(const std::string& s) {
-    if (s == "wpa3" || s == "wpa2+wpa3") return s;
+    if (s == "open" || s == "wpa3" || s == "wpa2+wpa3") return s;
     return "wpa2";
 }
 
@@ -117,10 +126,11 @@ void wifi_page(const Request& req, Response& res) {
         std::string h =
             "<h2>WiFi</h2>\n\n"
             "<section class=\"card\">\n"
-            "  <p class=\"muted\">No WiFi radio detected. On the -W variant the AIC8800D80\n"
-            "  (SDIO) radio should surface as wlan0 via S35wifi; non-W boards have no\n"
-            "  radio and stay here. Check <code>/var/log/wifi.log</code> and\n"
-            "  <code>dmesg | grep aic8800</code>.</p>\n"
+            "  <p class=\"muted\">No WiFi radio detected. Depending on the board the\n"
+            "  radio is an AIC8800D80 (SDIO) or the SoC's built-in MT7628 WMAC\n"
+            "  (mt7603e); it should surface as wlan0 via S35wifi. Check that its\n"
+            "  kernel module is loaded (<code>lsmod</code>, <code>dmesg</code>) and see\n"
+            "  <code>/var/log/wifi.log</code>. Boards without a radio stay here.</p>\n"
             "</section>";
         res.body = render::layout(req, res, "WiFi", "wifi", h);
         return;
@@ -328,29 +338,66 @@ void wifi_page(const Request& req, Response& res) {
     }
     h = R(std::move(h), "__AP_SSID__", E(ap_ssid));
     h = R(std::move(h), "__AP_PSK__",  E(cfg["ap_psk"]));
-    h = R(std::move(h), "__AP_SECURITY_OPTIONS__", security_options(cfg["ap_security"], false));
-    // Both bands stay visible as radios (a <select> shows only the selected
-    // one and looks like the box supports a single band).
-    h = R(std::move(h), "__AP_BAND_AUTO_CHECKED__", cfg["ap_band"] == "auto" ? "checked" : "");
-    h = R(std::move(h), "__AP_BAND_24_CHECKED__", cfg["ap_band"] == "2.4" ? "checked" : "");
-    h = R(std::move(h), "__AP_BAND_5_CHECKED__",  cfg["ap_band"] == "5"  ? "checked" : "");
-    h = R(std::move(h), "__AP_STANDARD_OPTIONS__", standard_options(cfg["ap_standard"]));
+    h = R(std::move(h), "__AP_SECURITY_OPTIONS__", security_options(cfg["ap_security"], true));
+
+    // Bands/standards/widths come from `iw phy`, not from a generic list: an
+    // MT7628/mt7603e shows 2.4 GHz only and no ac/ax, while a 5 GHz radio
+    // shows both. Unknown hardware (no iw) keeps the full set.
+    wifi::Caps cp = wifi::caps();
+    std::string band_radios;
+    auto radio = [&](const char* v, const std::string& label, bool on) {
+        return std::string("<label><input type=\"radio\" name=\"ap_band\" value=\"") + v +
+               "\" " + (on ? "checked" : "") + "> " + label + "</label>";
+    };
+    bool want24 = cfg["ap_band"] == "2.4", want5 = cfg["ap_band"] == "5";
+    bool wantAuto = cfg["ap_band"] == "auto";
+    if (cp.known) {
+        if (cp.band24 && cp.band5) {
+            band_radios += radio("auto", "2.4/5 GHz (auto)", wantAuto);
+            band_radios += radio("2.4", "2.4 GHz", want24);
+            band_radios += radio("5", "5 GHz", want5);
+        } else if (cp.band24) {
+            band_radios += radio("2.4", "2.4 GHz (only band)", want24 || wantAuto || want5);
+        } else if (cp.band5) {
+            band_radios += radio("5", "5 GHz (only band)", want5 || wantAuto || want24);
+        }
+    } else {
+        band_radios += radio("auto", "2.4/5 GHz (auto)", wantAuto);
+        band_radios += radio("2.4", "2.4 GHz", want24);
+        band_radios += radio("5", "5 GHz", want5);
+    }
+    h = R(std::move(h), "__AP_BAND_RADIOS__", band_radios);
+    h = R(std::move(h), "__AP_STANDARD_OPTIONS__", standard_options(cfg["ap_standard"], cp));
 
     std::string sel_chan = cfg["ap_channel"];
     if (!channel_valid(cfg["ap_band"], sel_chan, cfg["ap_width"])) sel_chan = "auto";
-    h = R(std::move(h), "__AP_CHANNEL_OPTIONS__", channel_options(cfg["ap_band"], sel_chan));
+    h = R(std::move(h), "__AP_CHANNEL_OPTIONS__", channel_options(cfg["ap_band"], sel_chan, cp));
 
     std::string width_opts;
     width_opts += opt("20", "20 MHz", cfg["ap_width"]);
-    width_opts += opt("40", "40 MHz", cfg["ap_width"]);
-    width_opts += opt("80", "80 MHz (5 GHz, 802.11ac/ax)", cfg["ap_width"]);
+    if (cp.ht || cp.vht || !cp.known) width_opts += opt("40", "40 MHz", cfg["ap_width"]);
+    if (cp.vht || cp.he || !cp.known) width_opts += opt("80", "80 MHz (5 GHz, 802.11ac/ax)", cfg["ap_width"]);
     h = R(std::move(h), "__AP_WIDTH_OPTIONS__", width_opts);
+
+    // Channel lists the page's JS rebuilds on a band switch. Fall back to the
+    // standard lists when the phy did not report frequencies.
+    auto js_list = [](std::vector<int> v, const std::vector<int>& fallback) {
+        if (v.empty()) v = fallback;
+        std::string s = "[";
+        for (size_t i = 0; i < v.size(); ++i) { if (i) s += ","; s += std::to_string(v[i]); }
+        return s + "]";
+    };
+    std::vector<int> ch24_fb, ch5_fb;
+    for (int i = 1; i <= 13; ++i) ch24_fb.push_back(i);
+    for (int c : {36, 40, 44, 48, 149, 153, 157, 161, 165}) ch5_fb.push_back(c);
+    h = R(std::move(h), "__CH24_JS__", js_list(cp.ch24, ch24_fb));
+    h = R(std::move(h), "__CH5_JS__",  js_list(cp.ch5, ch5_fb));
     h = R(std::move(h), "__AP_HIDDEN_CHECKED__", cfg["ap_hidden"] == "1" ? "checked" : "");
 
     // Mode says hotspot-on but S35wifi refuses a weak PSK (e.g. a box still on
     // the old 'changeme123' default) — explain the missing AP.
     std::string psk_note;
-    if (ap_on && !wifi::ap_psk_ok(cfg["ap_psk"]))
+    if (ap_on && cfg["ap_security"] != "open" && !wifi::ap_psk_ok(cfg["ap_psk"]))
         psk_note = "<div class=\"flash warn\">The hotspot is switched on but is <strong>not running</strong>:\n"
                    "  its password is empty, too short, or the old published default\n"
                    "  <code>changeme123</code>. Set a new one below and apply.</div>";
@@ -513,7 +560,8 @@ void wifi_ap(const Request& req, Response& res) {
         : (cur["mode"] == "ap" || cur["mode"] == "sta+ap");
 
     if (security.empty()) security = "wpa3";
-    if (security != "wpa2" && security != "wpa3" && security != "wpa2+wpa3") {
+    if (security != "open" && security != "wpa2" && security != "wpa3" &&
+        security != "wpa2+wpa3") {
         render::redirect_flash(res, wifi_redirect(), "error", "Unknown hotspot security mode");
         return;
     }
@@ -541,6 +589,55 @@ void wifi_ap(const Request& req, Response& res) {
             "80 MHz requires 5 GHz and Wi-Fi 5 (ac) or Wi-Fi 6 (ax)");
         return;
     }
+    // Reject what this radio cannot do (a stale form or a hand-edited conf):
+    // mt7603e has no 5 GHz, VHT, HE or 80 MHz.
+    wifi::Caps cp = wifi::caps();
+    if (cp.known) {
+        if (band == "5" && !cp.band5) {
+            render::redirect_flash(res, wifi_redirect(), "error",
+                "This radio has no 5 GHz band");
+            return;
+        }
+        if (band == "2.4" && !cp.band24) {
+            render::redirect_flash(res, wifi_redirect(), "error",
+                "This radio has no 2.4 GHz band");
+            return;
+        }
+        if (standard == "n" && !cp.ht) {
+            render::redirect_flash(res, wifi_redirect(), "error",
+                "This radio does not support 802.11n");
+            return;
+        }
+        if (standard == "ac" && !cp.vht) {
+            render::redirect_flash(res, wifi_redirect(), "error",
+                "This radio does not support 802.11ac (Wi-Fi 5)");
+            return;
+        }
+        if (standard == "ax" && !cp.he) {
+            render::redirect_flash(res, wifi_redirect(), "error",
+                "This radio does not support 802.11ax (Wi-Fi 6)");
+            return;
+        }
+        if (width == "40" && !(cp.ht || cp.vht)) {
+            render::redirect_flash(res, wifi_redirect(), "error",
+                "This radio does not support 40 MHz");
+            return;
+        }
+        if (width == "80" && !(cp.vht || cp.he)) {
+            render::redirect_flash(res, wifi_redirect(), "error",
+                "This radio does not support 80 MHz");
+            return;
+        }
+        if (chan != "auto" && all_digits(chan)) {
+            int c = atoi(chan.c_str());
+            const std::vector<int>& list = (band == "5") ? cp.ch5 : cp.ch24;
+            if (!list.empty() && std::find(list.begin(), list.end(), c) == list.end()) {
+                render::redirect_flash(res, wifi_redirect(), "error",
+                    "Channel " + chan + " is not available on this radio");
+                return;
+            }
+        }
+    }
     if (chan.empty()) chan = "auto";
     if (!channel_valid(band, chan, width)) {
         render::redirect_flash(res, wifi_redirect(), "error",
@@ -558,8 +655,8 @@ void wifi_ap(const Request& req, Response& res) {
     // A blank SSID is allowed: S35wifi then names the hotspot after the
     // device hostname (the field above already shows that name).
     // Enabling the hotspot requires a good password; a bad typed value is
-    // rejected even while it stays off.
-    if (ap_on || !psk.empty()) {
+    // rejected even while it stays off. An explicitly open hotspot needs none.
+    if (security != "open" && (ap_on || !psk.empty())) {
         std::string why = ap_psk_problem(psk);
         if (!why.empty()) {
             render::redirect_flash(res, wifi_redirect(), "error", why);
@@ -611,7 +708,7 @@ void wifi_mode(const Request& req, Response& res) {
     }
     // ap / sta+ap switch the hotspot on with the STORED ssid/password — hold
     // them to the same rule as the Hotspot form (blank ssid = hostname).
-    if (mode == "ap" || mode == "sta+ap") {
+    if ((mode == "ap" || mode == "sta+ap") && cur["ap_security"] != "open") {
         std::string why = ap_psk_problem(cur["ap_psk"]);
         if (!why.empty()) {
             render::redirect_flash(res, wifi_redirect(), "error",

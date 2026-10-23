@@ -4,6 +4,8 @@
 #include "session.h"
 #include "util.h"
 #include <cstdlib>
+#include <cstring>
+#include <unistd.h>
 #include <utility>
 #include <vector>
 
@@ -12,6 +14,28 @@ namespace {
 std::string pages_dir() {
     const char* d = getenv("RNSBOX_PAGES");
     return d && *d ? std::string(d) : std::string("/usr/share/rnsbox-portal/pages");
+}
+
+// NomadNet tab only when the client is installed AND enabled in
+// /etc/rnsbox/nomadnet.conf. On the core image (no python-nomadnet) it would
+// be a dead link, so it is left out of the nav entirely.
+bool nomadnet_on() {
+    if (::access("/usr/bin/nomadnet", X_OK) != 0) return false;
+    std::string c = util::read_file("/etc/rnsbox/nomadnet.conf", 4096);
+    size_t p = 0;
+    while (p < c.size()) {
+        size_t e = c.find('\n', p);
+        if (e == std::string::npos) e = c.size();
+        std::string line = c.substr(p, e - p);
+        size_t s = line.find_first_not_of(" \t");
+        if (s != std::string::npos) line = line.substr(s);
+        if (line.compare(0, 8, "enabled=") == 0) {
+            std::string v = util::trim(line.substr(8));
+            return v == "yes" || v == "1" || v == "true" || v == "on";
+        }
+        p = e + 1;
+    }
+    return false;
 }
 
 // Percent-encode everything but the unreserved set — for the flash cookie value.
@@ -114,6 +138,13 @@ std::string layout(const http::Request& req, http::Response& res,
     for (const char* id : ids)
         kv.push_back({std::string("__ACT_") + id + "__",
                       (active && std::string(active) == id) ? "active" : ""});
+    std::string nav_nomadnet;
+    if (nomadnet_on()) {
+        std::string cls = (active && std::string(active) == "nomadnet") ? "active" : "";
+        nav_nomadnet = "<a href=\"" + esc(web::base()) + "/nomadnet\" class=\"" +
+                       cls + "\">NomadNet</a>";
+    }
+    kv.push_back({"__NAV_NOMADNET__", nav_nomadnet});
     kv.push_back({"__FLASH__", take_flash(req, res)});
     kv.push_back({"__CONTENT__", content});
     return fill(page_file("base"), kv);

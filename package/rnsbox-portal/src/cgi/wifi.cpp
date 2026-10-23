@@ -74,8 +74,8 @@ std::map<std::string, std::string> read_conf() {
         cfg["sta_security"] = "wpa2";
     if (cfg["sta_band"] != "2.4" && cfg["sta_band"] != "5")
         cfg["sta_band"] = "auto";
-    if (cfg["ap_security"] != "wpa2" && cfg["ap_security"] != "wpa3" &&
-        cfg["ap_security"] != "wpa2+wpa3")
+    if (cfg["ap_security"] != "open" && cfg["ap_security"] != "wpa2" &&
+        cfg["ap_security"] != "wpa3" && cfg["ap_security"] != "wpa2+wpa3")
         cfg["ap_security"] = "wpa3";
     if (cfg["ap_band"] != "2.4" && cfg["ap_band"] != "5")
         cfg["ap_band"] = "auto";
@@ -129,8 +129,8 @@ bool write_conf(const std::map<std::string, std::string>& updates) {
         o += std::string(k) + "=" + cfg[k] + "\n";
     o += "\n# --- AP (hotspot) ---\n";
     o += "# Bridged into the LAN (br-lan): clients share 10.42.0.0/24 and its DHCP pool.\n";
-    o += "# ap_psk: 8..63 chars — the hotspot will not start without one.\n";
-    o += "# ap_security: wpa2 | wpa3 | wpa2+wpa3 (no open hotspot).\n";
+    o += "# ap_psk: 8..63 chars for WPA2/WPA3; ignored when ap_security=open.\n";
+    o += "# ap_security: wpa2 | wpa3 | wpa2+wpa3 | open.\n";
     o += "# ap_band: 2.4 | 5; ap_standard: auto | n | ac | ax; ap_width: 20 | 40 | 80.\n";
     o += "# ap_channel: 1..13 (2.4), 36..165 (5), or auto (ACS).\n";
     for (const char* k : {"ap_ssid", "ap_psk", "ap_security", "ap_band",
@@ -241,6 +241,48 @@ static const char* iw_path() {
     if (::access("/usr/sbin/iw", X_OK) == 0) return "/usr/sbin/iw";
     if (::access("/sbin/iw", X_OK) == 0) return "/sbin/iw";
     return nullptr;
+}
+
+// Parse `iw phy` once per request. Wiphy capabilities are static per board,
+// so no cache is needed; the command costs a few ms.
+Caps caps() {
+    Caps c;
+    const char* iw = iw_path();
+    if (!iw) return c;
+    util::RunResult r = util::run({iw, "phy"}, "", 8, 512 * 1024);
+    const std::string& o = r.out;
+    if (r.exit_code != 0 || o.empty()) return c;
+    if (o.find("HT20") != std::string::npos || o.find("HT40") != std::string::npos) c.ht = true;
+    if (o.find("VHT Capabilities") != std::string::npos) c.vht = true;
+    if (o.find("HE MAC Capabilities") != std::string::npos ||
+        o.find("HE Iftypes") != std::string::npos) c.he = true;
+    // Frequencies appear as "  * 2412 MHz [1] (20.0 dBm)" (or "2412.0").
+    size_t p = 0;
+    while ((p = o.find(" MHz [", p)) != std::string::npos) {
+        size_t q = p;
+        while (q > 0 && (isdigit((unsigned char)o[q - 1]) || o[q - 1] == '.')) --q;
+        int f = (int)atof(o.substr(q, p - q).c_str());
+        size_t lb = o.find('[', p), rb = o.find(']', p);
+        if (lb == std::string::npos || rb == std::string::npos || rb < lb) break;
+        int ch = atoi(o.substr(lb + 1, rb - lb - 1).c_str());
+        if (f >= 2400 && f < 2500) {
+            c.band24 = true;
+            if (ch >= 1 && ch <= 14) c.ch24.push_back(ch);
+        } else if (f >= 4900 && f < 5925) {
+            c.band5 = true;
+            if (ch > 0) c.ch5.push_back(ch);
+        } else if (f >= 5925 && f < 7125) {
+            c.band6 = true;
+        }
+        p = rb;
+    }
+    auto uniq = [](std::vector<int>& v) {
+        std::sort(v.begin(), v.end());
+        v.erase(std::unique(v.begin(), v.end()), v.end());
+    };
+    uniq(c.ch24); uniq(c.ch5);
+    c.known = c.band24 || c.band5 || c.band6;
+    return c;
 }
 
 std::string scan_json() {

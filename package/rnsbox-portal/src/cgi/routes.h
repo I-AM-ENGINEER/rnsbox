@@ -54,6 +54,9 @@ void reticulum_bluetooth_peers(const http::Request&, http::Response&);  // GET  
 // Interface byte counters from the parsed rnstatus cache (pretty strings);
 // false when no cached snapshot matches the needle (e.g. "BLE").
 bool rnstatus_interface_traffic(const char* needle, std::string& tx, std::string& rx);
+// Rebuild the parsed rnstatus cache now (boot warm-up); false if rnstatus
+// produced no parseable output.
+bool rnstatus_prewarm();
 // RNode modem over USB serial or BLE
 void reticulum_rnode(const http::Request&, http::Response&);        // POST PRG (save + apply)
 void reticulum_rnode_status(const http::Request&, http::Response&); // GET  JSON (S81rnode state)

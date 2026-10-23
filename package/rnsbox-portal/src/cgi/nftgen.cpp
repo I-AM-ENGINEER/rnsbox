@@ -4,6 +4,7 @@
 #include "conntrack.h"
 #include "store.h"
 #include "sysinfo.h"
+#include "util.h"
 #include <cstdio>
 #include <cstring>
 #include <map>
@@ -22,7 +23,8 @@ static std::string ifname_elements(const std::vector<std::string>& names) {
     return out;
 }
 
-std::string generate(const std::vector<std::string>& wans, const std::vector<std::string>& lans, bool with_ipv6) {
+std::string generate(const std::vector<std::string>& wans, const std::vector<std::string>& lans,
+                     bool with_ipv6, bool nat) {
     auto forwards = store::read_portforwards();
     auto openports = store::read_openports();
     // HaLow modem over SLIP (S31slip): the kernel SLIP driver always names
@@ -37,6 +39,27 @@ std::string generate(const std::vector<std::string>& wans, const std::vector<std
 
     std::string lan_set = ifname_elements(lans);
     std::string wan_set = ifname_elements(wans);
+
+    // Reticulum AutoInterface may also run on the WAN (the RNS config's
+    // AutoInterface `devices` line lists a WAN iface): its discovery/data
+    // UDP must reach the box there, or the WAN peers never answer.
+    bool auto_wan = false;
+    {
+        std::string rc = util::read_file("/etc/reticulum/config", 256 * 1024);
+        size_t p = 0;
+        while (!auto_wan && (p = rc.find("devices", p)) != std::string::npos) {
+            size_t e = rc.find('\n', p);
+            if (e == std::string::npos) e = rc.size();
+            std::string line = rc.substr(p, e - p);
+            size_t eq = line.find('=');
+            if (eq != std::string::npos) {
+                std::string list = line.substr(eq + 1);
+                for (const auto& w : wans)
+                    if (list.find(w) != std::string::npos) { auto_wan = true; break; }
+            }
+            p = e;
+        }
+    }
 
     std::string L;
     auto add = [&](const std::string& s) { L += s; L += "\n"; };
@@ -87,6 +110,10 @@ std::string generate(const std::vector<std::string>& wans, const std::vector<std
             add("\t\tiifname @wan_ifaces " + kv.first + " dport { " + ports + " } accept");
         }
     }
+    if (auto_wan) {
+        add("\t\t# Reticulum AutoInterface on the WAN (discovery 29716, data 42671)");
+        add("\t\tiifname @wan_ifaces udp dport { 29716, 29717, 42671 } accept");
+    }
     add("\t}\n");
 
     add("\tchain forward {");
@@ -120,11 +147,15 @@ std::string generate(const std::vector<std::string>& wans, const std::vector<std
     add("\t}\n");
     add("\tchain postrouting {");
     add("\t\ttype nat hook postrouting priority srcnat; policy accept;");
-    // The ct mark tags the flow as NATed to this uplink, so `rnsbox-portal
-    // ctflush` can drop just these when WAN=auto moves to the other one.
-    char mark[16];
-    snprintf(mark, sizeof mark, "0x%08x", conntrack::WAN_NAT_MARK);
-    add(std::string("\t\toifname @wan_ifaces ct mark set ct mark or ") + mark + " masquerade");
+    if (nat) {
+        // The ct mark tags the flow as NATed to this uplink, so `rnsbox-portal
+        // ctflush` can drop just these when WAN=auto moves to the other one.
+        char mark[16];
+        snprintf(mark, sizeof mark, "0x%08x", conntrack::WAN_NAT_MARK);
+        add(std::string("\t\toifname @wan_ifaces ct mark set ct mark or ") + mark + " masquerade");
+    } else {
+        add("\t\t# nat=no: LAN -> WAN routed without source NAT");
+    }
     add("\t}");
     add("}");
 
@@ -136,7 +167,9 @@ std::string generate(const std::vector<std::string>& wans, const std::vector<std
         // box over IPv6, nothing is routed.
         add("");
         add("table ip6 filter {");
-        add("\tset lan_ifaces { type ifname; elements = { " + lan_set + " } }\n");
+        add("\tset lan_ifaces { type ifname; elements = { " + lan_set + " } }");
+        if (auto_wan) add("\tset wan_ifaces { type ifname; elements = { " + wan_set + " } }");
+        add("");
 
         add("\tchain input {");
         add("\t\ttype filter hook input priority filter; policy drop;");
@@ -149,6 +182,12 @@ std::string generate(const std::vector<std::string>& wans, const std::vector<std
             "mld-listener-query, mld-listener-report, mld-listener-done, mld2-listener-report } accept");
         add("\t\t# LAN: full surface (Reticulum AutoInterface discovery/data, SSH, ...)");
         add("\t\tiifname @lan_ifaces accept");
+        if (auto_wan) {
+            add("\t\t# Reticulum AutoInterface on the WAN: ND + its UDP ports");
+            add("\t\tiifname @wan_ifaces icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, "
+                "mld-listener-query, mld-listener-report, mld-listener-done, mld2-listener-report } accept");
+            add("\t\tiifname @wan_ifaces udp dport { 29716, 29717, 42671 } accept");
+        }
         add("\t}\n");
 
         add("\tchain forward {");
@@ -183,15 +222,17 @@ int cli_main(int argc, char** argv) {
     // kernel it shipped with) — nft would reject `table ip6` otherwise and
     // S60routing's nft -c would throw away the whole ruleset.
     bool v6 = access("/proc/sys/net/ipv6", F_OK) == 0;
+    bool nat = true;
     for (int i = 2; i < argc; ++i) {   // argv[1] == "nftgen"
         if (!strcmp(argv[i], "--wan") && i + 1 < argc) wan = argv[++i];
         else if (!strcmp(argv[i], "--lan") && i + 1 < argc) lan = argv[++i];
         else if (!strcmp(argv[i], "--no-ipv6")) v6 = false;
+        else if (!strcmp(argv[i], "--no-nat")) nat = false;
     }
     if (lan.empty()) lan = sysinfo::lan_iface();
     std::vector<std::string> wans = split_list(wan), lans = split_list(lan);
-    if (wans.empty()) { fprintf(stderr, "usage: rnsbox-portal nftgen --wan <iface>[,iface] [--lan a,b] [--no-ipv6]\n"); return 2; }
-    std::string out = generate(wans, lans, v6);
+    if (wans.empty()) { fprintf(stderr, "usage: rnsbox-portal nftgen --wan <iface>[,iface] [--lan a,b] [--no-ipv6] [--no-nat]\n"); return 2; }
+    std::string out = generate(wans, lans, v6, nat);
     // S60routing trusts this exit status: a short write (ENOSPC) must fail,
     // or an empty file passes `nft -c` (empty batch) and gets installed.
     if (fwrite(out.data(), 1, out.size(), stdout) != out.size() || fflush(stdout) != 0) {

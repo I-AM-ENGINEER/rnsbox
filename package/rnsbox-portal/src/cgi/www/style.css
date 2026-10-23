@@ -528,10 +528,19 @@ pre.log {
 body.login-screen { background: var(--primary); }
 .login-page {
   display: flex;
+  flex-direction: column;
   justify-content: center;
   align-items: center;
+  gap: 14px;
   min-height: 100vh;
   padding: 20px;
+}
+/* The flash lives in the same column as the card. As flex row items they
+   used to sit side by side, with the error pushed to the far left. */
+.login-page .flash {
+  width: 100%;
+  max-width: 360px;
+  margin-bottom: 0;
 }
 .login-box {
   background: var(--card);
