@@ -425,6 +425,28 @@ __ECHOBOT_CARDS__
 function escH(s){ return (''+(s==null?'':s)).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
 var RN_DATA = [];
 var RN_SORT = { key: 'name', dir: 1 };
+// The table refreshes every few seconds; the "updated N s ago" label must
+// not step in poll-sized jumps. Anchor the server's age_s to the local clock
+// once per response and tick the label every second in the browser.
+var RN_META_HEAD = '';
+var RN_META_AT = null;      // local epoch ms when the snapshot was taken
+var RN_META_ABS = '';       // fallback absolute time (no age_s)
+function rnRenderMeta() {
+  var el = document.getElementById('rnstatus-meta');
+  if (!el) return;
+  var text = RN_META_HEAD;
+  if (RN_META_AT !== null) {
+    var s = Math.max(0, Math.floor((Date.now() - RN_META_AT) / 1000));
+    var rel = s < 60 ? s + ' s ago'
+            : s < 3600 ? Math.floor(s / 60) + ' min ago'
+            : Math.floor(s / 3600) + ' h ago';
+    text += ' · updated ' + rel;
+  } else if (RN_META_ABS) {
+    text += ' · updated ' + RN_META_ABS;
+  }
+  el.textContent = text;
+}
+setInterval(rnRenderMeta, 1000);
 function rnBytes(v){
   var m = ('' + (v || '')).match(/([\d.]+)\s*([KMG]?B)/i);
   if (!m) return 0;
@@ -500,7 +522,13 @@ function loadRnstatus(){
     if (r.status === 401) throw new Error('session expired — please log in again');
     return r.json();
   }).then(function(d){
-    if (d.error) { RN_DATA = []; ui.innerHTML = '<p class="muted">' + escH(d.error) + '</p>'; meta.textContent=''; return; }
+    if (d.error) {
+      RN_DATA = [];
+      RN_META_HEAD = ''; RN_META_AT = null; RN_META_ABS = '';
+      ui.innerHTML = '<p class="muted">' + escH(d.error) + '</p>';
+      meta.textContent = '';
+      return;
+    }
     RN_DATA = d.interfaces || [];
     renderRnstatus();
     var t = d.transport || {};
@@ -513,19 +541,20 @@ function loadRnstatus(){
       ifEl.textContent = RN_DATA.length + ' in rnsd · ' + nup + ' up';
     }
     if (trEl && t.hash) { trEl.textContent = t.hash; trEl.title = t.hash; }
-    var when = '';
-    if (typeof d.age_s === 'number') {
-      var s = d.age_s;
-      var rel = s < 60 ? s + ' s ago'
-              : s < 3600 ? Math.floor(s / 60) + ' min ago'
-              : Math.floor(s / 3600) + ' h ago';
-      when = ' · updated ' + rel;
-    } else if (d.age) {
-      when = ' · updated ' + new Date(d.age * 1000).toTimeString().slice(0, 8);
-    }
-    meta.textContent = RN_DATA.length + ' interface' + (RN_DATA.length === 1 ? '' : 's') +
+    RN_META_HEAD = RN_DATA.length + ' interface' + (RN_DATA.length === 1 ? '' : 's') +
       (t.hash ? ' · transport ' + t.hash : '') +
-      (t.uptime ? ' · up ' + t.uptime : '') + when;
+      (t.uptime ? ' · up ' + t.uptime : '');
+    if (typeof d.age_s === 'number') {
+      RN_META_AT = Date.now() - d.age_s * 1000;
+      RN_META_ABS = '';
+    } else if (d.age) {
+      RN_META_AT = null;
+      RN_META_ABS = new Date(d.age * 1000).toTimeString().slice(0, 8);
+    } else {
+      RN_META_AT = null;
+      RN_META_ABS = '';
+    }
+    rnRenderMeta();
     // refresh the state badge too (it's free and may have changed since load)
     fetch('__BASE__/reticulum/status').then(function(r){ return r.json(); }).then(function(s){
       st.innerHTML = s.running
