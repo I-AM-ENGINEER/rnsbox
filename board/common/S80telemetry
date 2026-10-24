@@ -1,0 +1,142 @@
+#!/bin/sh
+# S80telemetry — publish this box's location through rnsd interface discovery.
+#
+# Coordinates live in /etc/rnsbox/telemetry.conf (portal Map tab). Two rnsd
+# paths are managed here:
+#   discover_lora = yes  S81rnode writes discoverable/coordinates into the
+#                        managed [[RNode ...]] stanza (LoRa interface).
+#   discover_tcp  = yes  this script writes the same keys into the shipped
+#                        [[TCP Server]] stanza, so a box without a radio can
+#                        still appear on the RNS discovery map.
+# When either path is on, the [reticulum] section gets
+# `discover_interfaces = Yes` so the Map tab can collect other nodes too.
+#
+# The TCP keys sit between BEGIN/END TELEMETRY markers inside the section;
+# everything outside the markers is never touched (the raw config editor keeps
+# working). Runs before S81rnode/S82rnsd.
+
+CONF=/etc/rnsbox/telemetry.conf
+RNS_CFG=/etc/reticulum/config
+BEGIN_MARK="# BEGIN TELEMETRY"
+END_MARK="# END TELEMETRY"
+TMP=/run/.telemetry-config.$$
+
+log() { logger -t S80telemetry -p daemon.notice "$1" 2>/dev/null; }
+
+cfg() {
+	sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$CONF" 2>/dev/null \
+	  | tail -1 | tr -d '"' | tr -d "'" | awk '{print $1}'
+}
+cfg_text() {
+	sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$CONF" 2>/dev/null \
+	  | tail -1 | tr -d '\r' | tr -d '"' | tr -d "'"
+}
+truthy() { case "$1" in yes|true|1|on) return 0 ;; esac; return 1; }
+
+# A value rnsd will parse as a float in range; keeps a bad edit from panic()ing
+# rnsd at startup.
+num_ok() {
+	case "$1" in ''|*[!0-9.+-]*) return 1 ;; esac
+	awk -v v="$1" -v lo="$2" -v hi="$3" \
+	    'BEGIN { if ((v+0) != v) exit 1; if (v < lo || v > hi) exit 1; exit 0 }'
+}
+
+is_on() { truthy "$(cfg "$1")"; }
+
+update() {
+	[ -r "$RNS_CFG" ] || { log "no $RNS_CFG"; return 0; }
+
+	# Drop the previous managed blocks (if any) first: they are replaced below
+	# or stay out when their publish path is disabled.
+	sed "/^[[:space:]]*$BEGIN_MARK/,/^[[:space:]]*$END_MARK/d" "$RNS_CFG" > "$TMP" || return 1
+	rm -f "$TMP.block"
+
+	publish=no
+	if is_on discover_tcp || is_on discover_halow; then
+		lat=$(cfg_text latitude); lon=$(cfg_text longitude)
+		hgt=$(cfg_text height);   name=$(cfg_text name)
+		iv=$(cfg announce_interval); reach=$(cfg_text reachable_on)
+		if ! num_ok "$lat" -90 90 || ! num_ok "$lon" -180 180; then
+			log "discovery: latitude/longitude missing or out of range; not publishing"
+		elif [ -n "$hgt" ] && ! num_ok "$hgt" -1000 10000; then
+			log "discovery: height out of range; not publishing"
+		else
+			[ -n "$iv" ] || iv=360
+			case "$iv" in *[!0-9]*|'') iv=360 ;; esac
+			[ "$iv" -ge 5 ] 2>/dev/null || iv=5
+			{
+				echo "    $BEGIN_MARK"
+				echo "    discoverable = yes"
+				echo "    latitude = $lat"
+				echo "    longitude = $lon"
+				[ -n "$hgt" ]  && echo "    height = $hgt"
+				[ -n "$name" ] && echo "    discovery_name = $name"
+				echo "    announce_interval = $iv"
+				[ -n "$reach" ] && echo "    reachable_on = $reach"
+				echo "    $END_MARK"
+			} > "$TMP.block"
+			publish=yes
+		fi
+	fi
+
+	# Put the block at the end of a section (right before the next header).
+	# `sec` is matched as a prefix so [[RNode-Halow]] and a renamed
+	# [[RNode-Halow 2]] both get the keys.
+	inject_into() {
+		awk -v sec="$1" -v blockfile="$TMP.block" '
+			BEGIN { re = "^[[:space:]]*\\[\\[" sec "[^]]*\\]\\][[:space:]]*$"; inside=0; done=0 }
+			$0 ~ re { inside=1; print; next }
+			inside && /^[[:space:]]*\[/ {
+				if (!done) { while ((getline line < blockfile) > 0) print line; close(blockfile); done=1 }
+				inside=0; print; next
+			}
+			{ print }
+			END {
+				if (inside && !done) {
+					while ((getline line < blockfile) > 0) print line
+					close(blockfile)
+				}
+			}
+		' "$TMP" > "$TMP.new" && mv "$TMP.new" "$TMP"
+	}
+
+	if [ "$publish" = yes ]; then
+		is_on discover_tcp   && inject_into "TCP Server"
+		is_on discover_halow && inject_into "RNode-Halow"
+		rm -f "$TMP.block"
+	fi
+
+	# Any discovery publish path implies collecting announces locally so the
+	# Map tab is populated. Only ever turns it on; a hand-set No is preserved
+	# when nothing is published.
+	if is_on discover_tcp || is_on discover_lora || is_on discover_halow; then
+		awk '
+			BEGIN { inr=0; seen=0 }
+			/^\[reticulum\][[:space:]]*$/ { print; inr=1; next }
+			inr && /^[[:space:]]*discover_interfaces[[:space:]]*=/ {
+				print "  discover_interfaces = Yes"; seen=1; next
+			}
+			inr && /^[[:space:]]*\[/ {
+				if (!seen) print "  discover_interfaces = Yes"
+				seen=1; inr=0; print; next
+			}
+			{ print }
+			END { if (inr && !seen) print "  discover_interfaces = Yes" }
+		' "$TMP" > "$TMP.new" && mv "$TMP.new" "$TMP"
+	fi
+
+	if cmp -s "$TMP" "$RNS_CFG"; then
+		rm -f "$TMP"
+		echo "S80telemetry: no change"
+		return 0
+	fi
+	cat "$TMP" > "$RNS_CFG"
+	rm -f "$TMP"
+	echo "S80telemetry: location blocks written"
+}
+
+case "${1:-start}" in
+	start|reload|restart) update ;;
+	stop) rm -f "$TMP" "$TMP.new" "$TMP.block" ;;
+	*) echo "Usage: $0 {start|reload|stop}" >&2; exit 1 ;;
+esac

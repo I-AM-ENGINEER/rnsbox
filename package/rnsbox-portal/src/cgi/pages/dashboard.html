@@ -24,9 +24,6 @@ __DEFAULT_PASS_WARN__
     <div class="meter">
       <div class="meter-fill __RAM_FILL_CLASS__" id="d-ram-fill" style="width: __RAM_PCT__%"></div>
     </div>
-    <p class="muted" id="d-ram-note" style="margin-top:4px">
-      __RAM_PCT__% used &middot; __RAM_BUFFCACHE__ MB buff/cache (reclaimable)
-    </p>
     <div class="meter-label" style="margin-top:10px">
       <span>Swap (zram)</span>
       <span id="d-swap-label">__SWAP_LABEL__</span>
@@ -109,7 +106,6 @@ __HALOW_SCRIPT__
       var pct=m.used_pct||0;
       setText('d-ram-label', m.used_mb+' / '+m.total_mb+' MB · '+m.avail_mb+' MB free');
       var f=$('d-ram-fill'); if(f){ f.style.width=pct+'%'; f.className='meter-fill '+(pct>=90?'crit':pct>=75?'warn':'ok'); }
-      setText('d-ram-note', pct+'% used · '+m.buffcache_mb+' MB buff/cache (reclaimable)');
     }
     var st=m.swap_total_mb||0, su=m.swap_used_mb||0;
     var sp=st?Math.round(1000*su/st)/10:0;

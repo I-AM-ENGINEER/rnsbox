@@ -102,6 +102,11 @@ std::vector<Lease> dnsmasq_leases();
 struct Slip { bool present = false, up = false; };
 Slip slip_status();
 
+// Short TCP connect probe (no bytes exchanged). A network-attached HaLow
+// modem is "linked" when its TCP radio bridge answers, not when sl0 exists;
+// also used before writing the modem's telemetry config.
+bool tcp_reachable(const std::string& host, int port, int timeout_ms = 400);
+
 // Wall-clock provenance: /run/clock-source, written by S45ntpsync (boot: "rtc"
 // when the kernel set the clock from rtc0; "ntp" from the NTP one-shot and the
 // hourly RTC resync) and the Settings browser sync ("browser"). Returns exactly

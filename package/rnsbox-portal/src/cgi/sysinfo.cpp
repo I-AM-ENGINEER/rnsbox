@@ -14,6 +14,11 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifndef _WIN32
+#include <netdb.h>
+#include <sys/socket.h>
+#include <sys/select.h>
+#endif
 
 namespace {
 
@@ -471,6 +476,49 @@ Slip slip_status() {
     std::string st = slurp_trim("/sys/class/net/sl0/operstate");
     s.up = !(st == "down" || st.empty());
     return s;
+}
+
+bool tcp_reachable(const std::string& host, int port, int timeout_ms) {
+#ifdef _WIN32
+    (void)host; (void)port; (void)timeout_ms;
+    return false;
+#else
+    if (host.empty() || port < 1 || port > 65535) return false;
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    struct addrinfo* res = nullptr;
+    std::string ps = std::to_string(port);
+    if (getaddrinfo(host.c_str(), ps.c_str(), &hints, &res) != 0) return false;
+    bool ok = false;
+    for (struct addrinfo* ai = res; ai && !ok; ai = ai->ai_next) {
+        int fd = socket(ai->ai_family, ai->ai_socktype | SOCK_CLOEXEC, ai->ai_protocol);
+        if (fd < 0) continue;
+        int flags = fcntl(fd, F_GETFL, 0);
+        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+        int rc = connect(fd, ai->ai_addr, ai->ai_addrlen);
+        if (rc == 0) {
+            ok = true;
+        } else if (errno == EINPROGRESS) {
+            fd_set wf;
+            FD_ZERO(&wf);
+            FD_SET(fd, &wf);
+            struct timeval tv;
+            tv.tv_sec = timeout_ms / 1000;
+            tv.tv_usec = (timeout_ms % 1000) * 1000;
+            if (select(fd + 1, nullptr, &wf, nullptr, &tv) > 0) {
+                int err = 0;
+                socklen_t len = sizeof(err);
+                if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len) == 0 && err == 0)
+                    ok = true;
+            }
+        }
+        close(fd);
+    }
+    freeaddrinfo(res);
+    return ok;
+#endif
 }
 
 std::string clock_source() {

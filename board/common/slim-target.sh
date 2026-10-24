@@ -82,6 +82,15 @@ fi
 if [ -f "$COMMON_DIR/S81rnode" ] && [ -d "$T/etc/init.d" ]; then
 	install -m 0755 "$COMMON_DIR/S81rnode" "$T/etc/init.d/S81rnode"
 fi
+# Map telemetry: S80telemetry writes the TCP-server discovery block from
+# /etc/rnsbox/telemetry.conf; S83telemetry runs the HaLow MQTT proxy daemon
+# (only when the Map tab enabled that path).
+if [ -f "$COMMON_DIR/S80telemetry" ] && [ -d "$T/etc/init.d" ]; then
+	install -m 0755 "$COMMON_DIR/S80telemetry" "$T/etc/init.d/S80telemetry"
+fi
+if [ -f "$COMMON_DIR/S83telemetry" ] && [ -d "$T/etc/init.d" ]; then
+	install -m 0755 "$COMMON_DIR/S83telemetry" "$T/etc/init.d/S83telemetry"
+fi
 # Periodic monitor: rnstatus warm-up, memory watchdog and the Bluetooth
 # peers/traffic cache (30 s idle, 5 s while the portal page is open).
 if [ -f "$COMMON_DIR/S83mon" ] && [ -d "$T/etc/init.d" ]; then

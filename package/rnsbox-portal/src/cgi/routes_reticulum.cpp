@@ -637,33 +637,52 @@ void reticulum_page(const Request& req, Response& res) {
 
     // Status rows carry a badge or text, never both: a coloured state chip
     // next to a sentence reads as two different values on one line.
+    const bool halow_ip = (sl.mode == "ip");
+    int halow_port = atoi(sl.tcp_port.c_str());
+    if (halow_port < 1 || halow_port > 65535) halow_port = 4242;
+    const std::string halow_peer = sl.peer_ip.empty() ? "192.168.7.2" : sl.peer_ip;
+    // UART links are "up" when sl0 has an address; network modems are up when
+    // their TCP radio bridge answers (the same port rnsd connects to).
+    bool halow_link_up = halow_ip
+        ? (slip_on && sysinfo::tcp_reachable(halow_peer, halow_port, 400))
+        : slst.up;
+
     std::string link;
-    if (slst.up)            link = "<span class=\"badge ok\">UP</span>";
-    else if (slst.present)  link = "<span class=\"badge warn\">DOWN</span>";
-    else if (slip_on)       link = "<span class=\"badge warn\">not attached</span>";
-    else                    link = "<span class=\"muted\">disabled</span>";
+    if (!slip_on)              link = "<span class=\"muted\">disabled</span>";
+    else if (halow_link_up)    link = "<span class=\"badge ok\">UP</span>";
+    else if (!halow_ip && !slst.present)
+                               link = "<span class=\"badge warn\">not attached</span>";
+    else                       link = "<span class=\"badge warn\">DOWN</span>";
     h = R(std::move(h), "__SLIP_LINK_STATUS__", link);
 
     std::string halow;
     if (slip_on) {
         std::string note;
-        if (!slst.up)
-            note = slst.present
-                ? "The UART is attached but sl0 has no address."
-                : "The UART is not attached &mdash; is the modem wired?";
-        std::string addr = slst.up
-            ? E(sl.local_ip) + " &rarr; " + E(sl.peer_ip)
+        if (!halow_link_up) {
+            if (halow_ip)
+                note = "No answer at " + E(halow_peer) + ":" + std::to_string(halow_port) +
+                       " &mdash; is the modem powered and on the network?";
+            else
+                note = slst.present
+                    ? "The UART is attached but sl0 has no address."
+                    : "The UART is not attached &mdash; is the modem wired?";
+        }
+        std::string addr = halow_link_up
+            ? (halow_ip ? E(halow_peer) + ":" + std::to_string(halow_port)
+                        : E(sl.local_ip) + " &rarr; " + E(sl.peer_ip))
             : "<span class=\"muted\">&mdash;</span>";
         halow =
             "<table class=\"kv\" id=\"halow-kv\">\n"
-            "    <tr><th>Link (sl0)</th><td id=\"halow-link\">" + link + "</td></tr>\n"
-            "    <tr><th>Addresses</th><td id=\"halow-addr\">" + addr + "</td></tr>\n"
-            "    <tr><th>rnsd interface</th><td id=\"halow-iface\"><span class=\"muted\">&mdash;</span></td></tr>\n"
+            "    <tr><th>Status</th><td id=\"halow-status\">" + link + "</td></tr>\n"
+            "    <tr><th>Address</th><td id=\"halow-addr\">" + addr + "</td></tr>\n"
             "    <tr><th>Radio</th><td id=\"halow-radio\"><span class=\"muted\">&mdash;</span></td></tr>\n"
             "    <tr><th>Airtime</th><td id=\"halow-air\"><span class=\"muted\">&mdash;</span></td></tr>\n"
+            "    <tr><th>Channel load</th><td id=\"halow-chload\"><span class=\"muted\">&mdash;</span></td></tr>\n"
             "    <tr><th>Noise floor</th><td id=\"halow-noise\"><span class=\"muted\">&mdash;</span></td></tr>\n"
-            "    <tr><th>Throughput</th><td id=\"halow-thru\"><span class=\"muted\">&mdash;</span></td></tr>\n"
-            "    <tr><th>Modem</th><td id=\"halow-modem\"><span class=\"muted\">&mdash;</span></td></tr>\n"
+            "    <tr><th>RX / TX</th><td id=\"halow-rxtx\"><span class=\"muted\">&mdash;</span></td></tr>\n"
+            "    <tr><th>Temperature</th><td id=\"halow-temp\"><span class=\"muted\">&mdash;</span></td></tr>\n"
+            "    <tr><th>Firmware</th><td id=\"halow-fw\"><span class=\"muted\">&mdash;</span></td></tr>\n"
+            "    <tr><th>Uptime</th><td id=\"halow-uptime\"><span class=\"muted\">&mdash;</span></td></tr>\n"
             "  </table>\n"
             "  <p class=\"muted\" id=\"halow-note\"" + (note.empty() ? " hidden" : "") + ">" + note + "</p>\n"
             "  <details class=\"neigh\" id=\"halow-neigh\" hidden>\n"
@@ -674,23 +693,26 @@ void reticulum_page(const Request& req, Response& res) {
             "    <a class=\"btn\" href=\"" + base + "/modem\" target=\"_blank\" rel=\"noopener\">Open modem web UI &rarr;</a>\n"
             "    <form method=\"post\" action=\"" + base + "/reticulum/halow/add\" class=\"inline\" id=\"halow-add-form\" hidden>\n"
             "      <input type=\"hidden\" name=\"iface_name\" id=\"halow-add-name\" value=\"\">\n"
-            "      <input type=\"hidden\" name=\"iface_port\" id=\"halow-add-port\" value=\"4242\">\n"
+            "      <input type=\"hidden\" name=\"iface_port\" id=\"halow-add-port\" value=\"" + std::to_string(halow_port) + "\">\n"
             "      <button type=\"submit\" class=\"btn-primary\">+ Add to rnsd config</button>\n"
             "    </form>\n"
             "  </div>";
     } else {
-        halow = "<table class=\"kv\"><tr><th>Link (sl0)</th><td>" + link + "</td></tr></table>";
+        halow = "<table class=\"kv\"><tr><th>Status</th><td>" + link + "</td></tr></table>";
     }
     h = R(std::move(h), "__HALOW_LIVE_BLOCK__", halow);
 
-    bool halow_in_config = reticulum_has_tcp_client(sl.peer_ip.empty() ? "192.168.7.2" : sl.peer_ip, 0);
+    bool halow_in_config = reticulum_has_tcp_client(halow_peer, 0);
     h = R(std::move(h), "__HALOW_IN_CONFIG__", halow_in_config ? "true" : "false");
 
     h = R(std::move(h), "__SLIP_ENABLED_CHECKED__", slip_on ? "checked" : "");
+    h = R(std::move(h), "__SLIP_MODE_SLIP__", halow_ip ? "" : "selected");
+    h = R(std::move(h), "__SLIP_MODE_IP__",   halow_ip ? "selected" : "");
     h = R(std::move(h), "__SLIP_DEVICE__",   E(sl.device));
     h = R(std::move(h), "__SLIP_BAUD__",     E(sl.baud));
     h = R(std::move(h), "__SLIP_LOCAL_IP__", E(sl.local_ip));
     h = R(std::move(h), "__SLIP_PEER_IP__",  E(sl.peer_ip));
+    h = R(std::move(h), "__SLIP_TCP_PORT__", E(sl.tcp_port.empty() ? "4242" : sl.tcp_port));
 
     // Bluetooth (BLE transport) card. The form block is filled server-side
     // (like __HALOW_LIVE_BLOCK__): a BLE-less image (cv1800b RAM-boot) gets
@@ -943,42 +965,67 @@ void reticulum_rnsdwatchdog(const Request& req, Response& res) {
             std::to_string(limit / 60) + " minutes despite the automatic restarts.");
 }
 
-void reticulum_slip(const Request& req, Response& res) {
-    if (!web::require_auth(req, res, false)) return;
+// The HaLow modem is always a TCPClientInterface in rnsd. Enabling the link
+// adds the stanza once; changing the address (or switching SLIP <-> network)
+// updates that same stanza instead of stacking a second one.
+static bool ensure_halow_interface(const std::string& host, int port, std::string& msg) {
+    auto list = store::read_tcp_clients();
+    for (size_t i = 0; i < list.size(); ++i) {
+        std::string lname = list[i].name;
+        for (auto& ch : lname) ch = (char)tolower((unsigned char)ch);
+        if (lname != "rnode-halow") continue;
+        std::string err;
+        if (store::update_tcp_client((int)i, list[i].name, host, std::to_string(port), err)) {
+            msg = list[i].name;
+            return true;
+        }
+        msg = err;
+        return false;
+    }
+    return store::add_halow_interface("RNode-Halow", host, port, msg);
+}
+
+void reticulum_slip(const Request& req, Response& res) {    if (!web::require_auth(req, res, false)) return;
     store::SlipConfig c;
     c.enabled  = req.f("enabled") == "on" ? "yes" : "no";
+    c.mode     = util::trim(req.f("mode"));
     c.device   = util::trim(req.f("device"));
     c.baud     = util::trim(req.f("baud"));
     c.local_ip = util::trim(req.f("local_ip"));
     c.peer_ip  = util::trim(req.f("peer_ip"));
+    c.tcp_port = util::trim(req.f("tcp_port"));
     std::string err;
     if (!store::write_slip(c, err)) {
-        render::redirect_flash(res, ret_redirect(), "error", "SLIP: " + err + ".");
+        render::redirect_flash(res, ret_redirect(), "error", "HaLow: " + err + ".");
         return;
     }
     web::run_init("S31slip", "reload");
     halow_cache_drop();   // link/peer changed: don't serve up to 10 s of the old modem state
+    int port = atoi(c.tcp_port.c_str());
+    if (port < 1 || port > 65535) port = 4242;
     if (c.enabled == "yes") {
-        // The HaLow interface used to be a second, manual step. Add it here so
-        // ticking "Enable SLIP link" is the whole setup: the modem's TCP Radio
-        // Bridge is always on the peer IP, port 4242. rnsd is restarted after
-        // sl0 is up, which also drops the previous (now dead) TCP connection.
+        // The HaLow interface used to be a second, manual step. Add or update
+        // it here so enabling the link is the whole setup: the modem's TCP
+        // radio bridge is on peer_ip:port in both transport modes. rnsd is
+        // restarted after the link is up, which also drops the old connection.
         std::string peer = c.peer_ip.empty() ? std::string("192.168.7.2") : c.peer_ip;
         std::string msg;
-        bool added = store::add_halow_interface("RNode-Halow", peer, 4242, msg);
+        bool ok = ensure_halow_interface(peer, port, msg);
         web::run_init("S82rnsd");
         std::string extra;
-        if (added)
-            extra = " HaLow interface “" + msg + "” added to the rnsd config.";
+        if (ok)
+            extra = " HaLow interface “" + msg + "” updated in the rnsd config.";
         else if (msg == "already")
             extra = " HaLow interface is already in the rnsd config.";
         else
             extra = " Could not add the HaLow interface: " + msg + ".";
-        render::redirect_flash(res, ret_redirect(), added || msg == "already" ? "success" : "warn",
-            "SLIP link enabled on " + c.device + " @ " + c.baud + " baud." + extra +
-            " rnsd restarted.");
+        std::string where = (c.mode == "ip")
+            ? ("network modem at " + peer + ":" + std::to_string(port))
+            : (c.device + " @ " + c.baud + " baud (SLIP)");
+        render::redirect_flash(res, ret_redirect(), ok || msg == "already" ? "success" : "warn",
+            "HaLow link enabled — " + where + "." + extra + " rnsd restarted.");
     } else
-        render::redirect_flash(res, ret_redirect(), "success", "SLIP link disabled.");
+        render::redirect_flash(res, ret_redirect(), "success", "HaLow link disabled.");
 }
 
 void reticulum_rnsh_save(const Request& req, Response& res) {
@@ -2587,16 +2634,6 @@ static std::string rnode_fill(std::string h) {
     }
     h = R(std::move(h), "__RNODE_BOND__", bond);
 
-    // Interface discovery: coordinates and announce cadence, published in the
-    // managed [[RNode]] stanza by S81rnode.
-    h = R(std::move(h), "__RNODE_DISCOVER_CHECKED__", truthy(rc.discover) ? "checked" : "");
-    h = R(std::move(h), "__RNODE_LAT__",          E(rc.latitude));
-    h = R(std::move(h), "__RNODE_LON__",          E(rc.longitude));
-    h = R(std::move(h), "__RNODE_HEIGHT__",       E(rc.height));
-    h = R(std::move(h), "__RNODE_DISC_NAME__",    E(rc.discovery_name));
-    h = R(std::move(h), "__RNODE_ANNOUNCE__",     E(rc.announce_interval.empty() ? "360" : rc.announce_interval));
-    h = R(std::move(h), "__RNODE_REACHABLE__",    E(rc.reachable_on));
-
     std::string stack;
     if (!store::rnode_ble_stack_present())
         stack = "<p class=\"muted\" style=\"margin:6px 0 0\">This image has no BLE stack (bluez/dbus + bleak) — "
@@ -2619,14 +2656,6 @@ void reticulum_rnode(const Request& req, Response& res) {
     c.spreadingfactor = util::trim(req.f("spreadingfactor"));
     c.codingrate      = util::trim(req.f("codingrate"));
     c.flow_control    = req.f("flow_control") == "on" ? "yes" : "no";
-    c.discover        = req.f("discover") == "on" ? "yes" : "no";
-    c.latitude        = util::trim(req.f("latitude"));
-    c.longitude       = util::trim(req.f("longitude"));
-    c.height          = util::trim(req.f("height"));
-    c.discovery_name  = util::trim(req.f("discovery_name"));
-    c.announce_interval = util::trim(req.f("announce_interval"));
-    if (c.announce_interval.empty()) c.announce_interval = "360";
-    c.reachable_on    = util::trim(req.f("reachable_on"));
     std::string err;
     if (!store::write_rnode(c, err)) {
         render::redirect_flash(res, ret_redirect(), "error", "RNode: " + err + ".");

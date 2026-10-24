@@ -437,12 +437,15 @@ SlipConfig read_slip() {
         if (k == "enabled") d.enabled = v; else if (k == "device") d.device = v;
         else if (k == "baud") d.baud = v; else if (k == "local_ip") d.local_ip = v;
         else if (k == "peer_ip") d.peer_ip = v;
+        else if (k == "mode") d.mode = (v == "ip") ? "ip" : "slip";
+        else if (k == "tcp_port") d.tcp_port = v;
     }
     return d;
 }
 
 bool write_slip(const SlipConfig& c, std::string& err) {
     std::string en = cron_truthy(c.enabled) ? "yes" : "no";
+    std::string mode = (c.mode == "ip") ? "ip" : "slip";
     std::string dev = c.device.empty() ? "/dev/serial0" : c.device;
     if (!valid_tty(dev)) { err = "bad device path"; return false; }
     // Digits only (atoi would take "2000000<junk>"); the cap is a sanity
@@ -457,14 +460,20 @@ bool write_slip(const SlipConfig& c, std::string& err) {
     std::string lip = c.local_ip.empty() ? "192.168.7.1" : c.local_ip;
     std::string pip = c.peer_ip.empty() ? "192.168.7.2" : c.peer_ip;
     if (!valid_ipv4(lip) || !valid_ipv4(pip)) { err = "bad IP address"; return false; }
+    std::string port = c.tcp_port.empty() ? "4242" : c.tcp_port;
+    if (!all_digits(port) || port.size() > 5) { err = "bad TCP port"; return false; }
+    long p = strtol(port.c_str(), nullptr, 10);
+    if (p < 1 || p > 65535) { err = "TCP port must be 1..65535"; return false; }
     std::string o =
-        "# SLIP-over-UART link to an external WiFi-HaLow (RNode) modem.\n"
-        "# Managed by the rnsbox-portal Reticulum tab; applied by S31slip. OFF\n"
-        "# by default. baud must match the modem (2 Mbaud on every rnsbox\n"
-        "# board except the classic LicheeRV Nano-e: use 1500000 there);\n"
-        "# local_ip/peer_ip must match the modem's SLIP config.\n";
-    o += "enabled=" + en + "\ndevice=" + dev + "\nbaud=" + std::to_string(baud) +
-         "\nlocal_ip=" + lip + "\npeer_ip=" + pip + "\n";
+        "# HaLow (RNode) modem link. Managed by the rnsbox-portal Reticulum\n"
+        "# tab; applied by S31slip. OFF by default.\n"
+        "#   mode=slip  UART: ldattach SLIP, sl0 between local_ip and peer_ip;\n"
+        "#              baud must match the modem (2 Mbaud on every rnsbox\n"
+        "#              board except the classic LicheeRV Nano-e: 1500000).\n"
+        "#   mode=ip    network modem: no UART; rnsd reaches it over TCP at\n"
+        "#              peer_ip:tcp_port (the modem's TCP radio bridge).\n";
+    o += "enabled=" + en + "\nmode=" + mode + "\ndevice=" + dev + "\nbaud=" + std::to_string(baud) +
+         "\nlocal_ip=" + lip + "\npeer_ip=" + pip + "\ntcp_port=" + port + "\n";
     if (!util::write_file_atomic(SLIP_FILE, o, 0644)) { err = "write failed"; return false; }
     return true;
 }
@@ -981,13 +990,6 @@ RnodeConfig read_rnode() {
         else if (k == "spreadingfactor") c.spreadingfactor = v;
         else if (k == "codingrate") c.codingrate = v;
         else if (k == "flow_control") c.flow_control = v;
-        else if (k == "discover") c.discover = v;
-        else if (k == "latitude") c.latitude = v;
-        else if (k == "longitude") c.longitude = v;
-        else if (k == "height") c.height = v;
-        else if (k == "discovery_name") c.discovery_name = v;
-        else if (k == "announce_interval") c.announce_interval = v;
-        else if (k == "reachable_on") c.reachable_on = v;
     }
     return c;
 }
@@ -1132,41 +1134,6 @@ bool write_rnode(const RnodeConfig& c, std::string& err) {
 
     std::string flow = cron_truthy(c.flow_control) ? "yes" : "no";
 
-    // Interface discovery: coordinates and the optional map metadata. Invalid
-    // values are rejected here; rnsd would otherwise panic while parsing them.
-    std::string discover = cron_truthy(c.discover) ? "yes" : "no";
-    std::string lat = util::trim(c.latitude), lon = util::trim(c.longitude);
-    std::string hgt = util::trim(c.height), dname = util::trim(c.discovery_name);
-    std::string reach = util::trim(c.reachable_on);
-    std::string interval = util::trim(c.announce_interval);
-    if (!rnode_num_in_range(interval, 5, 10080)) {
-        err = "discovery announce interval must be 5..10080 minutes"; return false;
-    }
-    auto float_ok = [](const std::string& s, double lo, double hi, double& out) {
-        if (s.empty()) return false;
-        char* end = nullptr;
-        double v = strtod(s.c_str(), &end);
-        if (!end || *end != '\0') return false;
-        out = v;
-        return v >= lo && v <= hi;
-    };
-    if (discover == "yes") {
-        double v = 0;
-        if (!float_ok(lat, -90.0, 90.0, v)) { err = "latitude must be -90..90"; return false; }
-        if (!float_ok(lon, -180.0, 180.0, v)) { err = "longitude must be -180..180"; return false; }
-        if (!hgt.empty() && !float_ok(hgt, -1000.0, 10000.0, v)) {
-            err = "height must be -1000..10000 metres"; return false;
-        }
-    }
-    if (dname.size() > 64 || !conf_value_ok(dname) ||
-        dname.find_first_of("[]#=\"'") != std::string::npos) {
-        err = "discovery name must be a single clean line (max 64)"; return false;
-    }
-    if (reach.size() > 64 || !conf_value_ok(reach) ||
-        reach.find_first_of("[]#=\"'") != std::string::npos) {
-        err = "reachable_on must be a single clean line (max 64)"; return false;
-    }
-
     std::string o =
         "# RNode LoRa modem over USB (CDC-ACM / USB-serial) or BLE.\n"
         "# Managed by the rnsbox-portal Reticulum tab; applied by S81rnode,\n"
@@ -1185,14 +1152,137 @@ bool write_rnode(const RnodeConfig& c, std::string& err) {
     o += "spreadingfactor=" + sf + "\n";
     o += "codingrate=" + cr + "\n";
     o += "flow_control=" + flow + "\n";
-    o += "discover=" + discover + "\n";
-    o += "latitude=" + lat + "\n";
-    o += "longitude=" + lon + "\n";
-    o += "height=" + hgt + "\n";
-    o += "discovery_name=" + dname + "\n";
-    o += "announce_interval=" + interval + "\n";
-    o += "reachable_on=" + reach + "\n";
     if (!util::write_file_atomic(RNODE_FILE, o, 0644)) { err = "write failed"; return false; }
+    return true;
+}
+
+// ---- Map telemetry / location ----
+// One conf file for every publish path. Values that end up as rnsd config
+// keys are validated here; rnsd panics on a malformed float.
+TelemetryConfig read_telemetry() {
+    TelemetryConfig c;
+    bool seen = false;
+    for (const auto& ln : read_lines(TELEMETRY_FILE)) {
+        std::string s = util::trim(ln);
+        if (s.empty() || s[0] == '#' || s.find('=') == std::string::npos) continue;
+        size_t eq = s.find('=');
+        std::string k = util::trim(s.substr(0, eq));
+        std::string v = util::trim(s.substr(eq + 1));
+        seen = true;
+        if (k == "latitude") c.latitude = v;
+        else if (k == "longitude") c.longitude = v;
+        else if (k == "height") c.height = v;
+        else if (k == "name") c.name = v;
+        else if (k == "announce_interval") c.announce_interval = v.empty() ? "360" : v;
+        else if (k == "reachable_on") c.reachable_on = v;
+        else if (k == "discover_lora") c.discover_lora = cron_truthy(v) ? "yes" : "no";
+        else if (k == "discover_tcp") c.discover_tcp = cron_truthy(v) ? "yes" : "no";
+        else if (k == "discover_halow") c.discover_halow = cron_truthy(v) ? "yes" : "no";
+        else if (k == "halow_mqtt") c.halow_mqtt = cron_truthy(v) ? "yes" : "no";
+        else if (k == "halow_ext") c.halow_ext = cron_truthy(v) ? "yes" : "no";
+        else if (k == "halow_dir_en") c.halow_dir_en = cron_truthy(v) ? "yes" : "no";
+        else if (k == "halow_direction") c.halow_direction = v;
+        else if (k == "halow_upstream") c.halow_upstream = v;
+        else if (k == "halow_upstream_port") c.halow_upstream_port = v;
+    }
+    // Upgrade path: the coordinates used to live in rnode.conf. Seed the form
+    // from them until the telemetry file exists, so a box that already had a
+    // location does not lose it when the fields move to the Map tab.
+    if (!seen) {
+        for (const auto& ln : read_lines(RNODE_FILE)) {
+            std::string s = util::trim(ln);
+            if (s.empty() || s[0] == '#' || s.find('=') == std::string::npos) continue;
+            size_t eq = s.find('=');
+            std::string k = util::trim(s.substr(0, eq));
+            std::string v = util::trim(s.substr(eq + 1));
+            if (k == "latitude") c.latitude = v;
+            else if (k == "longitude") c.longitude = v;
+            else if (k == "height") c.height = v;
+            else if (k == "discovery_name") c.name = v;
+            else if (k == "announce_interval") c.announce_interval = v.empty() ? "360" : v;
+            else if (k == "reachable_on") c.reachable_on = v;
+            else if (k == "discover") c.discover_lora = cron_truthy(v) ? "yes" : "no";
+        }
+    }
+    return c;
+}
+
+bool telemetry_any_path(const TelemetryConfig& c) {
+    return cron_truthy(c.discover_lora) || cron_truthy(c.discover_tcp) ||
+           cron_truthy(c.discover_halow) || cron_truthy(c.halow_mqtt);
+}
+
+bool write_telemetry(const TelemetryConfig& c, std::string& err) {
+    std::string lat = util::trim(c.latitude), lon = util::trim(c.longitude);
+    std::string hgt = util::trim(c.height), name = util::trim(c.name);
+    std::string reach = util::trim(c.reachable_on);
+    std::string interval = util::trim(c.announce_interval);
+    if (interval.empty()) interval = "360";
+    if (!rnode_num_in_range(interval, 5, 10080)) {
+        err = "announce interval must be 5..10080 minutes"; return false;
+    }
+    auto float_ok = [](const std::string& s, double lo, double hi, double& out) {
+        if (s.empty()) return false;
+        char* end = nullptr;
+        double v = strtod(s.c_str(), &end);
+        if (!end || *end != '\0') return false;
+        out = v;
+        return v >= lo && v <= hi;
+    };
+    bool on = cron_truthy(c.discover_lora) || cron_truthy(c.discover_tcp) ||
+              cron_truthy(c.discover_halow) || cron_truthy(c.halow_mqtt);
+    if (on) {
+        double v = 0;
+        if (!float_ok(lat, -90.0, 90.0, v)) { err = "latitude must be -90..90"; return false; }
+        if (!float_ok(lon, -180.0, 180.0, v)) { err = "longitude must be -180..180"; return false; }
+        if (!hgt.empty() && !float_ok(hgt, -1000.0, 10000.0, v)) {
+            err = "height must be -1000..10000 metres"; return false;
+        }
+    }
+    if (name.size() > 64 || !conf_value_ok(name) ||
+        name.find_first_of("[]#=\"'\\") != std::string::npos) {
+        err = "map name must be a single clean line (max 64)"; return false;
+    }
+    if (reach.size() > 64 || !conf_value_ok(reach) ||
+        reach.find_first_of("[]#=\"'\\") != std::string::npos) {
+        err = "reachable_on must be a single clean line (max 64)"; return false;
+    }
+    std::string up = util::trim(c.halow_upstream);
+    if (up.empty()) up = "telemetry.rnode-halow.ru";
+    if (up.size() > 128 || !conf_value_ok(up) ||
+        up.find_first_of("[]#=\"' /") != std::string::npos) {
+        err = "upstream MQTT server must be a hostname or IP"; return false;
+    }
+    std::string port = util::trim(c.halow_upstream_port);
+    if (port.empty()) port = "1883";
+    if (!all_digits(port) || port.size() > 5) { err = "upstream port must be numeric"; return false; }
+    long p = std::strtol(port.c_str(), nullptr, 10);
+    if (p < 1 || p > 65535) { err = "upstream port must be 1..65535"; return false; }
+    std::string dir = util::trim(c.halow_direction);
+    if (dir.empty()) dir = "0";
+    if (!all_digits(dir) || dir.size() > 3) { err = "antenna direction must be 0..359"; return false; }
+    long dv = std::strtol(dir.c_str(), nullptr, 10);
+    if (dv < 0 || dv > 359) { err = "antenna direction must be 0..359"; return false; }
+
+    std::string o =
+        "# Map telemetry — managed by the portal Map tab. One set of coordinates\n"
+        "# feeds every enabled publish path.\n"
+        "latitude=" + lat + "\n"
+        "longitude=" + lon + "\n"
+        "height=" + hgt + "\n"
+        "name=" + name + "\n"
+        "announce_interval=" + interval + "\n"
+        "reachable_on=" + reach + "\n"
+        "discover_lora=" + std::string(cron_truthy(c.discover_lora) ? "yes" : "no") + "\n"
+        "discover_tcp=" + std::string(cron_truthy(c.discover_tcp) ? "yes" : "no") + "\n"
+        "discover_halow=" + std::string(cron_truthy(c.discover_halow) ? "yes" : "no") + "\n"
+        "halow_mqtt=" + std::string(cron_truthy(c.halow_mqtt) ? "yes" : "no") + "\n"
+        "halow_ext=" + std::string(cron_truthy(c.halow_ext) ? "yes" : "no") + "\n"
+        "halow_dir_en=" + std::string(cron_truthy(c.halow_dir_en) ? "yes" : "no") + "\n"
+        "halow_direction=" + dir + "\n"
+        "halow_upstream=" + up + "\n"
+        "halow_upstream_port=" + port + "\n";
+    if (!util::write_file_atomic(TELEMETRY_FILE, o, 0644)) { err = "write failed"; return false; }
     return true;
 }
 

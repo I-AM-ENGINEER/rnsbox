@@ -39,24 +39,6 @@ bool nomadnet_on() {
     return false;
 }
 
-// Map tab only when rnsd is configured to collect interface-discovery
-// announces; without that store the page would always be empty.
-bool map_on() {
-    std::string c = util::read_file("/etc/reticulum/config", 64 * 1024);
-    size_t p = 0;
-    while (p < c.size()) {
-        size_t e = c.find('\n', p);
-        if (e == std::string::npos) e = c.size();
-        std::string line = util::trim(c.substr(p, e - p));
-        if (line.compare(0, 21, "discover_interfaces =") == 0) {
-            std::string v = util::trim(line.substr(21));
-            return v == "yes" || v == "Yes" || v == "1" || v == "true";
-        }
-        p = e + 1;
-    }
-    return false;
-}
-
 std::string pct(const std::string& s) {
     static const char* hex = "0123456789ABCDEF";
     std::string o;
@@ -179,12 +161,13 @@ std::string layout(const http::Request& req, http::Response& res,
                std::string((active && std::string(active) == "wifi") ? "active" : "") + "\">WiFi</a>";
     nav_console = "<a href=\"" + esc(web::base()) + "/console\" class=\"" +
                   std::string((active && std::string(active) == "console") ? "active" : "") + "\">Console</a>";
-    // The standalone RNode page is hidden: the RNode LoRa card on the
-    // Reticulum tab configures and attaches the modem. Map needs the Linux
-    // helpers (rnsd storage).
-    if (map_on())
-        nav_map = "<a href=\"" + esc(web::base()) + "/map\" class=\"" +
-                  std::string((active && std::string(active) == "map") ? "active" : "") + "\">Map</a>";
+    // Both tabs are always present on the Linux appliance: the Map tab owns
+    // the location settings (it must stay reachable even with every publish
+    // path off), and the RNode tab hosts rnodeconf-style modem tools.
+    nav_rnode = "<a href=\"" + esc(web::base()) + "/rnode\" class=\"" +
+                std::string((active && std::string(active) == "rnode") ? "active" : "") + "\">RNode</a>";
+    nav_map = "<a href=\"" + esc(web::base()) + "/map\" class=\"" +
+              std::string((active && std::string(active) == "map") ? "active" : "") + "\">Map</a>";
 #endif
     kv.push_back({"__NAV_WIFI__", nav_wifi});
     kv.push_back({"__NAV_CONSOLE__", nav_console});

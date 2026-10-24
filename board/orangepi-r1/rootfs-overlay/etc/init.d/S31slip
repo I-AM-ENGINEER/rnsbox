@@ -47,6 +47,13 @@ start() {
 	enabled=$(cfg enabled)
 	case "$enabled" in yes|true|1|on) ;; *) echo "S31slip: disabled"; return 0 ;; esac
 
+	# Network-attached modem (mode=ip): rnsd reaches it directly over TCP
+	# at peer_ip:tcp_port; there is no UART to attach and no sl0 to create.
+	if [ "$(cfg mode)" = "ip" ]; then
+		echo "S31slip: network mode ($(cfg peer_ip):$(cfg tcp_port))"
+		return 0
+	fi
+
 	device=$(cfg device);     [ -n "$device" ]   || device=/dev/serial0
 	baud=$(cfg baud);         [ -n "$baud" ]     || baud=2000000
 	local_ip=$(cfg local_ip); [ -n "$local_ip" ] || local_ip=192.168.7.1

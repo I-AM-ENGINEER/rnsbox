@@ -64,3 +64,16 @@ CONFIG_BRCMFMAC_SDIO=y
 #     gzip cpio built by post-image.sh from the target busybox) ---
 CONFIG_BLK_DEV_INITRD=y
 CONFIG_RD_GZIP=y
+
+# --- zram swap: the Zero 2 W has 512 MB and Reticulum grows to ~0.5 GB.
+#     S05zram formats and swapon's it at boot; compressing swap in RAM is the
+#     only way a busy node survives without an SD-backed swap file. LZ4 is the
+#     best CPU/ratio trade-off on the A53. ---
+CONFIG_SWAP=y
+CONFIG_ZSMALLOC=y
+CONFIG_ZRAM=y
+CONFIG_ZRAM_BACKEND_LZO=y
+CONFIG_ZRAM_BACKEND_LZ4=y
+CONFIG_ZRAM_DEF_COMP_LZ4=y
+CONFIG_LZ4_COMPRESS=y
+CONFIG_LZ4_DECOMPRESS=y

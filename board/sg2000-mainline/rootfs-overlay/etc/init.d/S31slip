@@ -40,6 +40,13 @@ start() {
 	enabled=$(cfg enabled)
 	case "$enabled" in yes|true|1|on) ;; *) echo "S31slip: disabled"; return 0 ;; esac
 
+	# Network-attached modem (mode=ip): rnsd reaches it directly over TCP
+	# at peer_ip:tcp_port; there is no UART to attach and no sl0 to create.
+	if [ "$(cfg mode)" = "ip" ]; then
+		echo "S31slip: network mode ($(cfg peer_ip):$(cfg tcp_port))"
+		return 0
+	fi
+
 	# Mainline pinctrl does not model the UART1 pads. Mux XGPIOA[28]/[29]
 	# to fmux function 1 here (the value the vendor u-boot writes on the
 	# boards where it does); /dev/mem is enabled for this bring-up path.

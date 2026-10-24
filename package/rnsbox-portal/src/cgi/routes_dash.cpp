@@ -149,30 +149,32 @@ static std::string halow_script_html(const std::string& base) {
       if(d.error){ body.innerHTML='<p class="muted">Login expired — reload the page.</p>'; return; }   // 401 JSON
       if(!d.enabled){ card.hidden=true; return; }
       if(!d.reachable){
-        var sl=d.sl0_up?'<span class="badge ok">UP</span>':'<span class="badge warn">DOWN</span>';
-        body.innerHTML='<table class="kv"><tr><th>Link (sl0)</th><td>'+sl+'</td></tr></table>'+
+        var ip = d.mode === 'ip';
+        body.innerHTML='<table class="kv"><tr><th>Status</th><td><span class="badge warn">DOWN</span></td></tr></table>'+
           '<p class="muted" style="margin:6px 0 0">'+
-          (d.sl0_up?'The modem is not answering over SLIP.':'The SLIP link (sl0) is not up.')+'</p>';
+          (ip ? ('The modem at '+esc(d.peer)+' is not answering.')
+              : (d.sl0_up?'The modem is not answering over SLIP.':'The SLIP link (sl0) is not up.'))+
+          '</p>';
         return;
       }
-      var rd=d.radio||{}, st=d.stats||{}, dv=d.device||{}, b=d.best, ns=d.neighbours||[];
+      var rd=d.radio||{}, st=d.stats||{}, dv=d.device||{};
       var mcs = (rd.mcs==null||rd.mcs==='') ? 'MCS?' : 'MCS'+esc((''+rd.mcs).replace(/^mcs\s*/i,''));
       var fw = (dv.fw ? esc((''+dv.fw).split(' ')[0]) : '?');
+      function pct(v){ var n=num(v); return n==null ? '<span class="muted">&mdash;</span>' : n.toFixed(2)+' %'; }
+      function dbm(v){ var n=num(v); return n==null ? esc(v||'?') : n+' dBm'; }
       var rows=[
-        ['Link (sl0)','<span class="badge ok">UP</span>'],
-        ['Addresses','<span class="val">'+esc(d.local)+' &rarr; '+esc(d.peer)+'</span>'],
-        ['rnsd interface', d.rnsd_up?'<span class="badge ok">UP</span>':'<span class="badge warn">DOWN</span>'],
+        ['Status','<span class="badge ok">UP</span>'],
+        ['Address','<span class="val">'+(d.mode==='ip'?(esc(d.peer)+':'+esc(d.tcp_port||4242)):(esc(d.local)+' &rarr; '+esc(d.peer)))+'</span>'],
         ['Radio','<span class="val">'+unit(rd.freq,'MHz')+' · '+unit(rd.bw,'MHz')+' · '+mcs+' · '+unit(rd.power,'dBm')+'</span>'],
-        ['Airtime','<span class="val">'+esc(st.airtime||'?')+'</span> <span class="dim">· ch-util '+esc(st.ch_util||'?')+'</span>'],
-        ['Noise floor', noise(st.noise)],
-        ['Throughput','<span class="val">&darr; '+esc(st.rx_speed||'?')+' · &uarr; '+esc(st.tx_speed||'?')+'</span>'],
-        ['Traffic','<span class="val">&darr; '+esc(st.rx_bytes||'?')+' · &uarr; '+esc(st.tx_bytes||'?')+'</span>'],
-        ['Best peer', b?(sig(num(b.rssi),'dBm',-75,-88)+' · '+sig(num(b.snr),'dB',10,5)):'<span class="muted">none heard</span>'],
-        ['Neighbours','<span class="val">'+ns.length+'</span>'],
-        ['Modem','<span class="val">'+esc(dv.temp||'?')+' · fw '+fw+' · up '+esc(dv.uptime||'?')+'</span>'],
+        ['Airtime',pct(st.airtime)],
+        ['Channel load',pct(st.ch_util)],
+        ['Noise floor',dbm(st.noise)],
+        ['RX / TX','<span class="val">'+esc(st.rx_bytes||'?')+' / '+esc(st.tx_bytes||'?')+'</span>'],
+        ['Temperature','<span class="val">'+esc(dv.temp||'?')+'</span>'],
+        ['Firmware','<span class="val">'+fw+'</span>'],
+        ['Uptime','<span class="val">'+esc(dv.uptime||'?')+'</span>'],
       ];
-      body.innerHTML='<table class="kv">'+rows.map(function(x){return '<tr><th>'+x[0]+'</th><td>'+x[1]+'</td></tr>';}).join('')+'</table>'+
-        (d.rnsd_up?'':'<p class="muted" style="margin:6px 0 0">rnsd has no interface connected to the modem — add it on the Reticulum tab.</p>');
+      body.innerHTML='<table class="kv">'+rows.map(function(x){return '<tr><th>'+x[0]+'</th><td>'+x[1]+'</td></tr>';}).join('')+'</table>';
     }).catch(function(){ body.innerHTML='<p class="muted">Could not read modem status.</p>'; });
   }
   window.__loadHalow = load;
