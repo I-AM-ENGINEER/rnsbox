@@ -14,6 +14,7 @@
 #include "rnstatusd_client.h"
 #endif
 #include <cctype>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
