@@ -1,0 +1,57 @@
+#!/bin/sh
+# S99diag — boot-time recovery plus a one-page health report on the boot FAT.
+#
+# The boot partition is a FAT filesystem every PC can read, which makes it the
+# one place that still works when the portal login is lost and SSH does not
+# come up. Two files live there:
+#
+#   reset-admin      create an empty file and reboot: the portal auth store,
+#                    its sessions and the Unix admin password go back to
+#                    admin/admin. The flag is removed after it is applied.
+#   rnsbox-diag.txt  rewritten on every boot: image version, whether / and
+#                    /etc/rnsbox are writable, rootfs free space, auth.json
+#                    presence and the sshd/host-key state. This separates a
+#                    stale password from a read-only or full filesystem,
+#                    which look identical from the browser.
+#
+# Silent no-op when /boot is not mounted or not writable.
+set -u
+[ -d /boot ] || exit 0
+[ -w /boot ] || exit 0
+
+RESET=0
+if [ -e /boot/reset-admin ]; then
+	rm -f /etc/rnsbox/auth.json /var/lib/rnsbox/portal.session /run/rnsbox-defpass.cache
+	printf 'admin\nadmin\n' | /usr/bin/passwd -a sha512 admin >/dev/null 2>&1 || true
+	rm -f /boot/reset-admin
+	RESET=1
+fi
+
+root=$(awk '$2 == "/" { print $4; exit }' /proc/mounts 2>/dev/null)
+case "$root" in
+	*ro*) root_state=read-only ;;
+	*)    root_state=rw ;;
+esac
+free_kb=$(df -k / 2>/dev/null | awk 'NR == 2 { print $4 }')
+if touch /etc/rnsbox/.write-test 2>/dev/null; then
+	etc_state=writable
+	rm -f /etc/rnsbox/.write-test
+else
+	etc_state=READ-ONLY
+fi
+[ -f /etc/rnsbox/auth.json ] && auth=present || auth=absent
+keys=$(ls /etc/ssh/ssh_host_*_key 2>/dev/null | wc -l)
+if pidof sshd >/dev/null 2>&1; then sshd=running; else sshd=not-running; fi
+
+{
+	echo "image: $(cat /etc/rnsbox/image.ver 2>/dev/null || echo unknown)"
+	echo "reset-admin: $RESET"
+	echo "root: $root_state"
+	echo "root_free_kb: ${free_kb:-?}"
+	echo "etc-rnsbox: $etc_state"
+	echo "auth.json: $auth"
+	echo "ssh_hostkeys: $keys"
+	echo "sshd: $sshd"
+} > /boot/rnsbox-diag.txt 2>/dev/null
+
+exit 0
