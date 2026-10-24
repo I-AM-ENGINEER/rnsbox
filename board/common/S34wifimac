@@ -1,0 +1,51 @@
+#!/bin/sh
+# S34wifimac — stable WiFi MAC on AIC8800 boards.
+#
+# The AIC8800 vendor firmware assigns a random WiFi MAC at every boot unless
+# a MAC_ADDR is supplied. The box ID (rnsbox-XXXXXX) is persistent and unique,
+# so derive a locally-administered MAC from it. /etc/rnsbox/wifi-mac overrides
+# the derived value. S35wifi applies /run/rnsbox-wifi-mac to the physical
+# interface before it is brought up.
+#
+# The vendor settings file is written too: the vendor OS reads
+# /mnt/system/firmware/aic8800/rwnx_settings.ini at driver load. This image
+# has no /mnt/system partition, so the file lands on the rootfs; the S35wifi
+# interface hook is the authoritative path either way.
+
+ID_FILE=/etc/rnsbox/device-id
+MAC_FILE=/etc/rnsbox/wifi-mac
+RUN_FILE=/run/rnsbox-wifi-mac
+
+# Only AIC8800 boards randomise the MAC; fused-MAC radios keep theirs.
+if [ ! -e /etc/modprobe.d/aic8800-debug.conf ] &&
+   ! ls /lib/modules/*/aic8800_fdrv.ko >/dev/null 2>&1; then
+	exit 0
+fi
+
+id=$(tr -d '[:space:]' < "$ID_FILE" 2>/dev/null)
+case "$id" in
+	[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]) ;;
+	*) id=$(tr -d '[:space:]' < /etc/machine-id 2>/dev/null | cut -c1-6) ;;
+esac
+
+mac=$(tr -d '[:space:]' < "$MAC_FILE" 2>/dev/null)
+if ! printf '%s' "$mac" | grep -Eq '^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$'; then
+	mac=
+fi
+if [ -z "$mac" ]; then
+	case "$id" in
+		[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f])
+			mac="02:52:4E:$(printf '%s' "$id" | cut -c1-2):$(printf '%s' "$id" | cut -c3-4):$(printf '%s' "$id" | cut -c5-6)"
+			;;
+		*) exit 0 ;;
+	esac
+fi
+
+printf '%s\n' "$mac" > "$RUN_FILE" 2>/dev/null
+chmod 0644 "$RUN_FILE" 2>/dev/null
+
+# Vendor firmware setting (its own /mnt/system path; harmless if unused).
+if mkdir -p /mnt/system/firmware/aic8800 2>/dev/null; then
+	printf 'MAC_ADDR=%s\n' "$mac" > /mnt/system/firmware/aic8800/rwnx_settings.ini 2>/dev/null
+	sync
+fi

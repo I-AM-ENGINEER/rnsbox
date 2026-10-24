@@ -134,7 +134,10 @@ __HALOW_SCRIPT__
       setText('d-usb-rxtx', (uif.rx||'0')+' / '+(uif.tx||'0'));
     }
     setHTML('d-rnsd-status', rn.running
-      ? '<span class="badge ok">RUNNING</span>'
+      ? '<span class="badge ok">RUNNING</span>' + (rn.interfaces
+          ? ' <span class="muted">' + rn.interfaces.active + '/' + rn.interfaces.total + ' interfaces · '
+            + (rn.destinations != null ? rn.destinations : '—') + ' destinations</span>'
+          : ' <span class="muted">interfaces — · destinations —</span>')
       : '<span class="badge err">STOPPED</span>');
     setText('d-rnsd-mem', rn.running && rn.rss_mb ? rn.rss_mb+' MB' : '—');
     setText('d-rnsd-uptime', (rn.uptime_s >= 0 && rn.uptime) ? 'up '+rn.uptime : '—');

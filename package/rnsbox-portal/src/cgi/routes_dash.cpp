@@ -14,7 +14,9 @@
 #include "updatecheck.h"
 #include "util.h"
 #include "wifi.h"
+#include "json.h"
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <sys/stat.h>
@@ -237,8 +239,73 @@ static std::string ble_card_html(const std::string& base) {
     return web::replace_all(std::move(s), "__BLE_TRAFFIC__", traffic);
 }
 
+// Counts for the Reticulum status line: live interfaces (up/total, shared
+// instance excluded) and path-table entries, all from the rnstatus snapshot
+// the Reticulum tab already keeps warm. No subprocess, and -1 means "not
+// known yet" (cold boot, helper restarting) so the UI can show a dash.
+struct RnsCounts { int total = -1, active = -1, paths = -1; };
+
+static RnsCounts reticulum_counts() {
+    RnsCounts c;
+    std::string data = util::read_file("/run/rnsbox-rnstatus-v2.json", 1024 * 1024);
+    if (data.empty()) return c;
+    json::Value root;
+    std::string err;
+    if (!json::parse(data, root, err) || !root.is_object()) return c;
+    const json::Value* arr = root.find("interfaces");
+    if (arr && arr->is_array()) {
+        c.total = 0;
+        c.active = 0;
+        for (const json::Value& v : arr->arr) {
+            // rnsd's own RPC plumbing is not a network interface: the shared
+            // server and each client's LocalInterface would inflate both
+            // numbers (the Reticulum tab's count is the configured set).
+            const json::Value* type = v.find("type");
+            if (type && type->is_string() &&
+                (type->str == "LocalServerInterface" || type->str == "LocalClientInterface"))
+                continue;
+            c.total++;
+            const json::Value* s = v.find("status");
+            if (!s) continue;
+            if (s->is_bool()) {
+                if (s->b) c.active++;
+            } else if (s->is_number()) {
+                if (s->num != 0) c.active++;
+            } else if (s->is_string()) {
+                std::string u = s->str;
+                for (auto& ch : u) ch = (char)tolower((unsigned char)ch);
+                if (u == "up" || u == "true" || u == "yes" || u == "1") c.active++;
+            }
+        }
+    }
+    const json::Value* p = root.find("path_table_count");
+    if (p && p->is_number()) c.paths = (int)p->as_int(0);
+    return c;
+}
+
 // --- RNode LoRa card: like BLE/HaLow, the modem is a full interface. All
 // server-side from rnode.conf + S81rnode's /run status file — no subprocess.
+//
+// Air rate is the plain semtech formula: Rb = (BW / 2^SF) * SF * 4/CR.
+// Sensitivity is the usual SX126x/SX127x reference at 125 kHz shifted by
+// 10*log10(BW/125 kHz); antenna gain and noise are deliberately not modelled.
+static std::string lora_air_rate(const store::RnodeConfig& rc) {
+    int bw = atoi(rc.bandwidth.c_str());
+    int sf = atoi(rc.spreadingfactor.c_str());
+    int cr = atoi(rc.codingrate.c_str());
+    if (bw <= 0 || sf < 5 || sf > 12 || cr < 5 || cr > 8) return "";
+    static const double sens[8] = {-118, -121, -123, -126, -129, -132, -134.5, -137};
+    double sym = (double)bw / (double)(1u << sf);
+    double bps = sym * (double)sf * 4.0 / (double)cr;
+    double sn = sens[sf - 5] + 10.0 * log10((double)bw / 125000.0);
+    char buf[128];
+    if (bps >= 1000)
+        snprintf(buf, sizeof(buf), "%.1f kbps &middot; sensitivity %.0f dBm", bps / 1000.0, sn);
+    else
+        snprintf(buf, sizeof(buf), "%.0f bps &middot; sensitivity %.0f dBm", bps, sn);
+    return buf;
+}
+
 static std::string rnode_card_html(const std::string& base) {
     store::RnodeConfig rc = store::read_rnode();
     store::RnodeStatus st = store::read_rnode_status();
@@ -249,7 +316,9 @@ static std::string rnode_card_html(const std::string& base) {
     else if (st.state == "ok" && !st.port.empty())
         status = "<span class=\"badge ok\">ready</span> <span class=\"mono\">" + E(st.port) + "</span>";
     else if (st.state == "waiting" || st.state == "scanning")
-        status = "<span class=\"badge warn\">" + E(st.state) + "</span> " + E(st.message);
+        // No paragraph of advice here: the peer and bond state have their own
+        // rows, and pairing lives on the Reticulum tab.
+        status = "<span class=\"badge warn\">waiting for device</span>";
     else if (!st.state.empty())
         status = "<span class=\"badge warn\">" + E(st.state.empty() ? "off" : st.state) + "</span> " + E(st.message);
     else
@@ -261,13 +330,31 @@ static std::string rnode_card_html(const std::string& base) {
              atoi(rc.frequency.c_str()) / 1000000.0, bw_khz,
              rc.spreadingfactor.c_str(), rc.codingrate.c_str());
 
+    std::string peer, bond;
+    if (rc.transport == "ble") {
+        peer = rc.ble_address.empty()
+            ? "any advertising RNode"
+            : "<span class=\"mono\">" + E(rc.ble_address) + "</span>";
+        std::string b = rc.ble_address.empty() ? std::string() : store::bt_peer_bond(rc.ble_address);
+        if (b == "bonded") bond = "<span class=\"badge ok\">bonded</span>";
+        else if (b == "paired") bond = "<span class=\"badge warn\">paired, not bonded</span>";
+        else if (b == "none") bond = "<span class=\"badge err\">not paired</span>";
+    } else {
+        peer = "<span class=\"mono\">" + E(rc.device) + "</span>";
+    }
+
     std::string s =
         "<section class=\"card\" id=\"rnode-card\">\n"
         "    <h3>RNode LoRa</h3>\n"
         "    <table class=\"kv\">\n"
         "      <tr><th>Status</th><td>" + status + "</td></tr>\n"
         "      <tr><th>Transport</th><td>" + E(rc.transport) + "</td></tr>\n"
+        "      <tr><th>Peer</th><td>" + peer + "</td></tr>\n";
+    if (!bond.empty())
+        s += "      <tr><th>Bluetooth bond</th><td>" + bond + "</td></tr>\n";
+    s +=
         "      <tr><th>Radio</th><td>" + E(radio) + "</td></tr>\n"
+        "      <tr><th>Air rate (max)</th><td>" + lora_air_rate(rc) + "</td></tr>\n"
         "      <tr><th>TX power</th><td>" + E(rc.txpower) + " dBm</td></tr>\n"
         "    </table>\n"
         "    <p class=\"cardfoot\"><a class=\"btn\" href=\"" + base + "/reticulum#rnode\">Manage &rarr;</a></p>\n"
@@ -539,9 +626,18 @@ void dashboard_page(const Request& req, Response& res) {
     h = R(std::move(h), "__WIFI_CARD__", wifi_card_html(base, net));
 
     // Reticulum card
+    RnsCounts rcounts = reticulum_counts();
     std::string rstat;
     if (rnsd.running) {
         rstat = "<span class=\"badge ok\">RUNNING</span>";
+        if (rcounts.total >= 0) {
+            rstat += " <span class=\"muted\">" + std::to_string(rcounts.active) + "/" +
+                     std::to_string(rcounts.total) + " interfaces &middot; " +
+                     (rcounts.paths >= 0 ? std::to_string(rcounts.paths) : std::string("&mdash;")) +
+                     " destinations</span>";
+        } else {
+            rstat += " <span class=\"muted\">interfaces &mdash; &middot; destinations &mdash;</span>";
+        }
     } else {
         rstat = "<span class=\"badge err\">STOPPED</span>";
     }
@@ -605,6 +701,7 @@ void dashboard_data(const Request& req, Response& res) {
 
     sysinfo::Summary sys = sysinfo::summary();
     sysinfo::Rnsd    rnsd = sysinfo::rnsd_status();
+    RnsCounts        rcounts = reticulum_counts();
     sysinfo::Network net  = sysinfo::network_summary();
     store::WanConfig  wan  = store::read_wan();
     const sysinfo::Iface* wif = find_iface(net, sysinfo::wan_display_iface(wan.interface, net));
@@ -632,6 +729,11 @@ void dashboard_data(const Request& req, Response& res) {
     J += ",\"rss_mb\":" + (rnsd.rss_mb >= 0  ? std::to_string(rnsd.rss_mb) : std::string("null"));
     J += ",\"uptime_s\":" + std::to_string(rnsd.uptime_s);
     J += ",\"uptime\":\"" + JE(rnsd.uptime_s >= 0 ? fmt_uptime(rnsd.uptime_s) : std::string()) + "\"";
+    J += ",\"interfaces\":" + (rcounts.total >= 0
+            ? "{\"active\":" + std::to_string(rcounts.active) +
+              ",\"total\":" + std::to_string(rcounts.total) + "}"
+            : std::string("null"));
+    J += ",\"destinations\":" + (rcounts.paths >= 0 ? std::to_string(rcounts.paths) : std::string("null"));
     J += "},";
     J += "\"wan_label\":\"" + JE(sysinfo::wan_label(wan.interface, net)) + "\",";
     J += "\"wan_if\":" + iface_json(wif) + ",";

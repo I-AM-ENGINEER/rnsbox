@@ -155,6 +155,11 @@ strong { font-weight: 600; }
 .rnsh-block { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
 .rnsh-block h4 { margin: 0 0 6px; }
 .rnsh-block > p { margin: 0 0 8px; max-width: 80ch; }
+.lora-calc { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--border);
+  display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
+.lora-calc .lora-note { flex-basis: 100%; margin: 0; font-size: 12px; max-width: 90ch; }
+.lora-calc .lora-rssi { display: inline-flex; gap: 6px; align-items: center; margin: 0; }
+.lora-calc .lora-rssi input { width: 90px; }
 
 .cards {
   display: grid;

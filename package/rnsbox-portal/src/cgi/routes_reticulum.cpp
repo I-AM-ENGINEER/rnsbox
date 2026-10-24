@@ -2098,7 +2098,21 @@ static bool rnstatus_normalise(const std::string& raw, std::string& out) {
     }
     o += "],\"transport\":{\"hash\":\"" + http::json_escape(thash) +
          "\",\"uptime\":\"" + http::json_escape(tupt) +
-         "\",\"state\":\"" + http::json_escape(tstate) + "\"}}";
+         "\",\"state\":\"" + http::json_escape(tstate) + "\"}";
+    // The resident helper adds the destination-table size; the normaliser
+    // rebuilds the document, so carry the counter across explicitly.
+    size_t kp = raw.find("\"path_table_count\"");
+    if (kp != std::string::npos) {
+        size_t colon = raw.find(':', kp);
+        if (colon != std::string::npos) {
+            const char* p = raw.c_str() + colon + 1;
+            char* end = nullptr;
+            long long v = std::strtoll(p, &end, 10);
+            if (end && end != p && v >= 0)
+                o += ",\"path_table_count\":" + std::to_string(v);
+        }
+    }
+    o += "}";
     util::write_file_atomic(RNSTATUS_CACHE, o, 0600);
     out = std::move(o);
     return true;
@@ -2357,9 +2371,11 @@ static std::string rnode_fill(std::string h) {
     } else if (st.state == "ok" && !st.port.empty()) {
         status = "<span class=\"badge ok\">ready</span> <span class=\"mono\">" + E(st.port) + "</span>";
     } else if (st.state == "waiting") {
-        status = "<span class=\"badge warn\">waiting for device</span> " + E(st.message);
+        status = "<span class=\"badge warn\">waiting for device</span>";
     } else if (st.state == "scanning") {
-        status = "<span class=\"badge warn\">scanning</span> " + E(st.message);
+        // Deliberately no paragraph here: the peer and bond rows below carry
+        // the address and what to do about a missing bond.
+        status = "<span class=\"badge warn\">waiting for device</span>";
     } else if (st.state == "no-pyserial") {
         status = "<span class=\"badge err\">pyserial missing</span> the image lacks the serial module RNS needs for USB RNodes";
     } else if (st.state == "no-ble-stack") {
@@ -2415,6 +2431,46 @@ static std::string rnode_fill(std::string h) {
     h = R(std::move(h), "__RNODE_CR__",         E(rc.codingrate));
     h = R(std::move(h), "__RNODE_FLOW_CHECKED__", truthy(rc.flow_control) ? "checked" : "");
 
+    // Saved peer + BlueZ bond state: the card tells you which modem it will
+    // attach to before rnsd ever opens it, and whether the link keys exist.
+    std::string peer;
+    if (ble)
+        peer = rc.ble_address.empty()
+            ? "<span class=\"muted\">any advertising RNode</span>"
+            : "<span class=\"mono\">" + E(rc.ble_address) + "</span>" +
+              (rc.ble_name.empty() ? "" : " <span class=\"muted\">" + E(rc.ble_name) + "</span>");
+    else if (usb)
+        peer = "<span class=\"mono\">" + E(rc.device) + "</span>";
+    else
+        peer = "<span class=\"muted\">none</span>";
+    h = R(std::move(h), "__RNODE_PEER__", peer);
+
+    std::string bond = "<span class=\"muted\">n/a over USB</span>";
+    if (ble) {
+        if (rc.ble_address.empty()) {
+            bond = "<span class=\"muted\">no device selected</span>";
+        } else {
+            std::string b = store::bt_peer_bond(rc.ble_address);
+            if (b == "bonded")
+                bond = "<span class=\"badge ok\">bonded</span> <span class=\"muted\">BlueZ holds the link keys</span>";
+            else if (b == "paired")
+                bond = "<span class=\"badge warn\">paired, not bonded</span> <span class=\"muted\">reconnect the peer or Pair again</span>";
+            else
+                bond = "<span class=\"badge err\">not paired</span> <span class=\"muted\">use Pair in the scan list above</span>";
+        }
+    }
+    h = R(std::move(h), "__RNODE_BOND__", bond);
+
+    // Interface discovery: coordinates and announce cadence, published in the
+    // managed [[RNode]] stanza by S81rnode.
+    h = R(std::move(h), "__RNODE_DISCOVER_CHECKED__", truthy(rc.discover) ? "checked" : "");
+    h = R(std::move(h), "__RNODE_LAT__",          E(rc.latitude));
+    h = R(std::move(h), "__RNODE_LON__",          E(rc.longitude));
+    h = R(std::move(h), "__RNODE_HEIGHT__",       E(rc.height));
+    h = R(std::move(h), "__RNODE_DISC_NAME__",    E(rc.discovery_name));
+    h = R(std::move(h), "__RNODE_ANNOUNCE__",     E(rc.announce_interval.empty() ? "360" : rc.announce_interval));
+    h = R(std::move(h), "__RNODE_REACHABLE__",    E(rc.reachable_on));
+
     std::string stack;
     if (!store::rnode_ble_stack_present())
         stack = "<p class=\"muted\" style=\"margin:6px 0 0\">This image has no BLE stack (bluez/dbus + bleak) — "
@@ -2437,6 +2493,14 @@ void reticulum_rnode(const Request& req, Response& res) {
     c.spreadingfactor = util::trim(req.f("spreadingfactor"));
     c.codingrate      = util::trim(req.f("codingrate"));
     c.flow_control    = req.f("flow_control") == "on" ? "yes" : "no";
+    c.discover        = req.f("discover") == "on" ? "yes" : "no";
+    c.latitude        = util::trim(req.f("latitude"));
+    c.longitude       = util::trim(req.f("longitude"));
+    c.height          = util::trim(req.f("height"));
+    c.discovery_name  = util::trim(req.f("discovery_name"));
+    c.announce_interval = util::trim(req.f("announce_interval"));
+    if (c.announce_interval.empty()) c.announce_interval = "360";
+    c.reachable_on    = util::trim(req.f("reachable_on"));
     std::string err;
     if (!store::write_rnode(c, err)) {
         render::redirect_flash(res, ret_redirect(), "error", "RNode: " + err + ".");
@@ -2464,7 +2528,7 @@ void reticulum_rnode(const Request& req, Response& res) {
 // on the target); same pattern as the halow modem cache.
 constexpr const char* RNODE_SCAN_CACHE = "/run/rnsbox-rnode-scan.json";
 constexpr const char* RNODE_SCAN_LOCK  = "/run/rnsbox-rnode-scan.lock";
-constexpr int RNODE_SCAN_TTL = 15;   // seconds
+constexpr int RNODE_SCAN_TTL = 60;   // seconds; a scan itself takes ~20 s
 
 static bool rnode_scan_fresh(std::string& out) {
     struct stat st;
@@ -2529,14 +2593,18 @@ void reticulum_rnode_scan(const Request& req, Response& res) {
         res.body = "{\"error\":\"no BLE stack in this image (bluez/dbus + bleak needed)\",\"devices\":[]}";
         return;
     }
-    util::RunResult rr = util::run({"/usr/bin/python3", "/usr/lib/rnsbox/rnode.py", "scan"}, "", 20);
+    // Python + bleak import alone is ~12 s on the C906 and the discovery
+    // window is 6 s, so 20 s killed healthy scans. 60 s leaves room for a
+    // loaded single core without holding the lock indefinitely.
+    util::RunResult rr = util::run({"/usr/bin/python3", "/usr/lib/rnsbox/rnode.py", "scan"}, "", 60);
     std::string out = util::trim(rr.out);
     if (rr.exit_code == 0 && !out.empty() && out[0] == '{') {
         util::write_file_atomic(RNODE_SCAN_CACHE, rr.out, 0600);
         res.body = rr.out;
         return;
     }
-    res.body = "{\"error\":\"scan failed\",\"devices\":[]}";
+    std::string why = out.empty() ? std::string("timed out") : out.substr(0, out.find('\n'));
+    res.body = "{\"error\":\"scan failed: " + http::json_escape(why) + "\",\"devices\":[]}";
 }
 
 // POST /reticulum/rnode/pair — manual bluetoothctl pair (+ trust) as a

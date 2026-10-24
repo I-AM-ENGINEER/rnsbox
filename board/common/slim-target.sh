@@ -49,6 +49,19 @@ fi
 if [ -f "$COMMON_DIR/S11console" ] && [ -d "$T/etc/init.d" ]; then
 	install -m 0755 "$COMMON_DIR/S11console" "$T/etc/init.d/S11console"
 fi
+# Stable WiFi MAC on AIC8800 boards: the vendor firmware randomises it at
+# every boot. S34 derives it from the persistent box ID; S35wifi applies it
+# to wlan0 before up. The script itself exits on boards with a fused MAC.
+if [ -f "$COMMON_DIR/S34wifimac" ] && [ -d "$T/etc/init.d" ]; then
+	install -m 0755 "$COMMON_DIR/S34wifimac" "$T/etc/init.d/S34wifimac"
+fi
+# RNode LoRa interface (USB or BLE): the portal's RNode card writes
+# /etc/rnsbox/rnode.conf and calls `S81rnode reload` to regenerate the
+# managed [[RNode ...]] section of /etc/reticulum/config. Universal: works on
+# every board (USB), and on boards with a BLE stack (RNode firmware over NUS).
+if [ -f "$COMMON_DIR/S81rnode" ] && [ -d "$T/etc/init.d" ]; then
+	install -m 0755 "$COMMON_DIR/S81rnode" "$T/etc/init.d/S81rnode"
+fi
 # Periodic monitor: rnstatus warm-up, memory watchdog and the Bluetooth
 # peers/traffic cache (30 s idle, 5 s while the portal page is open).
 if [ -f "$COMMON_DIR/S83mon" ] && [ -d "$T/etc/init.d" ]; then

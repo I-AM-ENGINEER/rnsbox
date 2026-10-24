@@ -62,6 +62,13 @@ cfg() {
 	  | tail -1 | tr -d '"' | tr -d "'" | awk '{print $1}'
 }
 
+# same lookup, but keeps the rest of the line: discovery names and
+# reachable_on may legitimately contain spaces.
+cfg_text() {
+	sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$CONF" 2>/dev/null \
+	  | tail -1 | tr -d '\r' | tr -d '"' | tr -d "'"
+}
+
 # digits-only check (builtins; an empty string fails)
 num_ok() { case "$1" in ""|*[!0-9]*) return 1 ;; esac; return 0; }
 
@@ -88,7 +95,9 @@ have_py() {
 # an image without them must degrade to enabled = no, never panic rnsd.)
 ble_stack_ok() {
 	have_py bleak || return 1
-	command -v bluetoothd >/dev/null 2>&1 || return 1
+	# BlueZ installs the daemon in /usr/libexec/bluetooth on some images, so
+	# PATH lookup alone rejects a perfectly working adapter.
+	command -v bluetoothd >/dev/null 2>&1 || [ -x /usr/libexec/bluetooth/bluetoothd ] || return 1
 	[ -S /run/dbus/system_bus_socket ] || [ -S /var/run/dbus/system_bus_socket ] || return 1
 	return 0
 }
@@ -130,6 +139,22 @@ emit_block() {
 	echo "    spreadingfactor = $SPREADINGFACTOR"
 	echo "    codingrate = $CODINGRATE"
 	echo "    flow_control = $FLOW_CONTROL"
+	# A LoRa RNode is a wide-area access point: quiet until someone uses it,
+	# short path expiry, and path requests handled like a gateway. Reticulum
+	# would force this itself for discoverable radio interfaces; set it
+	# explicitly so the mode is visible in the config.
+	echo "    mode = ${RNODE_MODE:-access_point}"
+	if [ "$DISCOVER" = yes ]; then
+		echo "    discoverable = yes"
+		[ -n "$DISC_LAT" ]      && echo "    latitude = $DISC_LAT"
+		[ -n "$DISC_LON" ]      && echo "    longitude = $DISC_LON"
+		[ -n "$DISC_HEIGHT" ]   && echo "    height = $DISC_HEIGHT"
+		[ -n "$DISC_NAME" ]     && echo "    discovery_name = $DISC_NAME"
+		if num_ok "$DISC_INTERVAL" && [ "$DISC_INTERVAL" -ge 5 ]; then
+			echo "    announce_interval = $DISC_INTERVAL"
+		fi
+		[ -n "$DISC_REACH" ]    && echo "    reachable_on = $DISC_REACH"
+	fi
 	echo "$END_MARK"
 }
 
@@ -216,15 +241,32 @@ do_work() {
 			;;
 	esac
 
-	name=$(sanitize_name "$(cfg name)")
-	[ -n "$name" ] || name=RNode
+	name=$(sanitize_name "$(cfg_text name)")
+	[ -n "$name" ] || name="RNode LoRa"
 
 	FREQUENCY=$(cfg frequency);     num_ok "$FREQUENCY"       || FREQUENCY=0
 	BANDWIDTH=$(cfg bandwidth);     num_ok "$BANDWIDTH"       || BANDWIDTH=0
 	TXPOWER=$(cfg txpower);         num_ok "$TXPOWER"         || TXPOWER=0
-	SPREADINGFACTOR=$(cfg sf);      num_ok "$SPREADINGFACTOR" || SPREADINGFACTOR=0
-	CODINGRATE=$(cfg cr);           num_ok "$CODINGRATE"      || CODINGRATE=0
+	SPREADINGFACTOR=$(cfg spreadingfactor); [ -n "$SPREADINGFACTOR" ] || SPREADINGFACTOR=$(cfg sf)
+num_ok "$SPREADINGFACTOR" || SPREADINGFACTOR=0
+	CODINGRATE=$(cfg codingrate); [ -n "$CODINGRATE" ] || CODINGRATE=$(cfg cr)
+num_ok "$CODINGRATE" || CODINGRATE=0
 	case "$(cfg flow_control)" in yes|true|1|on) FLOW_CONTROL=True ;; *) FLOW_CONTROL=False ;; esac
+
+	# Discovery metadata (RNS interface discovery) and the interface mode.
+	# The mode defaults to access_point: the right shape for a LoRa radio.
+	DISCOVER=$(cfg discover)
+	RNODE_MODE=$(cfg mode)
+	case "$RNODE_MODE" in
+		full|access_point|ap|gateway|gw|roaming|boundary) ;;
+		*) RNODE_MODE=access_point ;;
+	esac
+	DISC_LAT=$(cfg_text latitude)
+	DISC_LON=$(cfg_text longitude)
+	DISC_HEIGHT=$(cfg_text height)
+	DISC_NAME=$(cfg_text discovery_name)
+	DISC_INTERVAL=$(cfg announce_interval)
+	DISC_REACH=$(cfg_text reachable_on)
 
 	# Radio ranges mirror RNodeInterface; out of range disables the
 	# interface instead of panicking rnsd.
@@ -311,8 +353,7 @@ do_work() {
 	# portal Pair button or `bluetoothctl pair <addr>`.
 	emit_block "$name" "$port" yes > "$BLOCK"
 	if replace_block; then
-		write_status ble "$port" scanning \
-			"waiting for the bonded RNode${ble_address:+ at $ble_address} - pair it from the RNode card if new"
+		write_status ble "$port" scanning ""
 	else
 		write_status ble "" error "could not rewrite $RNS_CFG"
 		log "could not rewrite $RNS_CFG"

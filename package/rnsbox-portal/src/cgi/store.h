@@ -193,13 +193,22 @@ struct RnodeConfig {
     std::string device = "auto";          // usb: auto (first ttyACM*, else ttyUSB*) | /dev/ttyACM0 ...
     std::string ble_address = "";         // ble: AA:BB:CC:DD:EE:FF, or blank
     std::string ble_name = "";            // ble: exact advert name, or blank
-    std::string name = "RNode";           // [[section]] name in the rns config
+    std::string name = "RNode LoRa";      // [[section]] name in the rns config
     std::string frequency = "868825000";  // Hz (137000000..3000000000); EU868 default
     std::string bandwidth = "125000";     // Hz (7800..1625000)
     std::string txpower = "7";            // dBm (0..37)
     std::string spreadingfactor = "7";    // 5..12
     std::string codingrate = "7";         // 5..8
     std::string flow_control = "no";      // yes|no
+    // Interface discovery (RNS advertises this RNode to other nodes). Written
+    // into the managed [[RNode ...]] stanza by S81rnode.
+    std::string discover = "no";          // yes|no
+    std::string latitude;                 // -90..90
+    std::string longitude;                // -180..180
+    std::string height;                   // metres above sea level
+    std::string discovery_name;           // name shown on other nodes' maps
+    std::string announce_interval = "360";// minutes (RNS minimum 5)
+    std::string reachable_on;             // host/address other nodes can try
 };
 RnodeConfig read_rnode();
 bool write_rnode(const RnodeConfig& c, std::string& err);
@@ -213,6 +222,11 @@ RnodeStatus read_rnode_status();
 
 // USB serial candidates for the device dropdown (/dev/ttyACM*, /dev/ttyUSB*).
 std::vector<std::string> rnode_serial_devices();
+
+// BlueZ bond state for a BLE peer, straight from /var/lib/bluetooth's key
+// store (no bluetoothctl spawn): "bonded", "paired", "none", or "" when no
+// adapter has a record for the address yet.
+std::string bt_peer_bond(const std::string& address);
 
 // True when the BLE stack RNS needs for port = ble:// is in the image
 // (bleak + bluetoothd). Cheap globs/binary checks, no python startup.

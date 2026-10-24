@@ -1,0 +1,375 @@
+#!/bin/sh
+# S81rnode — generate the [[RNode ...]] interface section in
+# /etc/reticulum/config from /etc/rnsbox/rnode.conf (portal: Reticulum
+# tab). Runs before S82rnsd so every rnsd start sees a current section;
+# the portal runs `S81rnode reload` + `S82rnsd restart` on save.
+#
+# An RNode modem reaches Reticulum two ways, both through the same
+# RNodeInterface section, differing only in `port`:
+#   usb — a serial port: /dev/ttyACM* (native USB CDC-ACM: nRF52 boards,
+#         ESP32-S3) or /dev/ttyUSB* (USB-UART bridges: classic ESP32
+#         RNode v1/v2). This is the path for full-size Raspberry Pis and
+#         any other board with USB host. Buildroot runs no udev, so the
+#         device is resolved here, at start/reload time (auto = first
+#         ACM, else first USB serial). RNS retries a missing port every
+#         5 s (RNodeInterface.reconnect_port), so the modem may be
+#         plugged in after boot; the resolved path is only written into
+#         the config, nothing is held open.
+#   ble — RNode firmware >= 1.52 on nRF52 boards (T-Echo, RAK4631)
+#         exposes the modem over BLE GATT (Nordic UART Service); RNS
+#         >= 1.5.7 speaks it natively (port = ble://...): no bridge
+#         daemon, nothing to start or stop. bleak must be installed and
+#         BlueZ running — RNS panics rnsd otherwise (the missing-module
+#         check fires in RNodeInterface.__init__ / BLEConnection), so
+#         when the stack is absent this script writes the section with
+#         enabled = no instead, and says so in the status file.
+#         RNS attaches to BONDED devices only: pair once (portal Pair
+#         button / bluetoothctl pair <addr>) after the BLE stack is up.
+#
+# The section is written between "# BEGIN RNODE" / "# END RNODE" marker
+# lines; everything outside the markers is never touched, and the raw
+# config editor in the portal keeps working for the rest of the file.
+# transport=off removes the marked block.
+#
+# Status for the portal (and a cheap liveness probe): /run/rnsbox-rnode
+# status file, key=value lines. Nothing here opens the modem or runs a
+# daemon: start and stop are no-ops beyond the config rewrite, so the
+# boot cost is one awk pass over the config.
+
+CONF=/etc/rnsbox/rnode.conf
+RNS_CFG=/etc/reticulum/config
+STATUS=/run/rnsbox-rnode.status
+BEGIN_MARK="# BEGIN RNODE"
+END_MARK="# END RNODE"
+BLOCK=/run/.rnode-block.$$
+
+# RNS bounds (RNS/Interfaces/RNodeInterface.py __init__): an invalid
+# config raises inside the rnsd interface loop, which ends in
+# RNS.panic() — so validate here with the same numbers and disable the
+# interface rather than ever feed rnsd a bad section.
+FREQ_MIN=137000000; FREQ_MAX=3000000000
+BW_MIN=7800; BW_MAX=1625000
+SF_MIN=5; SF_MAX=12
+CR_MIN=5; CR_MAX=8
+TX_MIN=0; TX_MAX=37
+
+log() { logger -t S81rnode -p daemon.notice "$1" 2>/dev/null; }
+
+# read one key=value from the conf (single value, no shell sourcing).
+# Same parser as S31slip.
+cfg() {
+	sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$CONF" 2>/dev/null \
+	  | tail -1 | tr -d '"' | tr -d "'" | awk '{print $1}'
+}
+
+# same lookup, but keeps the rest of the line: discovery names and
+# reachable_on may legitimately contain spaces.
+cfg_text() {
+	sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$CONF" 2>/dev/null \
+	  | tail -1 | tr -d '\r' | tr -d '"' | tr -d "'"
+}
+
+# digits-only check (builtins; an empty string fails)
+num_ok() { case "$1" in ""|*[!0-9]*) return 1 ;; esac; return 0; }
+
+# first existing serial device: native CDC-ACM first, then USB-UART
+# bridges. A fixed device= path skips the scan entirely.
+find_serial() {
+	for d in /dev/ttyACM* /dev/ttyUSB*; do
+		[ -c "$d" ] && { echo "$d"; return 0; }
+	done
+	return 1
+}
+
+# python module check: the glob survives minor version bumps and is
+# near-free next to a python startup on the C906.
+have_py() {
+	for f in /usr/lib/python3*/site-packages/"$1"/__init__.py; do
+		[ -f "$f" ] && return 0
+	done
+	return 1
+}
+
+# BLE stack present: bleak for RNS, bluetoothd + a system bus socket for
+# it to talk to. (bluez/dbus are packaged on the ble-interface branch;
+# an image without them must degrade to enabled = no, never panic rnsd.)
+ble_stack_ok() {
+	have_py bleak || return 1
+	# BlueZ installs the daemon in /usr/libexec/bluetooth on some images, so
+	# PATH lookup alone rejects a perfectly working adapter.
+	command -v bluetoothd >/dev/null 2>&1 || [ -x /usr/libexec/bluetooth/bluetoothd ] || return 1
+	[ -S /run/dbus/system_bus_socket ] || [ -S /var/run/dbus/system_bus_socket ] || return 1
+	return 0
+}
+
+# iface_name — sanitize the section name: no [ ] (they would break the
+# [[...]] header), no control chars/newlines (they would inject config
+# lines), collapsed whitespace, bounded length.
+sanitize_name() {
+	printf "%s" "$1" | tr -d "[]\000-\037" | tr -s " \t" " " | cut -c1-48
+}
+
+# status TRANSPORT PORT STATE [MESSAGE] — what the portal renders
+# without spawning anything. Written on every invocation, so it never
+# describes a config that no longer matches.
+write_status() {
+	{
+		echo "transport=$1"
+		echo "port=$2"
+		echo "state=$3"
+		echo "message=$4"
+	} > "$STATUS"
+}
+
+# emit_block NAME PORT ENABLED — the marked section, to stdout. The
+# marker lines sit at COLUMN 1 on purpose: that is what replace_block's
+# awk matcher keys on (an indented marker would be invisible to it, and
+# each run would append a second block instead of replacing). A col-1
+# comment is still just a comment to RNS's config parser.
+emit_block() {
+	_name=$1 _port=$2 _enabled=$3
+	echo "$BEGIN_MARK (managed by S81rnode - configured on the portal Reticulum tab; hand edits inside are overwritten)"
+	echo "  [[$_name]]"
+	echo "    type = RNodeInterface"
+	echo "    enabled = $_enabled"
+	echo "    port = $_port"
+	echo "    frequency = $FREQUENCY"
+	echo "    bandwidth = $BANDWIDTH"
+	echo "    txpower = $TXPOWER"
+	echo "    spreadingfactor = $SPREADINGFACTOR"
+	echo "    codingrate = $CODINGRATE"
+	echo "    flow_control = $FLOW_CONTROL"
+	# A LoRa RNode is a wide-area access point: quiet until someone uses it,
+	# short path expiry, and path requests handled like a gateway. Reticulum
+	# would force this itself for discoverable radio interfaces; set it
+	# explicitly so the mode is visible in the config.
+	echo "    mode = ${RNODE_MODE:-access_point}"
+	if [ "$DISCOVER" = yes ]; then
+		echo "    discoverable = yes"
+		[ -n "$DISC_LAT" ]      && echo "    latitude = $DISC_LAT"
+		[ -n "$DISC_LON" ]      && echo "    longitude = $DISC_LON"
+		[ -n "$DISC_HEIGHT" ]   && echo "    height = $DISC_HEIGHT"
+		[ -n "$DISC_NAME" ]     && echo "    discovery_name = $DISC_NAME"
+		if num_ok "$DISC_INTERVAL" && [ "$DISC_INTERVAL" -ge 5 ]; then
+			echo "    announce_interval = $DISC_INTERVAL"
+		fi
+		[ -n "$DISC_REACH" ]    && echo "    reachable_on = $DISC_REACH"
+	fi
+	echo "$END_MARK"
+}
+
+# replace_block — swap the marked region for $BLOCK; append when the
+# config has no marker yet. index( , ) == 1 pins the match at line
+# start, so a comment merely mentioning a marker elsewhere is ignored.
+# A BEGIN with no END (a truncated hand edit) drops to EOF, which is
+# exactly the recovery wanted. Stray END lines outside a block are
+# dropped too.
+replace_block() {
+	[ -f "$RNS_CFG" ] || { echo "S81rnode: no $RNS_CFG; skipping"; return 1; }
+	awk -v bf="$BLOCK" '
+		!inhunk && index($0, "# BEGIN RNODE") == 1 {
+			inhunk = 1
+			while ((getline line < bf) > 0) print line
+			next
+		}
+		inhunk && index($0, "# END RNODE") == 1 { inhunk = 0; next }
+		!inhunk && index($0, "# END RNODE") == 1 { next }
+		!inhunk { print }
+	' "$RNS_CFG" > "$RNS_CFG.new" || return 1
+	if ! grep -q "^# BEGIN RNODE" "$RNS_CFG.new"; then
+		printf "\n" >> "$RNS_CFG.new"
+		cat "$BLOCK" >> "$RNS_CFG.new"
+	fi
+	grep -q "type = RNodeInterface" "$RNS_CFG.new" || return 1
+	cat "$RNS_CFG.new" > "$RNS_CFG"
+	rm -f "$RNS_CFG.new"
+	return 0
+}
+
+# strip_block — remove the marked region entirely (markers included):
+# what "transport=off" leaves behind.
+strip_block() {
+	[ -f "$RNS_CFG" ] || return 0
+	awk '
+		!inhunk && index($0, "# BEGIN RNODE") == 1 { inhunk = 1; next }
+		inhunk && index($0, "# END RNODE") == 1 { inhunk = 0; next }
+		!inhunk && index($0, "# END RNODE") == 1 { next }
+		!inhunk { print }
+	' "$RNS_CFG" > "$RNS_CFG.new" || return 1
+	# trim blank lines the removal left at the tail
+	while [ -s "$RNS_CFG.new" ] && [ -z "$(tail -1 "$RNS_CFG.new")" ]; do
+		sed -i '$d' "$RNS_CFG.new"
+	done
+	cat "$RNS_CFG.new" > "$RNS_CFG"
+	rm -f "$RNS_CFG.new"
+	return 0
+}
+
+# write the disabled form of the section (PORT is kept for reference)
+write_disabled() {
+	_name=$1 _port=$2 _msg=$3 _state=$4
+	emit_block "$_name" "$_port" no > "$BLOCK"
+	if replace_block; then
+		write_status "$transport" "" "$_state" "$_msg"
+		log "$_msg - wrote the RNode section disabled"
+	else
+		write_status "$transport" "" error "could not rewrite $RNS_CFG"
+		log "could not rewrite $RNS_CFG"
+	fi
+	rm -f "$BLOCK"
+}
+
+# do_work — the whole job; "start" and "reload" share it.
+do_work() {
+	if [ ! -r "$CONF" ]; then
+		write_status off "" off "no $CONF"
+		echo "S81rnode: no $CONF; skipping"
+		return 0
+	fi
+
+	transport=$(cfg transport)
+	case "$transport" in
+		usb|ble) ;;
+		*)
+			# Off (or a garbage value): make sure no stale managed block
+			# survives from a since-disabled config.
+			write_status off "" off ""
+			if [ -f "$RNS_CFG" ] && grep -q "^# BEGIN RNODE" "$RNS_CFG"; then
+				strip_block && log "RNode off - removed the managed section"
+			fi
+			return 0
+			;;
+	esac
+
+	name=$(sanitize_name "$(cfg_text name)")
+	[ -n "$name" ] || name="RNode LoRa"
+
+	FREQUENCY=$(cfg frequency);     num_ok "$FREQUENCY"       || FREQUENCY=0
+	BANDWIDTH=$(cfg bandwidth);     num_ok "$BANDWIDTH"       || BANDWIDTH=0
+	TXPOWER=$(cfg txpower);         num_ok "$TXPOWER"         || TXPOWER=0
+	SPREADINGFACTOR=$(cfg spreadingfactor); [ -n "$SPREADINGFACTOR" ] || SPREADINGFACTOR=$(cfg sf)
+num_ok "$SPREADINGFACTOR" || SPREADINGFACTOR=0
+	CODINGRATE=$(cfg codingrate); [ -n "$CODINGRATE" ] || CODINGRATE=$(cfg cr)
+num_ok "$CODINGRATE" || CODINGRATE=0
+	case "$(cfg flow_control)" in yes|true|1|on) FLOW_CONTROL=True ;; *) FLOW_CONTROL=False ;; esac
+
+	# Discovery metadata (RNS interface discovery) and the interface mode.
+	# The mode defaults to access_point: the right shape for a LoRa radio.
+	DISCOVER=$(cfg discover)
+	RNODE_MODE=$(cfg mode)
+	case "$RNODE_MODE" in
+		full|access_point|ap|gateway|gw|roaming|boundary) ;;
+		*) RNODE_MODE=access_point ;;
+	esac
+	DISC_LAT=$(cfg_text latitude)
+	DISC_LON=$(cfg_text longitude)
+	DISC_HEIGHT=$(cfg_text height)
+	DISC_NAME=$(cfg_text discovery_name)
+	DISC_INTERVAL=$(cfg announce_interval)
+	DISC_REACH=$(cfg_text reachable_on)
+
+	# Radio ranges mirror RNodeInterface; out of range disables the
+	# interface instead of panicking rnsd.
+	cfgerr=
+	[ "$FREQUENCY" -ge "$FREQ_MIN" ] && [ "$FREQUENCY" -le "$FREQ_MAX" ] || cfgerr="frequency out of range"
+	if [ -z "$cfgerr" ]; then
+		{ [ "$BANDWIDTH" -ge "$BW_MIN" ] && [ "$BANDWIDTH" -le "$BW_MAX" ]; } || cfgerr="bandwidth out of range"
+	fi
+	if [ -z "$cfgerr" ]; then
+		{ [ "$TXPOWER" -ge "$TX_MIN" ] && [ "$TXPOWER" -le "$TX_MAX" ]; } || cfgerr="txpower out of range"
+	fi
+	if [ -z "$cfgerr" ]; then
+		{ [ "$SPREADINGFACTOR" -ge "$SF_MIN" ] && [ "$SPREADINGFACTOR" -le "$SF_MAX" ]; } || cfgerr="spreading factor out of range"
+	fi
+	if [ -z "$cfgerr" ]; then
+		{ [ "$CODINGRATE" -ge "$CR_MIN" ] && [ "$CODINGRATE" -le "$CR_MAX" ]; } || cfgerr="coding rate out of range"
+	fi
+	if [ -n "$cfgerr" ]; then
+		write_disabled "$name" "/dev/null" "$cfgerr - interface disabled" invalid
+		return 1
+	fi
+
+	if [ "$transport" = usb ]; then
+		# A missing pyserial would panic rnsd at interface creation.
+		if ! have_py serial; then
+			write_disabled "$name" "/dev/ttyACM0" "pyserial is not installed" no-pyserial
+			return 1
+		fi
+		device=$(cfg device)
+		case "$device" in
+			""|auto|Auto|AUTO)
+				if port=$(find_serial); then
+					state=ok; msg=""
+					log "RNode over USB: $port"
+				else
+					# Keep the section enabled: RNS retries every 5 s and
+					# attaches the moment the modem is plugged in.
+					port=/dev/ttyACM0
+					state=waiting
+					msg="no USB serial device found yet - plug the RNode in, rnsd attaches it on its own"
+					log "no USB serial device yet - rnsd will pick the RNode up when it appears"
+				fi
+				;;
+			*)
+				case "$device" in /dev/*) port=$device ;; *) port=/dev/$device ;; esac
+				if [ -c "$port" ]; then state=ok; msg=""
+				else state=waiting; msg="$port is not present yet - rnsd retries it every 5 s"; fi
+				log "RNode over USB: $port"
+				;;
+		esac
+		emit_block "$name" "$port" yes > "$BLOCK"
+		if replace_block; then
+			write_status usb "$port" "$state" "$msg"
+		else
+			write_status usb "" error "could not rewrite $RNS_CFG"
+			log "could not rewrite $RNS_CFG"
+		fi
+		rm -f "$BLOCK"
+		return 0
+	fi
+
+	# --- ble ---
+	if ! ble_stack_ok; then
+		write_disabled "$name" "ble://" "BLE stack not in the image (bluez/dbus + bleak needed)" no-ble-stack
+		return 1
+	fi
+	ble_address=$(cfg ble_address)
+	ble_name=$(cfg ble_name)
+	case "$ble_address" in
+		[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F])
+			ble_address=$(echo "$ble_address" | tr "a-f" "A-F")
+			port="ble://$ble_address"
+			;;
+		*)
+			ble_address=
+			case "$ble_name" in
+				""|*[!-~]*) port="ble://" ;;   # blank (or control chars): match any "RNode *" advert
+				*) port="ble://$ble_name" ;;
+			esac
+			;;
+	esac
+	# RNS scans forever until the (bonded) device advertises: nothing to
+	# probe here beyond the stack itself. Pairing is one-time, from the
+	# portal Pair button or `bluetoothctl pair <addr>`.
+	emit_block "$name" "$port" yes > "$BLOCK"
+	if replace_block; then
+		write_status ble "$port" scanning ""
+	else
+		write_status ble "" error "could not rewrite $RNS_CFG"
+		log "could not rewrite $RNS_CFG"
+	fi
+	rm -f "$BLOCK"
+	log "RNode over BLE: $port"
+	return 0
+}
+
+case "${1:-start}" in
+	start|reload) do_work ;;
+	stop)
+		# Nothing is running (no daemon here); retire the status file so
+		# the portal does not describe a config this boot no longer has.
+		rm -f "$STATUS"
+		;;
+	restart) do_work ;;
+	*) echo "Usage: $0 {start|stop|restart|reload}" >&2; exit 1 ;;
+esac

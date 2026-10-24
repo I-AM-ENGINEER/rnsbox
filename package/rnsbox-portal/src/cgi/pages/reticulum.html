@@ -148,9 +148,11 @@
 
   <table class="kv">
     <tr><th>Status</th><td id="rnode-live-status">__RNODE_STATUS__</td></tr>
+    <tr><th>Saved peer</th><td id="rnode-peer">__RNODE_PEER__</td></tr>
+    <tr><th>Bluetooth bond</th><td>__RNODE_BOND__</td></tr>
   </table>
 
-  <form method="post" action="__BASE__/reticulum/rnode">
+  <form method="post" action="__BASE__/reticulum/rnode" id="rnode-form">
     <div class="row-form" style="margin-top:10px">
       <label style="margin:0">Transport
         <select name="transport" id="rnode-transport" onchange="rnodeTransportChanged()"
@@ -183,7 +185,8 @@
       <input type="hidden" name="ble_name" id="rnode-ble-name" value="__RNODE_BLE_NAME__">
       <p class="muted" style="margin:6px 0 0" id="rnode-selected-note"></p>
       <p class="muted" style="margin:6px 0 0">A device is chosen only from the scan above — no manual address entry.
-      <strong>RNS attaches to bonded devices</strong> — pair from the scan list, then Save &amp; apply. An empty selection attaches to any advertising <code>RNode *</code>.
+      <strong>RNS attaches to bonded devices</strong> — pairing selects the peer and applies the interface
+      (rnsd restarts), so there is no second save. An empty selection attaches to any advertising <code>RNode *</code>.
       For display-less RNodes that need a pairing code, use the <a href="/flasher/" target="_blank" rel="noopener">built-in RNode flasher</a>
       (WebSocket mode: host <code>10.42.0.1</code>).</p>
       __RNODE_BLE_STACK_NOTE__
@@ -207,6 +210,49 @@
         <input type="number" name="codingrate" value="__RNODE_CR__" min="5" max="8" title="5..8"></label>
       <label class="check" style="margin:0"><input type="checkbox" name="flow_control" __RNODE_FLOW_CHECKED__> flow control</label>
     </div>
+
+    <div class="lora-calc" id="lora-calc">
+      <div class="lora-out">
+        <span class="muted">Theoretical maximum:</span>
+        <strong id="lora-rate">—</strong>
+        <span class="muted">· sensitivity</span> <strong id="lora-sens">—</strong>
+        <span class="muted">· SNR limit</span> <strong id="lora-snr">—</strong>
+        <span id="lora-margin-box" style="display:none"> <span class="muted">· link margin</span> <strong id="lora-margin">—</strong></span>
+      </div>
+      <label class="lora-rssi">Measured RSSI (dBm, optional)
+        <input type="number" id="lora-rssi" step="0.5" min="-160" max="0" placeholder="-120"></label>
+      <a class="muted" href="https://unsigned.io/understanding-lora-parameters/" target="_blank" rel="noopener">LoRa parameters explained</a>
+      <p class="muted lora-note">This is the theoretical air bitrate. Useful throughput is much lower:
+      Reticulum framing, acknowledgements, retries and half-duplex turnaround all take their share.</p>
+    </div>
+
+    <div class="rnsh-block" style="margin-top:12px">
+      <h4>Discovery / location</h4>
+      <label class="check"><input type="checkbox" name="discover"
+        __RNODE_DISCOVER_CHECKED__> Announce this RNode to other Reticulum nodes</label>
+      <div class="row-form" style="margin-top:8px">
+        <label style="margin:0">Latitude
+          <input type="text" name="latitude" value="__RNODE_LAT__" inputmode="decimal"
+            placeholder="55.7558"></label>
+        <label style="margin:0">Longitude
+          <input type="text" name="longitude" value="__RNODE_LON__" inputmode="decimal"
+            placeholder="37.6173"></label>
+        <label style="margin:0">Height (m)
+          <input type="text" name="height" value="__RNODE_HEIGHT__" inputmode="decimal"></label>
+      </div>
+      <div class="row-form">
+        <label style="margin:0">Name on the map
+          <input type="text" name="discovery_name" value="__RNODE_DISC_NAME__" maxlength="64"></label>
+        <label style="margin:0">Announce every (minutes)
+          <input type="number" name="announce_interval" value="__RNODE_ANNOUNCE__" min="5" max="10080"></label>
+        <label style="margin:0">Reachable on
+          <input type="text" name="reachable_on" value="__RNODE_REACHABLE__" maxlength="64"
+            placeholder="hostname / IP (optional)"></label>
+      </div>
+      <p class="muted" style="margin:6px 0 0">Other Reticulum nodes will list this
+      RNode with these coordinates; its frequency and bandwidth are published too.
+      The interval is clamped to at least 5 minutes (RNS default 6 h).</p>
+    </div>
     <div class="form-actions" style="margin-top:10px">
       <span class="muted">saving restarts rnsd</span>
       <button type="submit" class="btn-primary">Save &amp; apply</button>
@@ -224,6 +270,53 @@ function rnodeTransportChanged(){
   if (ble) ble.style.display = (t.value === 'ble') ? '' : 'none';
 }
 document.addEventListener('DOMContentLoaded', rnodeTransportChanged);
+
+// LoRa link estimate. Semtech's formulas only: air rate from BW/SF/CR, the
+// chip's sensitivity at 125 kHz shifted by 10*log10(BW/125k), and an optional
+// margin against a measured RSSI. No antenna gain and no noise figure.
+var LORA_SENS = {5: -118, 6: -121, 7: -123, 8: -126, 9: -129, 10: -132, 11: -134.5, 12: -137};
+var LORA_SNR  = {5: -2.5, 6: -5, 7: -7.5, 8: -10, 9: -12.5, 10: -15, 11: -17.5, 12: -20};
+
+function loraField(name){
+  var el = document.querySelector('#rnode-form [name="' + name + '"]');
+  return el ? parseFloat(el.value) : NaN;
+}
+
+function loraCalc(){
+  var rate = document.getElementById('lora-rate');
+  if (!rate) return;
+  var bw = loraField('bandwidth'), sf = loraField('spreadingfactor'), cr = loraField('codingrate');
+  var sensEl = document.getElementById('lora-sens'), snrEl = document.getElementById('lora-snr');
+  var marginBox = document.getElementById('lora-margin-box'), marginEl = document.getElementById('lora-margin');
+  if (!(bw > 0) || !(sf >= 5 && sf <= 12) || !(cr >= 5 && cr <= 8)) {
+    rate.textContent = sensEl.textContent = snrEl.textContent = '—';
+    if (marginBox) marginBox.style.display = 'none';
+    return;
+  }
+  var bps = (bw / Math.pow(2, sf)) * sf * 4 / cr;
+  var sens = LORA_SENS[sf] + 10 * Math.log10(bw / 125000);
+  rate.textContent = bps >= 1000 ? (bps / 1000).toFixed(2) + ' kbps' : Math.round(bps) + ' bps';
+  sensEl.textContent = sens.toFixed(1) + ' dBm';
+  snrEl.textContent = LORA_SNR[sf] + ' dB';
+  var rssiEl = document.getElementById('lora-rssi');
+  var rssi = rssiEl ? parseFloat(rssiEl.value) : NaN;
+  if (marginBox && marginEl && rssiEl && rssiEl.value !== '' && !isNaN(rssi)) {
+    marginEl.textContent = (rssi - sens).toFixed(1) + ' dB';
+    marginBox.style.display = '';
+  } else if (marginBox) {
+    marginBox.style.display = 'none';
+  }
+}
+
+document.addEventListener('DOMContentLoaded', function(){
+  ['bandwidth', 'spreadingfactor', 'codingrate'].forEach(function(n){
+    var el = document.querySelector('#rnode-form [name="' + n + '"]');
+    if (el) el.addEventListener('input', loraCalc);
+  });
+  var rssiEl = document.getElementById('lora-rssi');
+  if (rssiEl) rssiEl.addEventListener('input', loraCalc);
+  loraCalc();
+});
 
 function rnodeStatusRefresh(){
   fetch('__BASE__/reticulum/rnode/status').then(function(r){
@@ -246,8 +339,8 @@ function rnodeStatusRefresh(){
     var b;
     if (d.transport !== 'usb' && d.transport !== 'ble') b = '<span class="badge">off</span>';
     else if (d.state === 'ok' && d.port) b = '<span class="badge ok">ready</span> <span class="mono">' + escH(d.port) + '</span>';
-    else if (d.state === 'waiting') b = '<span class="badge warn">waiting for device</span> ' + escH(d.message);
-    else if (d.state === 'scanning') b = '<span class="badge warn">scanning</span> ' + escH(d.message);
+    else if (d.state === 'waiting') b = '<span class="badge warn">waiting for device</span>';
+    else if (d.state === 'scanning') b = '<span class="badge warn">waiting for device</span>';
     else if (d.state === 'invalid' || d.state === 'error') b = '<span class="badge err">' + escH(d.state) + '</span> ' + escH(d.message);
     else if (d.state === 'no-pyserial' || d.state === 'no-ble-stack') b = '<span class="badge err">' + escH(d.state) + '</span>';
     else b = '<span class="badge">not applied yet</span>';
@@ -259,7 +352,7 @@ function rnodeScan(btn){
   var msg = document.getElementById('rnode-scan-msg');
   var list = document.getElementById('rnode-scan-list');
   btn.disabled = true;
-  msg.textContent = ' scanning (up to ~20 s)…';
+  msg.textContent = ' scanning (up to ~40 s)…';
   msg.style.color = 'var(--muted)';
   fetch('__BASE__/reticulum/rnode/scan').then(function(r){
     if (r.status === 401) throw new Error('session expired — please log in again');
@@ -317,6 +410,13 @@ function rnodePair(addr, name, btn){
   }).then(function(d){
     if (btn) { btn.disabled = false; btn.textContent = d.ok ? 'paired' : 'Pair'; }
     if (msg) { msg.textContent = ' ' + (d.message || (d.ok ? 'paired' : 'pairing failed')); msg.style.color = d.ok ? 'var(--ok)' : 'var(--err)'; }
+    // Pairing only wrote the bond; push the selected peer into rnode.conf and
+    // restart rnsd, so the modem comes up without a second manual save.
+    if (d.ok) {
+      if (msg) { msg.textContent = ' paired — applying the interface…'; msg.style.color = 'var(--ok)'; }
+      var f = document.getElementById('rnode-form');
+      if (f) setTimeout(function(){ f.submit(); }, 700);
+    }
   }).catch(function(e){
     if (btn) { btn.disabled = false; btn.textContent = 'Pair'; }
     if (msg) { msg.textContent = ' ' + (e.message || 'pairing failed'); msg.style.color = 'var(--err)'; }

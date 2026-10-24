@@ -977,6 +977,13 @@ RnodeConfig read_rnode() {
         else if (k == "spreadingfactor") c.spreadingfactor = v;
         else if (k == "codingrate") c.codingrate = v;
         else if (k == "flow_control") c.flow_control = v;
+        else if (k == "discover") c.discover = v;
+        else if (k == "latitude") c.latitude = v;
+        else if (k == "longitude") c.longitude = v;
+        else if (k == "height") c.height = v;
+        else if (k == "discovery_name") c.discovery_name = v;
+        else if (k == "announce_interval") c.announce_interval = v;
+        else if (k == "reachable_on") c.reachable_on = v;
     }
     return c;
 }
@@ -1121,6 +1128,41 @@ bool write_rnode(const RnodeConfig& c, std::string& err) {
 
     std::string flow = cron_truthy(c.flow_control) ? "yes" : "no";
 
+    // Interface discovery: coordinates and the optional map metadata. Invalid
+    // values are rejected here; rnsd would otherwise panic while parsing them.
+    std::string discover = cron_truthy(c.discover) ? "yes" : "no";
+    std::string lat = util::trim(c.latitude), lon = util::trim(c.longitude);
+    std::string hgt = util::trim(c.height), dname = util::trim(c.discovery_name);
+    std::string reach = util::trim(c.reachable_on);
+    std::string interval = util::trim(c.announce_interval);
+    if (!rnode_num_in_range(interval, 5, 10080)) {
+        err = "discovery announce interval must be 5..10080 minutes"; return false;
+    }
+    auto float_ok = [](const std::string& s, double lo, double hi, double& out) {
+        if (s.empty()) return false;
+        char* end = nullptr;
+        double v = strtod(s.c_str(), &end);
+        if (!end || *end != '\0') return false;
+        out = v;
+        return v >= lo && v <= hi;
+    };
+    if (discover == "yes") {
+        double v = 0;
+        if (!float_ok(lat, -90.0, 90.0, v)) { err = "latitude must be -90..90"; return false; }
+        if (!float_ok(lon, -180.0, 180.0, v)) { err = "longitude must be -180..180"; return false; }
+        if (!hgt.empty() && !float_ok(hgt, -1000.0, 10000.0, v)) {
+            err = "height must be -1000..10000 metres"; return false;
+        }
+    }
+    if (dname.size() > 64 || !conf_value_ok(dname) ||
+        dname.find_first_of("[]#=\"'") != std::string::npos) {
+        err = "discovery name must be a single clean line (max 64)"; return false;
+    }
+    if (reach.size() > 64 || !conf_value_ok(reach) ||
+        reach.find_first_of("[]#=\"'") != std::string::npos) {
+        err = "reachable_on must be a single clean line (max 64)"; return false;
+    }
+
     std::string o =
         "# RNode LoRa modem over USB (CDC-ACM / USB-serial) or BLE.\n"
         "# Managed by the rnsbox-portal Reticulum tab; applied by S81rnode,\n"
@@ -1139,6 +1181,13 @@ bool write_rnode(const RnodeConfig& c, std::string& err) {
     o += "spreadingfactor=" + sf + "\n";
     o += "codingrate=" + cr + "\n";
     o += "flow_control=" + flow + "\n";
+    o += "discover=" + discover + "\n";
+    o += "latitude=" + lat + "\n";
+    o += "longitude=" + lon + "\n";
+    o += "height=" + hgt + "\n";
+    o += "discovery_name=" + dname + "\n";
+    o += "announce_interval=" + interval + "\n";
+    o += "reachable_on=" + reach + "\n";
     if (!util::write_file_atomic(RNODE_FILE, o, 0644)) { err = "write failed"; return false; }
     return true;
 }
@@ -1183,6 +1232,41 @@ std::vector<std::string> rnode_serial_devices() {
         for (size_t j = 0; j + 1 < out.size() - i; ++j)
             if (out[j].compare(out[j + 1]) > 0) std::swap(out[j], out[j + 1]);
     return out;
+}
+
+std::string bt_peer_bond(const std::string& address) {
+    std::string addr;
+    for (char c : address) {
+        if (c == ':') { addr += c; continue; }
+        if (c >= 'a' && c <= 'f') c = (char)(c - 'a' + 'A');
+        if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F')) addr += c;
+    }
+    if (addr.size() != 17) return "";
+    DIR* d = opendir("/var/lib/bluetooth");
+    if (!d) return "";
+    bool found = false, paired = false, bonded = false;
+    struct dirent* e;
+    while ((e = readdir(d)) != nullptr) {
+        if (e->d_name[0] == '.') continue;
+        std::string info = std::string("/var/lib/bluetooth/") + e->d_name + "/" + addr + "/info";
+        std::string data = util::read_file(info);
+        if (data.empty()) continue;
+        found = true;
+        size_t i = 0;
+        while (i < data.size()) {
+            size_t nl = data.find('\n', i);
+            std::string ln = util::trim(data.substr(i, nl == std::string::npos ? std::string::npos : nl - i));
+            i = (nl == std::string::npos) ? data.size() : nl + 1;
+            if (ln == "Paired: yes") paired = true;
+            else if (ln == "Bonded: yes") bonded = true;
+        }
+        if (bonded) break;
+    }
+    closedir(d);
+    if (!found) return "none";
+    if (bonded) return "bonded";
+    if (paired) return "paired";
+    return "none";
 }
 
 bool rnode_ble_stack_present() {
