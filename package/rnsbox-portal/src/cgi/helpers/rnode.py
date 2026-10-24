@@ -199,7 +199,7 @@ def _rnodeconf(args, timeout=45):
         return {"ok": False, "output": "rnodeconf is not installed (python-rns)"}
     try:
         p = subprocess.run(["rnodeconf"] + args, capture_output=True,
-                           text=True, timeout=timeout)
+                           text=True, errors="replace", timeout=timeout)
     except subprocess.TimeoutExpired:
         return {"ok": False, "output": "rnodeconf timed out after %d s" % timeout}
     except OSError as e:
