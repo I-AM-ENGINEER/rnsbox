@@ -85,7 +85,7 @@
     var r = canvas.getBoundingClientRect();
     sx = (sx == null) ? r.width / 2 : sx;
     sy = (sy == null) ? r.height / 2 : sy;
-    var nz = Math.max(0.5, Math.min(128, view.z * f));
+    var nz = Math.max(0.5, Math.min(1024, view.z * f));
     var bx = (sx - view.ox) / view.z, by = (sy - view.oy) / view.z;
     view.z = nz;
     view.ox = sx - bx * nz;
@@ -127,16 +127,25 @@
     ctx.fillStyle = '#0b1622';
     ctx.fillRect(0, 0, baseW, baseH);
 
-    // graticule: coarser when zoomed out, finer when zoomed in
-    var step = view.z >= 20 ? 5 : (view.z >= 8 ? 10 : 30);
+    // graticule: finer as the view narrows. Only the visible slice is drawn,
+    // so a 0.02° step at maximum zoom is a handful of lines, not thousands.
+    var z = view.z;
+    var step = z >= 512 ? 0.02 : z >= 128 ? 0.1 : z >= 20 ? 1
+             : z >= 8 ? 5 : z >= 2 ? 10 : 30;
+    var wx0 = (-view.ox) / z, wx1 = (r.width - view.ox) / z;
+    var wy0 = (-view.oy) / z, wy1 = (r.height - view.oy) / z;
+    var lon0 = Math.max(-180, wx0 / baseW * 360 - 180);
+    var lon1 = Math.min(180, wx1 / baseW * 360 - 180);
+    var lat0 = Math.max(-90, 90 - wy1 / baseH * 180);
+    var lat1 = Math.min(90, 90 - wy0 / baseH * 180);
     ctx.strokeStyle = 'rgba(90,120,150,.18)';
-    ctx.lineWidth = 1 / view.z;
+    ctx.lineWidth = 1 / z;
     ctx.beginPath();
-    for (var lon = -180; lon <= 180; lon += step) {
+    for (var lon = Math.ceil(lon0 / step) * step; lon <= lon1; lon += step) {
       var x = (lon + 180) / 360 * baseW;
       ctx.moveTo(x, 0); ctx.lineTo(x, baseH);
     }
-    for (var lat = -90 + step; lat < 90; lat += step) {
+    for (var lat = Math.ceil(lat0 / step) * step; lat <= lat1; lat += step) {
       var y = (90 - lat) / 180 * baseH;
       ctx.moveTo(0, y); ctx.lineTo(baseW, y);
     }
@@ -214,7 +223,7 @@
 
     // Heard Reticulum nodes in screen space. Nodes closer than 14 px are
     // fanned out around the true point so two nearby boxes never merge into
-    // one dot; zoom 128 plus this fan-out keeps even co-located nodes
+    // one dot; max zoom plus this fan-out keeps even co-located nodes
     // individually clickable.
     var dpr = window.devicePixelRatio || 1;
     ctx.save();
