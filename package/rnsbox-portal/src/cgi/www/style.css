@@ -736,44 +736,11 @@ button:disabled, button:disabled:hover { opacity: 0.55; cursor: not-allowed; }
 .sig-g { color: var(--ok);   font-weight: 600; }
 .sig-a { color: var(--warn); font-weight: 600; }
 .sig-r { color: var(--err);  font-weight: 600; }
-.halow-live {
-  background: var(--panel);
-  border: 1px solid var(--panel-border);
-  border-radius: 4px;
-  padding: 10px 12px;
-  margin: 10px 0;
-  font-size: 13px;
-  line-height: 1.7;
-}
-.halow-live .hrow { display: flex; flex-wrap: wrap; gap: 4px 16px; }
-.halow-live .k { color: var(--muted); }
-/* Clean single-column key/value layout for the live modem card. */
-.halow-live table.halow-kv { background: transparent; }
-.halow-live table.halow-kv th { width: 128px; font-weight: 600; color: var(--muted); white-space: nowrap; }
-.halow-live table.halow-kv td { color: var(--text); }
-.halow-live table.halow-kv tr + tr th,
-.halow-live table.halow-kv tr + tr td { border-top: 1px solid var(--panel-border); }
-/* Airtime / channel-utilisation mini bar. */
-.hbar { display: inline-block; width: 90px; height: 7px; border-radius: 4px;
-  background: var(--panel-border); overflow: hidden; vertical-align: middle; }
-.hbar > span { display: block; height: 100%; background: var(--ok); }
 /* Card action row: "Open modem web UI" + the quick-add form (side by side). */
 .halow-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 12px 0 0; }
 .halow-actions form.inline { margin: 0; }
 .halow-actions .btn, .halow-actions .btn-primary { margin: 0; }
 
-/* Full-width dashboard card: spans every column of the .cards auto-fit grid
-   so the HaLow modem becomes a horizontal stats strip below the square cards. */
-.card-wide { grid-column: 1 / -1; }
-/* Responsive metric-tile strip. auto-fit reflows the tiles from ~8 across on a
-   wide screen down to 1 on a phone; min-width:0 + overflow-wrap keep long values
-   (IPs, hostnames) inside their tile so the page never scrolls sideways. */
-.hstats { display: grid; grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)); gap: 10px 12px; margin: 4px 0 2px; }
-.hstat { min-width: 0; padding: 9px 11px; background: var(--panel); border: 1px solid var(--panel-border); border-radius: 5px; }
-.hstat-k { font-size: 10.5px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted);
-  margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.hstat-v { font-size: 12.5px; line-height: 1.45; color: var(--text); overflow-wrap: anywhere; }
-.hstat-v .hbar { margin-bottom: 2px; }
 details.neigh { border: 1px solid var(--border); border-radius: 4px; margin: 0 0 10px; }
 details.neigh > summary {
   cursor: pointer;

@@ -121,10 +121,12 @@ static std::string state_badge(const sysinfo::Iface* i) {
 
 // --- HaLow card + live-status script (verbatim port of the old template) ---
 static std::string halow_card_html(const std::string& base) {
+    // Same shape as every other dashboard card: h3, a kv table, a cardfoot
+    // link. Status cells hold a badge only — never a badge plus prose.
     // href must go through the portal (SCRIPT_NAME base), not the server root —
     // a literal /modem/ hits uhttpd's docroot (404), not this CGI.
     std::string s = R"HTML(<section class="card" id="halow-card">
-    <div class="cardhead"><h3>HaLow modem</h3><span class="badge" id="halow-badge">…</span></div>
+    <h3>HaLow modem</h3>
     <div id="halow-body"><p class="muted">Loading modem status…</p></div>
     <p class="cardfoot"><a class="btn" href="__BASE__/modem" target="_blank" rel="noopener">Open modem web UI →</a></p>
   </section>)HTML";
@@ -138,34 +140,30 @@ static std::string halow_script_html(const std::string& base) {
   function esc(s){ return (''+(s==null?'':s)).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
   function num(v){ if(v==null) return null; var m=(''+v).match(/-?\d+(\.\d+)?/); return m?parseFloat(m[0]):null; }
   function unit(v,u){ if(v==null||v==='') return '?'; return /^-?\d+(\.\d+)?$/.test(''+v)? v+' '+u : esc(v); }
-  function sig(v,u,g,a){ if(v==null) return '<span class="muted">—</span>'; var c=v>=g?'sig-g':(v>=a?'sig-a':'sig-r'); return '<span class="'+c+'">'+v+' '+u+'</span>'; }
-  function noise(v){ var n=num(v); if(n==null) return '<span class="muted">—</span>'; var c=n<=-80?'sig-g':(n<=-70?'sig-a':'sig-r'); return '<span class="'+c+'">'+n+' dBm</span>'; }
+  function sig(v,u,g,a){ if(v==null) return '<span class="muted">&mdash;</span>'; var c=v>=g?'sig-g':(v>=a?'sig-a':'sig-r'); return '<span class="'+c+'">'+v+' '+u+'</span>'; }
+  function noise(v){ var n=num(v); if(n==null) return '<span class="muted">&mdash;</span>'; var c=n<=-80?'sig-g':(n<=-70?'sig-a':'sig-r'); return '<span class="'+c+'">'+n+' dBm</span>'; }
   function load(){
-    var badge=document.getElementById('halow-badge'), body=document.getElementById('halow-body');
-    if(!badge) return;
+    var card=document.getElementById('halow-card'), body=document.getElementById('halow-body');
+    if(!card || !body) return;
     return fetch('__BASE__/reticulum/halow').then(function(r){return r.json();}).then(function(d){
-      if(d.error){ badge.className='badge warn'; badge.textContent='login expired'; return; }   // 401 JSON
-      if(!d.enabled){ var c=document.getElementById('halow-card'); if(c) c.hidden=true; return; }
+      if(d.error){ body.innerHTML='<p class="muted">Login expired — reload the page.</p>'; return; }   // 401 JSON
+      if(!d.enabled){ card.hidden=true; return; }
       if(!d.reachable){
-        badge.className='badge '+(d.sl0_up?'err':'warn');
-        badge.textContent=d.sl0_up?'unreachable':'sl0 down';
-        body.innerHTML='<p class="muted">'+(d.sl0_up?'Modem not answering over SLIP.':'SLIP link (sl0) is down.')+'</p>';
+        var sl=d.sl0_up?'<span class="badge ok">UP</span>':'<span class="badge warn">DOWN</span>';
+        body.innerHTML='<table class="kv"><tr><th>Link (sl0)</th><td>'+sl+'</td></tr></table>'+
+          '<p class="muted" style="margin:6px 0 0">'+
+          (d.sl0_up?'The modem is not answering over SLIP.':'The SLIP link (sl0) is not up.')+'</p>';
         return;
       }
-      badge.className='badge ok'; badge.textContent='link up';
       var rd=d.radio||{}, st=d.stats||{}, dv=d.device||{}, b=d.best, ns=d.neighbours||[];
-      var name=(dv.hostname||'RNode-Halow'), port=(d.tcp_port||4242);
-      var air=num(st.airtime);
-      var airbar = air!=null ? '<span class="hbar"><span style="width:'+Math.max(0,Math.min(100,air))+'%"></span></span> ' : '';
       var mcs = (rd.mcs==null||rd.mcs==='') ? 'MCS?' : 'MCS'+esc((''+rd.mcs).replace(/^mcs\s*/i,''));
       var fw = (dv.fw ? esc((''+dv.fw).split(' ')[0]) : '?');
       var rows=[
-        ['Link (sl0)','<span class="badge ok">UP</span> <span class="val">'+esc(d.local)+' &rarr; '+esc(d.peer)+'</span>'],
-        ['rnsd interface', d.rnsd_up
-          ? '<span class="badge ok">UP</span> <span class="val">'+esc(name)+' &rarr; :'+esc(port)+'</span>'
-          : '<span class="badge warn">DOWN</span> <span class="val">'+esc(name)+'</span>'],
+        ['Link (sl0)','<span class="badge ok">UP</span>'],
+        ['Addresses','<span class="val">'+esc(d.local)+' &rarr; '+esc(d.peer)+'</span>'],
+        ['rnsd interface', d.rnsd_up?'<span class="badge ok">UP</span>':'<span class="badge warn">DOWN</span>'],
         ['Radio','<span class="val">'+unit(rd.freq,'MHz')+' · '+unit(rd.bw,'MHz')+' · '+mcs+' · '+unit(rd.power,'dBm')+'</span>'],
-        ['Airtime', airbar+'<span class="val">'+esc(st.airtime||'?')+'</span> <span class="dim">· ch-util '+esc(st.ch_util||'?')+'</span>'],
+        ['Airtime','<span class="val">'+esc(st.airtime||'?')+'</span> <span class="dim">· ch-util '+esc(st.ch_util||'?')+'</span>'],
         ['Noise floor', noise(st.noise)],
         ['Throughput','<span class="val">&darr; '+esc(st.rx_speed||'?')+' · &uarr; '+esc(st.tx_speed||'?')+'</span>'],
         ['Traffic','<span class="val">&darr; '+esc(st.rx_bytes||'?')+' · &uarr; '+esc(st.tx_bytes||'?')+'</span>'],
@@ -173,9 +171,9 @@ static std::string halow_script_html(const std::string& base) {
         ['Neighbours','<span class="val">'+ns.length+'</span>'],
         ['Modem','<span class="val">'+esc(dv.temp||'?')+' · fw '+fw+' · up '+esc(dv.uptime||'?')+'</span>'],
       ];
-      body.innerHTML='<table class="kv">'+rows.map(function(x){return '<tr><th>'+x[0]+'</th><td>'+x[1]+'</td></tr>';}).join('')+'</table>';
-    }).catch(function(){ badge.className='badge warn'; badge.textContent='error';
-      body.innerHTML='<p class="muted">Could not read modem status.</p>'; });
+      body.innerHTML='<table class="kv">'+rows.map(function(x){return '<tr><th>'+x[0]+'</th><td>'+x[1]+'</td></tr>';}).join('')+'</table>'+
+        (d.rnsd_up?'':'<p class="muted" style="margin:6px 0 0">rnsd has no interface connected to the modem — add it on the Reticulum tab.</p>');
+    }).catch(function(){ body.innerHTML='<p class="muted">Could not read modem status.</p>'; });
   }
   window.__loadHalow = load;
   load();
@@ -665,14 +663,18 @@ void dashboard_page(const Request& req, Response& res) {
     h = R(std::move(h), "__RNSD_UPTIME__",
           rnsd.running && rnsd.uptime_s >= 0 ? "up " + fmt_uptime(rnsd.uptime_s) : "—");
     // Installed version (cheap dist-info read) + optional update badge — mirrors
-    // the reticulum card and the /dashboard/data JS.
+    // the reticulum card and the /dashboard/data JS. Status lives in its own
+    // row: a badge next to the version string reads as two values on one line.
     updatecheck::State u = updatecheck::display();
     std::string ver = "<strong>" + E(u.installed.empty() ? "unknown" : u.installed) + "</strong>";
+    std::string upd;
     if (u.update_available)
-        ver += " <span class=\"badge warn\">update available: " + E(u.latest) + "</span>";
+        upd = "<span class=\"badge warn\">update available: " + E(u.latest) + "</span>";
     else if (!u.latest.empty() && u.error.empty())
-        ver += " <span class=\"badge ok\">up to date</span>";
+        upd = "<span class=\"badge ok\">up to date</span>";
+    if (upd.empty()) upd = "<span class=\"muted\">&mdash;</span>";
     h = R(std::move(h), "__RNSD_VERSION__", ver);
+    h = R(std::move(h), "__RNSD_UPDATE__", upd);
 
     // Echo Bot card — only when enabled in /etc/rnsbox/echobot.conf
     h = R(std::move(h), "__ECHOBOT_CARD__", echobot_dashboard_card(base));
