@@ -92,11 +92,13 @@ void console_full_page(const http::Request&, http::Response&);     // GET  rende
 void console_stream(const http::Request&, http::Response&);        // GET  raw VT output stream
 void console_input(const http::Request&, http::Response&);         // POST raw key bytes -> PTY
 void console_resize(const http::Request&, http::Response&);        // POST cols/rows -> PTY
+void console_ws_token(const http::Request&, http::Response&);      // GET  mint WS token
 void nomadnet_page(const http::Request&, http::Response&);         // GET  render
 void nomadnet_full_page(const http::Request&, http::Response&);    // GET  render (no chrome)
 void nomadnet_stream(const http::Request&, http::Response&);       // GET  raw VT output stream
 void nomadnet_input(const http::Request&, http::Response&);        // POST raw key bytes -> PTY
 void nomadnet_resize(const http::Request&, http::Response&);       // POST cols/rows -> PTY
+void nomadnet_ws_token(const http::Request&, http::Response&);     // GET  mint WS token
 
 // bundled Reticulum manual (Markdown rendered on demand)
 void manual_page(const http::Request&, http::Response&);           // GET  render

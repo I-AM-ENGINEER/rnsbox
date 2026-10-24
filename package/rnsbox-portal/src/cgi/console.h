@@ -8,8 +8,9 @@
 //   shell     — the operator's admin login shell (Console tab)
 //   nomadnet  — NomadNet's TUI client (NomadNet tab); started on first attach
 // The CGI routes authenticate against the portal session and bridge that socket
-// to ordinary HTTP (chunked output + POSTed keystrokes), so the terminals stay
-// on the portal's port 80 with no second listener.
+// to ordinary HTTP (chunked output + POSTed keystrokes). The broker also speaks
+// WebSocket on a token-authenticated TCP port: that is the fast path used by
+// term.js, while the CGI bridge stays as a fallback.
 #ifndef RNSBOX_CONSOLE_H
 #define RNSBOX_CONSOLE_H
 
@@ -25,10 +26,19 @@ extern const char PID_PATH[];
 extern const char SESSION_SHELL[];
 extern const char SESSION_NOMADNET[];
 
+// Shared runtime paths.  /run in production; RNSBOX_TERM_RUN_DIR overrides
+// them for the host test harness.
+std::string run_dir();
+std::string secret_path();   // HMAC key for the WebSocket tokens
+std::string port_path();     // port of the fast-path listener (absent when the
+                             // listener is disabled or failed)
+
 // Run the broker. Called for `rnsbox-portal console-broker [-f]`; returns 0
 // when another broker is already alive, non-zero on setup failure. With -f it
 // stays in the foreground (live debugging), otherwise it double-forks.
-int broker_main(bool foreground);
+// ws_port < 0 means "environment or 7681"; ws_port == 0 disables the
+// WebSocket fast path. ws_bind == nullptr means "environment or 0.0.0.0".
+int broker_main(bool foreground, int ws_port = -1, const char* ws_bind = nullptr);
 
 // CGI side: connect to the broker. Returns a blocking fd or -1.
 int connect_session();

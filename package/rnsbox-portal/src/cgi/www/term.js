@@ -1,9 +1,11 @@
 // term.js — xterm.js bridge for the Console and NomadNet tabs.
 //
-// The page markup (pages/terminal.html) carries the route prefix in
-// data-base/data-api; the broker session is selected server-side by that
-// prefix. Output is one long-lived chunked HTTP response, input and resize are
-// small POSTs — see routes_console.cpp and console_broker.cpp.
+// Fast path: fetch a short-lived token, open a WebSocket to the broker, and
+// receive [type][payload] binary frames (1 = cell diff, 2 = full snapshot,
+// 3 = raw VT, 4 = raw replay on attach).  Input goes back over the same socket
+// as [1][bytes], so a keystroke no longer spawns a CGI process.  The legacy
+// chunked-HTTP stream is kept as a fallback for https pages, blocked ports or
+// an old broker.
 (function () {
   'use strict';
   var card = document.getElementById('term-card');
@@ -75,21 +77,41 @@
     }, 120);
   }
 
+  // ---- shared state ----
   var lastCols = 0, lastRows = 0;
-  var leaving = false;
+  var leaving = false, closed = false, connected = false;
+  var attempts = 0;
+  var reconnectTimer = null;
+  var streamAbort = null, streamWatchdog = null, connectWatchdog = null;
+  var encoder = new TextEncoder();
+
+  var fast = {
+    attempting: false,
+    disabled: false,
+    ws: null,
+    open: false,
+    failed: 0,
+    pending: [],
+    watchdog: null,
+    modes: null
+  };
+  var fastTimer = null;
+
   function postResize(cols, rows) {
     // Unloading a tab can collapse the layout to 0x0; resizing the PTY to that
     // makes full-screen TUIs (NomadNet) quit. Keep the last real size instead.
     if (leaving || cols < 20 || rows < 5) return;
     if (cols === lastCols && rows === lastRows) return;
     lastCols = cols; lastRows = rows;
+    if (fast.open && fast.ws) {
+      try { fast.ws.send('R ' + cols + ' ' + rows); } catch (e) {}
+      return;
+    }
     fetch(API + '/resize?cols=' + cols + '&rows=' + rows, {
       method: 'POST', credentials: 'same-origin', cache: 'no-store'
     }).catch(function () {});
   }
-  term.onResize(function (size) {
-    postResize(size.cols, size.rows);
-  });
+  term.onResize(function (size) { postResize(size.cols, size.rows); });
 
   if (window.ResizeObserver) {
     new ResizeObserver(scheduleFit).observe(wrap);
@@ -101,14 +123,13 @@
     term.options.theme = currentTheme();
   }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
 
-  // ---- input: raw key bytes, sent immediately while a request is free ----
+  // ---- input ----
+  // Legacy: raw key bytes are POSTed, coalesced into ~15 ms batches.
   var pending = [];
   var inputBusy = false;
   var sendTimer = null;
-
-  // Take at most 64 KiB per POST: the portal caps a request body, and a big
-  // paste must not vanish. The remainder stays queued for the next request.
   var INPUT_CHUNK = 64 * 1024;
+
   function takeInput() {
     var chunks = [], total = 0;
     while (pending.length && total < INPUT_CHUNK) {
@@ -127,14 +148,12 @@
     for (var i = 0; i < chunks.length; i++) { buf.set(chunks[i], off); off += chunks[i].length; }
     return buf;
   }
+
   function flushInput() {
     if (inputBusy || pending.length === 0) return;
     if (sendTimer) { clearTimeout(sendTimer); sendTimer = null; }
     var buf = takeInput();
     inputBusy = true;
-    // A stalled POST must not freeze the keyboard forever: abort after a few
-    // seconds and let the next keystrokes through. Losing one small chunk is
-    // much better than an input queue that never drains.
     var ctl = new AbortController();
     var timer = setTimeout(function () {
       try { ctl.abort(); } catch (e) {}
@@ -153,7 +172,36 @@
     });
   }
 
+  function fastFrame(bytes) {
+    var f = new Uint8Array(bytes.length + 1);
+    f[0] = 1;                 // 1 = raw input bytes
+    f.set(bytes, 1);
+    return f;
+  }
+
+  function sendFastOrQueue(bytes) {
+    // Keep each WebSocket frame small: a large paste must not hit the broker's
+    // per-frame cap, and ordering is preserved by the socket itself.
+    var CHUNK = 64 * 1024;
+    if (fast.open && fast.ws) {
+      try {
+        for (var off = 0; off < bytes.length; off += CHUNK) {
+          fast.ws.send(fastFrame(bytes.subarray(off, Math.min(bytes.length, off + CHUNK))));
+        }
+        return;
+      } catch (e) { /* fall through */ }
+    }
+    for (var off2 = 0; off2 < bytes.length; off2 += CHUNK) {
+      fast.pending.push(fastFrame(bytes.subarray(off2, Math.min(bytes.length, off2 + CHUNK))));
+    }
+    while (fast.pending.length > 32) fast.pending.shift();
+  }
+
   function sendBytes(bytes) {
+    if (fast.ws || fast.attempting) {
+      sendFastOrQueue(bytes);
+      return;
+    }
     pending.push(bytes);
     // A tiny debounce coalesces fast typing/paste into fewer CGI requests
     // while staying below the threshold of perception for a single key.
@@ -165,7 +213,6 @@
     }, 15);
   }
 
-  var encoder = new TextEncoder();
   term.onData(function (data) { sendBytes(encoder.encode(data)); });
   term.onBinary(function (data) {
     var out = new Uint8Array(data.length);
@@ -173,15 +220,149 @@
     sendBytes(out);
   });
 
-  // ---- output: one long-lived chunked HTTP response ----
-  var streamAbort = null;
-  var connected = false;
-  var attempts = 0;
-  var reconnectTimer = null;
-  var closed = false;
-  var streamWatchdog = null;
-  var connectWatchdog = null;
+  function flushFastPending() {
+    if (!fast.open || !fast.ws) return;
+    var q = fast.pending;
+    fast.pending = [];
+    for (var i = 0; i < q.length; i++) {
+      try { fast.ws.send(q[i]); } catch (e) {
+        fast.pending = q.slice(i);
+        return;
+      }
+    }
+  }
 
+  function drainFastToLegacy() {
+    if (!fast.pending.length) return;
+    var q = fast.pending;
+    fast.pending = [];
+    for (var i = 0; i < q.length; i++) pending.push(q[i].subarray(1));
+    flushInput();
+  }
+
+  function touchFastWatchdog() {
+    if (fast.watchdog) clearTimeout(fast.watchdog);
+    fast.watchdog = setTimeout(function () {
+      fast.watchdog = null;
+      if (fast.ws) { try { fast.ws.close(); } catch (e) {} }
+    }, 25000);
+  }
+
+  function clearFastWatchdog() {
+    if (fast.watchdog) { clearTimeout(fast.watchdog); fast.watchdog = null; }
+  }
+
+  function handleFastText(s) {
+    if (s === 'H') return;            // heartbeat, already touched
+    if (s.charAt(0) !== '{') return;
+    try {
+      var o = JSON.parse(s);
+      if (o && o.t === 'm') fast.modes = o;
+    } catch (e) {}
+  }
+
+  function scheduleFastReconnect() {
+    if (closed || fastTimer) return;
+    var delay = Math.min(500 * Math.pow(2, fast.failed), 5000);
+    setStatus('reconnecting in ' + Math.round(delay / 1000) + 's…', 'warn');
+    fastTimer = setTimeout(function () {
+      fastTimer = null;
+      connect();
+    }, delay);
+  }
+
+  // ---- fast path: WebSocket ----
+  function connectFast() {
+    if (closed || fast.disabled) return false;
+    if (!window.WebSocket || location.protocol !== 'http:') return false;
+    fast.attempting = true;
+    setStatus('connecting…', '');
+    fetch(API + '/ws-token', { credentials: 'same-origin', cache: 'no-store' })
+      .then(function (r) {
+        if (!r.ok) throw new Error('fast path unavailable');
+        return r.json();
+      })
+      .then(function (info) {
+        if (closed) return null;
+        if (!info || !info.port || !info.token) throw new Error('fast path unavailable');
+        var url = 'ws://' + location.hostname + ':' + info.port +
+          '/term?session=' + encodeURIComponent(info.session) +
+          '&token=' + encodeURIComponent(info.token) +
+          '&cols=' + (term.cols || 80) + '&rows=' + (term.rows || 24);
+        var ws;
+        try { ws = new WebSocket(url); } catch (e) {
+          throw new Error('ws failed');
+        }
+        ws.binaryType = 'arraybuffer';
+        fast.ws = ws;
+        fast.open = false;
+        var opened = false;
+
+        ws.onopen = function () {
+          opened = true;
+          fast.open = true;
+          fast.attempting = false;
+          fast.failed = 0;
+          connected = true;
+          attempts = 0;
+          setStatus('connected', 'ok');
+          try { ws.send('R ' + (term.cols || 80) + ' ' + (term.rows || 24)); } catch (e) {}
+          flushFastPending();
+          touchFastWatchdog();
+        };
+
+        ws.onmessage = function (ev) {
+          touchFastWatchdog();
+          if (typeof ev.data === 'string') { handleFastText(ev.data); return; }
+          var u = new Uint8Array(ev.data);
+          if (!u.length) return;
+          if (u[0] === 2 || u[0] === 4) {
+            // 2 = screen snapshot, 4 = raw replay after a (re)attach: both are
+            // a fresh terminal state, so reset before painting.
+            term.reset();
+            term.write(u.subarray(1));
+          } else {
+            term.write(u.subarray(1));
+          }
+        };
+
+        ws.onerror = function () { /* onclose follows */ };
+
+        ws.onclose = function () {
+          fast.open = false;
+          fast.ws = null;
+          fast.attempting = false;
+          clearFastWatchdog();
+          connected = false;
+          if (closed) return;
+          if (!opened) {
+            fast.failed++;
+            if (fast.failed >= 2) {
+              fast.disabled = true;
+              drainFastToLegacy();
+              connectLegacy();
+              return;
+            }
+          }
+          scheduleFastReconnect();
+        };
+        return null;
+      })
+      .catch(function () {
+        fast.attempting = false;
+        fast.failed++;
+        if (fast.failed >= 2) {
+          fast.disabled = true;
+          drainFastToLegacy();
+          connectLegacy();
+        } else {
+          scheduleFastReconnect();
+        }
+      });
+    return true;
+  }
+
+  // ---- legacy path: chunked HTTP ----
   function clearWatchdogs() {
     if (streamWatchdog) { clearTimeout(streamWatchdog); streamWatchdog = null; }
     if (connectWatchdog) { clearTimeout(connectWatchdog); connectWatchdog = null; }
@@ -194,7 +375,7 @@
     setStatus('reconnecting in ' + Math.round(delay / 1000) + 's…', 'warn');
     reconnectTimer = setTimeout(function () {
       reconnectTimer = null;
-      connect();
+      connectLegacy();
     }, delay);
   }
 
@@ -206,7 +387,7 @@
     scheduleReconnect();
   }
 
-  function connect() {
+  function connectLegacy() {
     if (closed) return;
     clearWatchdogs();
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
@@ -216,8 +397,6 @@
     var ctl = new AbortController();
     streamAbort = ctl;
     setStatus('connecting…', '');
-    // The server flushes a byte right after the headers, so a connect taking
-    // longer than this is a stalled HTTP path, not a slow terminal.
     connectWatchdog = setTimeout(function () {
       connectWatchdog = null;
       streamFailed();
@@ -247,7 +426,7 @@
       }
       connected = true;
       attempts = 0;
-      setStatus('connected', 'ok');
+      setStatus('connected (fallback)', 'ok');
       term.reset();
       var reader = r.body.getReader();
       function pump() {
@@ -255,9 +434,6 @@
           if (ctl.signal.aborted) return;
           if (step.done) { streamFailed(); return; }
           term.write(step.value);
-          // The broker sends a heartbeat at least every 10 s. Silence beyond
-          // 25 s means the HTTP stream itself is stuck; reconnect instead of
-          // leaving the tab frozen.
           if (streamWatchdog) clearTimeout(streamWatchdog);
           streamWatchdog = setTimeout(function () {
             streamWatchdog = null;
@@ -279,8 +455,45 @@
     });
   }
 
+  function connect() {
+    if (closed) return;
+    clearWatchdogs();
+    clearFastWatchdog();
+    if (fastTimer) { clearTimeout(fastTimer); fastTimer = null; }
+    if (!fast.disabled && window.WebSocket && location.protocol === 'http:') {
+      if (connectFast()) return;
+    }
+    connectLegacy();
+  }
+
+  // Wheel fallback for full-screen apps that do not enable mouse reporting:
+  // their alternate screen has no scrollback for xterm to move, so send arrow
+  // keys (the classic "alternate scroll" behaviour).  When the app does ask
+  // for mouse events (1000/1002/1003), xterm.js encodes the wheel itself.
+  wrap.addEventListener('wheel', function (ev) {
+    if (!fast.open || !fast.modes) return;
+    if (!fast.modes.alt || fast.modes.mouse) return;
+    if (!ev.deltaY) return;
+    ev.preventDefault();
+    var seq = fast.modes.app ? (ev.deltaY < 0 ? '\x1bOA' : '\x1bOB')
+                             : (ev.deltaY < 0 ? '\x1b[A' : '\x1b[B');
+    var n = Math.max(1, Math.min(5, Math.round(Math.abs(ev.deltaY) / 40) || 1));
+    var s = '';
+    for (var i = 0; i < n; i++) s += seq;
+    sendBytes(encoder.encode(s));
+  }, { passive: false });
+
   document.getElementById('term-reconnect').addEventListener('click', function () {
     attempts = 0;
+    fast.failed = 0;
+    fast.disabled = false;
+    if (fastTimer) { clearTimeout(fastTimer); fastTimer = null; }
+    if (fast.ws) {
+      try { fast.ws.onclose = null; fast.ws.close(); } catch (e) {}
+      fast.ws = null;
+      fast.open = false;
+    }
+    if (streamAbort) { try { streamAbort.abort(); } catch (e) {} }
     connect();
     term.focus();
   });
@@ -293,14 +506,17 @@
     leaving = true;
     closed = true;
     clearWatchdogs();
+    clearFastWatchdog();
     if (sendTimer) { clearTimeout(sendTimer); sendTimer = null; }
+    if (fastTimer) { clearTimeout(fastTimer); fastTimer = null; }
+    if (fast.ws) { try { fast.ws.close(); } catch (e) {} fast.ws = null; fast.open = false; }
     if (streamAbort) { try { streamAbort.abort(); } catch (e) {} }
   }
   window.addEventListener('beforeunload', leave);
   window.addEventListener('pagehide', leave);
 
   document.addEventListener('visibilitychange', function () {
-    if (!document.hidden && !connected && !closed && !reconnectTimer) connect();
+    if (!document.hidden && !connected && !closed && !reconnectTimer && !fastTimer) connect();
   });
 
   requestAnimationFrame(function () {
