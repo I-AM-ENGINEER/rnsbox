@@ -196,12 +196,12 @@ static std::string ble_card_html(const std::string& base) {
     std::string traffic = "<span class=\"muted\">no data yet</span>";
     std::string ttx, trx;
     if (ble_traffic_stats(ttx, trx) || rnstatus_interface_traffic("BLE", ttx, trx))
-        traffic = "&uarr; " + E(ttx) + " &nbsp; &darr; " + E(trx);
+        traffic = E(trx) + " / " + E(ttx);
     std::string s = R"HTML(<section class="card" id="ble-card">
     <h3>Bluetooth (BLE)</h3>
     <table class="kv">
       <tr><th>Status</th><td id="d-ble-status">__BLE_STATUS__</td></tr>
-      <tr><th>Traffic</th><td id="d-ble-traffic" class="mono">__BLE_TRAFFIC__</td></tr>
+      <tr><th>RX / TX</th><td id="d-ble-traffic">__BLE_TRAFFIC__</td></tr>
     </table>
     <h4>Connected devices</h4>
     <table class="data">
@@ -225,8 +225,8 @@ static std::string ble_card_html(const std::string& base) {
         b.innerHTML = rows.length ? rows.join('') : '<tr><td colspan="2" class="muted">none</td></tr>';
         var t = document.getElementById('d-ble-traffic');
         if (t) t.innerHTML = d.traffic
-          ? ('&uarr; ' + esc(d.traffic.tx) + ' &nbsp; &darr; ' + esc(d.traffic.rx))
-          : '<span class="muted">no data yet</span>';
+          ? (esc(d.traffic.rx) + ' / ' + esc(d.traffic.tx))
+          : '<span class="muted">—</span>';
       }).catch(function(){
         b.innerHTML = '<tr><td colspan="2" class="muted">status unavailable</td></tr>';
       });
