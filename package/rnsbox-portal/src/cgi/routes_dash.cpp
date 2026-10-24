@@ -32,6 +32,13 @@ static std::string R(std::string s, const std::string& a, const std::string& b) 
 static std::string E(const std::string& s) { return render::esc(s); }
 static std::string JE(const std::string& s) { return http::json_escape(s); }
 
+// CPU busy percentage over the monitor's 5 s window. The value is an int, so
+// it is safe to inject as markup; the muted suffix names the window.
+static std::string cpu_load_html(int pct) {
+    if (pct < 0) return "<span class=\"muted\">&mdash;</span>";
+    return std::to_string(pct) + " % <span class=\"muted\">5 s avg</span>";
+}
+
 // _truthy() from store.py: enabled unless it's one of the "off" spellings.
 static bool slip_enabled(const store::SlipConfig& sl) {
     std::string v = util::trim(sl.enabled);
@@ -424,7 +431,7 @@ void dashboard_page(const Request& req, Response& res) {
     h = R(std::move(h), "__DEVICE__",   E(sys.device.empty() ? "unknown" : sys.device));
     h = R(std::move(h), "__KERNEL__",   E(sys.kernel));
     h = R(std::move(h), "__UPTIME__",   E(sys.uptime));
-    h = R(std::move(h), "__LOAD__",     E(sys.load[0]) + " / " + E(sys.load[1]) + " / " + E(sys.load[2]));
+    h = R(std::move(h), "__LOAD__",     cpu_load_html(sys.cpu_pct));
     h = R(std::move(h), "__CLOCK__",    clock_badge(sysinfo::clock_source()));
 
     // SoC thermal zone when the kernel exposes one; otherwise the DS3231 die
@@ -606,6 +613,7 @@ void dashboard_data(const Request& req, Response& res) {
 
     std::string J = "{\"sys\":{";
     J += "\"uptime\":\"" + JE(sys.uptime) + "\",";
+    J += "\"cpu_pct\":" + (sys.cpu_pct >= 0 ? std::to_string(sys.cpu_pct) : std::string("null")) + ",";
     J += "\"load\":[\"" + JE(sys.load[0]) + "\",\"" + JE(sys.load[1]) + "\",\"" + JE(sys.load[2]) + "\"],";
     J += "\"kernel\":\"" + JE(sys.kernel) + "\",";
     J += "\"mem\":{";

@@ -14,7 +14,7 @@ __DEFAULT_PASS_WARN__
       <tr><th>Kernel</th><td>__KERNEL__</td></tr>
       <tr><th>Uptime</th><td id="d-uptime">__UPTIME__</td></tr>
       <tr><th>Temperature</th><td>__TEMP__</td></tr>
-      <tr><th>Load avg</th><td id="d-load">__LOAD__</td></tr>
+      <tr><th>CPU load</th><td id="d-load">__LOAD__</td></tr>
       <tr><th>Clock source</th><td id="d-clock">__CLOCK__</td></tr>
     </table>
     <div class="meter-label">
@@ -97,7 +97,9 @@ __HALOW_SCRIPT__
   function patch(d){
     var s=d.sys||{}, m=s.mem||{}, wif=d.wan_if||{}, lif=d.lan_if||{}, rn=d.rnsd||{}, up=d.update||{};
     setText('d-uptime', s.uptime||'');
-    setText('d-load', (s.load||[]).join(' / '));
+    setHTML('d-load', (typeof s.cpu_pct === 'number')
+      ? (s.cpu_pct + ' % <span class="muted">5 s avg</span>')
+      : '<span class="muted">&mdash;</span>');
     var cm={ntp:'NTP',rtc:'RTC',browser:'browser'}, cs=cm.hasOwnProperty(d.clock_source)?cm[d.clock_source]:'';
     setHTML('d-clock', cs?'<span class="badge ok">'+esc(cs)+'</span>':'<span class="badge warn">none</span>');
     if(m.total_mb){

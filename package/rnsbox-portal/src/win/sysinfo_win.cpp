@@ -91,28 +91,33 @@ Summary summary() {
     snprintf(buf, sizeof buf, "%ldd %ldh %ldm", d, h, m);
     s.uptime = buf;
 
-    // Windows has no load average. Report the percentage of CPU busy since the
-    // previous render instead, so the column is not a lie; it reads "—" until
-    // there is a second sample.
-    static ULONGLONG prev_idle = 0, prev_kernel = 0, prev_user = 0;
+    // Windows has no load average. Report CPU busy over a 5 s window: the
+    // dashboard polls every second, so using each call as the baseline would
+    // give a 1 s window. The first call only sets the baseline; a value is
+    // published every 5 s and held in between.
+    static ULONGLONG base_idle = 0, base_kernel = 0, base_user = 0, base_ms = 0;
+    static int last_pct = -1;
     FILETIME idle_ft, kernel_ft, user_ft;
     if (GetSystemTimes(&idle_ft, &kernel_ft, &user_ft)) {
         auto to_u64 = [](const FILETIME& f) {
             ULARGE_INTEGER u; u.LowPart = f.dwLowDateTime; u.HighPart = f.dwHighDateTime; return u.QuadPart;
         };
         ULONGLONG idle = to_u64(idle_ft), kernel = to_u64(kernel_ft), user = to_u64(user_ft);
-        if (prev_kernel || prev_user) {
-            ULONGLONG di = idle - prev_idle;
-            ULONGLONG dt = (kernel - prev_kernel) + (user - prev_user);
+        ULONGLONG now_ms = GetTickCount64();
+        if (base_ms == 0) {
+            base_idle = idle; base_kernel = kernel; base_user = user; base_ms = now_ms;
+        } else if (now_ms - base_ms >= 5000) {
+            ULONGLONG di = idle - base_idle;
+            ULONGLONG dt = (kernel - base_kernel) + (user - base_user);
             if (dt > 0) {
                 int pct = (int)(((dt - di) * 100) / dt);
                 if (pct < 0) pct = 0;
                 if (pct > 100) pct = 100;
-                snprintf(buf, sizeof buf, "%d%%", pct);
-                s.load[0] = buf;
+                last_pct = pct;
             }
+            base_idle = idle; base_kernel = kernel; base_user = user; base_ms = now_ms;
         }
-        prev_idle = idle; prev_kernel = kernel; prev_user = user;
+        s.cpu_pct = last_pct;
     }
     for (int i = 0; i < 3; ++i) if (s.load[i].empty()) s.load[i] = "—";
 

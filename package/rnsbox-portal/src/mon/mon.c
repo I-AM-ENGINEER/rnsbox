@@ -15,6 +15,8 @@
 //   * memlog (every interval, 30 s default): one metrics line per tick to
 //     /var/log/memlog.log (or /var/lib/memlog.log on a read-only root), plus
 //     EVENT lines for rnsd PID changes. Config: /etc/rnsbox/memlog.conf.
+//   * CPU metric (every 5 s): publish {"pct":N,"ts":T} to /run/rnsbox-cpu
+//     for the dashboard's "CPU load" (busy excludes idle/iowait).
 //   * rnstatus warm (every 60 s, 10 s while the cache is still empty):
 //     run `rnsbox-portal rnstatus-refresh` at nice 10, single-flight via
 //     /run/rnsstatus.lock. The command is a stat() while the cache is warm,
@@ -53,7 +55,9 @@
 #define RNSTATUS_CACHE "/run/rnsbox-rnstatus-v2.json"
 #define RNSTATUS_LOCK  "/run/rnsstatus.lock"
 #define BT_PEERS_REQ   "/run/rnsbox-bt-peers.req"
+#define CPU_FILE       "/run/rnsbox-cpu"
 
+#define CPU_INTERVAL 5
 #define MEMWATCH_INTERVAL 30
 #define MEMWATCH_COOLDOWN 600
 #define MEMWATCH_MIN_UPTIME 120
@@ -339,10 +343,43 @@ static int cpu_pct(struct CpuSample cur) {
     if (g_prev_cpu.total && cur.total > g_prev_cpu.total) {
         unsigned long long dt = cur.total - g_prev_cpu.total;
         unsigned long long di = cur.idle >= g_prev_cpu.idle ? cur.idle - g_prev_cpu.idle : 0;
+        if (di > dt) di = dt;
         pct = (int)((100ULL * (dt - di)) / dt);
     }
     g_prev_cpu = cur;
     return pct;
+}
+
+// Dashboard CPU metric: a dedicated 5 s baseline (the memlog's cpu= column
+// above stays on its own interval), published for the portal as
+// {"pct":N,"ts":T}. Busy excludes idle+iowait, so it answers "how much of the
+// CPU was executing work", not "how many tasks were runnable" (loadavg).
+static struct CpuSample g_prev_cpu5;
+static int g_cpu5_have = 0;
+
+static void sample_cpu5(void) {
+    struct CpuSample cur = read_cpu();
+    if (cur.total == 0) return;
+    if (g_cpu5_have && cur.total > g_prev_cpu5.total) {
+        unsigned long long dt = cur.total - g_prev_cpu5.total;
+        unsigned long long di = cur.idle >= g_prev_cpu5.idle
+                                ? cur.idle - g_prev_cpu5.idle : 0;
+        if (di > dt) di = dt;
+        int pct = dt ? (int)((100ULL * (dt - di)) / dt) : 0;
+        if (pct < 0) pct = 0;
+        if (pct > 100) pct = 100;
+        char out[96], tmp[64];
+        snprintf(out, sizeof(out), "{\"pct\":%d,\"ts\":%ld}\n", pct, now_s());
+        snprintf(tmp, sizeof(tmp), CPU_FILE ".tmp");
+        FILE* f = fopen(tmp, "w");
+        if (f) {
+            fputs(out, f);
+            fclose(f);
+            if (rename(tmp, CPU_FILE) != 0) remove(tmp);
+        }
+    }
+    g_prev_cpu5 = cur;
+    g_cpu5_have = 1;
 }
 
 struct TopProc { long rss; char name[32]; };
@@ -541,9 +578,15 @@ int main(int argc, char** argv) {
     long next_log = mono_s() + 1;          // first sample right away
     long next_rn = mono_s() + 5;
     long next_bt = mono_s() + 2;
+    long next_cpu = mono_s();              // baseline now, publish after 5 s
 
     while (!g_stop) {
         long now = mono_s();
+
+        if (now >= next_cpu) {
+            next_cpu = now + CPU_INTERVAL;
+            sample_cpu5();
+        }
 
         // The rnstatus warm-up can now finish in milliseconds (resident
         // helper), so reap it here instead of leaving a zombie until the

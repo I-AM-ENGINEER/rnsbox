@@ -21,7 +21,11 @@ struct Mem {
 };
 struct Summary {
     std::string uptime;       // "Nd Nh Nm"
-    std::string load[3];      // 1/5/15-min load strings
+    std::string load[3];      // 1/5/15-min load strings (diagnostics)
+    // CPU busy percentage over rnsbox-mon's 5 s window, -1 = no sample yet.
+    // This is what the dashboard shows; load average counts runnable + blocked
+    // tasks and is not a CPU utilisation figure.
+    int cpu_pct = -1;
     Mem mem;
     std::string kernel;       // osrelease
     std::string device;       // /proc/device-tree/model (board name)

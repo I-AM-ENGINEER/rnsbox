@@ -155,9 +155,21 @@ Summary summary() {
         char buf[64]; snprintf(buf, sizeof(buf), "%ldd %ldh %ldm", d, h, m);
         s.uptime = buf;
     }
-    // load
+    // load (diagnostics only; the dashboard shows cpu_pct)
     auto la = split_ws(slurp("/proc/loadavg"));
     for (int i = 0; i < 3 && i < (int)la.size(); ++i) s.load[i] = la[i];
+    // CPU utilisation over the monitor's 5 s window. The file is written with
+    // an atomic rename; a sample older than three windows means rnsbox-mon is
+    // not running, so report "unknown" instead of a frozen number.
+    std::string cpu = util::read_file("/run/rnsbox-cpu", 128);
+    int cpct = -1;
+    long cts = 0;
+    if (sscanf(cpu.c_str(), "{\"pct\":%d,\"ts\":%ld}", &cpct, &cts) == 2) {
+        time_t now = ::time(nullptr);
+        if (cpct >= 0 && cpct <= 100 &&
+            (cts > (long)now || now - cts <= 15))
+            s.cpu_pct = cpct;
+    }
     // mem
     std::string mi = slurp("/proc/meminfo");
     long total = meminfo_kb(mi, "MemTotal:");
