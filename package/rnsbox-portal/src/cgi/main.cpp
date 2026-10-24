@@ -63,6 +63,7 @@ static const char* const POST_ONLY[] = {
     "/reticulum/halow/add",
     "/reticulum/halow/ota/chunk",
     "/reticulum/halow/ota/start",
+    "/reticulum/halow/ota/fetch",
     "/reticulum/halow/ota/online",
     "/reticulum/tcpclient/add",
     "/reticulum/tcpclient/update",
@@ -323,6 +324,12 @@ int main(int argc, char** argv) {
     // update the connected-device cache in the background.
     if (argc >= 2 && strcmp(argv[1], "bt-peers-refresh") == 0)
         return routes::bt_peers_refresh() ? 0 : 1;
+
+    // `rnsbox-portal halow-ota <file>` — detached by the HaLow OTA endpoint:
+    // reads the assembled image, drives the modem's ota_fw_* API and records
+    // progress in /run/rnsbox-halow-ota.json.
+    if (argc >= 3 && strcmp(argv[1], "halow-ota") == 0)
+        return routes::halow_ota_cli(argv[2]);
 
     // otherwise: CGI mode (invoked by uhttpd, request in the environment).
     // The request policy and the route table live in dispatch.cpp, shared with
