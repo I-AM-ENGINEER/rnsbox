@@ -994,7 +994,7 @@ if [ "${BUILD_STYLE:-patches}" = external ]; then
     # out-of-tree WiFi driver source shipped in board/sg2000-mainline/.
     # hostapd: board/common/buildroot-patches/hostapd patches the nl80211
     # driver (monitor-less AP mgmt frames), which is only applied at extract.
-    for p in rnsbox-update rnsbox-portal python-rns python-lxmf python-nomadnet python-ble-reticulum rnsbox-python-bluezero aic8800 hostapd; do
+    for p in rnsbox-update rnsbox-portal python-rns python-lxmf python-nomadnet python-ble-reticulum rnsbox-python-bluezero aic8800 hostapd wpa_supplicant; do
         rm -rf "$ODIR"/build/"$p"-* 2>/dev/null || :
     done
 
