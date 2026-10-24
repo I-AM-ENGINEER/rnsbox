@@ -109,6 +109,18 @@ The design goal throughout is a minimal OS: the stock board middleware
 (camera / display / audio / NPU / codec) is stripped so nearly all of the
 board's RAM is available to Linux and the router data plane.
 
+## USB modems and RNodes
+
+The Raspberry Pi images carry the USB serial and modem drivers (`option`,
+`qmi_wwan`, `cdc_acm`, `cdc_ncm`/`ecm`, `ch341`, `cp210x`, `ftdi_sio`). On a
+Pi 3/4/5 plug the modem or RNode into a USB-A port. The Zero 2 W has a single
+micro-USB port that the image uses as the CDC-NCM LAN gadget: to use a USB
+modem there instead, set `dtoverlay=dwc2,dr_mode=host` in the `[pi02]` section
+of `/boot/config.txt` and remove `/boot/usb.dev`.
+
+On the LicheeRV Nano the single USB-C port is also the CDC-NCM LAN (DWC2
+peripheral), so it cannot host a USB modem; use the UART HaLow link below.
+
 ## HaLow modem — SLIP wiring
 
 Wire the RNode HaLow modem to the board's hardware UART with three 3.3 V-TTL
