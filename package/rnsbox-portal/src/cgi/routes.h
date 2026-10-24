@@ -128,6 +128,7 @@ void ntp_set(const http::Request&, http::Response&);               // POST PRG
 void ntp_restart(const http::Request&, http::Response&);           // POST PRG
 void ssh_set(const http::Request&, http::Response&);               // POST PRG
 void usb_mode_set(const http::Request&, http::Response&);          // POST PRG (USB role device|host)
+void settings_uart(const http::Request&, http::Response&);         // POST PRG (UART functions)
 
 // echo bot (cards on the Reticulum tab; /echobot redirects to the card)
 std::string echobot_cards(const std::string& base);              // cards HTML for the Reticulum page

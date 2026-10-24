@@ -69,6 +69,7 @@ static const char* const POST_ONLY[] = {
     "/settings/ntp/restart",
     "/settings/ssh",
     "/settings/usb",
+    "/settings/uart",
     "/updates/config",
     "/updates/check",
     "/updates/apply",
@@ -482,6 +483,7 @@ void handle(const http::Request& req, http::Response& res) {
     else if (p == "/settings/ntp/restart")       routes::ntp_restart(req, res);
     else if (p == "/settings/ssh")               routes::ssh_set(req, res);
     else if (p == "/settings/usb")               routes::usb_mode_set(req, res);
+    else if (p == "/settings/uart")              routes::settings_uart(req, res);
     else if (p == "/echobot")                    routes::echobot_page(req, res);
     else if (p == "/echobot/peers")              routes::echobot_peers(req, res);
     else if (p == "/echobot/toggle")             routes::echobot_toggle(req, res);

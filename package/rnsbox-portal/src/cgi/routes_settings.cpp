@@ -179,7 +179,206 @@ static std::string usb_section_html(const UsbState& s) {
     return h;
 }
 
+// ---- UART card ----
+// The controllers are enabled in the DTS; the pin names below come from the
+// vendor header tables. The function is the operator's assignment: SLIP picks
+// up the UART marked SLIP, RNode is configured in its own card, and the kernel
+// console is fixed by the boot command line.
+struct UartRow { std::string key, dev, pins; };
+
+static std::string board_model() {
+    std::string s = util::read_file("/proc/device-tree/model", 512);
+    while (!s.empty() && (s.back() == '\0' || s.back() == '\n' || s.back() == '\r'))
+        s.pop_back();
+    return util::trim(s);
+}
+
+static std::vector<UartRow> uart_rows() {
+    const std::string m = board_model();
+    std::vector<UartRow> v;
+    if (m.find("Duo Module 01") != std::string::npos ||
+        m.find("Duo S") != std::string::npos) {
+        v = {
+            {"uart0", "ttyS0", "XGPIOA16 TX / XGPIOA17 RX"},
+            {"uart1", "ttyS1", "XGPIOA28 TX / XGPIOA29 RX"},
+            {"uart2", "ttyS2", "XGPIOB11 TX / XGPIOB12 RX"},
+            {"uart3", "ttyS3", "XGPIOB1 TX / XGPIOB2 RX"},
+            {"uart4", "ttyS4", "not pinned out on this header"},
+        };
+    } else if (m.find("256M") != std::string::npos) {
+        v = {
+            {"uart0", "ttyS0", "XGPIOA16 TX / XGPIOA17 RX"},
+            {"uart1", "ttyS1", "XGPIOA28 TX / XGPIOA29 RX"},
+            {"uart2", "ttyS2", "PWR_GPIO19 TX / PWR_GPIO20 RX"},
+            {"uart3", "ttyS3", "PWR_GPIO19 TX / PWR_GPIO20 RX (shared)"},
+            {"uart4", "ttyS4", "not pinned out on this header"},
+        };
+    } else if (m.find("Milk-V Duo") != std::string::npos) {
+        v = {
+            {"uart0", "ttyS0", "XGPIOA16 TX / XGPIOA17 RX"},
+            {"uart1", "ttyS1", "XGPIOA28 TX / XGPIOA29 RX"},
+            {"uart2", "ttyS2", "PWR_GPIO19 TX / PWR_GPIO20 RX"},
+            {"uart3", "ttyS3", "PWR_GPIO19 TX / PWR_GPIO20 RX (shared)"},
+            {"uart4", "ttyS4", "PWR_GPIO26 TX / PWR_GPIO25 RX"},
+        };
+    } else if (m.find("Raspberry Pi") != std::string::npos) {
+        v = {{"ttyS0", "ttyS0", "GPIO14 TX / GPIO15 RX"}};
+    } else if (m.find("Orange Pi R1") != std::string::npos) {
+        v = {{"uart0", "ttyS0", "UART0 header pins (PA4 TX / PA5 RX)"}};
+    } else {
+        for (int i = 0; i < 4; ++i) {
+            std::string d = "ttyS" + std::to_string(i);
+            if (::access(("/dev/" + d).c_str(), F_OK) == 0)
+                v.push_back({"uart" + std::to_string(i), d, "pins unknown on this board"});
+        }
+        if (::access("/dev/ttyAMA0", F_OK) == 0)
+            v.push_back({"uart0", "ttyAMA0", "pins unknown on this board"});
+    }
+    return v;
+}
+
+static std::string kernel_console() {
+    const std::string cmd = util::read_file("/proc/cmdline", 4096);
+    size_t p = 0;
+    while ((p = cmd.find("console=", p)) != std::string::npos) {
+        size_t b = p + 8;
+        size_t e = cmd.find_first_of(" \t\n", b);
+        std::string t = cmd.substr(b, e == std::string::npos ? std::string::npos : e - b);
+        size_t comma = t.find(',');
+        if (comma != std::string::npos) t.resize(comma);
+        if (t.rfind("tty", 0) == 0) return t;
+        p = b;
+    }
+    return "";
+}
+
+static std::string uart_conf_value(const std::string& key) {
+    std::string data = util::read_file("/etc/rnsbox/uart.conf", 16384);
+    size_t i = 0;
+    while (i < data.size()) {
+        size_t nl = data.find('\n', i);
+        std::string ln = util::trim(data.substr(i, nl == std::string::npos ? std::string::npos : nl - i));
+        i = (nl == std::string::npos) ? data.size() : nl + 1;
+        size_t eq = ln.find('=');
+        if (eq != std::string::npos && util::trim(ln.substr(0, eq)) == key)
+            return util::trim(ln.substr(eq + 1));
+    }
+    return "";
+}
+
+static bool uart_func_ok(const std::string& f) {
+    return f == "console" || f == "slip" || f == "rnode" ||
+           f == "custom" || f == "off";
+}
+
+static std::string uart_select(const std::string& key, const std::string& cur) {
+    static const char* opts[][2] = {
+        {"console", "Console"}, {"slip", "SLIP / HaLow"}, {"rnode", "RNode"},
+        {"custom", "Custom"}, {"off", "Off"},
+    };
+    std::string s = "<select name=\"" + E(key) + "\">";
+    for (auto& o : opts)
+        s += "<option value=\"" + std::string(o[0]) + "\"" +
+             (cur == o[0] ? " selected" : "") + ">" + o[1] + "</option>";
+    return s + "</select>";
+}
+
+static std::string uart_section_html() {
+    std::string base = web::base();
+    std::string model = board_model();
+    std::string cons = kernel_console();
+    store::SlipConfig slip = store::read_slip();
+    store::RnodeConfig rn = store::read_rnode();
+    std::vector<UartRow> rows = uart_rows();
+
+    std::string s = "<section class=\"card\">\n  <h3>UART</h3>\n";
+    s += "  <p class=\"muted\" style=\"max-width:none\">Board: <strong>" + E(model) +
+         "</strong>. ";
+    if (!cons.empty())
+        s += "The kernel console is on <code>/dev/" + E(cons) + "</code>. Before assigning "
+             "that UART to SLIP, RNode or a custom service, remove <code>console=" +
+             E(cons) + "</code> from the kernel command line in the boot files &mdash; "
+             "otherwise the console and the service write to the same port.";
+    else
+        s += "No serial console is enabled in the kernel command line.";
+    s += "</p>\n  <form method=\"post\" action=\"" + base + "/settings/uart\">\n";
+    s += "  <table class=\"data\">\n    <thead><tr><th>UART</th><th>Pins</th>"
+         "<th>Device</th><th>Function</th></tr></thead>\n    <tbody>\n";
+    for (const auto& r : rows) {
+        std::string fn = uart_conf_value(r.key);
+        if (!uart_func_ok(fn)) {
+            if (r.dev == cons) fn = "console";
+            else if (("/dev/" + r.dev) == slip.device) fn = "slip";
+            else if (rn.transport == "usb" && rn.device == "/dev/" + r.dev) fn = "rnode";
+            else fn = "off";
+        }
+        bool present = ::access(("/dev/" + r.dev).c_str(), F_OK) == 0;
+        bool conflict = !cons.empty() && r.dev == cons && fn != "console";
+        std::string label = r.key.rfind("uart", 0) == 0
+            ? "UART" + r.key.substr(4) : r.key;
+        s += "      <tr><td>" + E(label) + "</td><td class=\"mono\">" + E(r.pins) +
+             "</td><td class=\"mono\">/dev/" + E(r.dev) + "</td><td>" +
+             uart_select(r.key, fn);
+        if (!present) s += " <span class=\"badge err\">no device</span>";
+        if (conflict) s += " <span class=\"badge err\" title=\"The kernel console still uses this UART\">console</span>";
+        s += "</td></tr>\n";
+    }
+    s += "    </tbody>\n  </table>\n";
+    s += "  <div class=\"form-actions\"><span class=\"muted\">SLIP uses the UART marked SLIP when enabled on the Reticulum tab; "
+         "RNode is configured in its own card.</span>"
+         "<button type=\"submit\" class=\"btn-primary\">Save UARTs</button></div>\n";
+    s += "  </form>\n</section>\n";
+    return s;
+}
+
+static void set_conf_key(const std::string& path, const std::string& key, const std::string& val) {
+    std::string data = util::read_file(path);
+    std::vector<std::string> lines;
+    bool found = false;
+    size_t i = 0;
+    while (i < data.size()) {
+        size_t nl = data.find('\n', i);
+        std::string ln = data.substr(i, nl == std::string::npos ? std::string::npos : nl - i);
+        i = (nl == std::string::npos) ? data.size() : nl + 1;
+        std::string t = util::trim(ln);
+        if (t.compare(0, key.size() + 1, key + "=") == 0) {
+            ln = key + "=" + val;
+            found = true;
+        }
+        lines.push_back(ln);
+    }
+    if (!found) lines.push_back(key + "=" + val);
+    std::string out;
+    for (const auto& l : lines) out += l + "\n";
+    util::write_file_atomic(path, out, 0644);
+}
+
+void settings_uart(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, false)) return;
+    std::vector<UartRow> rows = uart_rows();
+    std::string cons = kernel_console();
+    std::string out = "# UART function assignment (Settings -> UART).\n";
+    std::string slip_dev;
+    bool conflict = false;
+    for (const auto& r : rows) {
+        std::string v = util::trim(req.f(r.key.c_str()));
+        if (!uart_func_ok(v)) v = "off";
+        out += r.key + "=" + v + "\n";
+        if (v == "slip" && slip_dev.empty()) slip_dev = "/dev/" + r.dev;
+        if (!cons.empty() && r.dev == cons && v != "console") conflict = true;
+    }
+    util::write_file_atomic("/etc/rnsbox/uart.conf", out, 0644);
+    if (!slip_dev.empty()) set_conf_key("/etc/rnsbox/slip.conf", "device", slip_dev);
+    std::string msg = "UART assignment saved.";
+    if (!slip_dev.empty()) msg += " SLIP device set to " + slip_dev + ".";
+    if (conflict)
+        msg += " Warning: the kernel console is still on /dev/" + cons +
+               "; remove console=" + cons + " from the boot command line before using it.";
+    render::redirect_flash(res, settings_redirect(), conflict ? "warn" : "success", msg);
+}
+
 // ---- GET render ----
+
 
 void settings_page(const Request& req, Response& res) {
     if (!web::require_auth(req, res, false)) return;
@@ -223,6 +422,7 @@ void settings_page(const Request& req, Response& res) {
     h = R(std::move(h), "__WAN__", E(wan));
     // USB role card (empty unless the board is OTG-capable — see usb_state()).
     h = R(std::move(h), "__USB_SECTION__", usb_section_html(usb_state()));
+    h = R(std::move(h), "__UART_SECTION__", uart_section_html());
 
     // SSH card. The checkbox reflects reality: sshd may be running from an
     // unconditional init even when the gate file was missing.
