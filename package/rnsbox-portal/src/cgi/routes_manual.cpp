@@ -44,9 +44,17 @@ void manual_page(const Request& req, Response& res) {
         if (json::parse(st, v, err)) update = jstr(v, "result");
     }
     std::string h = render::page_file("manual");
+    h = web::replace_all(std::move(h), "__BASE__", web::base());
     h = web::replace_all(std::move(h), "__DOCS_VERSION__", E(ver));
     h = web::replace_all(std::move(h), "__DOCS_UPDATE__", E(update));
     res.body = render::layout(req, res, "Manual", "manual", h);
+}
+
+void manual_progress(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, true)) return;
+    res.content_type = "application/json";
+    res.body = util::read_file("/run/rnsbox-docs.json", 4096);
+    if (res.body.empty()) res.body = "{}";
 }
 
 static void docs_action(const Request& req, Response& res, const char* cmd) {

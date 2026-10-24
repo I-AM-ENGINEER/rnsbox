@@ -187,12 +187,16 @@ def cmd_download():
                  "license", "brandolinis", "reference"]
         base = ("https://raw.githubusercontent.com/%s/master/%s/" % (REPO, SUBDIR))
         staging = tempfile.mkdtemp(prefix="rnsbox-docs-new-")
-        for n in names:
+        for i, n in enumerate(names, 1):
+            save_state({"progress": i - 1, "total": len(names),
+                        "result": "Downloading %d/%d…" % (i - 1, len(names))})
             req = urllib.request.Request(base + n + ".md",
                                          headers={"User-Agent": "rnsbox-docs"})
             with urllib.request.urlopen(req, timeout=20) as r:
                 data = r.read()
             open(os.path.join(staging, n + ".md"), "wb").write(data)
+        save_state({"progress": len(names), "total": len(names),
+                    "result": "Documentation downloaded from the upstream repository."})
         os.makedirs(DOCS, exist_ok=True)
         for f in glob.glob(os.path.join(DOCS, "*.md")):
             os.unlink(f)

@@ -7,10 +7,10 @@
         onsubmit="this.querySelector('button').textContent='Checking…'">
     <button type="submit" class="btn">Check for updates</button>
   </form>
-  <form method="post" action="__BASE__/manual/download" class="inline"
-        onsubmit="this.querySelector('button').textContent='Downloading…'">
-    <button type="submit" class="btn-primary">Download</button>
+  <form method="post" action="__BASE__/manual/download" class="inline" id="dlform">
+    <button type="submit" class="btn-primary">Download docs update</button>
   </form>
+  <progress id="dlbar" max="17" value="0" style="display:none; width: 160px;"></progress>
 </div>
 
 <div class="manual-layout">
@@ -54,6 +54,33 @@
            '" href="?page=' + p[0] + '">' + esc(p[1]) + "</a>";
   }).join("");
   var doc = document.getElementById("doc");
+  // Download with a real progress bar: the helper writes n/17 to
+  // /run/rnsbox-docs.json after every file, and we poll it while the POST runs.
+  var dl = document.getElementById("dlform");
+  if (dl) dl.addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var bar = document.getElementById("dlbar");
+    var btn = dl.querySelector("button");
+    bar.style.display = "";
+    bar.value = 0;
+    btn.disabled = true;
+    btn.textContent = "Downloading…";
+    var timer = setInterval(function () {
+      fetch("/cgi-bin/portal/manual/progress", {cache: "no-store"}).then(function (r) {
+        return r.json();
+      }).then(function (d) {
+        if (d && d.total) { bar.max = d.total; bar.value = d.progress || 0; }
+      }).catch(function () {});
+    }, 500);
+    fetch(dl.action, {method: "POST", credentials: "same-origin"}).then(function () {
+      clearInterval(timer);
+      location.href = "/cgi-bin/portal/manual";
+    }).catch(function () {
+      clearInterval(timer);
+      btn.disabled = false;
+      btn.textContent = "Download docs update";
+    });
+  });
   fetch("/manual/docs/" + page + ".md", {cache: "no-cache"}).then(function (r) {
     if (!r.ok) throw new Error(r.status + " " + r.statusText);
     return r.text();

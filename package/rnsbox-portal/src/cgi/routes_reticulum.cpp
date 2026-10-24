@@ -860,8 +860,10 @@ void reticulum_config_save(const Request& req, Response& res) {
         render::redirect_flash(res, ret_redirect(), "error", "Error: " + err);
         return;
     }
-    // NB: matches old Flask — saving does NOT restart rnsd.
-    render::redirect_flash(res, ret_redirect(), "success", "Config saved — restart rnsd to apply.");
+    // Save & apply: the editor writes the file and restarts rnsd, so the
+    // edited interfaces are actually loaded (no second button).
+    web::run_init("S82rnsd", "restart");
+    render::redirect_flash(res, ret_redirect(), "success", "Config saved — rnsd restarted.");
 }
 
 void reticulum_restart(const Request& req, Response& res) {
