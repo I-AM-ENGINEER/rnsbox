@@ -56,6 +56,11 @@ fi
 if [ -f "$COMMON_DIR/S11console" ] && [ -d "$T/etc/init.d" ]; then
 	install -m 0755 "$COMMON_DIR/S11console" "$T/etc/init.d/S11console"
 fi
+# Recovery + health report on the boot FAT: reset-admin resets the portal/unix
+# admin password, rnsbox-diag.txt records why the portal or SSH is unusable.
+if [ -f "$COMMON_DIR/S99diag" ] && [ -d "$T/etc/init.d" ]; then
+	install -m 0755 "$COMMON_DIR/S99diag" "$T/etc/init.d/S99diag"
+fi
 # Stable WiFi MAC on AIC8800 boards: the vendor firmware randomises it at
 # every boot. S34 derives it from the persistent box ID; S35wifi applies it
 # to wlan0 before up. The script itself exits on boards with a fused MAC.
