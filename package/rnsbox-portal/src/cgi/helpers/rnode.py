@@ -126,38 +126,147 @@ def scan_any() -> dict:
     return {"devices": devices, "error": ""}
 
 
-def pair(address: str) -> dict:
-    """bluetoothctl one-shot pair + trust. JustWorks pairing (what RNode
-    firmware uses) needs no interactive agent; a numeric-compare modem would
-    need a UI agent this box does not have."""
+def _bt_pair_session(address: str, code: str, wait_s: int):
+    """Run bluetoothctl on a PTY so its pairing agent can prompt.
+
+    RNode firmware can show a 6-digit passkey on its display; bluetoothctl's
+    KeyboardDisplay agent prints "Enter passkey..." and reads the answer from
+    the terminal. A plain pipe cannot answer that prompt. Returns
+    (output, need_code): need_code is true when the modem asked for a code and
+    none was supplied.
+    """
+    import os
+    import pty
+    import re
+    import select
+    import time
+
+    master, slave = pty.openpty()
+    p = subprocess.Popen(["bluetoothctl"], stdin=slave, stdout=slave,
+                         stderr=slave, close_fds=True)
+    os.close(slave)
+    chunks = []
+
+    def pump(secs):
+        end = time.time() + secs
+        while time.time() < end:
+            r, _, _ = select.select([master], [], [], 0.2)
+            if not r:
+                continue
+            try:
+                data = os.read(master, 4096)
+            except OSError:
+                return
+            if not data:
+                return
+            chunks.append(data.decode("utf-8", "replace"))
+
+    def output():
+        return "".join(chunks)
+
+    def send(line):
+        try:
+            os.write(master, (line + "\n").encode())
+        except OSError:
+            pass
+        time.sleep(0.2)
+
+    need_code = False
+    try:
+        send("agent KeyboardDisplay")
+        pump(0.6)
+        send("pair %s" % address)
+        deadline = time.time() + wait_s
+        answered = False
+        while time.time() < deadline:
+            pump(0.3)
+            text = output()
+            low = text.lower()
+            if "confirm passkey" in low and not answered:
+                m = re.search(r"confirm passkey\s+(\d+)", low)
+                if m and (not code or code == m.group(1)):
+                    send("yes")
+                else:
+                    send("no")
+                answered = True
+                continue
+            if re.search(r"enter (the )?(passkey|pin)", low) and not answered:
+                if code:
+                    send(code)
+                    answered = True
+                    continue
+                need_code = True
+                break
+            if re.search(r"pairing successful|failed to pair|authentication ?failed|"
+                         r"authentication cancel|not available|device not available",
+                         low):
+                break
+        text = output()
+        if re.search(r"pairing successful|already paired|alreadyexists", text, re.I):
+            send("trust %s" % address)
+            pump(0.6)
+        send("quit")
+        pump(0.3)
+    finally:
+        try:
+            p.terminate()
+        except Exception:
+            pass
+        try:
+            p.wait(timeout=3)
+        except Exception:
+            try:
+                p.kill()
+            except Exception:
+                pass
+        try:
+            os.close(master)
+        except Exception:
+            pass
+    return output(), need_code
+
+
+def pair(address: str, code: str = "") -> dict:
+    """Pair + trust an RNode. `code` is the pairing code shown on the modem
+    (empty for JustWorks)."""
     import re
     import shutil
 
     if not re.fullmatch(r"[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}", address or ""):
         return {"ok": False, "message": "bad address"}
+    if code and not re.fullmatch(r"[0-9]{1,6}", code):
+        return {"ok": False, "message": "bad pairing code (expected up to 6 digits)"}
     if shutil.which("bluetoothctl") is None:
         return {"ok": False, "message": "bluetoothctl is not installed (no BLE stack in this image)"}
-    out = ""
-    for args in (["pair", address], ["trust", address]):
+
+    text, need_code = _bt_pair_session(address, code, PAIR_TIMEOUT)
+    if need_code:
+        return {"ok": False,
+                "message": "The RNode is asking for a pairing code. Enter the code shown on its display and press Pair again."}
+
+    # A device that is no longer in BlueZ's cache says "not available"; a short
+    # discovery puts it back, then retry once.
+    if re.search(r"not available|device not available", text, re.I):
         try:
-            p = subprocess.run(["bluetoothctl"] + args, capture_output=True,
-                               text=True, timeout=PAIR_TIMEOUT)
-            out += (p.stdout or "") + (p.stderr or "")
-        except subprocess.TimeoutExpired:
-            return {"ok": False, "message": "pairing timed out — is the RNode on and in pairing reach?"}
-        except OSError as e:
-            return {"ok": False, "message": "could not run bluetoothctl: %s" % e}
-        if p.returncode != 0 and args[0] == "pair":
-            fail = "Failed to pair" in out or "not available" in out
-            msg = "pairing failed" if fail else "pairing attempt did not confirm"
-            return {"ok": False, "message": "%s (%s)" % (msg, _last_line(out))}
-    if "Pairing successful" not in out:
-        return {"ok": False, "message": "pairing did not succeed (%s)" % _last_line(out)}
-    return {"ok": True, "message": "Paired %s — now Save & apply (restarts rnsd)" % address}
+            subprocess.run(["bluetoothctl", "--timeout", "8", "scan", "on"],
+                           capture_output=True, text=True, timeout=12)
+        except Exception:
+            pass
+        text, need_code = _bt_pair_session(address, code, PAIR_TIMEOUT)
+        if need_code:
+            return {"ok": False,
+                    "message": "The RNode is asking for a pairing code. Enter the code shown on its display and press Pair again."}
+
+    if re.search(r"pairing successful|already paired|alreadyexists", text, re.I):
+        return {"ok": True,
+                "message": "Paired %s — now Save & apply (restarts rnsd)" % address}
+    return {"ok": False, "message": "pairing failed (%s)" % _last_line(text)}
 
 
 def _last_line(text: str) -> str:
-    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    import re
+    text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text or "")
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     return lines[-1][:120] if lines else "no output"
 
 
@@ -400,7 +509,7 @@ if __name__ == "__main__":
     elif cmd == "scan-any":
         print(json.dumps(scan_any()))
     elif cmd == "pair" and len(sys.argv) > 2:
-        print(json.dumps(pair(sys.argv[2])))
+        print(json.dumps(pair(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else "")))
     elif cmd == "serial":
         print(json.dumps(serial_devices()))
     elif cmd == "action" and len(sys.argv) > 3:

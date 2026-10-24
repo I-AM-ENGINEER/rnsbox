@@ -2558,10 +2558,25 @@ void reticulum_rnode_pair(const Request& req, Response& res) {
         if (i % 3 == 2) { if (c != ':') { update_json(res, false, false, "Bad address."); return; } }
         else if (!isxdigit((unsigned char)c)) { update_json(res, false, false, "Bad address."); return; }
     }
-    util::RunResult rr = util::run({"/usr/bin/python3", "/usr/lib/rnsbox/rnode.py", "pair", addr}, "", 40);
+    // Optional 6-digit code shown on the RNode display. The helper feeds it
+    // to bluetoothctl's passkey agent; empty means JustWorks.
+    std::string code = util::trim(req.f("code"));
+    if (!code.empty()) {
+        if (code.size() > 6 || code.find_first_not_of("0123456789") != std::string::npos) {
+            update_json(res, false, false, "Bad pairing code (expected up to 6 digits).");
+            return;
+        }
+    }
+    std::vector<std::string> argv = {
+        "/usr/bin/python3", "/usr/lib/rnsbox/rnode.py", "pair", addr
+    };
+    if (!code.empty()) argv.push_back(code);
+    util::RunResult rr = util::run(argv, "", 55);
     std::string out = util::trim(rr.out);
     if (rr.exit_code == 0 && !out.empty() && out[0] == '{') { res.body = rr.out; return; }
-    update_json(res, false, false, "Pairing failed (is bluetoothd running? is the RNode in pairing reach?)");
+    update_json(res, false, false,
+                rr.timed_out ? "Pairing timed out (the modem may still be waiting for a code)."
+                             : "Pairing failed (is bluetoothd running? is the RNode in pairing reach?)");
 }
 
 }  // namespace routes

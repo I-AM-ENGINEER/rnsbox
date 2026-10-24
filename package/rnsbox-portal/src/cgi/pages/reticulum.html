@@ -100,6 +100,9 @@
 
 <section class="card">
   <h3>HaLow modem (SLIP)</h3>
+  <p class="muted">RNode HaLow firmware for IEEE 802.11ah modems:
+    <a href="https://github.com/I-AM-ENGINEER/RNode_Halow_Firmware"
+       target="_blank" rel="noopener">RNode_Halow_Firmware</a>.</p>
 
   <table class="kv">
     <tr><th>Link (sl0)</th><td>
@@ -273,8 +276,7 @@ function rnodeScan(btn){
     list.innerHTML = '<table class="data"><tr><th>Name</th><th>Address</th><th></th></tr>' +
       d.devices.map(function(x){
         return '<tr id="rnode-row-' + escH(x.address).replace(/:/g,'') + '"><td>' + escH(x.name || '?') + '</td><td class="mono">' + escH(x.address) + '</td>' +
-          '<td><button type="button" class="btn" onclick="rnodeUse(\'' + escH(x.address) + '\',\'' + escH(x.name || '') + '\')">Use</button> ' +
-          '<button type="button" class="btn" onclick="rnodePair(\'' + escH(x.address) + '\', this)">Pair</button></td></tr>';
+          '<td><button type="button" class="btn" onclick="rnodePair(\'' + escH(x.address) + '\',\'' + escH(x.name || '') + '\', this)">Pair</button></td></tr>';
       }).join('') + '</table>';
   }).catch(function(e){
     btn.disabled = false; msg.textContent = ' ' + (e.message || 'scan failed');
@@ -293,20 +295,30 @@ function rnodeUse(addr, name){
   if (t && t.value !== 'ble') { t.value = 'ble'; rnodeTransportChanged(); }
 }
 
-function rnodePair(addr, btn){
+function rnodePair(addr, name, btn){
   var msg = document.getElementById('rnode-scan-msg');
+  // RNode firmware can display a 6-digit code on its screen; BlueZ asks for
+  // it during pairing. Empty input means the modem uses JustWorks.
+  var code = window.prompt(
+    'Enter the pairing code shown on the RNode display.\n' +
+    'Leave empty if the modem pairs without a code (JustWorks).', '');
+  if (code === null) return;                       // cancelled
+  code = (code || '').replace(/[^0-9]/g, '').slice(0, 6);
+  rnodeUse(addr, name);                            // Pair also selects it for Save
   if (btn) btn.disabled = true;
   if (msg) { msg.textContent = ' pairing ' + addr + '…'; msg.style.color = 'var(--muted)'; }
-  var fd = new FormData();
-  fd.append('address', addr);
-  fetch('__BASE__/reticulum/rnode/pair', {method:'POST', body:fd}).then(function(r){
+  fetch('__BASE__/reticulum/rnode/pair', {
+    method:'POST',
+    headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:'address=' + encodeURIComponent(addr) + '&code=' + encodeURIComponent(code)
+  }).then(function(r){
     if (r.status === 401) throw new Error('session expired — please log in again');
     return r.json();
   }).then(function(d){
-    if (btn) btn.disabled = false;
+    if (btn) { btn.disabled = false; btn.textContent = d.ok ? 'paired' : 'Pair'; }
     if (msg) { msg.textContent = ' ' + (d.message || (d.ok ? 'paired' : 'pairing failed')); msg.style.color = d.ok ? 'var(--ok)' : 'var(--err)'; }
   }).catch(function(e){
-    if (btn) btn.disabled = false;
+    if (btn) { btn.disabled = false; btn.textContent = 'Pair'; }
     if (msg) { msg.textContent = ' ' + (e.message || 'pairing failed'); msg.style.color = 'var(--err)'; }
   });
 }
