@@ -44,8 +44,9 @@
       <label style="margin:0">Name on the map
         <input type="text" name="name" value="__TEL_NAME__" maxlength="64"
           placeholder="defaults to the hostname"></label>
-      <label style="margin:0">Announce every (minutes)
-        <input type="number" name="announce_interval" value="__TEL_INTERVAL__" min="5" max="10080"></label>
+      <label style="margin:0">RNS announce every (minutes)
+        <input type="number" name="announce_interval" value="__TEL_INTERVAL__" min="5" max="10080"
+          title="RNS interface-discovery cadence. The HaLow modem always sends its MQTT telemetry every 12 hours."></label>
       <label style="margin:0">Reachable on
         <input type="text" name="reachable_on" value="__TEL_REACH__" maxlength="64"
           placeholder="hostname / IP (optional)"></label>

@@ -35,7 +35,7 @@ bool send_all(int fd, const std::string& data) {
 }  // namespace
 
 bool post(const std::string& peer, const std::string& endpoint,
-          const std::string& json, std::string& resp) {
+          const std::string& json, std::string& resp, int timeout_s) {
     resp.clear();
     if (peer.empty() || endpoint.empty()) return false;
     // The endpoint is a plain API word; never let a caller smuggle a request
@@ -46,7 +46,8 @@ bool post(const std::string& peer, const std::string& endpoint,
 
     int fd = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd < 0) return false;
-    struct timeval tv = { 4, 0 };
+    if (timeout_s < 1) timeout_s = 1;
+    struct timeval tv = { timeout_s, 0 };
     ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
     struct sockaddr_in sa;
@@ -68,6 +69,44 @@ bool post(const std::string& peer, const std::string& endpoint,
         ::close(fd);
         return false;
     }
+    char buf[1024];
+    for (;;) {
+        ssize_t r = ::recv(fd, buf, sizeof(buf), 0);
+        if (r <= 0) break;
+        if (resp.size() < 64 * 1024) resp.append(buf, (size_t)r);
+    }
+    ::close(fd);
+    size_t sp = resp.find(' ');
+    int code = (sp == std::string::npos) ? 0 : std::atoi(resp.c_str() + sp + 1);
+    return code >= 200 && code < 300;
+}
+
+bool get(const std::string& peer, const std::string& endpoint,
+         std::string& resp, int timeout_s) {
+    resp.clear();
+    if (peer.empty() || endpoint.empty()) return false;
+    for (unsigned char c : endpoint)
+        if (!(isalnum(c) || c == '_' || c == '.' || c == '-' || c == '/')) return false;
+    if (endpoint.find("..") != std::string::npos) return false;
+
+    int fd = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return false;
+    if (timeout_s < 1) timeout_s = 1;
+    struct timeval tv = { timeout_s, 0 };
+    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    struct sockaddr_in sa;
+    ::memset(&sa, 0, sizeof(sa));
+    sa.sin_family = AF_INET;
+    sa.sin_port = htons(80);
+    if (::inet_pton(AF_INET, peer.c_str(), &sa.sin_addr) != 1 ||
+        ::connect(fd, (struct sockaddr *)&sa, sizeof(sa)) != 0) {
+        ::close(fd);
+        return false;
+    }
+    std::string req = "GET /api/" + endpoint + " HTTP/1.0\r\nHost: " + peer +
+                      "\r\nConnection: close\r\n\r\n";
+    if (!send_all(fd, req)) { ::close(fd); return false; }
     char buf[1024];
     for (;;) {
         ssize_t r = ::recv(fd, buf, sizeof(buf), 0);
@@ -109,9 +148,10 @@ std::string local_ip_towards(const store::SlipConfig& sl) {
 
 #else
 
-bool post(const std::string&, const std::string&, const std::string&, std::string&) {
+bool post(const std::string&, const std::string&, const std::string&, std::string&, int) {
     return false;
 }
+bool get(const std::string&, const std::string&, std::string&, int) { return false; }
 std::string local_ip_towards(const store::SlipConfig& sl) { return sl.local_ip; }
 
 #endif

@@ -53,6 +53,9 @@ static const char* const POST_ONLY[] = {
     "/reticulum/rnsh",
     "/access/issue", "/access/revoke", "/access/reissue",
     "/reticulum/halow/add",
+    "/reticulum/halow/ota/chunk",
+    "/reticulum/halow/ota/start",
+    "/reticulum/halow/ota/online",
     "/reticulum/tcpclient/add",
     "/reticulum/tcpclient/update",
     "/reticulum/tcpclient/save",
@@ -427,6 +430,10 @@ void handle(const http::Request& req, http::Response& res) {
     else if (p == "/reticulum/slip")             routes::reticulum_slip(req, res);
     else if (p == "/reticulum/rnsh")             routes::reticulum_rnsh_save(req, res);
     else if (p == "/reticulum/halow/add")        routes::reticulum_halow_add(req, res);
+    else if (p == "/reticulum/halow/ota/chunk")   routes::reticulum_halow_ota_chunk(req, res);
+    else if (p == "/reticulum/halow/ota/start")   routes::reticulum_halow_ota_start(req, res);
+    else if (p == "/reticulum/halow/ota/status")  routes::reticulum_halow_ota_status(req, res);
+    else if (p == "/reticulum/halow/ota/online")  routes::reticulum_halow_ota_online(req, res);
     else if (p == "/reticulum/tcpclient/add")    routes::reticulum_tcpclient_add(req, res);
     else if (p == "/reticulum/tcpclient/update") routes::reticulum_tcpclient_update(req, res);
     else if (p == "/reticulum/tcpclient/save")   routes::reticulum_tcpclient_save(req, res);
