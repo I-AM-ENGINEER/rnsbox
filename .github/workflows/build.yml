@@ -64,8 +64,16 @@ jobs:
             imgdir: /mnt/rnsbox/lichee/install
           - board: sg2000-arm64
             imgdir: /mnt/rnsbox/lichee/install
+            # Legacy vendor-BSP arm64 flow (same wireless-module caveat as
+            # sg2002-licheerv-arm64). Mainline arm64 is covered by
+            # sg2000-duo-s-arm64-mainline.
+            experimental: true
           - board: sg2002-arm64
             imgdir: /mnt/rnsbox/lichee/install
+            # Legacy vendor-BSP arm64 flow (same wireless-module caveat as
+            # sg2002-licheerv-arm64). Mainline arm64 is covered by
+            # sg2000-duo-s-arm64-mainline.
+            experimental: true
           - board: sg2002-licheerv-arm64
             imgdir: /mnt/rnsbox/lichee/install
             # Legacy vendor-BSP arm64 flow: its out-of-tree wireless module
