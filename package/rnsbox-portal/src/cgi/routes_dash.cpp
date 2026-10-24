@@ -283,49 +283,73 @@ static RnsCounts reticulum_counts() {
     return c;
 }
 
-// --- RNode LoRa card: like BLE/HaLow, the modem is a full interface. All
-// server-side from rnode.conf + S81rnode's /run status file — no subprocess.
-//
-// Air rate is the plain semtech formula: Rb = (BW / 2^SF) * SF * 4/CR.
-// Sensitivity is the usual SX126x/SX127x reference at 125 kHz shifted by
-// 10*log10(BW/125 kHz); antenna gain and noise are deliberately not modelled.
-static std::string lora_air_rate(const store::RnodeConfig& rc) {
-    int bw = atoi(rc.bandwidth.c_str());
-    int sf = atoi(rc.spreadingfactor.c_str());
-    int cr = atoi(rc.codingrate.c_str());
-    if (bw <= 0 || sf < 5 || sf > 12 || cr < 5 || cr > 8) return "";
-    static const double sens[8] = {-118, -121, -123, -126, -129, -132, -134.5, -137};
-    double sym = (double)bw / (double)(1u << sf);
-    double bps = sym * (double)sf * 4.0 / (double)cr;
-    double sn = sens[sf - 5] + 10.0 * log10((double)bw / 125000.0);
-    char buf[128];
-    if (bps >= 1000)
-        snprintf(buf, sizeof(buf), "%.1f kbps &middot; sensitivity %.0f dBm", bps / 1000.0, sn);
-    else
-        snprintf(buf, sizeof(buf), "%.0f bps &middot; sensitivity %.0f dBm", bps, sn);
-    return buf;
+// --- RNode LoRa card. The radio's own telemetry (airtime, channel load,
+// noise floor, byte counters) arrives through the rnstatus snapshot;
+// rnode.conf supplies the name and the address.
+struct RnodeLive {
+    bool present = false, up = false;
+    bool has_airtime = false, has_chload = false, has_noise = false;
+    std::string tx, rx;
+    double airtime = 0, airtime_short = 0, chload = 0, chload_short = 0, noise = 0;
+};
+
+static RnodeLive rnode_live() {
+    RnodeLive s;
+    std::string data = util::read_file("/run/rnsbox-rnstatus-v2.json", 1024 * 1024);
+    if (data.empty()) return s;
+    json::Value root;
+    std::string err;
+    if (!json::parse(data, root, err) || !root.is_object()) return s;
+    const json::Value* arr = root.find("interfaces");
+    if (!arr || !arr->is_array()) return s;
+    for (const json::Value& v : arr->arr) {
+        const json::Value* t = v.find("type");
+        if (!t || !t->is_string() || t->str != "RNodeInterface") continue;
+        s.present = true;
+        const json::Value* st = v.find("status");
+        if (st && st->is_string()) s.up = (st->str == "Up" || st->str == "up");
+        else if (st && st->is_bool()) s.up = st->b;
+        auto str_of = [&](const char* k) {
+            const json::Value* x = v.find(k);
+            return x && x->is_string() ? x->str : std::string();
+        };
+        s.tx = str_of("tx");
+        s.rx = str_of("rx");
+        const json::Value* x = v.find("airtime");
+        if (x && x->is_number()) { s.has_airtime = true; s.airtime = x->num; }
+        if ((x = v.find("airtime_short")) && x->is_number()) s.airtime_short = x->num;
+        if ((x = v.find("channel_load")) && x->is_number()) { s.has_chload = true; s.chload = x->num; }
+        if ((x = v.find("channel_load_short")) && x->is_number()) s.chload_short = x->num;
+        if ((x = v.find("noise_floor")) && x->is_number()) { s.has_noise = true; s.noise = x->num; }
+        return s;
+    }
+    return s;
 }
 
 static std::string rnode_card_html(const std::string& base) {
     store::RnodeConfig rc = store::read_rnode();
     store::RnodeStatus st = store::read_rnode_status();
-    bool live = rnode_live_up(nullptr);
+    RnodeLive live = rnode_live();
+    bool ble = rc.transport == "ble";
 
-    std::string status;
     if (rc.transport != "usb" && rc.transport != "ble")
         return std::string();
-    else if (live)
-        status = "<span class=\"badge ok\">connected</span> <span class=\"mono\">" + E(st.port) + "</span>";
+
+    std::string status;
+    if (live.up)
+        status = "<span class=\"badge ok\">connected</span>";
     else if (st.state == "ok" && !st.port.empty())
-        status = "<span class=\"badge ok\">ready</span> <span class=\"mono\">" + E(st.port) + "</span>";
+        status = "<span class=\"badge ok\">ready</span>";
     else if (st.state == "waiting" || st.state == "scanning")
-        // No paragraph of advice here: the peer and bond state have their own
-        // rows, and pairing lives on the Reticulum tab.
         status = "<span class=\"badge warn\">waiting for device</span>";
     else if (!st.state.empty())
-        status = "<span class=\"badge warn\">" + E(st.state.empty() ? "off" : st.state) + "</span> " + E(st.message);
+        status = "<span class=\"badge warn\">" + E(st.state) + "</span>";
     else
         status = "<span class=\"badge warn\">not applied yet</span>";
+
+    std::string name = ble && !rc.ble_name.empty() ? rc.ble_name : rc.name;
+    std::string addr = ble ? rc.ble_address : rc.device;
+    std::string addr_label = ble ? "BLE address" : "USB device";
 
     int bw_khz = atoi(rc.bandwidth.c_str()) / 1000;
     char radio[96];
@@ -333,32 +357,37 @@ static std::string rnode_card_html(const std::string& base) {
              atoi(rc.frequency.c_str()) / 1000000.0, bw_khz,
              rc.spreadingfactor.c_str(), rc.codingrate.c_str());
 
-    std::string peer, bond;
-    if (rc.transport == "ble") {
-        peer = rc.ble_address.empty()
-            ? "any advertising RNode"
-            : "<span class=\"mono\">" + E(rc.ble_address) + "</span>";
-        std::string b = rc.ble_address.empty() ? std::string() : store::bt_peer_bond(rc.ble_address);
-        if (b == "bonded") bond = "<span class=\"badge ok\">bonded</span>";
-        else if (b == "paired") bond = "<span class=\"badge warn\">paired, not bonded</span>";
-        else if (b == "none") bond = "<span class=\"badge err\">not paired</span>";
+    auto pct = [](double v) {
+        char b[32];
+        snprintf(b, sizeof(b), "%.2f %%", v);
+        return std::string(b);
+    };
+    std::string airtime = live.has_airtime ? pct(live.airtime) : std::string("&mdash;");
+    std::string chload  = live.has_chload  ? pct(live.chload)  : std::string("&mdash;");
+    std::string noise;
+    if (live.has_noise) {
+        char b[32];
+        snprintf(b, sizeof(b), "%.0f dBm", live.noise);
+        noise = b;
     } else {
-        peer = "<span class=\"mono\">" + E(rc.device) + "</span>";
+        noise = "&mdash;";
     }
+    std::string traffic = (live.rx.empty() && live.tx.empty())
+        ? std::string("&mdash;")
+        : E(live.rx.empty() ? "—" : live.rx) + " / " + E(live.tx.empty() ? "—" : live.tx);
 
     std::string s =
         "<section class=\"card\" id=\"rnode-card\">\n"
         "    <h3>RNode LoRa</h3>\n"
         "    <table class=\"kv\">\n"
         "      <tr><th>Status</th><td>" + status + "</td></tr>\n"
-        "      <tr><th>Transport</th><td>" + E(rc.transport) + "</td></tr>\n"
-        "      <tr><th>Peer</th><td>" + peer + "</td></tr>\n";
-    if (!bond.empty())
-        s += "      <tr><th>Bluetooth bond</th><td>" + bond + "</td></tr>\n";
-    s +=
+        "      <tr><th>Name</th><td>" + E(name) + "</td></tr>\n"
+        "      <tr><th>" + addr_label + "</th><td class=\"mono\">" + E(addr.empty() ? "—" : addr) + "</td></tr>\n"
         "      <tr><th>Radio</th><td>" + E(radio) + "</td></tr>\n"
-        "      <tr><th>Air rate (max)</th><td>" + lora_air_rate(rc) + "</td></tr>\n"
-        "      <tr><th>TX power</th><td>" + E(rc.txpower) + " dBm</td></tr>\n"
+        "      <tr><th>Airtime</th><td>" + airtime + "</td></tr>\n"
+        "      <tr><th>Channel load</th><td>" + chload + "</td></tr>\n"
+        "      <tr><th>Noise floor</th><td>" + noise + "</td></tr>\n"
+        "      <tr><th>RX / TX</th><td>" + traffic + "</td></tr>\n"
         "    </table>\n"
         "    <p class=\"cardfoot\"><a class=\"btn\" href=\"" + base + "/reticulum#rnode\">Manage &rarr;</a></p>\n"
         "  </section>";

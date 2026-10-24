@@ -1906,6 +1906,9 @@ struct IfStat {
     std::string status, mode, rate, mtu;
     std::string clients, peers, serving;
     std::string tx, tx_rate, rx, rx_rate;
+    // RNodeInterface-only radio telemetry: percentages and dBm.
+    bool has_airtime = false, has_chload = false, has_noise = false;
+    double airtime = 0, airtime_short = 0, chload = 0, chload_short = 0, noise = 0;
 };
 
 // Formatting mirrors RNS.prettysize()/prettyspeed() and rnstatus's
@@ -2049,6 +2052,24 @@ static bool rnstatus_parse(const std::string& out, std::vector<IfStat>& ifs,
         if ((x = v.find("bitrate")) && x->is_number()) f.rate = pretty_bitrate(x->num);
         if ((x = v.find("mtu")) && x->is_number())     f.mtu  = std::to_string(x->as_int(0));
 
+        // RNodeInterface reports the radio's airtime/channel load as
+        // percentages and the noise floor in dBm. Keep them for the
+        // dashboard card; other interface classes simply lack them.
+        if ((x = v.find("airtime_long")) && x->is_number()) {
+            f.has_airtime = true;
+            f.airtime = x->num;
+        }
+        if ((x = v.find("airtime_short")) && x->is_number()) f.airtime_short = x->num;
+        if ((x = v.find("channel_load_long")) && x->is_number()) {
+            f.has_chload = true;
+            f.chload = x->num;
+        }
+        if ((x = v.find("channel_load_short")) && x->is_number()) f.chload_short = x->num;
+        if ((x = v.find("noise_floor")) && x->is_number()) {
+            f.has_noise = true;
+            f.noise = x->num;
+        }
+
         long long clients = -1;
         if ((x = v.find("clients")) && x->is_number()) clients = x->as_int(0);
         if (shared) {
@@ -2120,7 +2141,25 @@ static bool rnstatus_normalise(const std::string& raw, std::string& out) {
              "\",\"tx\":\"" + http::json_escape(f.tx) +
              "\",\"tx_rate\":\"" + http::json_escape(f.tx_rate) +
              "\",\"rx\":\"" + http::json_escape(f.rx) +
-             "\",\"rx_rate\":\"" + http::json_escape(f.rx_rate) + "\"}";
+             "\",\"rx_rate\":\"" + http::json_escape(f.rx_rate) + "\"";
+        char nb[32];
+        if (f.has_airtime) {
+            snprintf(nb, sizeof(nb), "%.2f", f.airtime);
+            o += ",\"airtime\":" + std::string(nb);
+            snprintf(nb, sizeof(nb), "%.2f", f.airtime_short);
+            o += ",\"airtime_short\":" + std::string(nb);
+        }
+        if (f.has_chload) {
+            snprintf(nb, sizeof(nb), "%.2f", f.chload);
+            o += ",\"channel_load\":" + std::string(nb);
+            snprintf(nb, sizeof(nb), "%.2f", f.chload_short);
+            o += ",\"channel_load_short\":" + std::string(nb);
+        }
+        if (f.has_noise) {
+            snprintf(nb, sizeof(nb), "%.0f", f.noise);
+            o += ",\"noise_floor\":" + std::string(nb);
+        }
+        o += "}";
     }
     o += "],\"transport\":{\"hash\":\"" + http::json_escape(thash) +
          "\",\"uptime\":\"" + http::json_escape(tupt) +
