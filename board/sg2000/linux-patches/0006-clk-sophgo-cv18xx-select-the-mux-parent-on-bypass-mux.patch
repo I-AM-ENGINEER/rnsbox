@@ -1,0 +1,28 @@
+From: RNSBox <rnsbox@localhost>
+Subject: [PATCH] clk: sophgo: cv18xx: select the mux parent on bypass mux reparent
+
+bypass_mux_set_parent() only toggled the "bypass" bit: selecting a real
+parent (index > 0) cleared the bypass but left the underlying mux field
+at its previous value. On the SG2000 EVB this defeated
+assigned-clock-parents for CLK_CAM0_200: the DTS asks for disppll, the
+bypass bit is cleared, but the mux still points at the 25 MHz crystal.
+
+The UARTs inherit clk_cam0_200, so base_baud stayed at 1,562,500 and
+stty 2000000 failed (EINVAL) - no SLIP link at the modem 2 Mbaud.
+
+Write the mux field as well (index - 1, matching get_parent +1 offset).
+Muxes that never reparent are unaffected: with index 0 the bypass bit is
+still set and the mux field is not used.
+
+--- a/drivers/clk/sophgo/clk-cv18xx-ip.c
++++ b/drivers/clk/sophgo/clk-cv18xx-ip.c
+@@ -592,7 +592,8 @@
+ 	if (index == 0)
+ 		return cv1800_clk_setbit(&mux->mux.common, &mux->bypass);
+ 
+-	return cv1800_clk_clearbit(&mux->mux.common, &mux->bypass);
++	cv1800_clk_clearbit(&mux->mux.common, &mux->bypass);
++	return mux_set_parent(hw, index - 1);
+ }
+ 
+ const struct clk_ops cv1800_clk_bypass_mux_ops = {
