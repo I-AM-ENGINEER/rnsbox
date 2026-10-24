@@ -34,6 +34,13 @@ T="${1:-.}"
 # directory the sysinit mount fails and USB gadget setup has no flags.
 mkdir -p "$T/boot"
 
+# Image identity over HTTP, independent of the CGI: if the portal is missing
+# or misconfigured, http://<box>/version.txt still says which build the card
+# carries (build.sh exports RNSBOX_BUILD_VER for every board flow).
+if [ -d "$T/www" ]; then
+	printf '%s\n' "${RNSBOX_BUILD_VER:-unknown}" > "$T/www/version.txt"
+fi
+
 # Stable per-device hostname (rnsbox-XXXXXX from the best stable MAC, or a
 # persisted random ID when every radio hands out a random address). Shared by
 # every board that runs this post-build script.
