@@ -47,16 +47,22 @@ start() {
 		return 0
 	fi
 
-	# pinctrl does not model the UART1 pads. Mux XGPIOA[28]/[29]
-	# to fmux function 1 here (the value the vendor u-boot writes on the
-	# boards where it does); /dev/mem is enabled for this bring-up path.
-	# uart1_mux=no in slip.conf keeps a board from touching the pads.
-	if [ "$(cfg uart1_mux)" != "no" ]; then
-		devmem 0x03001070 32 1 2>/dev/null || true
-		devmem 0x03001074 32 1 2>/dev/null || true
-	fi
-
 	device=$(cfg device);     [ -n "$device" ]   || device=/dev/serial0
+
+	# The DTS pinctrl states cover UART1/UART2 on the EVB, but a board may
+	# still run a tree without them. Apply the same pad mux here, from the
+	# vendor cv181x table: fmux 1 on XGPIOA[28]/[29] is UART1, fmux 0 on
+	# XGPIOB[11]/[12] is UART2 (fmux 5 would route those pads to UART4).
+	# uart_mux=no (or the older uart1_mux=no) keeps the pads untouched.
+	mux_off=$(cfg uart_mux); [ -n "$mux_off" ] || mux_off=$(cfg uart1_mux)
+	if [ "$mux_off" != "no" ]; then
+		case "$device" in
+			/dev/ttyS1) devmem 0x03001070 32 1 2>/dev/null || true
+				    devmem 0x03001074 32 1 2>/dev/null || true ;;
+			/dev/ttyS2) devmem 0x030010c0 32 0 2>/dev/null || true
+				    devmem 0x030010c8 32 0 2>/dev/null || true ;;
+		esac
+	fi
 	baud=$(cfg baud);         [ -n "$baud" ]     || baud=2000000
 	local_ip=$(cfg local_ip); [ -n "$local_ip" ] || local_ip=192.168.7.1
 	peer_ip=$(cfg peer_ip);   [ -n "$peer_ip" ]  || peer_ip=192.168.7.2

@@ -1,0 +1,40 @@
+From: RNSBox <rnsbox@localhost>
+Subject: [PATCH] riscv: dts: sophgo: mux UART2 on the EVB 26-pin header
+
+The EVB header exposes UART2 on XGPIOB[11] TX and XGPIOB[12] RX. UART1
+shares its RX pad with the onboard blue LED (XGPIOA[29]), so on this
+carrier UART2 is the usable SLIP/HaLow port.
+
+The bootloader leaves these pads at their default function: the UART2
+controller probes, but nothing reaches the header. Raw fmux 0 selects
+UART2 on these pads (fmux 5 would route them to UART4), per the vendor
+cv181x pinmux table. The pads live in the RTC IO domain, which the EVB
+runs at 3.3 V like the header pins.
+
+--- a/arch/riscv/boot/dts/sophgo/sg2000-duomodule01-evb.dts
++++ b/arch/riscv/boot/dts/sophgo/sg2000-duomodule01-evb.dts
+@@ -146,6 +146,15 @@
+ 		};
+ 	};
+ 
++	uart2_cfg: uart2-cfg {
++		uart2-pins {
++			pinmux = <PINMUX(PIN_UART2_TX, 0)>,
++				 <PINMUX(PIN_UART2_RX, 0)>;
++			drive-strength-microamp = <10800>;
++			power-source = <3300>;
++		};
++	};
++
+ 	sdhci1_cfg: sdhci1-cfg {
+ 		/* Vendor U-Boot cvi_sdio1_pad_setting: CLK pull-down, CMD/DAT
+ 		 * pull-up, drive strength left at the weakest default. */
+@@ -316,6 +325,8 @@
+  * and the UART card in Settings shows it. UART1 is muxed by S31slip; the
+  * other pads need a board-specific fmux setup before use. */
+ &uart2 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&uart2_cfg>;
+ 	status = "okay";
+ };
+ 
