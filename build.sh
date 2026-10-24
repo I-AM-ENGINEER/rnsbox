@@ -16,7 +16,7 @@
 #         sg2000-duo-s-rv64
 #
 # Env overrides: UPSTREAM_URL, UPSTREAM_COMMIT, UPSTREAM_BASE, ODIR,
-# BR2_DL_DIR. Every image is lite (one NCM gadget; no clients DVD).
+# BR2_DL_DIR. Every image is lite (one NCM gadget; no clients disc).
 #
 # RNS version policy: the shipped `rns` (Reticulum) is the LATEST release at
 # build time — build.sh asks PyPI, re-pins package/python-rns and verifies
@@ -40,21 +40,17 @@ fi
 export RNSBOX_BUILD_VER
 
 BOARD=""
-VARIANT=""
 for a in "$@"; do
-    case "$a" in
-        lite|dvd) VARIANT="$a" ;;
-        *) BOARD="$a" ;;
-    esac
+    BOARD="$a"
 done
-VARIANT="${VARIANT:-lite}"
+VARIANT=lite
 BOARD="${BOARD:-rpi-universal}"
 
 BOARDS="rpi-universal pc-x86_64 orangepi-r1 milkv-duo-cv1800b-rv64 sg2000-duo-s-arm64 sg2000-duomodule01-rv64 sg2002-licheerv-nano-rv64 sg2002-duo256m-rv64 sg2000-duo-s-rv64"
 
 if [ "$BOARD" = all ]; then
     for b in $BOARDS; do
-        "$0" "$b" "$VARIANT" || exit 1
+        "$0" "$b" || exit 1
     done
     exit 0
 fi
@@ -137,10 +133,6 @@ rnsbox_build_external() {
     export PATH=$(printf '%s' "$PATH" | tr ':' '
 ' | grep -v '^/mnt/[a-z]/' | paste -sd:)
     export PATH=/usr/sbin:/sbin:$PATH
-    if [ "$VARIANT" != lite ]; then
-        echo ">> $BOARD: lite only, building lite"
-        VARIANT=lite
-    fi
     export RNSBOX_VARIANT="$VARIANT"
     echo ">> configuring ($DEFCONFIG) + building (first run compiles everything; be patient)"
     make -C "$UPSTREAM" O="$ODIR" BR2_EXTERNAL="$EXT" "$DEFCONFIG"

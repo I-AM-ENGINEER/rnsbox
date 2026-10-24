@@ -123,7 +123,7 @@ jobs:
               echo "::warning::attempt 1 failed (exit $status) - retrying"
               cp /mnt/tmp/build.log /mnt/tmp/build.log.try1
             fi
-            /usr/bin/time -v ./build.sh "$BOARD" lite 2>&1 | tee /mnt/tmp/build.log
+            /usr/bin/time -v ./build.sh "$BOARD" 2>&1 | tee /mnt/tmp/build.log
             status=$?
             echo ">> attempt $attempt exit: $status"
             [ "$status" -eq 0 ] && break
