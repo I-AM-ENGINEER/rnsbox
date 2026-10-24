@@ -37,6 +37,10 @@ BR2_PACKAGE_KMOD_TOOLS=y
 BR2_PACKAGE_DNSMASQ=y
 BR2_PACKAGE_NFTABLES=y
 BR2_PACKAGE_OPENRESOLV=y
+# The operator account is admin (root is locked); sudo is the one privileged
+# path for SSH and the browser Console. The sudoers drop-in lives in
+# board/common/sudoers.d and is installed by slim-target.sh.
+BR2_PACKAGE_SUDO=y
 
 # --- WiFi userspace (every board except the 64 MB CV1800B and MT7628) ---
 # S35wifi and the portal's WiFi tab drive iw/wpa_supplicant/hostapd. The

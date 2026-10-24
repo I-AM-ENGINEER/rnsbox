@@ -1,5 +1,5 @@
 #!/bin/sh
-# S10consoleuser — the TTY console logs in as the unprivileged `admin` user.
+# S10consoleuser — the TTY console logs in as the operator `admin` user (sudo-enabled).
 #
 # Its unix password mirrors the portal admin password: the image ships the
 # account locked, so seed the factory default admin/admin here. Changing the
