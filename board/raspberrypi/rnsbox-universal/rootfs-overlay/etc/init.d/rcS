@@ -8,6 +8,16 @@
 # and every service it spawns — writing to /dev/null. devtmpfs is mounted by
 # then, so reopening here always succeeds and boot messages are never lost.
 #
+# devtmpfs has been seen without /dev/null on the CVITEK boards, and a
+# redirection then leaves a regular file there.  Daemons that call
+# daemon() (wpa_supplicant -B, dhcpcd, ...) die with "daemon: No such
+# device" and never start.  Recreate the node before any service runs.
+if [ ! -c /dev/null ]; then
+	rm -f /dev/null
+	mknod /dev/null c 1 3 2>/dev/null
+	chmod 666 /dev/null
+fi
+
 exec >/dev/console 2>&1
 
 for i in /etc/init.d/S??*; do
