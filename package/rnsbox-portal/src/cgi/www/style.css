@@ -958,7 +958,6 @@ body.term-full .term-wrap {
   .manual-layout { display: block; }
   .manual-nav { width: auto; flex: none; flex-direction: row; flex-wrap: wrap; margin-bottom: 14px; }
 }
-.manual-layout:fullscreen { background: var(--bg); padding: 20px 28px; overflow: auto; }
 .manual-layout { max-width: 100%; }
 .manual-doc { overflow-wrap: break-word; }
 .manual-doc pre { max-width: 100%; }

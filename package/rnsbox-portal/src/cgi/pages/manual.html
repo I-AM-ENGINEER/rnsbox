@@ -9,7 +9,6 @@
   <form method="post" action="__BASE__/manual/download" class="inline">
     <button type="submit" class="btn-primary">Download</button>
   </form>
-  <button type="button" class="btn" id="manual-fs">Fullscreen</button>
 </div>
 
 <div class="manual-layout">
@@ -53,15 +52,6 @@
            '" href="?page=' + p[0] + '">' + esc(p[1]) + "</a>";
   }).join("");
   var doc = document.getElementById("doc");
-  var fs = document.getElementById("manual-fs");
-  if (fs) fs.addEventListener("click", function () {
-    var el = document.querySelector(".manual-layout");
-    if (!document.fullscreenElement) {
-      if (el && el.requestFullscreen) el.requestFullscreen();
-    } else if (document.exitFullscreen) {
-      document.exitFullscreen();
-    }
-  });
   fetch("/manual/docs/" + page + ".md", {cache: "no-cache"}).then(function (r) {
     if (!r.ok) throw new Error(r.status + " " + r.statusText);
     return r.text();
