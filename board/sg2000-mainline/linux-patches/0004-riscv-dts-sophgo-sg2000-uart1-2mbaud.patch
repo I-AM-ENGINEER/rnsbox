@@ -10,7 +10,7 @@ Pin clk_cam0_200 (the UART baud clock parent) to disppll/8 = 96 MHz:
 96 MHz / 16 / 3 = 2,000,000 exactly, and the 115200 console falls on
 divisor 52 (0.16% error). Enable UART1 without a pinctrl state (the
 mainline pinctrl driver does not model the XGPIOA[28]/[29] pads; S31slip
-muxes them through /dev/mem) and without a reset, matching uart0.
+muxes them through /dev/mem).
 
 --- a/arch/riscv/boot/dts/sophgo/sg2000-duomodule01-evb.dts
 +++ b/arch/riscv/boot/dts/sophgo/sg2000-duomodule01-evb.dts
@@ -37,10 +37,10 @@ muxes them through /dev/mem) and without a reset, matching uart0.
 +/*
 + * UART1 is the HaLow modem / SLIP port on XGPIOA[28] TX and XGPIOA[29] RX.
 + * No pinctrl state: mainline pinctrl does not model these pads yet, S31slip
-+ * muxes them through /dev/mem. No reset either, matching uart0.
++ * muxes them through /dev/mem. The reset controller is left in place so the
++ * driver deasserts RST_UART1 itself.
 + */
 +&uart1 {
-+	/delete-property/ resets;
 +	status = "okay";
 +};
 +
