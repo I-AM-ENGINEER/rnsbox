@@ -24,7 +24,7 @@ the worker refuses to apply without one.
       "version": "r2026.10.15-abc1234",
       "prerelease": false,
       "files": [
-        {"board": "sg2002-rv64", "url": "rnsbox-sg2002-rv64.img.xz",
+        {"board": "rpi-universal", "url": "rnsbox-rpi-universal.img.xz",
          "sha256": "…64 hex…"},
         {"board": "rpi-universal", "url":
          "https://mirror.example.net/rnsbox/rnsbox-rpi-universal.img.xz",

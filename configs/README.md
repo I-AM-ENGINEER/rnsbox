@@ -18,9 +18,8 @@ keys stay stable. `scripts/gen-defconfigs.sh --check` fails when the base or a
 delta changed without regenerating; both `build.sh` (external flow) and the
 GitHub Actions workflows run it.
 
-Vendor-BSP flows (`patches/licheerv-nano`, `patches/milkv-duo-01*`) are not
-part of this scheme: they ship their own Buildroot/Kconfig, and `build.sh`
-stamps the vendor policy into that tree.
+Every board — including the vendor-fip CVITEK ones — uses this same external
+rootfs defconfig layer; there is no second buildroot tree to keep in sync.
 
 ## Change the shared set (e.g. add a package)
 

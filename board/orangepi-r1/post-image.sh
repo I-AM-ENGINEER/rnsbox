@@ -27,8 +27,7 @@ echo "RNSBox"                 > "${BINARIES_DIR}/usb.manufacturer"
 echo "RNSBox Reticulum router (Orange Pi R1)" > "${BINARIES_DIR}/usb.product"
 echo "02:1d:6b:01:04:03"      > "${BINARIES_DIR}/usb.ncm.mac"
 echo "rnsbox"                 > "${BINARIES_DIR}/hostname"
-# usb.disk0 (+ .size) for the read-only clients DVD is added by
-# scripts/build-variant.sh for the dvd variant; lite ships NCM-only.
+# Lite image: one NCM gadget, no clients disc.
 
 # boot.cmd -> boot.scr (mkimage comes from host-uboot-tools, enabled in the
 # defconfig). Buildroot already generated it through the *_BOOT_SCRIPT

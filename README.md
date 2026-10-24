@@ -3,20 +3,24 @@
 RNSBox turns a small, USB-powered single-board computer into a
 [Reticulum](https://reticulum.network/) router and transport node with an
 OpenWrt-style web admin UI. One repository serves every supported board —
-the **Sipeed LicheeRV Nano-e** and **Milk-V Duo / Duo S / Duo 256M**
-(SG2000/SG2002, RISC-V C906 *and* ARM Cortex-A53), the **Raspberry Pi**
-(one universal image for Zero 2 W / 3 / 4 / 5) and the **Orange Pi R1**
-(Allwinner H2+, 4× Cortex-A7) — with the router software shared and only
+the **Sipeed LicheeRV Nano-e**, **Milk-V Duo / Duo S / Duo 256M** and
+**Duo Module 01** (SG2000/SG2002, RISC-V C906 and ARM Cortex-A53), the
+**Raspberry Pi** (one universal image for Zero 2 W / 3 / 4 / 5) and the
+**Orange Pi R1** (Allwinner H2+) — with the router software shared and only
 the board files differing.
 
-The repository is a Buildroot **external tree** plus, for boards whose
-vendor only ships a BSP fork, a git-am patch series — so it contains only
-the RNSBox delta; the kernel, Buildroot and vendor sources come from
-upstream and are fetched at build time.
+The repository is a Buildroot **external tree**, and there is exactly one
+build flow: pinned upstream Buildroot + mainline Linux + this repo as
+`BR2_EXTERNAL`. The only vendor artifact left is the CVITEK first-stage boot
+blob (`fip.bin`), which a board's post-image script writes to the boot FAT;
+there is no vendor Buildroot, no per-board packer and no patch series.
 
-- **LicheeRV Nano-e / Milk-V Duo family (RISC-V and ARM):** [`sipeed/LicheeRV-Nano-Build`](https://github.com/sipeed/LicheeRV-Nano-Build) at `d4003f15b` via the patches in [`patches/licheerv-nano/`](patches/licheerv-nano), [`patches/milkv-duo-01/`](patches/milkv-duo-01) and [`patches/milkv-duo-01-arm/`](patches/milkv-duo-01-arm)
-- **Milk-V Duo S on mainline ARM64:** [`buildroot/buildroot`](https://github.com/buildroot/buildroot) 2026.02.3 LTS at `679b9ead` + mainline Linux `v7.3-rc7` (`board/sg2000-duo-s-arm64-mainline/`)
-- **Raspberry Pi (universal) / Orange Pi R1:** [`buildroot/buildroot`](https://github.com/buildroot/buildroot) 2026.02.3 LTS at `679b9ead` (no patches — the boards build straight from this repo as an external tree)
+- **Common base:** [`buildroot/buildroot`](https://github.com/buildroot/buildroot)
+  2026.02.3 LTS at `679b9ead` + mainline Linux.
+- **CVITEK SG2000/SG2002:** mainline DTS and drivers under the
+  `board/*-mainline/` directories; the vendor `fip.bin` is only a boot blob.
+- **Raspberry Pi, Orange Pi R1, PC/VM:** upstream Buildroot + mainline Linux,
+  no vendor blob at all.
 
 ## Quick start
 
@@ -25,35 +29,27 @@ One command clones the pinned upstream base and builds:
 ```bash
 git clone https://github.com/Smit1237/rnsbox
 cd rnsbox
-./build.sh sg2002-rv64 lite      # LicheeRV Nano-e (SG2002, C906 boot)
-./build.sh sg2000-rv64 lite      # Duo Module 01 on the EVB (SG2000, C906 boot)
-./build.sh sg2000-arm64 lite     # same board on the A53 (the rv/arm switch)
-./build.sh sg2002-arm64 lite     # SG2002 (Duo 256M) on the A53
-./build.sh sg2002-licheerv-arm64 lite  # LicheeRV Nano on the A53 (vendor arm64)
-./build.sh rpi-universal lite    # Raspberry Pi — Zero 2 W / 3 / 4 / 5 (~433 MB)
-./build.sh orangepi-r1 lite      # Orange Pi R1 (Allwinner H2+, ARMv7)
-./build.sh sg2000-duo-s-arm64 lite  # Duo S, mainline Linux on the A53
-./build.sh all lite             # every board, sequentially
-# dvd instead of lite adds a read-only disc of the latest Reticulum clients
+./build.sh rpi-universal               # Raspberry Pi Zero 2 W / 3 / 4 / 5
+./build.sh orangepi-r1                 # Orange Pi R1 (Allwinner H2+)
+./build.sh pc-x86_64                   # PC / QEMU / VirtualBox disk
+./build.sh milkv-duo-cv1800b-rv64      # Milk-V Duo 64M (C906)
+./build.sh sg2000-duomodule01-rv64     # Duo Module 01 / EVB (C906)
+./build.sh sg2002-licheerv-nano-rv64   # LicheeRV Nano-e (C906)
+./build.sh sg2002-duo256m-rv64         # Duo 256M (C906)
+./build.sh sg2000-duo-s-rv64           # Duo S (C906)
+./build.sh sg2000-duo-s-arm64          # Duo S (A53)
+./build.sh all                         # every board, sequentially
 ```
 
-CVITEK image names are SoC-arch pairs, not board names: the SG2000/SG2002
-boot core (C906 RISC-V or A53) is picked by the physical rv/arm switch on
-the board, so flash the image whose suffix matches the switch position.
-EVB, Duo Module 01, LicheeRV Nano-e and Duo are the same two SoCs — the
-`sg2000-*` images drive the Duo Module 01 (its EVB), the `sg2002-*` ones
-the LicheeRV Nano-e / Duo form factor.
+The finished image lands at
+`~/rnsbox-work/upstream/out/<board>/images/rnsbox-<board>.img`. Flash it with
+`dd` (or a tool like balenaEtcher) to a microSD and boot the board. CVITEK
+images are still named by SoC+core (`sg2000-*` / `sg2002-*`) because the
+physical rv/arm switch selects the boot core; the board key also says which
+core it was built for.
 
-The finished image lands under `LicheeRV-Nano-Build/install/soc_sg2002_licheervnano_sd/images/`
-(LicheeRV), `milkv-duo-01-arm/install/soc_<board>/images/` (vendor ARM64
-family) or `~/rnsbox-work/upstream/out/<board>/images/` (Pi, Orange Pi,
-mainline Duo S). Flash it with `dd` (or a tool like balenaEtcher) to a
-microSD and boot the board.
-
-> **First build is long.** The LicheeRV build compiles a Rust host toolchain from
-> source (needed for `python-cryptography` on `riscv64-musl`), so the first run
-> takes roughly 40 minutes on a typical machine; the Pi build compiles a whole
-> distro (kernel, OpenSSL, Python) from scratch. Later builds are incremental.
+> **First build is long.** Buildroot compiles the kernel, OpenSSL, Python and
+> the rest of the distro from scratch. Later builds are incremental.
 
 Build host: a Linux machine set up for Buildroot (the upstream repo's
 `host/ubuntu` container works; WSL2 also works). `./build.sh` needs
@@ -68,9 +64,7 @@ Build host: a Linux machine set up for Buildroot (the upstream repo's
   and two public RNS-testnet uplinks preconfigured.
 - **USB gadget = LAN.** The board presents a CDC-NCM network interface, and the
   WiFi hotspot joins it as a second port of one bridged LAN
-  (`br-lan = 10.42.0.1/24`, dnsmasq DHCP + DNS). The DVD build additionally
-  exposes a read-only mass-storage "disc" pre-loaded with Reticulum client apps
-  for a zero-download quick start.
+  (`br-lan = 10.42.0.1/24`, dnsmasq DHCP + DNS).
 - **WAN**, DHCP or static, with automatic uplink selection (wired where
   present, else the WiFi station), NAT masquerade plus per-rule port forwarding
   and open-port management.
@@ -143,35 +137,35 @@ lines; TX and RX cross over:
 On the Nano-e set **both** ends to `1500000` baud — its UART tops out at
 1,562,500, below the modem's 2 Mbaud default. On the Pi use `/dev/serial0`
 at the modem's **2 Mbaud** default (Bluetooth is disabled so the PL011 is
-free). Enable the link from the portal (*Reticulum tab → HaLow modem (SLIP)*),
-then point a `TCPClientInterface` at the modem on **port 8001**.
+free). Enable the link from the portal (*Reticulum tab → HaLow modem (SLIP)*);
+the page adds the modem's `TCPClientInterface` (port **4242**) to the rnsd
+config automatically and restarts rnsd.
 
 ## Repository layout
 
 ```
-build.sh          one-command builder: ./build.sh <board> [lite|dvd|all]
-board/<vendor>/   per-board files: kernel fragments, boot config, rootfs
-                  overlay (init scripts, /etc), image assembly
+build.sh          one-command builder: ./build.sh <board|all>
+board/<board>/    per-board defconfig inputs: DTS/fragments, boot config,
+                  rootfs overlay (init scripts, /etc), post-image assembly
 configs/          base.config + boards/<board>.config (source of truth);
                   rnsbox_<board>_defconfig is generated from them
 package/          SHARED packages: rnsbox-portal, python-rns, python-lxmf,
                   python-nomadnet — one copy for every board
                   (package/rnsbox-portal/src/win/ builds the same portal
                   natively for Windows — see its README)
-scripts/          lite/dvd packaging + client-disc helpers
-patches/          the git-am series (vendor-BSP boards only, e.g. licheerv-nano)
+scripts/          gen-defconfigs.sh, run/test-pc-vm.sh
 .github/          CI: matrix-build the images on GitHub Actions + Releases
 LICENSE           MIT (the RNSBox delta)
 README.md         this file
 ```
 
-**Adding a board:** `configs/boards/<board>.config` (board delta only) +
+**Adding a board:** a defconfig delta in `configs/boards/<board>.config` +
 `board/<vendor>/<board>/` (copy the shape from an existing board; keep board
-differences in configs, not in code forks) + a small entry in `build.sh` +
-one line in the CI matrix. Then run `scripts/gen-defconfigs.sh` to produce
-`configs/rnsbox_<board>_defconfig`. Shared selections live in
-`configs/base.config` — see `configs/README.md`. A new shared package goes to
-`package/<name>/` once and is instantly available to every board.
+differences in configs and data files, not in code forks) + one entry in the
+`build.sh` board map and one line in the CI matrix. Then run
+`scripts/gen-defconfigs.sh` to produce `configs/rnsbox_<board>_defconfig`.
+Shared selections live in `configs/base.config`; a new shared package goes to
+`package/<name>/` once and is available to every board.
 
 ## Windows (native, for development)
 
@@ -192,44 +186,32 @@ service. Details: `package/rnsbox-portal/src/win/README.md`.
 
 ## Hardware
 
-- Sipeed LicheeRV Nano-e (no radio) or Nano-e **W** (AIC8800 WiFi). One image
-  serves both; WiFi bring-up is a clean no-op where there is no radio.
-- Raspberry Pi — one universal image for Zero 2 W, 3, 4 and 5 (aarch64;
+- Sipeed LicheeRV Nano-e (no radio) or Nano-e **W** (AIC8800 WiFi):
+  `sg2002-licheerv-nano-rv64`. One image serves both; WiFi bring-up is a
+  clean no-op where there is no radio.
+- Milk-V Duo 64M: `milkv-duo-cv1800b-rv64`; Duo 256M:
+  `sg2002-duo256m-rv64`; Duo Module 01 on the EVB:
+  `sg2000-duomodule01-rv64`; Duo S on the C906 or A53:
+  `sg2000-duo-s-rv64` / `sg2000-duo-s-arm64`.
+- Raspberry Pi: one universal image for Zero 2 W, 3, 4 and 5 (aarch64;
   onboard WiFi/BT on the Zero 2 W — STA / AP / concurrent AP+STA; WAN uplink
   is the WiFi station). Optional DS3231 RTC on i2c1: SDA GPIO2 (pin 3),
   SCL GPIO3 (pin 5).
-- microSD: the DVD build's size tracks the current client releases (~3.3 GB
-  now; use a card comfortably larger, e.g. 8 GB); the lite builds are ~217 MB
-  (Nano-e) and ~433 MB (Pi). The rootfs auto-grows to fill the card on first
-  boot.
+- Orange Pi R1 (Allwinner H2+) and a generic PC/VM disk (`pc-x86_64`).
+- microSD: every image is lite (no clients disc). The rootfs auto-grows to
+  fill the card on first boot.
 
 ## Default credentials
 
 | Service | User  | Password |
 |---------|-------|----------|
-| SSH     | root  | admin    |
+| SSH     | admin | admin    |
 | Web UI  | admin | admin    |
 
-Change these on first use. The web password is stored hashed (pbkdf2) in
-`/etc/rnsbox/auth.json` after first login; the session-signing key is generated
-at runtime and never stored in the source tree.
-
-## Applying the patches by hand
-
-Only the vendor-BSP boards carry patches. For the LicheeRV Nano-e:
-
-```bash
-git clone https://github.com/sipeed/LicheeRV-Nano-Build.git
-cd LicheeRV-Nano-Build
-git checkout d4003f15b35d43ad4842f427050ab2bba0114fa5
-git clone --depth=1 https://github.com/sophgo/host-tools host-tools
-git am /path/to/rnsbox/patches/licheerv-nano/*.patch
-source build/cvisetup.sh && defconfig sg2002_licheervnano_sd && build_all
-./build-rnsbox.sh lite      # or: ./fetch-clients.sh && ./build-rnsbox.sh dvd
-```
-
-The Raspberry Pi needs none of this — `build.sh rpi-universal` drives
-pinned Buildroot + this repo directly.
+Root login is disabled; `admin` is the operator account and sudo is not
+installed. Change the password on first use (Settings → Change admin
+password; it updates both the web and Unix accounts). The web password is
+stored hashed (pbkdf2) in `/etc/rnsbox/auth.json` after first login.
 
 ## Licensing
 

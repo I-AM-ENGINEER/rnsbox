@@ -72,8 +72,7 @@ The target is a normal buildroot external-tree board:
          BR2_EXTERNAL=$PWD rnsbox_licheerv_nano_mainline_defconfig
     make O=out/licheerv-nano
 
-Output: `out/licheerv-nano/images/rnsbox-sg2002-licheervnano-mainline.img`
-(the `-dvd` suffix appears only when that variant is built).
+Output: `out/licheerv-nano/images/rnsbox-sg2002-licheerv-nano-rv64.img`.
 (boot FAT at sector 1, ext4 rootfs at sector 32769, root=/dev/mmcblk0p2 is
 baked into the vendor u-boot bootargs).
 
