@@ -242,7 +242,7 @@ static int store_state(const char *source, const char *payload) {
         have_loc ? "true" : "false",
         mhz_to_hz(freq_s), mhz_to_hz(bw_s), esc_lxmf, uptime);
 
-    mkdir("/run", 0755);
+    mkdir("/run/rnsbox", 0755);
     mkdir(STATE_DIR, 0755);
     char tmp[128];
     snprintf(tmp, sizeof(tmp), STATE_FILE ".tmp.%ld", (long)getpid());

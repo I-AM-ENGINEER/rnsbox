@@ -41,6 +41,13 @@ void reticulum_applyupdate(const http::Request&, http::Response&); // POST JSON 
 void reticulum_slip(const http::Request&, http::Response&);        // POST PRG
 void reticulum_rnsh_save(const http::Request&, http::Response&);   // POST PRG
 void reticulum_halow_add(const http::Request&, http::Response&);   // POST PRG
+// HaLow firmware update: chunked upload (uhttpd caps a CGI body at 256 KiB),
+// background flasher status, and the modem's own online check/install.
+void reticulum_halow_ota_chunk(const http::Request&, http::Response&);  // POST raw
+void reticulum_halow_ota_start(const http::Request&, http::Response&);  // POST JSON
+void reticulum_halow_ota_status(const http::Request&, http::Response&); // GET JSON
+void reticulum_halow_ota_online(const http::Request&, http::Response&); // POST JSON
+int halow_ota_cli(const std::string& path);                             // CLI background
 // TCP client interface editor ([[...]] type = TCPClientInterface stanzas)
 void reticulum_tcpclient_add(const http::Request&, http::Response&);    // POST PRG
 void reticulum_tcpclient_update(const http::Request&, http::Response&); // POST PRG

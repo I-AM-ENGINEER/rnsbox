@@ -149,8 +149,7 @@ std::string tel_status_html(const store::TelemetryConfig& tc) {
         out += ", forwarded to " + render::esc(tc.halow_upstream) + ".</div>";
     } else if (tc.halow_mqtt == "yes") {
         out += "<div><span class=\"tel-k\">HaLow telemetry</span>nothing received yet — the "
-               "modem sends a packet every " + render::esc(tc.announce_interval) +
-               " minute(s) once its config is pushed.</div>";
+               "modem sends a packet every 12 hours once its config is pushed.</div>";
     }
     return out;
 }
@@ -290,8 +289,11 @@ void map_telemetry(const Request& req, Response& res) {
     std::string modem_msg;
     if (c.halow_mqtt == "yes" && sl.enabled == "yes") {
         std::string local = modem::local_ip_towards(sl);
-        long period = strtol(c.announce_interval.c_str(), nullptr, 10) * 60;
-        if (period < 60) period = 60;
+        // The modem's telemetry runs on a fixed 12-hour cadence; the card's
+        // announce interval is for rnsd discovery only. Everything else is
+        // the modem's standard telemetry config (only the MQTT destination
+        // and the coordinates/name from this form are substituted).
+        const long period = 12 * 3600;
         std::string json =
             "{\"en\":true,\"host\":\"" + local + "\",\"port\":1883,\"prd\":" +
             std::to_string(period) + ",\"lat\":" + c.latitude + ",\"lon\":" + c.longitude +

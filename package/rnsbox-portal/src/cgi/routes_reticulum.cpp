@@ -6,6 +6,7 @@
 #include "render.h"
 #include "web.h"
 #include "store.h"
+#include "modem.h"
 #include "sysinfo.h"
 #include "updatecheck.h"
 #include "util.h"
@@ -701,6 +702,105 @@ void reticulum_page(const Request& req, Response& res) {
         halow = "<table class=\"kv\"><tr><th>Status</th><td>" + link + "</td></tr></table>";
     }
     h = R(std::move(h), "__HALOW_LIVE_BLOCK__", halow);
+
+    // Firmware update card body: local upload (raw .bin / ota.tar) and the
+    // modem's own online check/install. Only meaningful with a live link.
+    std::string ota_block;
+    if (slip_on) {
+        ota_block = R"HTML(<div class="rnsh-block" style="margin-top:16px">
+    <h4>Firmware update</h4>
+    <div class="row-form">
+      <input type="file" id="halow-ota-file" accept=".bin,.tar">
+      <button type="button" class="btn-primary" id="halow-ota-upload" onclick="halowOtaUpload()">Upload &amp; flash</button>
+      <button type="button" class="btn" onclick="halowOtaOnline('check')">Check online</button>
+      <button type="button" class="btn" onclick="halowOtaOnline('install')">Install latest</button>
+    </div>
+    <p class="muted" id="halow-ota-msg" style="margin:8px 0 0">Local upload accepts a raw .bin or an ota.tar with fw.bin. Keep the modem powered during the write.</p>
+    <div class="meter" style="margin-top:8px"><div class="meter-fill" id="halow-ota-bar" style="width:0%"></div></div>
+  </div>
+  <script>
+  (function(){
+    var BASE = '__BASE__';
+    function msg(t){ var e=document.getElementById('halow-ota-msg'); if(e) e.textContent=t; }
+    function bar(p){ var e=document.getElementById('halow-ota-bar'); if(e) e.style.width=Math.max(0,Math.min(100,p))+'%'; }
+    function poll(){
+      fetch(BASE + '/reticulum/halow/ota/status', {credentials:'same-origin', cache:'no-store'})
+        .then(function(r){ return r.json(); }).then(function(s){
+          if (s.state === 'running' || s.state === 'starting') {
+            msg((s.stage || 'working') + ' — ' + (s.pct || 0) + '% (' + (s.done||0) + '/' + (s.total||0) + ' bytes)');
+            bar(s.pct || 0);
+            setTimeout(poll, 1500);
+          } else if (s.state === 'done') {
+            bar(100);
+            msg('Firmware written' + (s.version ? ' — version ' + s.version : '') + '. Reloading…');
+            setTimeout(function(){ location.reload(); }, 2500);
+          } else if (s.state === 'failed') {
+            msg('Update failed: ' + (s.error || 'unknown error'));
+          }
+        }).catch(function(){ setTimeout(poll, 2500); });
+    }
+    window.halowOtaUpload = function(){
+      var inp = document.getElementById('halow-ota-file');
+      if (!inp || !inp.files.length) { msg('Choose a firmware file first.'); return; }
+      var file = inp.files[0], CH = 131072, off = 0;
+      var btn = document.getElementById('halow-ota-upload');
+      if (btn) btn.disabled = true;
+      msg('Uploading ' + file.name + '…');
+      function next(){
+        if (off >= file.size) {
+          fetch(BASE + '/reticulum/halow/ota/start', {method:'POST', credentials:'same-origin'})
+            .then(function(r){ return r.json(); }).then(function(j){
+              if (!j.ok) { msg(j.error || 'could not start the updater'); if (btn) btn.disabled=false; return; }
+              msg('Flashing…'); bar(0); poll();
+            }).catch(function(e){ msg('Start failed: ' + e); if (btn) btn.disabled=false; });
+          return;
+        }
+        fetch(BASE + '/reticulum/halow/ota/chunk?off=' + off,
+              {method:'POST', credentials:'same-origin', body:file.slice(off, Math.min(off+CH, file.size))})
+          .then(function(r){ return r.json(); }).then(function(j){
+            if (j.error) throw new Error(j.error);
+            off = j.off;
+            bar(off * 100 / file.size);
+            msg('Uploading ' + Math.floor(off*100/file.size) + '%…');
+            next();
+          }).catch(function(e){ msg('Upload failed: ' + e.message); if (btn) btn.disabled=false; });
+      }
+      // The first chunk (off=0) truncates any previous upload.
+      next();
+    };
+    window.halowOtaOnline = function(action){
+      if (action === 'install' && !confirm('Install the latest firmware from GitHub on the modem? It will reboot.')) return;
+      msg(action === 'check' ? 'Checking GitHub releases…' : 'Starting the online install…');
+      fetch(BASE + '/reticulum/halow/ota/online', {
+        method:'POST', credentials:'same-origin',
+        headers:{'Content-Type':'application/x-www-form-urlencoded'},
+        body:'action=' + encodeURIComponent(action)
+      }).then(function(r){ return r.json(); }).then(function(j){
+        if (j.ok === false) {
+          var e = j.error || 'modem error';
+          if (/api not found/i.test(e)) e = 'this firmware has no online updater; upload a .bin instead.';
+          msg('Failed: ' + e);
+          return;
+        }
+        if (action === 'check') {
+          var parts = [];
+          if (j.latest != null) parts.push('latest ' + j.latest);
+          if (j.installed != null) parts.push('installed ' + j.installed);
+          if (j.update_available != null) parts.push(j.update_available ? 'update available' : 'up to date');
+          msg(parts.length ? parts.join(' · ') : JSON.stringify(j));
+        } else {
+          msg('Install started; the modem will reboot when the download finishes.');
+          setTimeout(poll, 3000);
+        }
+      }).catch(function(e){ msg('Failed: ' + e); });
+    };
+  })();
+  </script>)HTML";
+        ota_block = web::replace_all(std::move(ota_block), "__BASE__", base);
+    } else {
+        ota_block = "<p class=\"muted\" style=\"margin-top:14px\">Enable the HaLow link to update the modem firmware.</p>";
+    }
+    h = R(std::move(h), "__HALOW_OTA__", ota_block);
 
     bool halow_in_config = reticulum_has_tcp_client(halow_peer, 0);
     h = R(std::move(h), "__HALOW_IN_CONFIG__", halow_in_config ? "true" : "false");
@@ -2806,6 +2906,148 @@ void reticulum_rnode_pair(const Request& req, Response& res) {
     update_json(res, false, false,
                 rr.timed_out ? "Pairing timed out (the modem may still be waiting for a code)."
                              : "Pairing failed (is bluetoothd running? is the RNode in pairing reach?)");
+}
+
+// ---- HaLow firmware update ---------------------------------------------------
+// The modem's OTA API accepts a firmware image in 512-byte base64 chunks
+// (ota_fw_begin -> ota_fw_chunk* -> ota_fw_end -> reboot). uhttpd caps a CGI
+// request body at 256 KiB, so the browser uploads the image here in 128 KiB
+// pieces; halow_ota_cli (a detached child) then does the actual flashing and
+// records progress in /run.
+
+static constexpr const char* OTA_UPLOAD = "/run/rnsbox-halow-ota.fw";
+static constexpr const char* OTA_STATE  = "/run/rnsbox-halow-ota.json";
+static constexpr const char* OTA_LOCK   = "/run/rnsbox-halow-ota.lock";
+static constexpr uint64_t OTA_MAX       = 8ull * 1024 * 1024;
+
+static std::string http_body(const std::string& raw) {
+    size_t p = raw.find("\r\n\r\n");
+    return p == std::string::npos ? std::string() : raw.substr(p + 4);
+}
+
+void reticulum_halow_ota_chunk(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, true)) return;
+    res.content_type = "application/json";
+    long off = strtol(req.a("off").c_str(), nullptr, 10);
+    if (off < 0 || req.body.empty() || req.body.size() > 256 * 1024) {
+        res.status = "400 Bad Request";
+        res.body = "{\"error\":\"bad chunk\"}";
+        return;
+    }
+    if ((uint64_t)off + req.body.size() > OTA_MAX) {
+        res.status = "413 Payload Too Large";
+        res.body = "{\"error\":\"firmware image too large (max 8 MiB)\"}";
+        return;
+    }
+    int fd = open(OTA_UPLOAD, O_WRONLY | O_CREAT | O_CLOEXEC, 0600);
+    if (fd < 0) {
+        res.status = "500 Internal Server Error";
+        res.body = "{\"error\":\"cannot open the upload file\"}";
+        return;
+    }
+    struct stat st;
+    if (fstat(fd, &st) != 0) {
+        close(fd);
+        res.status = "500 Internal Server Error";
+        res.body = "{\"error\":\"stat failed\"}";
+        return;
+    }
+    if (off == 0) {
+        if (ftruncate(fd, 0) != 0) { close(fd); res.status = "500 Internal Server Error"; res.body = "{\"error\":\"truncate failed\"}"; return; }
+    } else if ((uint64_t)st.st_size != (uint64_t)off) {
+        close(fd);
+        res.status = "409 Conflict";
+        res.body = "{\"error\":\"chunks out of order — restart the upload\"}";
+        return;
+    }
+    if (lseek(fd, (off_t)off, SEEK_SET) < 0) {
+        close(fd);
+        res.status = "500 Internal Server Error";
+        res.body = "{\"error\":\"seek failed\"}";
+        return;
+    }
+    size_t written = 0;
+    while (written < req.body.size()) {
+        ssize_t w = write(fd, req.body.data() + written, req.body.size() - written);
+        if (w <= 0) { close(fd); res.status = "500 Internal Server Error"; res.body = "{\"error\":\"write failed\"}"; return; }
+        written += (size_t)w;
+    }
+    uint64_t total = (uint64_t)off + written;
+    close(fd);
+    res.body = "{\"ok\":true,\"off\":" + std::to_string(total) + "}";
+}
+
+void reticulum_halow_ota_start(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, true)) return;
+    res.content_type = "application/json";
+    if (access(OTA_LOCK, F_OK) == 0) {
+        res.status = "409 Conflict";
+        res.body = "{\"ok\":false,\"error\":\"an update is already running\"}";
+        return;
+    }
+    struct stat st;
+    if (stat(OTA_UPLOAD, &st) != 0 || st.st_size <= 0) {
+        res.status = "400 Bad Request";
+        res.body = "{\"ok\":false,\"error\":\"no firmware uploaded\"}";
+        return;
+    }
+    // Seed the status so the page has something to show before the child runs.
+    util::write_file_atomic(OTA_STATE,
+        "{\"state\":\"starting\",\"stage\":\"queued\",\"done\":0,\"total\":" +
+        std::to_string((long long)st.st_size) + ",\"pct\":0,\"error\":\"\",\"version\":\"\"}\n",
+        0644);
+    pid_t pid = fork();
+    if (pid == 0) {
+        setsid();
+        int nul = open("/dev/null", O_RDWR);
+        if (nul >= 0) { dup2(nul, 0); dup2(nul, 1); dup2(nul, 2); if (nul > 2) close(nul); }
+        execl("/usr/sbin/rnsbox-portal", "rnsbox-portal", "halow-ota", OTA_UPLOAD, (char *)nullptr);
+        _exit(127);
+    }
+    if (pid < 0) {
+        res.status = "500 Internal Server Error";
+        res.body = "{\"ok\":false,\"error\":\"could not start the updater\"}";
+        return;
+    }
+    res.status = "202 Accepted";
+    res.body = "{\"ok\":true}";
+}
+
+void reticulum_halow_ota_status(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, true)) return;
+    res.content_type = "application/json";
+    std::string s = util::read_file(OTA_STATE, 8192);
+    s = util::trim(s);
+    res.body = (s.empty() || s[0] != '{') ? "{\"state\":\"idle\"}" : s;
+}
+
+void reticulum_halow_ota_online(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, true)) return;
+    res.content_type = "application/json";
+    std::string action = req.f("action");
+    if (action != "check" && action != "install") {
+        res.status = "400 Bad Request";
+        res.body = "{\"ok\":false,\"error\":\"action must be check or install\"}";
+        return;
+    }
+    store::SlipConfig sl = store::read_slip();
+    if (sl.enabled != "yes") {
+        res.status = "400 Bad Request";
+        res.body = "{\"ok\":false,\"error\":\"the HaLow link is disabled\"}";
+        return;
+    }
+    std::string peer = sl.peer_ip.empty() ? "192.168.7.2" : sl.peer_ip;
+    std::string raw;
+    bool ok = modem::post(peer, action == "check" ? "ota_upd_check" : "ota_upd_install",
+                          "{}", raw, action == "check" ? 30 : 20);
+    std::string body = http_body(raw);
+    if (!ok) {
+        res.status = "502 Bad Gateway";
+        res.body = "{\"ok\":false,\"error\":\"" +
+                   http::json_escape(util::trim(body.empty() ? raw : body)) + "\"}";
+        return;
+    }
+    res.body = (body.empty() || body[0] != '{') ? "{\"ok\":true}" : body;
 }
 
 }  // namespace routes
