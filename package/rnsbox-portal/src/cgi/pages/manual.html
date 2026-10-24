@@ -90,7 +90,7 @@
   }).then(function (md) {
     var html = marked.parse(md, {mangle: false, headerIds: true});
     html = html.replace(/src="graphics\/([A-Za-z0-9_]+)\.png"/g,
-                        'src="/manual/img/$1.jpg"');
+                        'src="/manual/img/$1.jpg?v=2"');
     html = html.replace(/href="([A-Za-z0-9_-]+)\.md(#[^"]*)?"/g,
                         function (m, n, a) { return 'href="?page=' + n + (a || "") + '"'; });
     doc.innerHTML = html;

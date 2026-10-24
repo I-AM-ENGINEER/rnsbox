@@ -179,9 +179,9 @@ std::string layout(const http::Request& req, http::Response& res,
                std::string((active && std::string(active) == "wifi") ? "active" : "") + "\">WiFi</a>";
     nav_console = "<a href=\"" + esc(web::base()) + "/console\" class=\"" +
                   std::string((active && std::string(active) == "console") ? "active" : "") + "\">Console</a>";
-    // RNode and Map need the Linux helpers (rnodeconf/serial, rnsd storage).
-    nav_rnode = "<a href=\"" + esc(web::base()) + "/rnode\" class=\"" +
-                std::string((active && std::string(active) == "rnode") ? "active" : "") + "\">RNode</a>";
+    // The standalone RNode page is hidden: the RNode LoRa card on the
+    // Reticulum tab configures and attaches the modem. Map needs the Linux
+    // helpers (rnsd storage).
     if (map_on())
         nav_map = "<a href=\"" + esc(web::base()) + "/map\" class=\"" +
                   std::string((active && std::string(active) == "map") ? "active" : "") + "\">Map</a>";

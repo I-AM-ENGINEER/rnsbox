@@ -46,7 +46,7 @@ constexpr const char* RNSH_CONF = "/etc/rnsbox/rnsh.conf";
 
 struct RnshConf {
     bool enabled = false;
-    std::string announce = "600";
+    std::string announce = "43200";
     std::string allowed;   // normalized "allowed_id=<hash>" lines
 };
 
@@ -105,7 +105,10 @@ static std::string rnsh_fill(std::string h) {
     else
         status = "<span class=\"badge\">stopped</span>";
     h = R(std::move(h), "__RNSH_CHECKED__", rc.enabled ? "checked" : "");
-    h = R(std::move(h), "__RNSH_ANNOUNCE__", E(rc.announce));
+    // rnsh stores the interval in seconds; the form works in minutes.
+    long announce_s = std::strtol(rc.announce.c_str(), nullptr, 10);
+    if (announce_s < 0) announce_s = 0;
+    h = R(std::move(h), "__RNSH_ANNOUNCE__", std::to_string(announce_s / 60));
     h = R(std::move(h), "__RNSH_ALLOWED__", E(rc.allowed));
     h = R(std::move(h), "__RNSH_STATUS__", status);
     h = R(std::move(h), "__RNSH_DEST__",
@@ -750,7 +753,6 @@ void reticulum_page(const Request& req, Response& res) {
     h = rnsh_fill(std::move(h));
     h = rnsdmon_fill(std::move(h));
     h = R(std::move(h), "__ECHOBOT_CARDS__", echobot_cards(base));
-    h = R(std::move(h), "__RNSH_ACCESS_CARDS__", access_cards(base));
     h = R(std::move(h), "__TCP_CLIENTS_ROWS__", tcp_clients_rows(base));
     h = R(std::move(h), "__TCP_CLIENTS_COUNT__", std::to_string(store::read_tcp_clients().size()));
     h = R(std::move(h), "__CONFIG__",        E(cfg));
@@ -951,12 +953,13 @@ void reticulum_slip(const Request& req, Response& res) {
 void reticulum_rnsh_save(const Request& req, Response& res) {
     if (!web::require_auth(req, res, false)) return;
     bool enabled = req.f("enabled") == "on";
+    // The form sends minutes; rnsh.conf and S86rnsh use seconds.
     std::string announce = util::trim(req.f("announce"));
     if (announce.empty() || announce.find_first_not_of("0123456789") != std::string::npos)
-        announce = "600";
-    long an = strtol(announce.c_str(), nullptr, 10);
-    if (an < 0 || an > 86400) an = 600;
-    announce = std::to_string(an);
+        announce = "720";
+    long minutes = std::strtol(announce.c_str(), nullptr, 10);
+    if (minutes < 0 || minutes > 10080) minutes = 720;   // 0 .. 7 days
+    announce = std::to_string(minutes * 60);
 
     // The allow-list is the security model: normalize hard. One hash per
     // line, 16..64 lowercase hex, '#' comments stripped, deduped, max 64.
@@ -2505,7 +2508,20 @@ void reticulum_rnode_scan(const Request& req, Response& res) {
     if (rnode_scan_fresh(cached)) { res.body = cached; return; }
 
     int lfd = ::open(RNODE_SCAN_LOCK, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
-    if (lfd >= 0) ::flock(lfd, LOCK_EX);
+    // Never queue scans: one BLE discovery is ~11 s, and a second click
+    // waiting on a blocking flock keeps a CGI alive until the browser gives
+    // up. Serve the last snapshot (stale is fine) or ask to retry.
+    if (lfd >= 0 && ::flock(lfd, LOCK_EX | LOCK_NB) != 0) {
+        std::string stale = util::read_file(RNODE_SCAN_CACHE, 256 * 1024);
+        std::string t = util::trim(stale);
+        if (!t.empty() && t[0] == '{') {
+            res.body = stale;
+        } else {
+            res.body = "{\"error\":\"scan already in progress — try again in a few seconds\",\"devices\":[]}";
+        }
+        ::close(lfd);
+        return;
+    }
     struct LockGuard { int fd; ~LockGuard() { if (fd >= 0) ::close(fd); } } guard{lfd};
     if (rnode_scan_fresh(cached)) { res.body = cached; return; }
 
