@@ -123,7 +123,7 @@ static std::string state_badge(const sysinfo::Iface* i) {
 static std::string halow_card_html(const std::string& base) {
     // href must go through the portal (SCRIPT_NAME base), not the server root —
     // a literal /modem/ hits uhttpd's docroot (404), not this CGI.
-    std::string s = R"HTML(<section class="card card-wide" id="halow-card">
+    std::string s = R"HTML(<section class="card" id="halow-card">
     <div class="cardhead"><h3>HaLow modem</h3><span class="badge" id="halow-badge">…</span></div>
     <div id="halow-body"><p class="muted">Loading modem status…</p></div>
     <p class="cardfoot"><a class="btn" href="__BASE__/modem" target="_blank" rel="noopener">Open modem web UI →</a></p>
@@ -140,7 +140,6 @@ static std::string halow_script_html(const std::string& base) {
   function unit(v,u){ if(v==null||v==='') return '?'; return /^-?\d+(\.\d+)?$/.test(''+v)? v+' '+u : esc(v); }
   function sig(v,u,g,a){ if(v==null) return '<span class="muted">—</span>'; var c=v>=g?'sig-g':(v>=a?'sig-a':'sig-r'); return '<span class="'+c+'">'+v+' '+u+'</span>'; }
   function noise(v){ var n=num(v); if(n==null) return '<span class="muted">—</span>'; var c=n<=-80?'sig-g':(n<=-70?'sig-a':'sig-r'); return '<span class="'+c+'">'+n+' dBm</span>'; }
-  function tile(k,v){ return '<div class="hstat"><div class="hstat-k">'+k+'</div><div class="hstat-v">'+v+'</div></div>'; }
   function load(){
     var badge=document.getElementById('halow-badge'), body=document.getElementById('halow-body');
     if(!badge) return;
@@ -160,23 +159,21 @@ static std::string halow_script_html(const std::string& base) {
       var airbar = air!=null ? '<span class="hbar"><span style="width:'+Math.max(0,Math.min(100,air))+'%"></span></span> ' : '';
       var mcs = (rd.mcs==null||rd.mcs==='') ? 'MCS?' : 'MCS'+esc((''+rd.mcs).replace(/^mcs\s*/i,''));
       var fw = (dv.fw ? esc((''+dv.fw).split(' ')[0]) : '?');
-      var tiles=[
-        tile('Link (sl0)','<span class="badge ok">UP</span> <span class="val">'+esc(d.local)+' &rarr; '+esc(d.peer)+'</span>'),
-        tile('rnsd interface', d.rnsd_up
+      var rows=[
+        ['Link (sl0)','<span class="badge ok">UP</span> <span class="val">'+esc(d.local)+' &rarr; '+esc(d.peer)+'</span>'],
+        ['rnsd interface', d.rnsd_up
           ? '<span class="badge ok">UP</span> <span class="val">'+esc(name)+' &rarr; :'+esc(port)+'</span>'
-          : '<span class="badge warn">DOWN</span> <span class="val">'+esc(name)+'</span>'),
-        tile('Radio','<span class="val">'+unit(rd.freq,'MHz')+' · '+unit(rd.bw,'MHz')+' · '+mcs+'</span>'),
-        tile('TX power','<span class="val">'+unit(rd.power,'dBm')+'</span>'),
-        tile('Airtime', airbar+'<span class="val">'+esc(st.airtime||'?')+'</span>'),
-        tile('Ch. util','<span class="val">'+esc(st.ch_util||'?')+'</span>'),
-        tile('Noise floor', noise(st.noise)),
-        tile('Throughput','<span class="val">&darr; '+esc(st.rx_speed||'?')+' · &uarr; '+esc(st.tx_speed||'?')+'</span>'),
-        tile('Traffic','<span class="val">&darr; '+esc(st.rx_bytes||'?')+' · &uarr; '+esc(st.tx_bytes||'?')+'</span>'),
-        tile('Best peer', b?(sig(num(b.rssi),'dBm',-75,-88)+' · '+sig(num(b.snr),'dB',10,5)):'<span class="muted">none heard</span>'),
-        tile('Neighbours','<span class="val">'+ns.length+'</span>'),
-        tile('Modem','<span class="val">'+esc(dv.temp||'?')+' · fw '+fw+' · up '+esc(dv.uptime||'?')+'</span>'),
+          : '<span class="badge warn">DOWN</span> <span class="val">'+esc(name)+'</span>'],
+        ['Radio','<span class="val">'+unit(rd.freq,'MHz')+' · '+unit(rd.bw,'MHz')+' · '+mcs+' · '+unit(rd.power,'dBm')+'</span>'],
+        ['Airtime', airbar+'<span class="val">'+esc(st.airtime||'?')+'</span> <span class="dim">· ch-util '+esc(st.ch_util||'?')+'</span>'],
+        ['Noise floor', noise(st.noise)],
+        ['Throughput','<span class="val">&darr; '+esc(st.rx_speed||'?')+' · &uarr; '+esc(st.tx_speed||'?')+'</span>'],
+        ['Traffic','<span class="val">&darr; '+esc(st.rx_bytes||'?')+' · &uarr; '+esc(st.tx_bytes||'?')+'</span>'],
+        ['Best peer', b?(sig(num(b.rssi),'dBm',-75,-88)+' · '+sig(num(b.snr),'dB',10,5)):'<span class="muted">none heard</span>'],
+        ['Neighbours','<span class="val">'+ns.length+'</span>'],
+        ['Modem','<span class="val">'+esc(dv.temp||'?')+' · fw '+fw+' · up '+esc(dv.uptime||'?')+'</span>'],
       ];
-      body.innerHTML='<div class="hstats">'+tiles.join('')+'</div>';
+      body.innerHTML='<table class="kv">'+rows.map(function(x){return '<tr><th>'+x[0]+'</th><td>'+x[1]+'</td></tr>';}).join('')+'</table>';
     }).catch(function(){ badge.className='badge warn'; badge.textContent='error';
       body.innerHTML='<p class="muted">Could not read modem status.</p>'; });
   }
@@ -527,7 +524,8 @@ void dashboard_page(const Request& req, Response& res) {
     bool slip_on = slip_enabled(store::read_slip());
 
     // WAN=auto: the card follows the uplink in use (eth0 or the WiFi client).
-    const sysinfo::Iface* wif = find_iface(net, sysinfo::wan_display_iface(wan.interface, net));
+    std::string wan_ifc = sysinfo::wan_display_iface(wan.interface, net);
+    const sysinfo::Iface* wif = find_iface(net, wan_ifc);
     std::string lan_if = sysinfo::lan_iface();
     const sysinfo::Iface* lif = find_iface(net, lan_if);
 
@@ -553,7 +551,7 @@ void dashboard_page(const Request& req, Response& res) {
     std::string temp = "—";
     if (has_temp) {
         char buf[32];
-        snprintf(buf, sizeof(buf), "%.2f &deg;C", temp_c);
+        snprintf(buf, sizeof(buf), "%.0f &deg;C", temp_c);
         temp = buf;
     }
     h = R(std::move(h), "__TEMP__", temp);
@@ -579,6 +577,7 @@ void dashboard_page(const Request& req, Response& res) {
           spct >= 90 ? "crit" : spct >= 75 ? "warn" : "ok");
 
     // WAN card
+    h = R(std::move(h), "__WAN_CARD_HIDDEN__", wan_ifc.empty() ? " hidden" : "");
     h = R(std::move(h), "__WAN__", E(sysinfo::wan_label(wan.interface, net)));
     h = R(std::move(h), "__WAN_STATE__", state_badge(wif));
     h = R(std::move(h), "__WAN_ADDR__", (wif && !wif->addrs.empty()) ? join_esc(wif->addrs) : "(none)");

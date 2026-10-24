@@ -659,12 +659,16 @@ bool add_halow_interface(const std::string& name_in, const std::string& host, in
     if (has(name)) { std::string base = name; int i = 2; while (has(name)) { name = base + " " + std::to_string(i); ++i; } }
     while (!lines.empty() && util::trim(lines.back()).empty()) lines.pop_back();
     lines.push_back("");
-    lines.push_back("  # HaLow RNode modem over the SLIP link — added from the portal.");
-    lines.push_back("  [[" + name + "]]");
-    lines.push_back("    type = TCPClientInterface");
-    lines.push_back("    enabled = yes");
-    lines.push_back("    target_host = " + host);
-    lines.push_back("    target_port = " + std::to_string(port));
+    // The [[section]] header MUST start at column 0: Reticulum's ConfigObj
+    // parser treats an indented [[...]] as a nested subsection of whatever
+    // top-level section precedes it, so rnsd never sees the interface (the
+    // portal's own scanner still did, which made it look configured).
+    lines.push_back("# HaLow RNode modem over the SLIP link — added from the portal.");
+    lines.push_back("[[" + name + "]]");
+    lines.push_back("  type = TCPClientInterface");
+    lines.push_back("  enabled = yes");
+    lines.push_back("  target_host = " + host);
+    lines.push_back("  target_port = " + std::to_string(port));
     std::string o;
     for (const auto& l : lines) o += l + "\n";
     if (!util::write_file_atomic(RETICULUM_CONFIG, o, 0600)) { msg = "write failed"; return false; }  // see write_reticulum_config
