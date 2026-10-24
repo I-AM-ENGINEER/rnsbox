@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       run_id:
-        description: "build-lite run id that holds the rnsbox-lite-image artifact"
+        description: "build run id that holds the rnsbox-image artifact"
         required: true
       version:
         description: "release tag (e.g. r2026.09.22-3667bdb)"
@@ -35,14 +35,14 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out && cd out
-          gh run download "$RID" -R "$GITHUB_REPOSITORY" -n rnsbox-lite-image
-          IMG=$(ls -1 *-lite.img | head -1)
+          gh run download "$RID" -R "$GITHUB_REPOSITORY" -n rnsbox-image
+          IMG=$(ls -1 *.img | head -1)
           echo "image: $IMG"
           xz -T0 -9 -k -f "$IMG"
           sha256sum "$IMG" "$IMG.xz" > SHA256SUMS
           cat SHA256SUMS
           printf '%s\n' \
-            "First RNSBox **lite** image release, built by CI from \`${TGT:0:7}\` (firmware = the 22-patch main series)." \
+            "RNSBox image release, built by CI from \`${TGT:0:7}\` (firmware = the 22-patch main series)." \
             "" \
             "**Flash to a microSD:**" \
             '```bash' \
@@ -53,7 +53,7 @@ jobs:
             "" \
             "_Single-partition image (pre-A/B); the A/B auto-updater is in progress on the \`auto-updater\` branch._" > notes.md
           gh release create "$VER" -R "$GITHUB_REPOSITORY" \
-            --target "$TGT" --title "RNSBox lite $VER" \
+            --target "$TGT" --title "RNSBox $VER" \
             --notes-file notes.md "${IMG}.xz" SHA256SUMS
           echo "published $VER"
 

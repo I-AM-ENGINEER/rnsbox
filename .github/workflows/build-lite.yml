@@ -116,7 +116,7 @@ jobs:
         if: success()
         run: |
           cd /mnt/rnsbox/LicheeRV-Nano-Build/install/soc_sg2002_licheervnano_sd/images
-          IMG=$(ls -1 *-lite.img | tail -1)
+          IMG=$(ls -1 *.img | tail -1)
           echo "compressing $IMG …"
           xz -T0 -9 -k -f "$IMG"
           sha256sum "$IMG" "$IMG.xz" | tee SHA256SUMS
@@ -132,7 +132,7 @@ jobs:
           [ -z "$VER" ] && VER="r$(date -u +%Y.%m.%d)-${GITHUB_SHA:0:7}"
           cd "$IMGDIR"
           printf '%s\n' \
-            "Automated RNSBox **lite** build from \`${GITHUB_SHA:0:7}\` (branch \`${GITHUB_REF_NAME}\`)." \
+            "Automated RNSBox build from \`${GITHUB_SHA:0:7}\` (branch \`${GITHUB_REF_NAME}\`)." \
             "" \
             "Decompress and flash to a microSD:" \
             '```' \
@@ -142,17 +142,17 @@ jobs:
           gh release create "$VER" \
             --repo "${{ github.repository }}" \
             --target "${{ github.sha }}" \
-            --title "RNSBox lite $VER" \
+            --title "RNSBox $VER" \
             --notes-file /tmp/notes.md \
             "${IMG}.xz" SHA256SUMS
           echo "Published release: $VER"
 
-      - name: Upload lite image
+      - name: Upload image
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: rnsbox-lite-image
-          path: /mnt/rnsbox/LicheeRV-Nano-Build/install/soc_sg2002_licheervnano_sd/images/*-lite.img
+          name: rnsbox-image
+          path: /mnt/rnsbox/LicheeRV-Nano-Build/install/soc_sg2002_licheervnano_sd/images/*.img
           if-no-files-found: warn
           retention-days: 7
 

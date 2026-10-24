@@ -69,7 +69,7 @@ index 000000000..55692b2da
 +  follow-up note in [README.RNSBox.md](README.RNSBox.md). The `lite` variant
 +  needs none of this.
 +- Output images land under `install/soc_sg2002_licheervnano_sd/images/`,
-+  suffixed `-dvd` / `-lite`.
++  the default variant has no suffix, dvd is suffixed `-dvd`.
 +
 +## 4. Flash
 +
