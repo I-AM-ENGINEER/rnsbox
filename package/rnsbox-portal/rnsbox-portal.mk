@@ -59,6 +59,15 @@ define RNSBOX_PORTAL_INSTALL_TARGET_CMDS
 	mkdir -p $(TARGET_DIR)/www/qr
 	$(INSTALL) -m 0644 $(@D)/cgi/www/qr/*.svg $(TARGET_DIR)/www/qr/
 	$(INSTALL) -D -m 0755 $(@D)/cgi/helpers/updatecheck.py $(TARGET_DIR)/usr/lib/rnsbox/updatecheck.py
+	# Bundled Reticulum manual: the browser renders the Markdown (marked.js),
+	# so page views cost the box nothing and an update only replaces the .md
+	# files in /www/manual/docs.
+	$(INSTALL) -D -m 0755 $(@D)/cgi/helpers/manual.py $(TARGET_DIR)/usr/lib/rnsbox/manual.py
+	mkdir -p $(TARGET_DIR)/www/manual/docs $(TARGET_DIR)/www/manual/img
+	$(INSTALL) -m 0644 $(@D)/www/manual/marked.min.js $(TARGET_DIR)/www/manual/
+	$(INSTALL) -m 0644 $(@D)/docs/manual/*.md $(TARGET_DIR)/www/manual/docs/
+	$(INSTALL) -m 0644 $(@D)/docs/VERSION $(TARGET_DIR)/www/manual/docs/VERSION
+	$(INSTALL) -m 0644 $(@D)/docs/graphics/*.jpg $(TARGET_DIR)/www/manual/img/
 	# Fallback trust store for boards built without ca-certificates: several
 	# rnsbox images ship an empty /etc/ssl/certs, so every HTTPS check failed.
 	$(INSTALL) -D -m 0644 $(@D)/ca-certificates.crt $(TARGET_DIR)/usr/share/rnsbox-portal/ca-certificates.crt

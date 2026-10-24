@@ -93,6 +93,11 @@ void nomadnet_stream(const http::Request&, http::Response&);       // GET  raw V
 void nomadnet_input(const http::Request&, http::Response&);        // POST raw key bytes -> PTY
 void nomadnet_resize(const http::Request&, http::Response&);       // POST cols/rows -> PTY
 
+// bundled Reticulum manual (Markdown rendered on demand)
+void manual_page(const http::Request&, http::Response&);           // GET  render
+void manual_check(const http::Request&, http::Response&);          // POST PRG
+void manual_download(const http::Request&, http::Response&);       // POST PRG
+
 // settings tab
 void settings_page(const http::Request&, http::Response&);         // GET  render
 void settings_password(const http::Request&, http::Response&);     // POST PRG

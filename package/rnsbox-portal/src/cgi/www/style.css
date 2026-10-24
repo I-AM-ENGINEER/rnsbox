@@ -657,6 +657,51 @@ img.qr {
 textarea.ntp-servers { min-height: 64px; width: 100%; max-width: 520px; }
 .time-actions { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
 form.ntp-restart { margin-top: 8px; }
+
+/* ---- rnsd config editor: textarea over a highlighted <pre> ---- */
+.cfg-editor { position: relative; }
+.cfg-editor textarea,
+.cfg-editor pre {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 430px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.45;
+  white-space: pre;
+  overflow: auto;
+  tab-size: 2;
+}
+.cfg-editor pre {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  overflow: hidden;
+  background: var(--code-bg);
+  color: var(--text);
+  border-color: transparent;
+}
+.cfg-editor textarea {
+  position: relative;
+  z-index: 2;
+  min-height: 430px;
+  resize: vertical;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--text);
+}
+.cfg-editor pre .c { color: var(--muted); }
+.cfg-editor pre .s { color: #b45309; font-weight: 600; }
+.cfg-editor pre .k { color: #0b6bcb; }
+.cfg-editor pre .v { color: #15803d; }
+html[data-theme="dark"] .cfg-editor pre .s { color: #e5c07b; }
+html[data-theme="dark"] .cfg-editor pre .k { color: #61afef; }
+html[data-theme="dark"] .cfg-editor pre .v { color: #98c379; }
 button:disabled, button:disabled:hover { opacity: 0.55; cursor: not-allowed; }
 .btn-primary:disabled:hover { background: var(--primary-2); }
 
@@ -877,3 +922,40 @@ body.term-full .term-wrap {
 .modal-box h3 { margin: 0 0 16px; }
 .modal-box label { display: block; margin-bottom: 12px; }
 .modal-box .form-actions { margin-top: 18px; }
+
+
+/* ---- Bundled Reticulum manual (update card; reading is a static page) ---- */
+.manual-actions { display: flex; gap: 10px; margin: 4px 0 18px; flex-wrap: wrap; align-items: center; }
+.manual-update { color: var(--muted); min-height: 1.4em; }
+
+/* ---- Reticulum manual (Markdown rendered by marked.js in the browser) ---- */
+.manual-bar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 2px 0 16px; }
+.manual-bar .manual-spacer { flex: 1; }
+.manual-update { color: var(--muted); }
+.manual-layout { display: flex; gap: 24px; align-items: flex-start; }
+.manual-nav { width: 230px; flex: 0 0 230px; display: flex; flex-direction: column; gap: 1px; }
+.manual-nav a.item { display: block; padding: 5px 9px; border-radius: 5px; color: var(--muted); font-size: 13.5px; line-height: 1.35; }
+.manual-nav a.item:hover { background: var(--code-bg); color: var(--text); text-decoration: none; }
+.manual-nav a.item.active { background: var(--code-bg); color: var(--text); font-weight: 600; }
+.manual-doc { flex: 1; min-width: 0; font-size: 15px; line-height: 1.65; }
+.manual-doc h1 { margin: 0 0 10px; font-size: 26px; line-height: 1.25; }
+.manual-doc h2 { margin: 30px 0 10px; padding-top: 16px; border-top: 1px solid var(--border); font-size: 20px; }
+.manual-doc h3 { margin: 24px 0 8px; font-size: 17px; }
+.manual-doc h4 { margin: 18px 0 6px; font-size: 15.5px; }
+.manual-doc p { margin: 0 0 13px; }
+.manual-doc ul, .manual-doc ol { margin: 0 0 14px; padding-left: 24px; }
+.manual-doc li { margin: 3px 0; }
+.manual-doc code { background: var(--code-bg); border-radius: 4px; padding: 1px 5px; font-family: var(--mono); font-size: .92em; }
+.manual-doc pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; overflow: auto; margin: 0 0 16px; }
+.manual-doc pre code { background: none; padding: 0; font-size: 12.5px; line-height: 1.5; }
+.manual-doc blockquote { margin: 0 0 16px; padding: 8px 16px; border-left: 3px solid var(--accent); background: var(--code-bg); color: var(--muted); }
+.manual-doc table { border-collapse: collapse; margin: 0 0 18px; font-size: 14px; }
+.manual-doc th, .manual-doc td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+.manual-doc th { background: var(--code-bg); }
+.manual-doc img { max-width: 100%; height: auto; border-radius: 6px; margin: 6px 0 14px; }
+.manual-doc hr { border: 0; border-top: 1px solid var(--border); margin: 26px 0; }
+@media (max-width: 860px) {
+  .manual-layout { display: block; }
+  .manual-nav { width: auto; flex: none; flex-direction: row; flex-wrap: wrap; margin-bottom: 14px; }
+}
+.manual-layout:fullscreen { background: var(--bg); padding: 20px 28px; overflow: auto; }

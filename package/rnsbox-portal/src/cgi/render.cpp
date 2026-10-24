@@ -138,7 +138,7 @@ std::string layout(const http::Request& req, http::Response& res,
         {"__CSSV__",     asset_version()},
     };
     // Active-nav: exactly one id gets "active", the rest collapse to "".
-    static const char* ids[] = {"dashboard", "network", "wifi", "reticulum", "console", "nomadnet", "updates", "echobot", "settings", "donate", "access"};
+    static const char* ids[] = {"dashboard", "network", "wifi", "reticulum", "console", "nomadnet", "manual", "updates", "echobot", "settings", "donate", "access"};
     for (const char* id : ids)
         kv.push_back({std::string("__ACT_") + id + "__",
                       (active && std::string(active) == id) ? "active" : ""});
@@ -149,6 +149,10 @@ std::string layout(const http::Request& req, http::Response& res,
                        cls + "\">NomadNet</a>";
     }
     kv.push_back({"__NAV_NOMADNET__", nav_nomadnet});
+    kv.push_back({"__NAV_MANUAL__",
+                  "<a href=\"" + esc(web::base()) + "/manual\" class=\"" +
+                  std::string((active && std::string(active) == "manual") ? "active" : "") +
+                  "\">Manual</a>"});
     // WiFi and the browser console are router features: on Windows there is
     // no radio and no PTY broker, so their tabs are left out of the nav (the
     // routes answer 503 if something still links to them).

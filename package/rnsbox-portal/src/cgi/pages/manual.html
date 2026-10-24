@@ -1,0 +1,79 @@
+<h2>Reticulum Manual</h2>
+<div class="manual-bar">
+  <span class="muted">version <span class="mono">__DOCS_VERSION__</span></span>
+  <span class="manual-update">__DOCS_UPDATE__</span>
+  <span class="manual-spacer"></span>
+  <form method="post" action="__BASE__/manual/check" class="inline">
+    <button type="submit" class="btn">Check for updates</button>
+  </form>
+  <form method="post" action="__BASE__/manual/download" class="inline">
+    <button type="submit" class="btn-primary">Download</button>
+  </form>
+  <button type="button" class="btn" id="manual-fs">Fullscreen</button>
+</div>
+
+<div class="manual-layout">
+  <nav class="manual-nav" id="manual-nav"></nav>
+  <article class="manual-doc" id="doc"><p class="muted">loading…</p></article>
+</div>
+
+<script src="/manual/marked.min.js"></script>
+<script>
+(function () {
+  var PAGES = [
+    ["index", "Introduction"],
+    ["whatis", "What is Reticulum?"],
+    ["gettingstartedfast", "Getting Started Fast"],
+    ["zen", "Zen of Reticulum"],
+    ["software", "Programs Using Reticulum"],
+    ["using", "Using Reticulum on Your System"],
+    ["understanding", "Understanding Reticulum"],
+    ["hardware", "Communications Hardware"],
+    ["interfaces", "Configuring Interfaces"],
+    ["networks", "Building Networks"],
+    ["distributed", "Distributed Development"],
+    ["git", "Git Over Reticulum"],
+    ["support", "Support Reticulum"],
+    ["examples", "Code Examples"],
+    ["license", "Reticulum License"],
+    ["brandolinis", "Brandolini's Reference"],
+    ["reference", "API Reference"]
+  ];
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c];
+    });
+  }
+  var q = new URLSearchParams(location.search);
+  var page = q.get("page") || "index";
+  if (!PAGES.some(function (p) { return p[0] === page; })) page = "index";
+  var nav = document.getElementById("manual-nav");
+  nav.innerHTML = PAGES.map(function (p) {
+    return '<a class="item' + (p[0] === page ? " active" : "") +
+           '" href="?page=' + p[0] + '">' + esc(p[1]) + "</a>";
+  }).join("");
+  var doc = document.getElementById("doc");
+  var fs = document.getElementById("manual-fs");
+  if (fs) fs.addEventListener("click", function () {
+    var el = document.querySelector(".manual-layout");
+    if (!document.fullscreenElement) {
+      if (el && el.requestFullscreen) el.requestFullscreen();
+    } else if (document.exitFullscreen) {
+      document.exitFullscreen();
+    }
+  });
+  fetch("/manual/docs/" + page + ".md", {cache: "no-cache"}).then(function (r) {
+    if (!r.ok) throw new Error(r.status + " " + r.statusText);
+    return r.text();
+  }).then(function (md) {
+    var html = marked.parse(md, {mangle: false, headerIds: true});
+    html = html.replace(/src="graphics\/([A-Za-z0-9_]+)\.png"/g,
+                        'src="/manual/img/$1.jpg"');
+    html = html.replace(/href="([A-Za-z0-9_-]+)\.md(#[^"]*)?"/g,
+                        function (m, n, a) { return 'href="?page=' + n + (a || "") + '"'; });
+    doc.innerHTML = html;
+  }).catch(function (e) {
+    doc.innerHTML = '<p class="muted">Could not load this page: ' + esc(e.message) + "</p>";
+  });
+})();
+</script>
