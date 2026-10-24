@@ -15,6 +15,11 @@
   var wrap = document.getElementById('term-wrap');
   var statusEl = document.getElementById('term-status');
   var dotEl = document.getElementById('term-dot');
+  // NomadNet is started from its Connect button only; the Console keeps
+  // connecting as soon as the page opens.
+  var autostart = card.getAttribute('data-autostart') !== '0';
+  var connectBtn = document.getElementById('term-connect');
+  var started = autostart;
 
   var darkTheme = {
     background: '#0b141a', foreground: '#d9e7f2', cursor: '#7ee787',
@@ -483,7 +488,8 @@
     sendBytes(encoder.encode(s));
   }, { passive: false });
 
-  document.getElementById('term-reconnect').addEventListener('click', function () {
+  function startConnect() {
+    started = true;
     attempts = 0;
     fast.failed = 0;
     fast.disabled = false;
@@ -496,7 +502,16 @@
     if (streamAbort) { try { streamAbort.abort(); } catch (e) {} }
     connect();
     term.focus();
-  });
+    if (connectBtn) connectBtn.style.display = 'none';
+  }
+  document.getElementById('term-reconnect').addEventListener('click', startConnect);
+  if (connectBtn) {
+    connectBtn.addEventListener('click', startConnect);
+    if (!autostart) {
+      connectBtn.style.display = '';
+      setStatus('disconnected — press Connect', 'warn');
+    }
+  }
   document.getElementById('term-clear').addEventListener('click', function () {
     term.clear();
     term.focus();
@@ -516,12 +531,12 @@
   window.addEventListener('pagehide', leave);
 
   document.addEventListener('visibilitychange', function () {
-    if (!document.hidden && !connected && !closed && !reconnectTimer && !fastTimer) connect();
+    if (!document.hidden && started && !connected && !closed && !reconnectTimer && !fastTimer) connect();
   });
 
   requestAnimationFrame(function () {
     fitNow();
     term.focus();
-    connect();
+    if (autostart) connect();
   });
 })();

@@ -50,6 +50,7 @@
     var nxt = cur === 'dark' ? 'light' : 'dark';
     document.documentElement.setAttribute('data-theme', nxt);
     try { localStorage.setItem('rnsbox-theme', nxt); } catch(e){}
+    document.dispatchEvent(new CustomEvent('rnsbox-theme'));
     label();
   });
   label();

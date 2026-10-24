@@ -49,7 +49,9 @@ static bool write_all_stdout(const char* p, size_t n) {
 // session is selected by that prefix, not by the browser.
 static void term_page(const http::Request& req, http::Response& res,
                       const char* title, const char* active,
-                      const char* api, bool full) {
+                      const char* api, bool full,
+                      bool autostart = true,
+                      const std::string& note = std::string()) {
     if (!web::require_auth(req, res, false)) return;
     const std::string base = web::base();
     std::string h = render::page_file("terminal");
@@ -57,6 +59,8 @@ static void term_page(const http::Request& req, http::Response& res,
     h = web::replace_all(h, "__TERM_JSV__", render::asset_version());
     h = web::replace_all(h, "__TERM_BASE__", render::esc(base));
     h = web::replace_all(h, "__TERM_API__", render::esc(base + api));
+    h = web::replace_all(h, "__TERM_AUTOSTART__", autostart ? "1" : "0");
+    h = web::replace_all(h, "__TERM_NOTE__", note);
     h = web::replace_all(h, "__TERM_HEADING__",
                          full ? std::string()
                               : "<h2>" + render::esc(title) + "</h2>");
@@ -195,24 +199,21 @@ void console_resize(const http::Request& req, http::Response& res) {
     term_resize(req, res, console::SESSION_SHELL);
 }
 
-// rnsbox-mon stops the NomadNet daemon after idle_stop seconds without this
-// file being touched. The page open and the broker's 10 s heartbeat (while a
-// terminal is attached) keep it fresh.
-static void touch_nomadnet_req() {
-    const char* p = "/run/rnsbox-nomadnet.req";
-    int fd = ::open(p, O_WRONLY | O_CREAT | O_CLOEXEC, 0644);
-    if (fd >= 0) ::close(fd);
-    ::utimensat(AT_FDCWD, p, nullptr, 0);
-}
-
 // ---- NomadNet tab: the NomadNet TUI client ----
+// Deliberately NOT started when the page opens: urwid + LXMF on the single
+// C906 is a heavy client, so it starts from the Connect button only.
+static const char* NOMADNET_NOTE =
+    "<p class=\"muted\" style=\"margin:0 0 10px;max-width:80ch\">"
+    "NomadNet substantially loads the CPU. On single-core SoCs it runs "
+    "slowly, and launching it on a 256 MB RAM system is not recommended.</p>";
+
 void nomadnet_page(const http::Request& req, http::Response& res) {
-    touch_nomadnet_req();
-    term_page(req, res, "NomadNet", "nomadnet", "/nomadnet", false);
+    term_page(req, res, "NomadNet", "nomadnet", "/nomadnet", false, false,
+              NOMADNET_NOTE);
 }
 void nomadnet_full_page(const http::Request& req, http::Response& res) {
-    touch_nomadnet_req();
-    term_page(req, res, "NomadNet", "nomadnet", "/nomadnet", true);
+    term_page(req, res, "NomadNet", "nomadnet", "/nomadnet", true, false,
+              NOMADNET_NOTE);
 }
 void nomadnet_stream(const http::Request& req, http::Response& res) {
     term_stream(req, res, console::SESSION_NOMADNET);

@@ -30,7 +30,7 @@ LOG=/var/log/wifi.log
 # LAN bridge). While it exists there is no hotspot to revive or protect — see
 # loop().
 AP_REFUSED=/run/wifi-ap-refused
-GRACE=8          # seconds the STA may be down before we protect the AP
+GRACE=45         # let wpa_supplicant finish a fresh scan/association first
 IDLE_RETRY=30    # seconds between STA reconnect attempts, but only while idle
 STEP=4           # poll interval
 
@@ -96,7 +96,10 @@ loop() {
 			n=$(now_s)
 			if [ $((n - last_retry)) -ge "$IDLE_RETRY" ]; then
 				log "AP idle — trying STA reconnect"
-				wpa reconnect
+				# reconnect alone leaves the network TEMP-DISABLED after
+				# our disconnect; re-enable it explicitly.
+				wpa enable_network 0
+				wpa reassociate
 				last_retry=$n
 			fi
 		fi

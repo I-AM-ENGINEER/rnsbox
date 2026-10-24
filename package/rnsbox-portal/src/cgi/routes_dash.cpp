@@ -257,13 +257,9 @@ static RnsCounts reticulum_counts() {
         c.total = 0;
         c.active = 0;
         for (const json::Value& v : arr->arr) {
-            // rnsd's own RPC plumbing is not a network interface: the shared
-            // server and each client's LocalInterface would inflate both
-            // numbers (the Reticulum tab's count is the configured set).
-            const json::Value* type = v.find("type");
-            if (type && type->is_string() &&
-                (type->str == "LocalServerInterface" || type->str == "LocalClientInterface"))
-                continue;
+            // Count every interface rnsd reports, including its own shared
+            // instance/local clients: the Reticulum tab lists the same set,
+            // so both views show the same total.
             c.total++;
             const json::Value* s = v.find("status");
             if (!s) continue;
@@ -353,9 +349,9 @@ static std::string rnode_card_html(const std::string& base) {
 
     int bw_khz = atoi(rc.bandwidth.c_str()) / 1000;
     char radio[96];
-    snprintf(radio, sizeof(radio), "%.3f MHz · %d kHz · SF%s · CR%s",
+    snprintf(radio, sizeof(radio), "%.3f MHz · %d kHz · SF%s · CR%s · %s dBm",
              atoi(rc.frequency.c_str()) / 1000000.0, bw_khz,
-             rc.spreadingfactor.c_str(), rc.codingrate.c_str());
+             rc.spreadingfactor.c_str(), rc.codingrate.c_str(), rc.txpower.c_str());
 
     auto pct = [](double v) {
         char b[32];
@@ -499,6 +495,9 @@ static std::string wifi_card_html(const std::string& base, const sysinfo::Networ
         ap_rxtx = rx + " / " + tx;
     }
 
+    std::string ap_title = "WiFi AP";
+    if (ap_on && !st.ap.iface.empty()) ap_title += " (" + E(st.ap.iface) + ")";
+
     return "<section class=\"card\" id=\"wifi-sta-card\">\n"
            "  <h3>WiFi STA (wlan0)</h3>\n"
            "  <table class=\"kv\">\n"
@@ -513,7 +512,7 @@ static std::string wifi_card_html(const std::string& base, const sysinfo::Networ
            "  <p class=\"cardfoot\"><a class=\"btn\" href=\"" + base + "/wifi#sta\">Manage &rarr;</a></p>\n"
            "</section>\n"
            "<section class=\"card\" id=\"wifi-ap-card\">\n"
-           "  <h3>WiFi AP</h3>\n"
+           "  <h3>" + ap_title + "</h3>\n"
            "  <table class=\"kv\">\n"
            "    <tr><th>Status</th><td id=\"d-wifi-ap-state\">" + ap_state + "</td></tr>\n"
            "    <tr><th>SSID</th><td id=\"d-wifi-ap-ssid\">" + ap_ssid + "</td></tr>\n"
@@ -662,18 +661,15 @@ void dashboard_page(const Request& req, Response& res) {
     std::string rstat;
     if (rnsd.running) {
         rstat = "<span class=\"badge ok\">RUNNING</span>";
-        if (rcounts.total >= 0) {
-            rstat += " <span class=\"muted\">" + std::to_string(rcounts.active) + "/" +
-                     std::to_string(rcounts.total) + " interfaces &middot; " +
-                     (rcounts.paths >= 0 ? std::to_string(rcounts.paths) : std::string("&mdash;")) +
-                     " destinations</span>";
-        } else {
-            rstat += " <span class=\"muted\">interfaces &mdash; &middot; destinations &mdash;</span>";
-        }
     } else {
         rstat = "<span class=\"badge err\">STOPPED</span>";
     }
     h = R(std::move(h), "__RNSD_STATUS__", rstat);
+    h = R(std::move(h), "__RNSD_IFACES__",
+          rcounts.total >= 0 ? std::to_string(rcounts.active) + " / " + std::to_string(rcounts.total)
+                             : std::string("—"));
+    h = R(std::move(h), "__RNSD_DEST__",
+          rcounts.paths >= 0 ? std::to_string(rcounts.paths) : std::string("—"));
     h = R(std::move(h), "__RNSD_MEM__",
           rnsd.running ? (rnsd.rss_mb > 0 ? std::to_string(rnsd.rss_mb) + " MB" : std::string("—"))
                        : std::string("—"));
