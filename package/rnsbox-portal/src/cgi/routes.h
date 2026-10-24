@@ -49,7 +49,7 @@ void reticulum_halow_ota_status(const http::Request&, http::Response&); // GET J
 void reticulum_halow_ota_online(const http::Request&, http::Response&); // POST JSON
 void reticulum_halow_ota_releases(const http::Request&, http::Response&); // GET JSON (GitHub)
 void reticulum_halow_ota_fetch(const http::Request&, http::Response&);    // POST JSON (download+start)
-int halow_ota_cli(const std::string& path);                             // CLI background
+int halow_ota_cli(const std::string& path, const std::string& peer_ip); // CLI background
 // TCP client interface editor ([[...]] type = TCPClientInterface stanzas)
 void reticulum_tcpclient_add(const http::Request&, http::Response&);    // POST PRG
 void reticulum_tcpclient_update(const http::Request&, http::Response&); // POST PRG

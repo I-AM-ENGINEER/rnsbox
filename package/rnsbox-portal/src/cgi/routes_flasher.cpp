@@ -75,20 +75,23 @@ std::string run_helper(const std::vector<std::string>& args, int timeout_s) {
     return out;
 }
 
+std::string bundled_tag() {
+    std::string meta = util::read_file(
+        "/usr/share/rnsbox-portal/halow-firmware/VERSION", 1024);
+    size_t p = meta.find("tag=");
+    if (p == std::string::npos) return std::string();
+    size_t e = meta.find((char)10, p);
+    return util::trim(meta.substr(p + 4,
+        e == std::string::npos ? std::string::npos : e - p - 4));
+}
+
 }  // namespace
 
 void flasher_page(const Request& req, Response& res) {
     if (!web::require_auth(req, res, false)) return;
     std::string h = render::page_file("flasher");
     h = web::replace_all(std::move(h), "__BASE__", render::esc(web::base()));
-    std::string meta = util::read_file(
-        "/usr/share/rnsbox-portal/halow-firmware/VERSION", 1024);
-    std::string tag;
-    size_t p = meta.find("tag=");
-    if (p != std::string::npos) {
-        size_t e = meta.find((char)10, p);
-        tag = util::trim(meta.substr(p + 4, e == std::string::npos ? std::string::npos : e - p - 4));
-    }
+    std::string tag = bundled_tag();
     h = web::replace_all(std::move(h), "__FLASHER_BUNDLED__",
                          tag.empty() ? std::string("not bundled in this image")
                                      : (tag + " — bundled at build time, works offline"));
@@ -118,6 +121,16 @@ void flasher_action(const Request& req, Response& res) {
     std::string source = req.f("source");          // github | local | factory
     bool factory = (source == "factory");
     bool bundled = (source == "bundled");
+    // The flasher uses the target version for the preflash decision and for
+    // its log; the downloaded image itself usually carries no tag.
+    std::string version = util::trim(req.f("version"));
+    if (version.size() > 40 ||
+        version.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-") != std::string::npos) {
+        res.status = "400 Bad Request";
+        res.body = "{\"ok\":false,\"error\":\"bad firmware version\"}";
+        return;
+    }
+    if (version.empty() && bundled) version = bundled_tag();
 
     if (action == "ip" || action == "reboot" || action == "format") {
         if (transport == "slip") {
@@ -208,6 +221,7 @@ void flasher_action(const Request& req, Response& res) {
         "\"pct\":0,\"error\":\"\",\"log\":[]}\n", 0644);
 
     std::vector<std::string> args = {"flash", iface, mac, fw_path};
+    if (!version.empty()) args.push_back(version);
     pid_t pid = fork();
     if (pid == 0) {
         setsid();
@@ -253,7 +267,7 @@ void flasher_autoupdate(const Request& req, Response& res) {
         return;
     }
     util::RunResult rr = util::run(
-        {"/usr/bin/python3", "/usr/lib/rnsbox/halow_update.py", "status"}, "", 25);
+        {"/usr/bin/python3", "/usr/lib/rnsbox/halow_update.py", "status"}, "", 45);
     std::string out = util::trim(rr.out);
     if (rr.exit_code != 0 || out.empty() || out[0] != '{') {
         res.status = "502 Bad Gateway";

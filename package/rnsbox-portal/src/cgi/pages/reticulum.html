@@ -147,7 +147,6 @@
   })();
   </script>
 
-  __HALOW_OTA__
 </section>
 
 <section class="card"__BT_CARD_STYLE__>
@@ -751,10 +750,10 @@ function doUpdate(action, btn, isInstall){
     // "MCS" and re-add it so a bare index renders identically.
     var mcs = (rd.mcs==null||rd.mcs==='') ? 'MCS?' : 'MCS'+esc((''+rd.mcs).replace(/^mcs\s*/i,''));
     var fw = (dv.fw ? esc((''+dv.fw).split(' ')[0]) : '?');   // "2.3.0 (build…)" -> "2.3.0"
-    function pct(v){ var n=num(v); return n==null ? '<span class="muted">&mdash;</span>' : n.toFixed(2)+' %'; }
+    function pct(v){ var n=num(v); return n==null ? '<span class="muted">&mdash;</span>' : Math.round(n)+' %'; }
     function dbm(v){ var n=num(v); return n==null ? esc(v||'?') : n+' dBm'; }
     cell('halow-status', '<span class="badge ok">UP</span>');
-    cell('halow-addr', net ? (esc(d.peer)+':'+esc(port)) : (esc(d.local)+' &rarr; '+esc(d.peer)));
+    cell('halow-addr', net ? (esc(d.peer)+':'+esc(port)) : esc(d.peer));
     setNote('');
     cell('halow-radio', unit(rd.freq,'MHz')+' · '+unit(rd.bw,'MHz')+' · '+mcs+' · '+unit(rd.power,'dBm'));
     cell('halow-air', pct(st.airtime));

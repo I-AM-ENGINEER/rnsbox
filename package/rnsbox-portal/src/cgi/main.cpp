@@ -330,8 +330,10 @@ int main(int argc, char** argv) {
     // `rnsbox-portal halow-ota <file>` — detached by the HaLow OTA endpoint:
     // reads the assembled image, drives the modem's ota_fw_* API and records
     // progress in /run/rnsbox-halow-ota.json.
+    // An optional peer IP lets the scheduled updater flash any modem on the
+    // LAN, not just the one behind SLIP.
     if (argc >= 3 && strcmp(argv[1], "halow-ota") == 0)
-        return routes::halow_ota_cli(argv[2]);
+        return routes::halow_ota_cli(argv[2], argc >= 4 ? argv[3] : "");
 
     // otherwise: CGI mode (invoked by uhttpd, request in the environment).
     // The request policy and the route table live in dispatch.cpp, shared with

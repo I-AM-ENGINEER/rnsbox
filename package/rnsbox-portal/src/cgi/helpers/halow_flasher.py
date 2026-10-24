@@ -27,6 +27,7 @@ import tarfile
 import threading
 import time
 import urllib.request
+import zlib
 
 ETH_P_OTA = 0x4847
 BROADCAST = "ff:ff:ff:ff:ff:ff"
@@ -72,6 +73,42 @@ def log(msg):
     _log_lines.append(line)
     print(line, flush=True)
 
+
+def _size(n):
+    if n >= 1024 * 1024:
+        return "%.1f MiB" % (n / 1048576.0)
+    if n >= 1024:
+        return "%.1f KiB" % (n / 1024.0)
+    return "%d B" % n
+
+
+def _dur(seconds):
+    sec = int(max(0, round(seconds)))
+    if sec >= 3600:
+        return "%dh %02dm" % (sec // 3600, (sec % 3600) // 60)
+    if sec >= 60:
+        return "%dm %02ds" % (sec // 60, sec % 60)
+    return "%ds" % sec
+
+
+def _progress(stage):
+    """Status writer for flash_raw; adds a log line every 10 percent."""
+    st = {"next": 10, "t0": time.time()}
+
+    def report(done, total):
+        status("running", stage, done, total)
+        pct = (done * 100 // total) if total else 100
+        if pct < st["next"] and done < total:
+            return
+        elapsed = max(0.001, time.time() - st["t0"])
+        rate = done / elapsed
+        eta = (total - done) / rate if rate > 0 else 0
+        log("%s: %d%% (%s / %s), %s/s, ETA %s" %
+            (stage, pct, _size(done), _size(total), _size(rate), _dur(eta)))
+        while pct >= st["next"]:
+            st["next"] += 10
+
+    return report
 
 # ------------------------------------------------------------ raw ethernet ---
 def _mac_bytes(mac):
@@ -487,9 +524,9 @@ def flash_raw(iface, mac, fw, progress=None):
                                            (off, ack["status"]))
                     acked = True
                     break
-                if acked:
-                    break
-                time.sleep(0.08)
+                if attempt < 4:
+                    log("no ACK at offset %d, retrying (%d/5)" % (off, attempt + 1))
+                    time.sleep(0.08)
             if not acked:
                 raise RuntimeError("no ACK for chunk at %d" % off)
             off += len(part)
@@ -611,8 +648,10 @@ def wait_hgic_once(iface, mac, others):
     return None
 
 
-def wait_ip(iface, mac, timeout=80.0, others=()):
-    end = time.time() + timeout
+def wait_ip(iface, mac, timeout=80.0, others=(), note="waiting for the device"):
+    start = time.time()
+    last = start
+    end = start + timeout
     while time.time() < end:
         got = _adopt_target(iface, mac, others, want_kind="rnode-halow")
         if got:
@@ -620,26 +659,35 @@ def wait_ip(iface, mac, timeout=80.0, others=()):
         info = get_ip(iface, mac, tries=1, timeout=0.5)
         if info and info[1] not in ("", "0.0.0.0"):
             return mac, info[1]
+        if time.time() - last >= 10:
+            log("%s (%ds)" % (note, int(time.time() - start)))
+            last = time.time()
         time.sleep(0.4)
     return None, None
 
 
-def _version_major(text):
+def _version_tuple(text):
     m = re.search(r"(?<![0-9.])(\d{1,2})\.(\d{1,2})\.(\d{1,2})(?![0-9.])", text or "")
-    return int(m.group(1)) if m else None
+    return tuple(int(x) for x in m.groups()) if m else None
 
 
-def _target_major(path, fw):
-    name = os.path.basename(path)
-    m = re.search(r"v?(\d+)[._](\d+)[._](\d+)", name)
-    if m:
-        return int(m.group(1))
-    # Local files often have neutral names; the firmware's own version string
-    # is embedded in the image.
-    return _version_major(fw[:512 * 1024].decode("latin-1", "ignore"))
+def _version_major(text):
+    v = _version_tuple(text)
+    return v[0] if v else None
 
 
-def cmd_flash(iface, mac, path, preflash=None, with_tftp=None):
+def _target_version(path, fw, hint=""):
+    # The portal passes the release tag; otherwise the asset/file name may
+    # carry it, and finally the firmware image embeds its own version string.
+    for text in (hint, os.path.basename(path)):
+        m = re.search(r"v?(\d+)[._](\d+)[._](\d+)", text or "")
+        if m:
+            return tuple(int(x) for x in m.groups())
+    return _version_tuple(fw[:512 * 1024].decode("latin-1", "ignore"))
+
+
+def cmd_flash(iface, mac, path, version_hint=""):
+    started = time.time()
     try:
         fd = os.open(LOCK, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         os.close(fd)
@@ -648,44 +696,78 @@ def cmd_flash(iface, mac, path, preflash=None, with_tftp=None):
         return 3
     try:
         status("running", "loading firmware")
-        log("target %s on %s" % (mac, iface))
+        factory_target = os.path.realpath(path) == os.path.realpath(PREFLASH)
+        label = "vendor factory image" if factory_target else "RNode HaLow firmware"
+
         fw, files = load_firmware(path)
         if not fw:
             raise RuntimeError("no firmware image in the uploaded file")
-        # Other devices on this interface must never be mistaken for ours
-        # after a reboot (the preflash can change the target's MAC).
-        others = {d["mac"] for d in scan_iface(iface, packet_cnt=3, sniff=0.3)}
-        others.discard(mac)
+        log("target %s on %s" % (mac, iface))
+        try:
+            mtu = int(open("/sys/class/net/%s/mtu" % iface).read().strip())
+        except OSError:
+            mtu = 1500
+        block = max(512, min(1400, mtu - 22)) & ~3
+        log("interface %s, MTU %d, block %d B" % (iface, mtu, block))
+        log("image: %s, %s, crc32 %08x" %
+            (label, _size(len(fw)), zlib.crc32(fw) & 0xFFFFFFFF))
+        if files:
+            log("filesystem: %d file(s), %s" %
+                (len(files), _size(sum(len(d) for _, d in files))))
 
-        factory_target = os.path.realpath(path) == os.path.realpath(PREFLASH)
-        target_major = _target_major(path, fw)
+        # One probe doubles as the "other devices" blacklist and as the
+        # identity check: our firmware answers 0.0.0.0, a factory unit reports
+        # its vendor version.
+        scan = scan_iface(iface, packet_cnt=3, sniff=0.3)
+        others = {d["mac"] for d in scan}
+        others.discard(mac)
+        kind = next((d["kind"] for d in scan if d["mac"] == mac), None)
+        if kind == "rnode-halow":
+            log("device identifies as RNode HaLow (0.0.0.0)")
+        elif kind:
+            log("device identifies as vendor firmware")
+
+        current_ver, ip = "", ""
+        info = get_ip(iface, mac, tries=2, timeout=0.5)
+        if info and info[1] not in ("", "0.0.0.0"):
+            ip = info[1]
+            st = http_json(ip, "/api/get_stat", timeout=2.0)
+            current_ver = ((st or {}).get("device") or {}).get("ver", "")
+            if current_ver:
+                log("running firmware %s at %s" % (current_ver, ip))
+        current_major = _version_major(current_ver)
+
+        tgt = _target_version(path, fw, version_hint)
+        target_major = tgt[0] if tgt else None
+        if tgt:
+            log("target firmware version %d.%d.%d" % tgt)
+        else:
+            log("target firmware version not advertised")
 
         # Preflash rule (no user switch): the vendor loader is required when
         # the device is not already running our firmware or when the major
         # version changes. Within the same major (2.x -> 2.x) it is skipped.
-        current_major = None
-        if not factory_target:
-            info = get_ip(iface, mac, tries=2, timeout=0.5)
-            if info and info[1] not in ("", "0.0.0.0"):
-                st = http_json(info[1], "/api/get_stat", timeout=2.0)
-                current_major = _version_major(((st or {}).get("device") or {}).get("ver", ""))
         if factory_target:
             need_preflash = False
+            why = "writing the vendor image itself"
         elif current_major is None:
-            need_preflash = True
+            need_preflash = (kind != "rnode-halow")
+            why = ("the device does not identify as RNode" if need_preflash
+                   else "the device already runs RNode firmware")
         else:
-            need_preflash = (target_major is None or target_major != current_major)
-        log("preflash: %s (current major %s, target major %s)" %
-            ("yes" if need_preflash else "no", current_major, target_major))
+            need_preflash = (target_major is not None and target_major != current_major)
+            why = ("major version changes %d -> %d" % (current_major, target_major)
+                   if need_preflash else "same major version %d" % current_major)
+        log("preflash: %s (%s)" % ("yes" if need_preflash else "no", why))
 
         if need_preflash:
             if not os.path.isfile(PREFLASH):
                 raise RuntimeError("bundled preflash image is missing")
             status("running", "preflash (vendor image)")
-            log("flashing vendor preflash image")
             with open(PREFLASH, "rb") as f:
                 vendor = f.read()
-            flash_raw(iface, mac, vendor, lambda d, t: status("running", "preflash", d, t))
+            log("flashing the vendor preflash image (%s)" % _size(len(vendor)))
+            flash_raw(iface, mac, vendor, _progress("preflash"))
             log("vendor image written; rebooting")
             reboot(iface, mac)
             status("running", "waiting for vendor firmware")
@@ -695,40 +777,55 @@ def cmd_flash(iface, mac, path, preflash=None, with_tftp=None):
             if new_mac != mac:
                 log("device MAC changed: %s -> %s" % (mac, new_mac))
                 mac = new_mac
-            log("device is back in HGIC mode; settling")
+            log("device is back in HGIC mode; settling 5 s")
             time.sleep(5.0)
 
         status("running", "flashing firmware", 0, len(fw))
-        log("flashing RNode HaLow firmware (%d bytes)" % len(fw))
-        flash_raw(iface, mac, fw, lambda d, t: status("running", "flashing firmware", d, t))
-        log("firmware written; rebooting")
+        log("flashing %s (%d bytes)" % (label, len(fw)))
+        t0 = time.time()
+        flash_raw(iface, mac, fw, _progress("flashing"))
+        log("image written in %s; rebooting" % _dur(time.time() - t0))
         reboot(iface, mac)
 
         if files:
-            status("running", "waiting for IP")
-            log("waiting for the device to get an IP")
-            mac, ip = wait_ip(iface, mac, 80.0, others)
+            status("running", "waiting for the device")
+            log("waiting for the device to come back")
+            was = mac
+            mac, ip = wait_ip(iface, mac, 80.0, others, "waiting for IP")
             if not ip:
                 raise RuntimeError("device did not get an IP address")
-            log("device IP: %s (MAC %s)" % (ip, mac))
+            if mac != was:
+                log("device MAC is now %s" % mac)
+            log("device is up at %s; formatting LittleFS" % ip)
             status("running", "formatting LittleFS")
-            log("formatting LittleFS")
-            format_lfs(iface, mac)
+            st = format_lfs(iface, mac)
+            if st is None:
+                log("LittleFS did not acknowledge the format; continuing")
+            else:
+                log("LittleFS formatted (status %d)" % st)
             reboot(iface, mac)
-            status("running", "waiting for IP after format")
-            mac, ip = wait_ip(iface, mac, 80.0, others)
+            log("reboot sent; waiting for the device again")
+            mac, ip = wait_ip(iface, mac, 80.0, others, "waiting for IP after format")
             if not ip:
                 raise RuntimeError("device did not get an IP after the format")
+            log("device is up at %s" % ip)
             total = sum(len(d) for _, d in files)
             done = 0
             for name, data in files:
-                status("running", "TFTP: " + name, done, total)
-                log("TFTP upload: %s" % name)
+                log("TFTP %s (%s)" % (name, _size(len(data))))
                 tftp_put(ip, name, data)
                 done += len(data)
-            log("filesystem files uploaded")
+                status("running", "TFTP: " + name, done, total)
+            log("filesystem files uploaded (%s)" % _size(total))
+
+        st = http_json(ip, "/api/get_stat", timeout=2.5) if ip else None
+        ver = ((st or {}).get("device") or {}).get("ver", "")
+        if ver:
+            log("device is running %s at %s" % (ver, ip))
+        elif ip:
+            log("device is up at %s" % ip)
         status("done", "finished", len(fw), len(fw))
-        log("flash done")
+        log("flash done in %s" % _dur(time.time() - started))
     except Exception as exc:  # noqa: BLE001 - report every failure to the page
         status("failed", "failed", error=str(exc))
         log("ERROR: %s" % exc)
@@ -772,7 +869,8 @@ def main(argv):
             print(json.dumps({"ok": st is not None, "status": st}))
         return 0
     if cmd == "flash" and len(argv) >= 5:
-        return cmd_flash(argv[2], argv[3].lower(), argv[4])
+        return cmd_flash(argv[2], argv[3].lower(), argv[4],
+                         argv[5] if len(argv) >= 6 else "")
     print("usage: halow_flasher.py scan|ip|reboot|format|flash", file=sys.stderr)
     return 1
 
