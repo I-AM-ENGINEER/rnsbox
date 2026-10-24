@@ -51,11 +51,13 @@ void console_full_page(const http::Request&, http::Response& res) { unavailable(
 void console_stream(const http::Request&, http::Response& res)    { unavailable(res, "The console"); }
 void console_input(const http::Request&, http::Response& res)     { unavailable(res, "The console"); }
 void console_resize(const http::Request&, http::Response& res)    { unavailable(res, "The console"); }
+void console_ws_token(const http::Request&, http::Response& res)  { unavailable(res, "The console"); }
 void nomadnet_page(const http::Request&, http::Response& res)     { unavailable(res, "NomadNet"); }
 void nomadnet_full_page(const http::Request&, http::Response& res){ unavailable(res, "NomadNet"); }
 void nomadnet_stream(const http::Request&, http::Response& res)   { unavailable(res, "NomadNet"); }
 void nomadnet_input(const http::Request&, http::Response& res)    { unavailable(res, "NomadNet"); }
 void nomadnet_resize(const http::Request&, http::Response& res)   { unavailable(res, "NomadNet"); }
+void nomadnet_ws_token(const http::Request&, http::Response& res) { unavailable(res, "NomadNet"); }
 
 void modem_ui(const http::Request&, http::Response& res)          { unavailable(res, "The HaLow modem page"); }
 void modem_api(const http::Request&, http::Response& res)         { unavailable(res, "The HaLow modem API"); }

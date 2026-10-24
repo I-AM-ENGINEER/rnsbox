@@ -405,6 +405,41 @@ void append_node(std::string& o, const Node& n) {
          ",\"port\":" + number_json(n.has_port, (double)n.port) + "}";
 }
 
+// The store changes only when an announce is validated or updated; cache the
+// rendered JSON keyed on every record's (name, mtime, size). A directory walk
+// plus 114 stat() calls is ~2 ms, while decoding plus re-rendering is ~100 ms
+// on the C906. The cache lives in /run (tmpfs) and is rebuilt on any change.
+constexpr const char* MAP_CACHE = "/run/rnsbox-map-nodes.json";
+constexpr const char* MAP_STAMP = "/run/rnsbox-map-nodes.stamp";
+
+void fnv_str(uint64_t& h, const std::string& s) {
+    for (unsigned char c : s) {
+        h ^= c;
+        h *= 1099511628211ULL;
+    }
+}
+
+std::string store_signature(const std::string& store,
+                            const std::vector<std::string>& names) {
+    uint64_t h = 1469598103934665603ULL;
+    fnv_str(h, store);
+    for (const std::string& name : names) {
+        struct stat st;
+        std::string path = store + "/" + name;
+        if (::stat(path.c_str(), &st) != 0) ::memset(&st, 0, sizeof(st));
+        fnv_str(h, name);
+        char b[96];
+        std::snprintf(b, sizeof(b), "|%lld:%lld:%lld",
+                      (long long)st.st_mtim.tv_sec,
+                      (long long)st.st_mtim.tv_nsec,
+                      (long long)st.st_size);
+        fnv_str(h, b);
+    }
+    char out[32];
+    std::snprintf(out, sizeof(out), "%016llx", (unsigned long long)h);
+    return out;
+}
+
 }  // namespace
 
 std::string map_nodes_body() {
@@ -423,6 +458,18 @@ std::string map_nodes_body() {
     }
     ::closedir(dir);
     std::sort(names.begin(), names.end());
+
+    // RNSBOX_MAP_STORE is the diagnostics/test override; never mix its
+    // output with the cache built from the real store.
+    const bool use_cache = ::getenv("RNSBOX_MAP_STORE") == nullptr;
+    std::string signature;
+    if (use_cache) {
+        signature = store_signature(store, names);
+        std::string stamp = util::trim(util::read_file(MAP_STAMP, 128));
+        std::string cached = util::read_file(MAP_CACHE, 4 * 1024 * 1024);
+        if (stamp == signature && !cached.empty() && cached[0] == '{')
+            return cached;
+    }
 
     std::vector<Node> all;
     std::string first_error;
@@ -470,6 +517,10 @@ std::string map_nodes_body() {
             ",\"store\":\"" + http::json_escape(store) + "\",\"error\":\"";
     body += http::json_escape(out.empty() ? first_error : std::string());
     body += "\"}";
+    if (use_cache) {
+        util::write_file_atomic(MAP_CACHE, body, 0600);
+        util::write_file_atomic(MAP_STAMP, signature, 0600);
+    }
     return body;
 }
 
