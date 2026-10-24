@@ -932,7 +932,7 @@ body.term-full .term-wrap {
 .manual-bar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 2px 0 16px; }
 .manual-bar .manual-spacer { flex: 1; }
 .manual-update { color: var(--muted); }
-.manual-layout { display: flex; gap: 24px; align-items: flex-start; }
+.manual-layout { display: flex; flex-direction: row-reverse; gap: 24px; align-items: flex-start; }
 .manual-nav { width: 230px; flex: 0 0 230px; display: flex; flex-direction: column; gap: 1px; }
 .manual-nav a.item { display: block; padding: 5px 9px; border-radius: 5px; color: var(--muted); font-size: 13.5px; line-height: 1.35; }
 .manual-nav a.item:hover { background: var(--code-bg); color: var(--text); text-decoration: none; }
@@ -959,3 +959,7 @@ body.term-full .term-wrap {
   .manual-nav { width: auto; flex: none; flex-direction: row; flex-wrap: wrap; margin-bottom: 14px; }
 }
 .manual-layout:fullscreen { background: var(--bg); padding: 20px 28px; overflow: auto; }
+.manual-layout { max-width: 100%; }
+.manual-doc { overflow-wrap: break-word; }
+.manual-doc pre { max-width: 100%; }
+.manual-doc table { display: block; max-width: 100%; overflow-x: auto; }
