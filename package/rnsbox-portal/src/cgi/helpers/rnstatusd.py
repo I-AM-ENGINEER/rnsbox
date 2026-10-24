@@ -18,6 +18,7 @@ same document `rnstatus -a -j` prints, so the portal parses both identically.
 import fcntl
 import json
 import os
+import signal
 import socket
 import sys
 import time
@@ -66,7 +67,21 @@ def _jsonable(stats):
     return stats
 
 
+class _Timeout(Exception):
+    pass
+
+
+def _on_alarm(signum, frame):
+    raise _Timeout("RNS call timed out")
+
+
 def main():
+    # rnsd may be restarted (or wedged) while we hold a shared-instance
+    # socket. A blocking recv then never returns and the helper would keep
+    # the socket forever; alarm() turns that into an exception and a clean
+    # exit, after which the portal starts a fresh helper.
+    signal.signal(signal.SIGALRM, _on_alarm)
+
     if _mem_total_kb() < MIN_MEM_KB:
         _note("MemTotal below %d kB; using the CLI fallback" % MIN_MEM_KB)
         return 0
@@ -86,11 +101,14 @@ def main():
 
     started = time.time()
     try:
+        signal.alarm(90)   # a cold import plus a wedged shared instance
         import RNS
         reticulum = RNS.Reticulum(require_shared_instance=True, loglevel=3)
     except Exception as e:
         _note("RNS start failed: %s" % e)
         return 1
+    finally:
+        signal.alarm(0)
 
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
@@ -126,7 +144,12 @@ def main():
                 continue
             now = time.monotonic()
             if cached is None or now - cached_at > QUERY_TTL:
-                cached = json.dumps(_jsonable(reticulum.get_interface_stats()))
+                signal.alarm(10)
+                try:
+                    stats = reticulum.get_interface_stats()
+                finally:
+                    signal.alarm(0)
+                cached = json.dumps(_jsonable(stats))
                 cached_at = now
             conn.sendall(cached.encode("utf-8") + b"\n")
         except Exception as e:
