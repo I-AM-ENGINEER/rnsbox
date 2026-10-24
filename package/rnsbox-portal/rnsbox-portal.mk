@@ -98,6 +98,10 @@ define RNSBOX_PORTAL_INSTALL_TARGET_CMDS
 	$(INSTALL) -D -m 0755 $(@D)/cgi/helpers/rnshaccess.py $(TARGET_DIR)/usr/lib/rnsbox/rnshaccess.py
 	$(INSTALL) -D -m 0755 $(@D)/cgi/helpers/halow.py $(TARGET_DIR)/usr/lib/rnsbox/halow.py
 	$(INSTALL) -D -m 0755 $(@D)/cgi/helpers/halow_fw.py $(TARGET_DIR)/usr/lib/rnsbox/halow_fw.py
+	# Factory/HGIC raw-Ethernet flasher (the portal's HaLow flasher tab) and
+	# the vendor preflash image it restores before writing RNode firmware.
+	$(INSTALL) -D -m 0755 $(@D)/cgi/helpers/halow_flasher.py $(TARGET_DIR)/usr/lib/rnsbox/halow_flasher.py
+	$(INSTALL) -D -m 0644 $(@D)/flasher/preflash.bin $(TARGET_DIR)/usr/share/rnsbox-portal/preflash.bin
 	$(INSTALL) -D -m 0755 $(@D)/cgi/helpers/rnodebridge $(TARGET_DIR)/usr/lib/rnsbox/rnodebridge
 	# S88rnodebridge — ws://:7634 KISS bridge for the embedded RNode flasher;
 	# no-op (and no daemon) unless rnode.conf names a transport.

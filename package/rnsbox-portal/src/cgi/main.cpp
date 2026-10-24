@@ -75,6 +75,8 @@ static const char* const POST_ONLY[] = {
     "/reticulum/rnode",
     "/reticulum/rnode/pair",
     "/map/telemetry",
+    "/flasher/action",
+    "/flasher/fetch",
     "/settings/password",
     "/settings/hostname",
     "/settings/time/browser",

@@ -137,7 +137,7 @@ std::string layout(const http::Request& req, http::Response& res,
         {"__CSSV__",     asset_version()},
     };
     // Active-nav: exactly one id gets "active", the rest collapse to "".
-    static const char* ids[] = {"dashboard", "network", "wifi", "reticulum", "rnode", "map", "console", "nomadnet", "manual", "updates", "echobot", "settings", "donate", "access"};
+    static const char* ids[] = {"dashboard", "network", "wifi", "reticulum", "rnode", "map", "flasher", "console", "nomadnet", "manual", "updates", "echobot", "settings", "donate", "access"};
     for (const char* id : ids)
         kv.push_back({std::string("__ACT_") + id + "__",
                       (active && std::string(active) == id) ? "active" : ""});
@@ -155,7 +155,7 @@ std::string layout(const http::Request& req, http::Response& res,
     // WiFi and the browser console are router features: on Windows there is
     // no radio and no PTY broker, so their tabs are left out of the nav (the
     // routes answer 503 if something still links to them).
-    std::string nav_wifi, nav_console, nav_rnode, nav_map;
+    std::string nav_wifi, nav_console, nav_rnode, nav_map, nav_flasher;
 #ifndef _WIN32
     nav_wifi = "<a href=\"" + esc(web::base()) + "/wifi\" class=\"" +
                std::string((active && std::string(active) == "wifi") ? "active" : "") + "\">WiFi</a>";
@@ -168,11 +168,15 @@ std::string layout(const http::Request& req, http::Response& res,
                 std::string((active && std::string(active) == "rnode") ? "active" : "") + "\">RNode</a>";
     nav_map = "<a href=\"" + esc(web::base()) + "/map\" class=\"" +
               std::string((active && std::string(active) == "map") ? "active" : "") + "\">Map</a>";
+    nav_flasher = "<a href=\"" + esc(web::base()) + "/flasher\" class=\"" +
+                  std::string((active && std::string(active) == "flasher") ? "active" : "") +
+                  "\">HaLow flasher</a>";
 #endif
     kv.push_back({"__NAV_WIFI__", nav_wifi});
     kv.push_back({"__NAV_CONSOLE__", nav_console});
     kv.push_back({"__NAV_RNODE__", nav_rnode});
     kv.push_back({"__NAV_MAP__", nav_map});
+    kv.push_back({"__NAV_FLASHER__", nav_flasher});
     kv.push_back({"__FLASH__", take_flash(req, res)});
     kv.push_back({"__CONTENT__", content});
     return fill(page_file("base"), kv);

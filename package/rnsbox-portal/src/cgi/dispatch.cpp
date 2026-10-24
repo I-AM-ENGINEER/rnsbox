@@ -67,6 +67,8 @@ static const char* const POST_ONLY[] = {
     "/reticulum/rnode",
     "/reticulum/rnode/pair",
     "/map/telemetry",
+    "/flasher/action",
+    "/flasher/fetch",
     "/settings/password",
     "/settings/hostname",
     "/settings/time/browser",
@@ -487,6 +489,11 @@ void handle(const http::Request& req, http::Response& res) {
     else if (p == "/map")                        routes::map_page(req, res);
     else if (p == "/map/nodes")                  routes::map_nodes(req, res);
     else if (p == "/map/telemetry")              routes::map_telemetry(req, res);
+    else if (p == "/flasher")                    routes::flasher_page(req, res);
+    else if (p == "/flasher/scan")               routes::flasher_scan(req, res);
+    else if (p == "/flasher/status")             routes::flasher_status(req, res);
+    else if (p == "/flasher/action")             routes::flasher_action(req, res);
+    else if (p == "/flasher/fetch")              routes::flasher_fetch(req, res);
     else if (p == "/settings")                   routes::settings_page(req, res);
     else if (p == "/settings/password")          routes::settings_password(req, res);
     else if (p == "/settings/hostname")          routes::hostname_set(req, res);
