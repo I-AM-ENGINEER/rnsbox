@@ -102,6 +102,15 @@ define RNSBOX_PORTAL_INSTALL_TARGET_CMDS
 	# the vendor preflash image it restores before writing RNode firmware.
 	$(INSTALL) -D -m 0755 $(@D)/cgi/helpers/halow_flasher.py $(TARGET_DIR)/usr/lib/rnsbox/halow_flasher.py
 	$(INSTALL) -D -m 0644 $(@D)/flasher/preflash.bin $(TARGET_DIR)/usr/share/rnsbox-portal/preflash.bin
+	# Scheduled auto-update (cron) for the HaLow modem: stable releases only,
+	# 3-day soak + random 0..7 days, download at the scheduled moment.
+	$(INSTALL) -D -m 0755 $(@D)/cgi/helpers/halow_update.py $(TARGET_DIR)/usr/lib/rnsbox/halow_update.py
+	$(INSTALL) -D -m 0755 $(@D)/cgi/helpers/rnsbox-halow-update $(TARGET_DIR)/usr/sbin/rnsbox-halow-update
+	# Latest stable RNode HaLow firmware bundled at build time, so the flasher
+	# works with no network (repaired/updated offline).
+	mkdir -p $(TARGET_DIR)/usr/share/rnsbox-portal/halow-firmware
+	$(INSTALL) -m 0644 $(@D)/firmware/halow-fw.tar $(TARGET_DIR)/usr/share/rnsbox-portal/halow-firmware/halow-fw.tar
+	$(INSTALL) -m 0644 $(@D)/firmware/VERSION $(TARGET_DIR)/usr/share/rnsbox-portal/halow-firmware/VERSION
 	$(INSTALL) -D -m 0755 $(@D)/cgi/helpers/rnodebridge $(TARGET_DIR)/usr/lib/rnsbox/rnodebridge
 	# S88rnodebridge — ws://:7634 KISS bridge for the embedded RNode flasher;
 	# no-op (and no daemon) unless rnode.conf names a transport.

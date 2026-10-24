@@ -8,8 +8,10 @@ GitHub release assets: they redirect to a host without CORS headers). Then
     halow_fw.py list
     halow_fw.py fetch <tag> <output-file>
 """
+import datetime
 import json
 import os
+import re
 import ssl
 import sys
 import urllib.request
@@ -34,6 +36,14 @@ def get(url, timeout=30):
         return r.read()
 
 
+def _epoch(iso):
+    try:
+        return int(datetime.datetime.fromisoformat(
+            str(iso).replace("Z", "+00:00")).timestamp())
+    except Exception:
+        return 0
+
+
 def firmware_asset(rel):
     for a in rel.get("assets") or []:
         name = a.get("name", "")
@@ -56,7 +66,20 @@ def releases():
             "asset": asset.get("name", ""),
             "size": int(asset.get("size") or 0),
             "url": asset.get("browser_download_url", ""),
+            "published": _epoch(rel.get("published_at")),
         })
+
+    # GitHub returns releases by creation date, which interleaves betas and
+    # finals (v2.1.1b before v2.2.0b). Sort by the version itself, newest
+    # first; a final release sorts above a beta of the same base version.
+    def vkey(rel):
+        m = re.match(r"^v?(\d+)\.(\d+)\.(\d+)(b?)$", rel["tag"])
+        if not m:
+            return (0, 0, 0, -1)
+        return (int(m.group(1)), int(m.group(2)), int(m.group(3)),
+                1 if not m.group(4) else 0)
+
+    out.sort(key=vkey, reverse=True)
     return out
 
 

@@ -4,7 +4,14 @@
 .fl-dev th { color: var(--muted); font-weight: 600; }
 .fl-dev td.mono { font-family: var(--mono); font-size: 11.5px; }
 .fl-dev tr.sel td { background: var(--hover); }
-.fl-log { margin: 10px 0 0; max-height: 300px; overflow: auto; }
+.fl-src { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-top: 1px solid var(--border); }
+.fl-src:first-child { border-top: 0; }
+.fl-src > label.check { min-width: 155px; margin: 0; }
+.fl-src select { min-width: 240px; }
+.fl-src input[type=file] { flex: 0 1 320px; }
+.fl-log { margin: 10px 0 0; max-height: 280px; overflow: auto; }
+#fl-auto-status { line-height: 1.75; }
+#fl-auto-status .k { display: inline-block; min-width: 150px; color: var(--muted); }
 </style>
 
 <h2>RNode HaLow flasher</h2>
@@ -13,215 +20,271 @@
   <div class="cardhead">
     <h3>Devices</h3>
     <div class="form-actions" style="margin:0">
-      <label class="check" style="margin:0"><input type="checkbox" id="fl-auto" checked> auto-scan</label>
+      <label class="check" style="margin:0"><input type="checkbox" id="fl-auto-scan" checked> auto-scan</label>
       <button type="button" class="btn" onclick="flScan()">Scan now</button>
     </div>
   </div>
   <p class="muted" style="margin-top:0">Factory modems answer the HGIC probe over raw Ethernet;
-    already-flashed RNode modems appear with kind <span class="mono">rnode-halow</span>.
-    The scan runs on every up interface (except loopback/SLIP).</p>
+    RNode modems reachable over SLIP or the LAN are listed with their version and IP.</p>
   <table class="fl-dev" id="fl-devices">
-    <thead><tr><th></th><th>MAC</th><th>Interface</th><th>Kind</th><th>Version</th><th>Chip</th><th>IP</th></tr></thead>
+    <thead><tr><th></th><th>MAC</th><th>Link</th><th>Kind</th><th>Version</th><th>Chip</th><th>IP</th></tr></thead>
     <tbody><tr><td colspan="7" class="muted">Scanning…</td></tr></tbody>
   </table>
 </section>
 
 <section class="card">
   <h3>Firmware</h3>
-  <div class="row-form">
-    <label style="margin:0">GitHub release
-      <select id="fl-release"><option value="">loading…</option></select></label>
+  <div class="fl-src">
+    <label class="check"><input type="radio" name="flsrc" value="github" checked> GitHub release</label>
+    <select id="fl-release"><option value="">loading…</option></select>
     <button type="button" class="btn" onclick="flReleases()">Reload</button>
   </div>
-  <div class="row-form" style="margin-top:8px">
+  <div class="fl-src">
+    <label class="check"><input type="radio" name="flsrc" value="local"> Local file</label>
     <input type="file" id="fl-file" accept=".bin,.tar">
-    <label class="check" style="margin:0"><input type="checkbox" id="fl-preflash" checked>
-      Preflash vendor image first</label>
-    <label class="check" style="margin:0"><input type="checkbox" id="fl-tftp" checked>
-      Upload www/ files (TFTP)</label>
   </div>
-  <div class="form-actions" style="margin-top:10px">
+  <div class="fl-src">
+    <label class="check"><input type="radio" name="flsrc" value="bundled"> Bundled offline</label>
+    <span class="muted" id="fl-bundled">__FLASHER_BUNDLED__</span>
+  </div>
+  <div class="fl-src">
+    <label class="check"><input type="radio" name="flsrc" value="factory"> Factory image</label>
+    <span class="muted">Bundled vendor firmware (txw8301 v2.4.1.3) — restores a factory device</span>
+  </div>
+  <div class="form-actions" style="margin-top:12px">
     <button type="button" class="btn-primary" id="fl-flash" onclick="flFlash()">Flash selected device</button>
-    <button type="button" class="btn" onclick="flAction('ip')">Get IP</button>
-    <button type="button" class="btn" onclick="flAction('reboot')">Reboot</button>
-    <button type="button" class="btn" onclick="flAction('format')">Format LittleFS</button>
+    <button type="button" class="btn" id="fl-reboot" onclick="flReboot()">Reboot</button>
   </div>
-  <p class="muted" id="fl-msg" style="margin:8px 0 0">Local file wins over the GitHub selection; leave it empty to flash the selected release.</p>
+  <p class="muted" style="margin:8px 0 0">www/ files are always uploaded. The vendor preflash runs
+    automatically when the device is factory firmware or when the router firmware's major version
+    changes; within the same major version it is skipped.</p>
+  <p class="muted" id="fl-msg" style="margin:6px 0 0"></p>
   <div class="meter" style="margin-top:8px"><div class="meter-fill" id="fl-bar" style="width:0%"></div></div>
   <pre id="fl-log" class="rnode-out fl-log" hidden></pre>
+</section>
+
+<section class="card">
+  <div class="cardhead">
+    <h3>Automatic updates</h3>
+    <label class="check" style="margin:0"><input type="checkbox" id="fl-auto-upd" onchange="flAutoToggle()">
+      enabled</label>
+  </div>
+  <p class="muted" style="margin-top:0">Stable releases only. As soon as a newer stable release is
+    published it is scheduled for <strong>published + 3 days + a random 0–7 days</strong>. The image is
+    downloaded at that moment, never before.</p>
+  <div id="fl-auto-status" class="muted">checking…</div>
 </section>
 
 <script>
 (function(){
   var BASE = '__BASE__';
-  var busy = false, timer = null;
+  var busy = false, scanBusy = false;
 
   function esc(s){ return (''+(s==null?'':s)).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
   function msg(t){ var e=document.getElementById('fl-msg'); if(e) e.textContent=t; }
   function bar(p){ var e=document.getElementById('fl-bar'); if(e) e.style.width=Math.max(0,Math.min(100,p))+'%'; }
   function log(s){ var e=document.getElementById('fl-log'); if(!e) return;
     if(s){ e.hidden=false; e.textContent=s; } else { e.hidden=true; e.textContent=''; } }
-  function devices(){ return Array.from(document.querySelectorAll('input[name="fldev"]')); }
-  function selected(){
-    var r = document.querySelector('input[name="fldev"]:checked');
-    if (!r) { msg('Select a device first.'); return null; }
-    var p = r.value.split('|');
-    return {iface:p[0], mac:p[1]};
-  }
   function setBusy(b){ busy=b; var e=document.getElementById('fl-flash'); if(e) e.disabled=b; }
+  function source(){ var r=document.querySelector('input[name="flsrc"]:checked'); return r?r.value:'github'; }
+  function selected(){
+    var r=document.querySelector('input[name="fldev"]:checked');
+    if(!r){ msg('Select a device first.'); return null; }
+    var p=r.value.split('|');
+    return {iface:p[0], mac:p[1]||'', transport:(p[2]==='slip'?'slip':'raw')};
+  }
+  function syncReboot(){
+    var d=document.querySelector('input[name="fldev"]:checked');
+    var b=document.getElementById('fl-reboot');
+    if(b) b.disabled = !d || (d.value.split('|')[2]==='slip');
+  }
+  function syncSource(){
+    var src=source(), rel=document.getElementById('fl-release'), file=document.getElementById('fl-file');
+    if(rel) rel.disabled = src!=='github';
+    if(file) file.disabled = src!=='local';
+  }
 
   window.flScan = function(){
-    if (busy) return;
-    fetch(BASE + '/flasher/scan', {credentials:'same-origin', cache:'no-store'})
+    if(busy || scanBusy) return;
+    scanBusy = true;
+    fetch(BASE+'/flasher/scan',{credentials:'same-origin',cache:'no-store'})
       .then(function(r){ return r.json(); }).then(function(j){
-        var tb = document.querySelector('#fl-devices tbody');
-        var ds = (j && j.devices) || [];
-        if (!ds.length) {
-          tb.innerHTML = '<tr><td colspan="7" class="muted">No HaLow device answered.</td></tr>';
-          return;
-        }
-        var sel = document.querySelector('input[name="fldev"]:checked');
-        var selv = sel ? sel.value : '';
-        tb.innerHTML = ds.map(function(d){
-          var v = esc(d.iface) + '|' + esc(d.mac);
-          return '<tr class="' + (v === selv ? 'sel' : '') + '">' +
-            '<td><input type="radio" name="fldev" value="' + v + '"' + (v === selv ? ' checked' : '') + '></td>' +
-            '<td class="mono">' + esc(d.mac) + '</td>' +
-            '<td>' + esc(d.iface) + '</td>' +
-            '<td>' + (d.kind === 'rnode-halow' ? '<span class="badge ok">RNode</span>' : '<span class="badge">factory</span>') + '</td>' +
-            '<td class="mono">' + esc(d.version) + '</td>' +
-            '<td class="mono">' + esc(d.chipid) + '</td>' +
-            '<td class="mono" id="fl-ip-' + esc(d.mac).replace(/:/g,'') + '">—</td></tr>';
+        var tb=document.querySelector('#fl-devices tbody');
+        var ds=(j&&j.devices)||[];
+        scanBusy = false;
+        if(!ds.length){ tb.innerHTML='<tr><td colspan="7" class="muted">No HaLow device answered.</td></tr>';
+          syncReboot(); return; }
+        var sel=document.querySelector('input[name="fldev"]:checked');
+        var selv=sel?sel.value:'';
+        tb.innerHTML=ds.map(function(d){
+          var tr=(d.transport==='slip')?'slip':'raw';
+          var v=esc(d.iface)+'|'+esc(d.mac||'')+'|'+tr;
+          var link=(d.transport==='slip')?'SLIP':esc(d.iface);
+          return '<tr class="'+(v===selv?'sel':'')+'">'+
+            '<td><input type="radio" name="fldev" value="'+v+'"'+(v===selv?' checked':'')+'>'+
+            '<td class="mono">'+esc(d.mac||'—')+'</td>'+
+            '<td>'+link+'</td>'+
+            '<td>'+(d.kind==='rnode-halow'?'<span class="badge ok">RNode</span>':'<span class="badge">factory</span>')+'</td>'+
+            '<td class="mono">'+esc(d.version||'—')+'</td>'+
+            '<td class="mono">'+esc(d.chipid==null?'—':d.chipid)+'</td>'+
+            '<td class="mono">'+esc(d.ip||'—')+'</td></tr>';
         }).join('');
         Array.from(document.querySelectorAll('input[name="fldev"]')).forEach(function(r){
-          r.addEventListener('change', function(){
-            Array.from(document.querySelectorAll('#fl-devices tr')).forEach(function(tr){ tr.classList.remove('sel'); });
-            r.closest('tr').classList.add('sel');
+          r.addEventListener('change',function(){
+            Array.from(document.querySelectorAll('#fl-devices tr')).forEach(function(x){x.classList.remove('sel');});
+            r.closest('tr').classList.add('sel'); syncReboot();
           });
         });
-      }).catch(function(){ msg('Scan failed.'); });
+        syncReboot();
+      }).catch(function(){ scanBusy = false; msg('Scan failed.'); });
   };
 
   window.flReleases = function(){
-    var sel = document.getElementById('fl-release');
-    if (!sel) return;
-    fetch(BASE + '/reticulum/halow/ota/releases', {credentials:'same-origin', cache:'no-store'})
+    var sel=document.getElementById('fl-release');
+    fetch(BASE+'/reticulum/halow/ota/releases',{credentials:'same-origin',cache:'no-store'})
       .then(function(r){ return r.json(); }).then(function(list){
-        if (!Array.isArray(list) || !list.length) { sel.innerHTML = '<option value="">no releases</option>'; return; }
-        sel.innerHTML = list.map(function(x){
-          return '<option value="' + esc(x.tag) + '">' + esc(x.tag) +
-                 (x.prerelease ? ' (beta)' : '') + ' — ' + Math.round((x.size||0)/1024) + ' KiB</option>';
+        if(!Array.isArray(list)||!list.length){ sel.innerHTML='<option value="">no releases</option>'; return; }
+        sel.innerHTML=list.map(function(x){
+          return '<option value="'+esc(x.tag)+'">'+esc(x.tag)+(x.prerelease?' (beta)':'')+
+                 ' — '+Math.round((x.size||0)/1024)+' KiB</option>';
         }).join('');
-      }).catch(function(){ sel.innerHTML = '<option value="">release list failed</option>'; });
-  };
-
-  window.flAction = function(action){
-    var d = selected(); if (!d) return;
-    msg(action === 'ip' ? 'Reading the device IP…' : (action + '…'));
-    var body = 'action=' + encodeURIComponent(action) + '&iface=' + encodeURIComponent(d.iface) +
-               '&mac=' + encodeURIComponent(d.mac);
-    fetch(BASE + '/flasher/action', {method:'POST', credentials:'same-origin',
-      headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:body})
-      .then(function(r){ return r.json(); }).then(function(j){
-        if (action === 'ip') {
-          if (j.ip) {
-            msg('IP: ' + j.ip + (j.version ? ' · ' + j.version : ''));
-            var cell = document.getElementById('fl-ip-' + d.mac.replace(/:/g,''));
-            if (cell) cell.textContent = j.ip;
-          } else {
-            msg(j.error || 'No IP reported (the device may not have DHCP).');
-          }
-          return;
-        }
-        msg(j.error ? ('Failed: ' + j.error) : (action + ' ok'));
-      }).catch(function(e){ msg('Failed: ' + e); });
+      }).catch(function(){ sel.innerHTML='<option value="">release list failed</option>'; });
   };
 
   function uploadLocal(file, done, fail){
-    var CH = 131072, off = 0;
+    var CH=131072, off=0;
     function next(){
-      if (off >= file.size) { done(); return; }
-      fetch(BASE + '/reticulum/halow/ota/chunk?off=' + off,
-            {method:'POST', credentials:'same-origin', body:file.slice(off, Math.min(off+CH, file.size))})
+      if(off>=file.size){ done(); return; }
+      fetch(BASE+'/reticulum/halow/ota/chunk?off='+off,
+            {method:'POST',credentials:'same-origin',body:file.slice(off,Math.min(off+CH,file.size))})
         .then(function(r){ return r.json(); }).then(function(j){
-          if (j.error) throw new Error(j.error);
-          off = j.off;
-          bar(off * 100 / file.size);
-          msg('Uploading ' + Math.floor(off*100/file.size) + '%…');
+          if(j.error) throw new Error(j.error);
+          off=j.off; bar(off*100/file.size); msg('Uploading '+Math.floor(off*100/file.size)+'%…');
           next();
-        }).catch(function(e){ fail(e.message || String(e)); });
+        }).catch(function(e){ fail(e.message||String(e)); });
     }
     next();
   }
 
+  function poll(transport){
+    var url = transport==='slip' ? '/reticulum/halow/ota/status' : '/flasher/status';
+    fetch(BASE+url,{credentials:'same-origin',cache:'no-store'})
+      .then(function(r){ return r.json(); }).then(function(s){
+        if(s.state==='running'||s.state==='starting'){
+          msg((s.stage||'working')+(s.total?' — '+s.pct+'% ('+s.done+'/'+s.total+')':''));
+          bar(s.pct||0);
+          if(s.log) log(s.log.join('\n'));
+          setTimeout(function(){ poll(transport); },1200);
+        } else if(s.state==='done'){
+          bar(100); if(s.log) log(s.log.join('\n'));
+          msg('Flash done'+(s.version?' — '+s.version:'')+'.');
+          setBusy(false); flScan();
+        } else if(s.state==='failed'){
+          if(s.log) log(s.log.join('\n'));
+          msg('Flash failed: '+(s.error||'unknown error'));
+          setBusy(false); flScan();
+        } else { setBusy(false); }
+      }).catch(function(){ setTimeout(function(){ poll(transport); },2500); });
+  }
+
   window.flFlash = function(){
-    if (busy) return;
-    var d = selected(); if (!d) return;
-    var file = document.getElementById('fl-file').files[0];
-    var tag = document.getElementById('fl-release').value;
-    if (!file && !tag) { msg('Choose a GitHub release or a local firmware file.'); return; }
-    if (!confirm('Flash ' + (file ? file.name : tag) + ' to ' + d.mac + '? The device will reboot.')) return;
+    if(busy) return;
+    var d=selected(); if(!d) return;
+    var src=source();
+    var tag=document.getElementById('fl-release').value;
+    var file=document.getElementById('fl-file').files[0];
+    if(src==='github' && !tag){ msg('Choose a GitHub release.'); return; }
+    if(src==='local' && !file){ msg('Choose a local firmware file.'); return; }
+    if(src==='factory' && d.transport==='slip'){ msg('The factory image needs the raw Ethernet path.'); return; }
+    var label = src==='github'?tag : (src==='local'?file.name : 'bundled image');
+    if(!confirm('Flash '+label+' to '+(d.mac||d.iface)+'? The device will reboot.')) return;
     setBusy(true); bar(0); log('');
-    var pre = document.getElementById('fl-preflash').checked;
-    var tftp = document.getElementById('fl-tftp').checked;
 
     function start(){
       msg('Flashing…');
-      var body = 'action=flash&iface=' + encodeURIComponent(d.iface) + '&mac=' + encodeURIComponent(d.mac) +
-                 (pre ? '&preflash=on' : '') + (tftp ? '&tftp=on' : '');
-      fetch(BASE + '/flasher/action', {method:'POST', credentials:'same-origin',
-        headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:body})
+      var body='action=flash&source='+encodeURIComponent(src)+
+               '&transport='+encodeURIComponent(d.transport)+
+               '&iface='+encodeURIComponent(d.iface)+'&mac='+encodeURIComponent(d.mac);
+      fetch(BASE+'/flasher/action',{method:'POST',credentials:'same-origin',
+        headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
         .then(function(r){ return r.json(); }).then(function(j){
-          if (!j.ok) { msg(j.error || 'could not start'); setBusy(false); return; }
-          poll();
-        }).catch(function(e){ msg('Failed: ' + e); setBusy(false); });
+          if(!j.ok){ msg(j.error||'could not start'); setBusy(false); return; }
+          poll(j.transport||d.transport);
+        }).catch(function(e){ msg('Failed: '+e); setBusy(false); });
     }
 
-    if (file) {
-      msg('Uploading ' + file.name + '…');
-      uploadLocal(file, start, function(e){ msg('Upload failed: ' + e); setBusy(false); });
-    } else {
-      msg('Downloading ' + tag + ' on the box…');
-      fetch(BASE + '/flasher/fetch', {method:'POST', credentials:'same-origin',
+    if(src==='bundled' || src==='factory'){ start(); return; }
+    if(src==='github'){
+      msg('Downloading '+tag+' on the box…');
+      fetch(BASE+'/flasher/fetch',{method:'POST',credentials:'same-origin',
         headers:{'Content-Type':'application/x-www-form-urlencoded'},
-        body:'tag=' + encodeURIComponent(tag)})
+        body:'tag='+encodeURIComponent(tag)})
         .then(function(r){ return r.json(); }).then(function(j){
-          if (!j.ok) { msg('Download failed: ' + (j.error || 'unknown')); setBusy(false); return; }
+          if(!j.ok){ msg('Download failed: '+(j.error||'unknown')); setBusy(false); return; }
           start();
-        }).catch(function(e){ msg('Download failed: ' + e); setBusy(false); });
+        }).catch(function(e){ msg('Download failed: '+e); setBusy(false); });
+      return;
     }
+    msg('Uploading '+file.name+'…');
+    uploadLocal(file,start,function(e){ msg('Upload failed: '+e); setBusy(false); });
   };
 
-  function poll(){
-    fetch(BASE + '/flasher/status', {credentials:'same-origin', cache:'no-store'})
-      .then(function(r){ return r.json(); }).then(function(s){
-        if (s.state === 'running' || s.state === 'starting') {
-          msg((s.stage || 'working') + (s.total ? ' — ' + s.pct + '% (' + s.done + '/' + s.total + ')' : ''));
-          bar(s.pct || 0);
-          if (s.log) log(s.log.join('\n'));
-          setTimeout(poll, 1200);
-        } else if (s.state === 'done') {
-          bar(100);
-          if (s.log) log(s.log.join('\n'));
-          msg('Flash done.');
-          setBusy(false); flScan();
-        } else if (s.state === 'failed') {
-          if (s.log) log(s.log.join('\n'));
-          msg('Flash failed: ' + (s.error || 'unknown error'));
-          setBusy(false); flScan();
-        } else {
-          setBusy(false);
-        }
-      }).catch(function(){ setTimeout(poll, 2500); });
+  window.flReboot = function(){
+    var d=selected(); if(!d) return;
+    if(d.transport==='slip'){ msg('Reboot is only available for raw Ethernet devices.'); return; }
+    fetch(BASE+'/flasher/action',{method:'POST',credentials:'same-origin',
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body:'action=reboot&iface='+encodeURIComponent(d.iface)+'&mac='+encodeURIComponent(d.mac)})
+      .then(function(r){ return r.json(); }).then(function(j){ msg(j.ok===false?('Failed: '+j.error):'Reboot sent.'); })
+      .catch(function(e){ msg('Failed: '+e); });
+  };
+
+  function autoRender(s){
+    var box=document.getElementById('fl-auto-status');
+    if(!box) return;
+    var on=document.getElementById('fl-auto-upd');
+    if(on) on.checked=!!s.auto;
+    var rows=[];
+    rows.push(['Installed', esc(s.installed||'unknown')]);
+    rows.push(['Latest stable', esc(s.latest||'unknown')]);
+    if(s.state==='scheduled')
+      rows.push(['Scheduled for', '<strong>'+esc(s.scheduled_iso||'—')+'</strong>']);
+    if(s.state==='current')
+      rows.push(['Status', 'up to date']);
+    if(s.state==='updating')
+      rows.push(['Status', 'updating to '+(s.tag||'?')+' now']);
+    if(s.state==='failed')
+      rows.push(['Status', 'failed'+(s.error?' — '+esc(s.error):'')+(s.scheduled_iso?' · retry '+esc(s.scheduled_iso):'')]);
+    if(s.error && !s.state)
+      rows.push(['GitHub', esc(s.error)]);
+    if(s.eligible_iso && s.state==='scheduled')
+      rows.push(['Soak ends', esc(s.eligible_iso)]);
+    box.innerHTML=rows.map(function(r){ return '<div><span class="k">'+r[0]+'</span>'+r[1]+'</div>'; }).join('');
   }
 
-  function tick(){
-    if (document.getElementById('fl-auto').checked && !busy) flScan();
-    timer = setTimeout(tick, 4000);
-  }
+  window.flAutoStatus = function(){
+    var box=document.getElementById('fl-auto-status');
+    if(box) box.textContent='checking…';
+    fetch(BASE+'/flasher/autoupdate',{credentials:'same-origin',cache:'no-store'})
+      .then(function(r){ return r.json(); }).then(autoRender)
+      .catch(function(){ if(box) box.textContent='status failed'; });
+  };
 
-  flReleases();
-  flScan();
-  timer = setTimeout(tick, 4000);
+  window.flAutoToggle = function(){
+    var on=document.getElementById('fl-auto-upd').checked;
+    fetch(BASE+'/flasher/autoupdate',{method:'POST',credentials:'same-origin',
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body:'enabled='+(on?'on':'off')})
+      .then(function(r){ return r.json(); }).then(function(j){
+        if(j.ok===false) msg(j.error||'could not save');
+        flAutoStatus();
+      }).catch(function(e){ msg('Failed: '+e); });
+  };
+
+  Array.from(document.querySelectorAll('input[name="flsrc"]')).forEach(function(r){
+    r.addEventListener('change',syncSource);
+  });
+  flReleases(); flScan(); flAutoStatus(); syncSource(); syncReboot();
+  setInterval(function(){ if(!busy && document.getElementById('fl-auto-scan').checked) flScan(); }, 5000);
 })();
 </script>

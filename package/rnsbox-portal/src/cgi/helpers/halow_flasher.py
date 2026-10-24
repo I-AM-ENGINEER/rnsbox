@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import queue
 import socket
 import struct
@@ -25,6 +26,7 @@ import sys
 import tarfile
 import threading
 import time
+import urllib.request
 
 ETH_P_OTA = 0x4847
 BROADCAST = "ff:ff:ff:ff:ff:ff"
@@ -277,6 +279,92 @@ def scan_iface(iface, packet_cnt=10, sniff=0.6):
     return found
 
 
+def http_json(ip, path, timeout=2.5):
+    try:
+        req = urllib.request.Request("http://%s%s" % (ip, path),
+                                     headers={"Accept-Encoding": "identity"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode("utf-8", "replace"))
+    except Exception:
+        return None
+
+
+def enrich_devices(raw):
+    """Dedupe by MAC and add the HTTP identity (IP, version, hostname)."""
+    groups = {}
+    for d in raw:
+        groups.setdefault(d["mac"], []).append(d)
+
+    out = []
+    for mac, items in groups.items():
+        d = items[0]
+        ifaces = []
+        for x in items:
+            if x["iface"] not in ifaces:
+                ifaces.append(x["iface"])
+        d["interfaces"] = ifaces
+        d["transport"] = "raw"
+        d.setdefault("ip", "")
+        d["online"] = False
+
+        # GET_IP over any interface the device was seen on.
+        for it in items:
+            info = get_ip(it["iface"], mac, tries=1, timeout=0.45)
+            if info and info[1] not in ("", "0.0.0.0"):
+                d["iface"] = it["iface"]
+                d["ip"] = info[1]
+                break
+
+        if d["ip"]:
+            st = http_json(d["ip"], "/api/get_stat")
+            dev = (st or {}).get("device") or {}
+            if dev:
+                d["online"] = True
+                d["version"] = dev.get("ver", d.get("version", ""))
+                d["hostname"] = dev.get("hostname", "")
+                d["kind"] = "rnode-halow"
+        out.append(d)
+    out.sort(key=lambda x: (x.get("online", False), x.get("version", "")), reverse=True)
+    return out
+
+
+def read_slip():
+    cfg = {"enabled": "no", "peer_ip": "192.168.7.2"}
+    try:
+        for line in open("/etc/rnsbox/slip.conf"):
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            cfg[k.strip()] = v.strip()
+    except OSError:
+        pass
+    return cfg
+
+
+def slip_device():
+    """The modem on the UART/SLIP link (HTTP OTA over the SLIP address)."""
+    cfg = read_slip()
+    if cfg.get("enabled", "no").lower() not in ("yes", "1", "true", "on"):
+        return None
+    peer = cfg.get("peer_ip") or "192.168.7.2"
+    st = http_json(peer, "/api/get_stat", timeout=2.0)
+    dev = (st or {}).get("device") or {}
+    d = {
+        "mac": str(dev.get("mac", "") or "").lower(),
+        "iface": "slip",
+        "transport": "slip",
+        "kind": "rnode-halow",
+        "version": dev.get("ver", ""),
+        "chipid": "",
+        "ip": peer,
+        "hostname": dev.get("hostname", ""),
+        "online": bool(dev),
+        "interfaces": ["slip"],
+    }
+    return d
+
+
 def cmd_scan():
     out, lock = [], threading.Lock()
 
@@ -294,7 +382,27 @@ def cmd_scan():
         t.start()
     for t in ths:
         t.join()
-    print(json.dumps({"devices": out, "interfaces": iter_ifaces()}))
+
+    devices = enrich_devices(out)
+
+    slip = slip_device()
+    if slip:
+        merged = False
+        for d in devices:
+            same_mac = slip["mac"] and d.get("mac") == slip["mac"]
+            same_ip = slip["ip"] and d.get("ip") == slip["ip"]
+            if same_mac or same_ip:
+                d["transport"] = "slip"
+                d["slip_ip"] = slip["ip"]
+                d["online"] = True
+                if slip["version"]:
+                    d["version"] = slip["version"]
+                merged = True
+                break
+        if not merged:
+            devices.append(slip)
+
+    print(json.dumps({"devices": devices, "interfaces": iter_ifaces()}))
 
 
 # ---------------------------------------------------------- device helpers ---
@@ -516,7 +624,22 @@ def wait_ip(iface, mac, timeout=80.0, others=()):
     return None, None
 
 
-def cmd_flash(iface, mac, path, preflash, with_tftp):
+def _version_major(text):
+    m = re.search(r"(?<![0-9.])(\d{1,2})\.(\d{1,2})\.(\d{1,2})(?![0-9.])", text or "")
+    return int(m.group(1)) if m else None
+
+
+def _target_major(path, fw):
+    name = os.path.basename(path)
+    m = re.search(r"v?(\d+)[._](\d+)[._](\d+)", name)
+    if m:
+        return int(m.group(1))
+    # Local files often have neutral names; the firmware's own version string
+    # is embedded in the image.
+    return _version_major(fw[:512 * 1024].decode("latin-1", "ignore"))
+
+
+def cmd_flash(iface, mac, path, preflash=None, with_tftp=None):
     try:
         fd = os.open(LOCK, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         os.close(fd)
@@ -534,7 +657,28 @@ def cmd_flash(iface, mac, path, preflash, with_tftp):
         others = {d["mac"] for d in scan_iface(iface, packet_cnt=3, sniff=0.3)}
         others.discard(mac)
 
-        if preflash:
+        factory_target = os.path.realpath(path) == os.path.realpath(PREFLASH)
+        target_major = _target_major(path, fw)
+
+        # Preflash rule (no user switch): the vendor loader is required when
+        # the device is not already running our firmware or when the major
+        # version changes. Within the same major (2.x -> 2.x) it is skipped.
+        current_major = None
+        if not factory_target:
+            info = get_ip(iface, mac, tries=2, timeout=0.5)
+            if info and info[1] not in ("", "0.0.0.0"):
+                st = http_json(info[1], "/api/get_stat", timeout=2.0)
+                current_major = _version_major(((st or {}).get("device") or {}).get("ver", ""))
+        if factory_target:
+            need_preflash = False
+        elif current_major is None:
+            need_preflash = True
+        else:
+            need_preflash = (target_major is None or target_major != current_major)
+        log("preflash: %s (current major %s, target major %s)" %
+            ("yes" if need_preflash else "no", current_major, target_major))
+
+        if need_preflash:
             if not os.path.isfile(PREFLASH):
                 raise RuntimeError("bundled preflash image is missing")
             status("running", "preflash (vendor image)")
@@ -560,7 +704,7 @@ def cmd_flash(iface, mac, path, preflash, with_tftp):
         log("firmware written; rebooting")
         reboot(iface, mac)
 
-        if with_tftp and files:
+        if files:
             status("running", "waiting for IP")
             log("waiting for the device to get an IP")
             mac, ip = wait_ip(iface, mac, 80.0, others)
@@ -583,9 +727,6 @@ def cmd_flash(iface, mac, path, preflash, with_tftp):
                 tftp_put(ip, name, data)
                 done += len(data)
             log("filesystem files uploaded")
-        elif with_tftp:
-            log("no www/ files in this archive; skipped TFTP")
-
         status("done", "finished", len(fw), len(fw))
         log("flash done")
     except Exception as exc:  # noqa: BLE001 - report every failure to the page
@@ -598,7 +739,8 @@ def cmd_flash(iface, mac, path, preflash, with_tftp):
         except OSError:
             pass
         try:
-            os.unlink(path)
+            if str(path).startswith("/run/"):
+                os.unlink(path)
         except OSError:
             pass
     return 0
@@ -630,8 +772,7 @@ def main(argv):
             print(json.dumps({"ok": st is not None, "status": st}))
         return 0
     if cmd == "flash" and len(argv) >= 5:
-        return cmd_flash(argv[2], argv[3].lower(), argv[4],
-                         "--preflash" in argv, "--tftp" in argv)
+        return cmd_flash(argv[2], argv[3].lower(), argv[4])
     print("usage: halow_flasher.py scan|ip|reboot|format|flash", file=sys.stderr)
     return 1
 

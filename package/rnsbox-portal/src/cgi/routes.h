@@ -129,6 +129,7 @@ void flasher_scan(const http::Request&, http::Response&);          // GET  JSON 
 void flasher_status(const http::Request&, http::Response&);        // GET  JSON progress
 void flasher_action(const http::Request&, http::Response&);        // POST JSON (flash/reboot/ip/format)
 void flasher_fetch(const http::Request&, http::Response&);         // POST JSON (GitHub download)
+void flasher_autoupdate(const http::Request&, http::Response&);    // GET status / POST toggle
 
 // Map tab: announced nodes with coordinates (offline render)
 void map_page(const http::Request&, http::Response&);              // GET  render

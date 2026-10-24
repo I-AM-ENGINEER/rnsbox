@@ -494,6 +494,7 @@ void handle(const http::Request& req, http::Response& res) {
     else if (p == "/flasher/status")             routes::flasher_status(req, res);
     else if (p == "/flasher/action")             routes::flasher_action(req, res);
     else if (p == "/flasher/fetch")              routes::flasher_fetch(req, res);
+    else if (p == "/flasher/autoupdate")         routes::flasher_autoupdate(req, res);
     else if (p == "/settings")                   routes::settings_page(req, res);
     else if (p == "/settings/password")          routes::settings_password(req, res);
     else if (p == "/settings/hostname")          routes::hostname_set(req, res);

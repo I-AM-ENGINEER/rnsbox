@@ -1,0 +1,12 @@
+#!/bin/sh
+# Cron entry for the scheduled HaLow firmware updater. Exits before spawning
+# Python when automatic updates are disabled, so the hourly tick is free.
+CONF=/etc/rnsbox/halow_update.conf
+[ -r "$CONF" ] || exit 0
+auto=$(sed -n 's/^[[:space:]]*auto[[:space:]]*=[[:space:]]*//p' "$CONF" 2>/dev/null \
+	| tail -1 | tr -d ' \r"')
+case "$auto" in
+	yes|true|1|on) ;;
+	*) exit 0 ;;
+esac
+exec /usr/bin/python3 /usr/lib/rnsbox/halow_update.py tick

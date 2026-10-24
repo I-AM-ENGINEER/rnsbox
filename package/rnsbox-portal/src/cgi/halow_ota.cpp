@@ -82,6 +82,20 @@ std::string b64(const unsigned char* p, size_t n) {
 }
 
 struct Range { uint64_t off = 0, size = 0; };
+struct FileRange { std::string name; uint64_t off = 0, size = 0; };
+
+std::string norm_name(std::string n) {
+    while (n.rfind("./", 0) == 0) n = n.substr(2);
+    while (!n.empty() && n[0] == '/') n = n.substr(1);
+    return n;
+}
+
+bool safe_rel(const std::string& n) {
+    if (n.empty() || n.size() > 180 || n.find("..") != std::string::npos) return false;
+    for (unsigned char c : n)
+        if (c < 0x20 || c == 0x5C || c == '"') return false;
+    return true;
+}
 
 bool ends_with(const std::string& s, const char* suffix) {
     size_t n = strlen(suffix);
@@ -89,38 +103,49 @@ bool ends_with(const std::string& s, const char* suffix) {
 }
 
 // Raw image, or the fw.bin member of an ota.tar (ustar at offset 257).
-bool firmware_range(FILE* f, uint64_t file_size, Range& out) {
+bool scan_image(FILE* f, uint64_t file_size, Range& fw,
+                std::vector<FileRange>& files) {
+    files.clear();
     char magic[6];
     if (file_size < 512 || fseeko(f, 257, SEEK_SET) != 0 ||
         fread(magic, 1, 5, f) != 5) {
-        out.off = 0; out.size = file_size; return file_size > 0;
+        fw.off = 0; fw.size = file_size;
+        return file_size > 0;
     }
     magic[5] = '\0';
     if (strncmp(magic, "ustar", 5) != 0) {
-        out.off = 0; out.size = file_size;
+        fw.off = 0; fw.size = file_size;
         return file_size > 0;
     }
+    bool have_fw = false;
     uint64_t pos = 0;
     char hdr[512];
     while (pos + 512 <= file_size) {
-        if (fseeko(f, (off_t)pos, SEEK_SET) != 0) return false;
-        if (fread(hdr, 1, 512, f) != 512) return false;
+        if (fseeko(f, (off_t)pos, SEEK_SET) != 0) break;
+        if (fread(hdr, 1, 512, f) != 512) break;
         if (hdr[0] == '\0') break;
-        char name[101];
-        memcpy(name, hdr, 100);
-        name[100] = '\0';
+        char raw[101];
+        memcpy(raw, hdr, 100);
+        raw[100] = '\0';
+        std::string name = norm_name(raw);
         char size_s[13];
         memcpy(size_s, hdr + 124, 12);
         size_s[12] = '\0';
-        uint64_t sz = strtoull(size_s, nullptr, 8);
-        if (ends_with(name, "fw.bin") || ends_with(name, "/fw.bin")) {
-            out.off = pos + 512;
-            out.size = sz;
-            return sz > 0 && out.off + sz <= file_size;
+        uint64_t sz = std::strtoull(size_s, nullptr, 8);
+        uint64_t data = pos + 512;
+        if (data + sz <= file_size && sz > 0) {
+            if (name == "fw.bin") {
+                fw.off = data; fw.size = sz; have_fw = true;
+            } else if (name.rfind("www/", 0) == 0 && safe_rel(name)) {
+                FileRange fr;
+                fr.name = name.substr(4);      // /www/<relative>
+                fr.off = data; fr.size = sz;
+                files.push_back(fr);
+            }
         }
         pos += 512 + ((sz + 511) & ~511ull);
     }
-    return false;
+    return have_fw;
 }
 
 bool crc_of(FILE* f, const Range& r, uint32_t& crc) {
@@ -159,6 +184,9 @@ int halow_ota_cli(const std::string& path) {
 #else
     store::SlipConfig sl = store::read_slip();
     std::string peer = sl.peer_ip.empty() ? "192.168.7.2" : sl.peer_ip;
+    // Only uploads under /run are ours to delete; a bundled firmware file
+    // under /usr/share must survive for offline re-flashing.
+    const bool ephemeral = path.rfind("/run/", 0) == 0;
 
     // One updater at a time.
     int lock = open(OTA_LOCK, O_WRONLY | O_CREAT | O_EXCL, 0600);
@@ -176,12 +204,13 @@ int halow_ota_cli(const std::string& path) {
     fseeko(f, 0, SEEK_SET);
 
     Range r;
-    if (size == 0 || size > OTA_MAX || !firmware_range(f, size, r) || r.size == 0) {
+    std::vector<FileRange> files;
+    if (size == 0 || size > OTA_MAX || !scan_image(f, size, r, files) || r.size == 0) {
         fclose(f);
         status("failed", "image", 0, size,
                "no firmware image found (use a raw .bin, or an ota.tar with fw.bin)", "");
         unlink(OTA_LOCK);
-        unlink(path.c_str());
+        if (ephemeral) unlink(path.c_str());
         return 1;
     }
 
@@ -190,11 +219,65 @@ int halow_ota_cli(const std::string& path) {
     if (!crc_of(f, r, crc)) {
         fclose(f);
         status("failed", "checksum", 0, r.size, "cannot read the firmware image", "");
-        unlink(OTA_LOCK); unlink(path.c_str());
+        unlink(OTA_LOCK); if (ephemeral) unlink(path.c_str());
         return 1;
     }
 
     std::string resp, err;
+
+    // Bundle www/ files are part of the update: format the LittleFS and upload
+    // each file before the firmware (the order the modem's own UI uses).
+    if (!files.empty()) {
+        auto fail = [&](const std::string& why) {
+            fclose(f);
+            status("failed", "www", 0, r.size, why, "");
+            unlink(OTA_LOCK);
+            if (ephemeral) unlink(path.c_str());
+        };
+        status("running", "wipe www", 0, r.size, "", "");
+        if (!modem::post(peer, "ota_wipe_lfs", "{}", resp, 30)) {
+            fail("the modem refused ota_wipe_lfs (is the link up?)");
+            return 1;
+        }
+        uint64_t www_total = 0, www_done = 0;
+        for (const auto& fr : files) www_total += fr.size;
+        unsigned char fbuf[OTA_CHUNK];
+        for (const auto& fr : files) {
+            Range rr;
+            rr.off = fr.off; rr.size = fr.size;
+            uint32_t fc = 0;
+            if (!crc_of(f, rr, fc)) { fail(std::string("cannot read ") + fr.name); return 1; }
+            status("running", (std::string("www: ") + fr.name).c_str(), www_done, www_total, "", "");
+            std::string begin = std::string("{\"path\":\"/www/") + http::json_escape(fr.name) +
+                                "\",\"size\":" + std::to_string(fr.size) +
+                                ",\"crc32\":" + std::to_string(fc) + "}";
+            if (!modem::post(peer, "ota_file_begin", begin, resp, 20)) {
+                fail(std::string("the modem refused ") + fr.name);
+                return 1;
+            }
+            if (fseeko(f, (off_t)fr.off, SEEK_SET) != 0) { fail("seek failed"); return 1; }
+            uint64_t off = 0;
+            while (off < fr.size) {
+                size_t n = (size_t)((fr.size - off) < OTA_CHUNK ? (fr.size - off) : OTA_CHUNK);
+                if (fread(fbuf, 1, n, f) != n) { fail("read failed"); return 1; }
+                std::string j = "{\"b64\":\"" + b64(fbuf, n) + "\"}";
+                bool sent = false;
+                for (int attempt = 0; attempt < 3 && !sent; ++attempt) {
+                    if (attempt) usleep(80000u << attempt);
+                    sent = modem::post(peer, "ota_file_chunk", j, resp, 6);
+                }
+                if (!sent) { fail(std::string("chunk of ") + fr.name + " was not accepted"); return 1; }
+                off += n;
+                www_done += n;
+                status("running", (std::string("www: ") + fr.name).c_str(), www_done, www_total, "", "");
+            }
+            if (!modem::post(peer, "ota_file_end", "{}", resp, 30)) {
+                fail(std::string("the modem rejected ") + fr.name + " (CRC mismatch)");
+                return 1;
+            }
+        }
+    }
+
     status("running", "start", 0, r.size, "", "");
     if (!modem::post(peer, "ota_fw_begin",
                      "{\"size\":" + std::to_string(r.size) +
@@ -202,7 +285,7 @@ int halow_ota_cli(const std::string& path) {
         fclose(f);
         status("failed", "start", 0, r.size,
                "the modem did not accept ota_fw_begin (is the link up?)", "");
-        unlink(OTA_LOCK); unlink(path.c_str());
+        unlink(OTA_LOCK); if (ephemeral) unlink(path.c_str());
         return 1;
     }
 
@@ -213,7 +296,7 @@ int halow_ota_cli(const std::string& path) {
     if (fseeko(f, (off_t)r.off, SEEK_SET) != 0) {
         fclose(f);
         status("failed", "upload", 0, r.size, "seek failed", "");
-        unlink(OTA_LOCK); unlink(path.c_str());
+        unlink(OTA_LOCK); if (ephemeral) unlink(path.c_str());
         return 1;
     }
     while (off < r.size) {
@@ -221,7 +304,7 @@ int halow_ota_cli(const std::string& path) {
         if (fread(buf, 1, n, f) != n) {
             fclose(f);
             status("failed", "upload", off, r.size, "read failed", "");
-            unlink(OTA_LOCK); unlink(path.c_str());
+            unlink(OTA_LOCK); if (ephemeral) unlink(path.c_str());
             return 1;
         }
         std::string json = "{\"off\":" + std::to_string(off) +
@@ -235,7 +318,7 @@ int halow_ota_cli(const std::string& path) {
             fclose(f);
             status("failed", "upload", off, r.size,
                    "chunk at offset " + std::to_string(off) + " was not accepted", "");
-            unlink(OTA_LOCK); unlink(path.c_str());
+            unlink(OTA_LOCK); if (ephemeral) unlink(path.c_str());
             return 1;
         }
         off += n;
@@ -251,7 +334,7 @@ int halow_ota_cli(const std::string& path) {
     if (!modem::post(peer, "ota_fw_end", "{}", resp, 120)) {
         status("failed", "verify", r.size, r.size,
                "the modem rejected the image (CRC mismatch or flash write error)", "");
-        unlink(OTA_LOCK); unlink(path.c_str());
+        unlink(OTA_LOCK); if (ephemeral) unlink(path.c_str());
         return 1;
     }
 
@@ -273,7 +356,7 @@ int halow_ota_cli(const std::string& path) {
     }
     status("done", "finished", r.size, r.size, "", version);
     unlink(OTA_LOCK);
-    unlink(path.c_str());
+    if (ephemeral) unlink(path.c_str());
     return 0;
 #endif
 }
