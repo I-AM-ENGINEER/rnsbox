@@ -109,5 +109,9 @@ genimage \
 	--outputpath "${BINARIES_DIR}" \
 	--config "${GENIMAGE_CFG}"
 
+# The CI packaging step names release assets after the board; genimage's
+# generic sdcard.img would otherwise ship as "rnsbox-sdcard.img".
+mv -f "${BINARIES_DIR}/sdcard.img" "${BINARIES_DIR}/rnsbox-rpi-universal.img"
+
 rm -rf "${ROOTPATH_TMP}"
 trap - EXIT

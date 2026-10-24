@@ -92,6 +92,18 @@ Build host: a Linux machine set up for Buildroot (the upstream repo's
   modem's own web UI reverse-proxied through the portal login. Off by default.
 - Optional **LXMF propagation node** (`lxmd`, off by default) for
   store-and-forward Reticulum message routing.
+- **BLE transport, both roles.** The box advertises a Reticulum GATT service
+  and scans for phones that only advertise (Columba/Sideband). The same
+  adapter optionally exposes an **RNode-over-BLE** endpoint (Nordic UART
+  Service): pair the phone, pick the box as an RNode, and its packets are
+  bridged into the local Reticulum transport — useful for a portable node.
+  The **RNode** tab drives `rnodeconf` for attached USB modems (info, config,
+  live counters, display framebuffer, Bluetooth pairing) and links the
+  [RNode HaLow firmware](https://github.com/I-AM-ENGINEER/RNode_Halow_Firmware).
+- **Map tab.** Reticulum interface-discovery announces that carry coordinates
+  are collected by `rnsd` and drawn on a bundled offline world outline; the
+  data lives on flash, the browser renders it, and nothing is fetched from
+  the internet.
 
 The design goal throughout is a minimal OS: the stock board middleware
 (camera / display / audio / NPU / codec) is stripped so nearly all of the
