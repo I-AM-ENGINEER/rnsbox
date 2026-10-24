@@ -1,5 +1,6 @@
-// rnsbox-mon — one small daemon for the three periodic jobs that used to be
-// three BusyBox shell loops (S46memwatch, S47memlog, S83rnsstatus).
+// rnsbox-mon — one small daemon for the periodic jobs that used to be
+// BusyBox shell loops (S46memwatch, S47memlog, S83rnsstatus) plus the BLE
+// peers cache.
 //
 // Each shell loop kept ~0.4-1 MB RSS just by living (a BusyBox ash retains
 // its heap after running pipelines every 30 s). On a 64 MB target that was
@@ -17,6 +18,10 @@
 //   * rnstatus warm (every 60 s, 10 s while the cache is still empty):
 //     run `rnsbox-portal rnstatus-refresh` at nice 10, single-flight via
 //     /run/rnsstatus.lock.
+//   * BLE peers cache (every 30 s idle, every 5 s while a portal page is
+//     polling /reticulum/bluetooth/peers): rebuild the connected-device list
+//     with a 60 s grace period, so a transient disconnect does not make the
+//     dashboard row blink.
 //
 // The on-disk log format is unchanged from S47memlog, so existing analysis
 // keeps working.
@@ -45,17 +50,22 @@
 #define MEMLOG_CONF  "/etc/rnsbox/memlog.conf"
 #define RNSTATUS_CACHE "/run/rnsbox-rnstatus-v2.json"
 #define RNSTATUS_LOCK  "/run/rnsstatus.lock"
+#define BT_PEERS_REQ   "/run/rnsbox-bt-peers.req"
 
 #define MEMWATCH_INTERVAL 30
 #define MEMWATCH_COOLDOWN 600
 #define MEMWATCH_MIN_UPTIME 120
 #define RNSTATUS_INTERVAL 60
 #define RNSTATUS_RETRY 10
+#define BT_PEERS_INTERVAL 30
+#define BT_PEERS_FAST 5
 
 static volatile sig_atomic_t g_stop = 0;
 static int g_log_fd = -1;
 static char g_log_path[256];
 static pid_t g_rn_pid = -1;
+static pid_t g_bt_pid = -1;
+static long g_bt_last = 0;
 
 static void on_signal(int sig) { (void)sig; g_stop = 1; }
 
@@ -450,6 +460,32 @@ static void restart_rnsd(int used, int threshold) {
     syslog(LOG_NOTICE, "rnsd restarted; RAM now %d%%", mem_used_pct(&m));
 }
 
+static int start_bt_refresh(void) {
+    if (g_bt_pid > 0) {
+        int st = 0;
+        pid_t r = waitpid(g_bt_pid, &st, WNOHANG);
+        if (r == 0) return 0;               // previous poll still running
+        g_bt_pid = -1;
+    }
+    pid_t pid = fork();
+    if (pid == 0) {
+        setsid();
+        setpriority(PRIO_PROCESS, 0, 10);
+        (void)chdir("/");
+        int nul = open("/dev/null", O_RDWR);
+        if (nul >= 0) {
+            dup2(nul, 0); dup2(nul, 1); dup2(nul, 2);
+            if (nul > 2) close(nul);
+        }
+        execl("/usr/sbin/rnsbox-portal", "rnsbox-portal", "bt-peers-refresh",
+              (char*)NULL);
+        _exit(127);
+    }
+    if (pid <= 0) return 0;
+    g_bt_pid = pid;
+    return 1;
+}
+
 static void start_refresh(void) {
     if (g_rn_pid > 0) {
         int st = 0;
@@ -502,6 +538,7 @@ int main(int argc, char** argv) {
     long next_watch = mono_s() + MEMWATCH_INTERVAL;
     long next_log = mono_s() + 1;          // first sample right away
     long next_rn = mono_s() + 5;
+    long next_bt = mono_s() + 2;
 
     while (!g_stop) {
         long now = mono_s();
@@ -564,6 +601,23 @@ int main(int argc, char** argv) {
             start_refresh();
         }
 
+        {
+            struct stat st;
+            int fast = stat(BT_PEERS_REQ, &st) == 0 &&
+                       now_s() - (long)st.st_mtime <= 15;
+            if (now >= next_bt) {
+                next_bt = now + (fast ? BT_PEERS_FAST : BT_PEERS_INTERVAL);
+                if (start_bt_refresh()) g_bt_last = now;
+            } else if (fast && now - g_bt_last >= BT_PEERS_FAST) {
+                // A portal page just opened: tighten the cadence without
+                // waiting for the idle 30 s timer to elapse.
+                if (start_bt_refresh()) {
+                    g_bt_last = now;
+                    next_bt = now + BT_PEERS_FAST;
+                }
+            }
+        }
+
         struct timespec ts = {0, 200 * 1000 * 1000};
         nanosleep(&ts, NULL);
     }
@@ -571,6 +625,10 @@ int main(int argc, char** argv) {
     if (g_rn_pid > 0) {
         kill(g_rn_pid, SIGTERM);
         waitpid(g_rn_pid, NULL, 0);
+    }
+    if (g_bt_pid > 0) {
+        kill(g_bt_pid, SIGTERM);
+        waitpid(g_bt_pid, NULL, 0);
     }
     rmdir(RNSTATUS_LOCK);
     if (g_log_fd >= 0) close(g_log_fd);

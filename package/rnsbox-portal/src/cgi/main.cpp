@@ -297,6 +297,10 @@ int main(int argc, char** argv) {
     // cache after rnsd is up, so the first page load does not block on it).
     if (argc >= 2 && strcmp(argv[1], "rnstatus-refresh") == 0)
         return routes::rnstatus_prewarm() ? 0 : 1;
+    // `rnsbox-portal bt-peers-refresh` (rnsbox-mon / the peers endpoint):
+    // update the connected-device cache in the background.
+    if (argc >= 2 && strcmp(argv[1], "bt-peers-refresh") == 0)
+        return routes::bt_peers_refresh() ? 0 : 1;
 
     // otherwise: CGI mode (invoked by uhttpd, request in the environment).
     // The request policy and the route table live in dispatch.cpp, shared with

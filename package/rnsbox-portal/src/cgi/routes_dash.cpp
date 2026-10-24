@@ -186,7 +186,7 @@ static std::string halow_script_html(const std::string& base) {
 static std::string ble_card_html(const std::string& base) {
     std::string traffic = "<span class=\"muted\">no data yet</span>";
     std::string ttx, trx;
-    if (rnstatus_interface_traffic("BLE", ttx, trx))
+    if (ble_traffic_stats(ttx, trx) || rnstatus_interface_traffic("BLE", ttx, trx))
         traffic = "&uarr; " + E(ttx) + " &nbsp; &darr; " + E(trx);
     std::string s = R"HTML(<section class="card" id="ble-card">
     <h3>Bluetooth (BLE)</h3>
@@ -223,7 +223,7 @@ static std::string ble_card_html(const std::string& base) {
       });
     }
     blePeers();
-    setInterval(blePeers, 8000);
+    setInterval(blePeers, 5000);
   })();
   </script>)HTML";
     s = web::replace_all(std::move(s), "__BASE__", base);

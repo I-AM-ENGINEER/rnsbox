@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <utime.h>
 #include <map>
 #include <string>
 #include <utility>
@@ -396,9 +397,12 @@ static bool bt_installed() {
     return ::access("/etc/reticulum/interfaces/BLEInterface.py", F_OK) == 0;
 }
 
-static std::string bt_status_html(const BtState& b) {
-    // The badge the operator needs: is BLE advertising right now.
+static std::string bt_status_html(const BtState& b, bool enabled) {
+    // Two independent facts: is the transport enabled in the config, and is
+    // the BlueZ stack usable? Never report "advertising" for a disabled
+    // interface just because bluetoothd happens to be running.
     if (!b.stack) return "<span class=\"badge\">no Bluetooth stack</span>";
+    if (!enabled) return "<span class=\"badge\">disabled</span>";
     if (!b.hci)   return "<span class=\"badge warn\">no adapter</span>";
     if (!b.dbus || !b.daemon) return "<span class=\"badge warn\">BlueZ not running</span>";
     return "<span class=\"badge ok\">advertising</span>";
@@ -707,7 +711,7 @@ void reticulum_page(const Request& req, Response& res) {
     h = R(std::move(h), "__BT_FORM_BLOCK__", bt_form);
     h = R(std::move(h), "__BT_CARD_STYLE__",
           bt_installed() ? "" : " style=\"display:none\"");
-    h = R(std::move(h), "__BT_STACK_STATUS__", bt_status_html(bt));
+    h = R(std::move(h), "__BT_STACK_STATUS__", bt_status_html(bt, bt_on));
     h = R(std::move(h), "__BT_ENABLED_CHECKED__", (bt_on && bt_installed()) ? "checked" : "");
     // Advertised name defaults to the box hostname, so the node carries one
     // base prefix everywhere: the hostname itself (S10uuid reads
@@ -1333,16 +1337,85 @@ void reticulum_bluetooth_pair(const Request& req, Response& res) {
 // adapter. BlueZ is the authoritative ACL view: it lists our outbound
 // (central) links too. The Bluetooth card polls this every few seconds.
 //
-// Reliability: bluetoothctl needs several seconds to come up and print when
-// the box is busy, and on a timeout it exits with NO output — which used to
-// render as an empty "none" flash mid-session. So: serve a /run snapshot
-// while it is <6 s old (the poll cadence reuses it, bluetoothctl is not
-// spawned per request), take a fresh one with a generous timeout otherwise,
-// and fall back to the last good snapshot (up to 60 s) when bluetoothctl
-// comes back empty-handed.
+// rnsbox-mon (S83mon) rebuilds the snapshot every 30 s, or every 5 s while a
+// portal page is polling; the CGI only reads it, so a request never waits for
+// bluetoothctl. Devices missing from a successful scan are kept for 60 s
+// (connected=false), so a transient disconnect does not make a row blink.
 constexpr const char* BT_PEERS_CACHE = "/run/rnsbox-bt-peers.json";
-constexpr int BT_PEERS_FRESH = 6;    // s a snapshot is served without re-query
-constexpr int BT_PEERS_STALE = 60;   // s an empty result may still fall back
+constexpr const char* BT_PEERS_REQ = "/run/rnsbox-bt-peers.req";
+constexpr const char* BT_PEERS_LOCK = "/run/rnsbox-bt-peers.lock";
+constexpr int BT_PEERS_FRESH = 5;    // s a snapshot is served as-is
+constexpr int BT_PEERS_GRACE = 60;   // s a missing device is kept after last_seen
+
+struct BtPeer {
+    std::string address;
+    std::string name;
+    long long last_seen = 0;
+    bool connected = false;
+};
+
+static std::string bt_peer_key(const BtPeer& p) {
+    // rnsstatus-only fallback rows have no Bluetooth address.
+    return p.address == "—" ? p.address + "|" + p.name : p.address;
+}
+
+static std::vector<BtPeer> bt_peers_read_cache() {
+    std::vector<BtPeer> out;
+    std::string s = util::read_file(BT_PEERS_CACHE, 64 * 1024);
+    long long mtime = 0;
+    struct stat st;
+    if (::stat(BT_PEERS_CACHE, &st) == 0) mtime = (long long)st.st_mtime;
+    if (s.empty()) return out;
+    json::Value root; std::string err;
+    if (!json::parse(s, root, err) || !root.is_object()) return out;
+    const json::Value* arr = root.find("devices");
+    if (!arr || !arr->is_array()) return out;
+    for (const json::Value& v : arr->arr) {
+        if (!v.is_object()) continue;
+        BtPeer p;
+        const json::Value* x = v.find("address");
+        if (x) p.address = x->as_string();
+        x = v.find("name");
+        if (x) p.name = x->as_string();
+        x = v.find("last_seen");
+        p.last_seen = (x && x->is_number()) ? (long long)x->as_number(0) : mtime;
+        x = v.find("connected");
+        p.connected = x ? x->as_bool(false) : false;
+        if (!p.address.empty()) out.push_back(std::move(p));
+    }
+    return out;
+}
+
+static void bt_peers_touch_request() {
+#ifdef _WIN32
+    return;   // no rnsbox-mon on the Windows front end
+#else
+    int fd = ::open(BT_PEERS_REQ, O_CREAT | O_WRONLY | O_CLOEXEC, 0600);
+    if (fd >= 0) ::close(fd);
+    ::utime(BT_PEERS_REQ, nullptr);
+#endif
+}
+
+static std::string bt_peers_json(const std::vector<BtPeer>& peers, long long updated,
+                                 bool have_traffic, const std::string& ttx,
+                                 const std::string& trx) {
+    std::string o = "{\"updated\":" + std::to_string(updated) + ",\"devices\":[";
+    bool first = true;
+    for (const auto& p : peers) {
+        if (!first) o += ",";
+        first = false;
+        o += "{\"address\":\"" + http::json_escape(p.address) +
+             "\",\"name\":\"" + http::json_escape(p.name) +
+             "\",\"last_seen\":" + std::to_string(p.last_seen) +
+             ",\"connected\":" + (p.connected ? "true" : "false") + "}";
+    }
+    o += "]";
+    if (have_traffic)
+        o += ",\"traffic\":{\"tx\":\"" + http::json_escape(ttx) +
+             "\",\"rx\":\"" + http::json_escape(trx) + "\"}";
+    o += "}";
+    return o;
+}
 
 static bool bt_peers_cache_age(time_t& age) {
     struct stat st;
@@ -1460,22 +1533,14 @@ static bool name_looks_like_mac(const std::string& s) {
     return true;
 }
 
-void reticulum_bluetooth_peers(const Request& req, Response& res) {
-    if (!web::require_auth(req, res, true)) return;
-    res.content_type = "application/json";
+static void bt_peers_collect() {
+    const long long now = (long long)::time(nullptr);
+    std::vector<BtPeer> old = bt_peers_read_cache();
+    std::vector<BtPeer> found;
 
-    time_t age = -1;
-    bool have = bt_peers_cache_age(age);
-    if (have && age <= BT_PEERS_FRESH) {
-        std::string cached = util::read_file(BT_PEERS_CACHE, 64 * 1024);
-        if (!cached.empty()) { res.body = cached; return; }
-    }
-
-    // --timeout makes bluetoothctl exit even while the adapter is scanning;
-    // without it the command can sit in the interactive loop until util::run
-    // kills it, which used to leave the peers table stuck at "none".
-    util::RunResult r = util::run({"/usr/bin/bluetoothctl", "--timeout", "5", "devices", "Connected"}, "", 8);
-    std::vector<std::pair<std::string, std::string>> found;
+    util::RunResult r = util::run(
+        {"/usr/bin/bluetoothctl", "--timeout", "5", "devices", "Connected"}, "", 8);
+    bool scan_ok = (r.exit_code == 0);
     size_t pos = 0;
     const std::string& s = r.out;
     while (pos <= s.size()) {
@@ -1484,45 +1549,151 @@ void reticulum_bluetooth_peers(const Request& req, Response& res) {
         std::string ln = util::trim(s.substr(pos, e - pos));
         pos = e + 1;
         if (!ln.empty() && ln.back() == '\r') ln.pop_back();
-        // "Device AA:BB:CC:DD:EE:FF Name with spaces"
         if (ln.compare(0, 7, "Device ") != 0) continue;
         std::string rest = ln.substr(7);
         size_t sp = rest.find(' ');
-        std::string addr = sp == std::string::npos ? rest : rest.substr(0, sp);
-        std::string name = sp == std::string::npos ? std::string() : util::trim(rest.substr(sp + 1));
-        found.push_back({addr, name});
+        BtPeer p;
+        p.address = sp == std::string::npos ? rest : rest.substr(0, sp);
+        p.name = sp == std::string::npos ? std::string() : util::trim(rest.substr(sp + 1));
+        p.last_seen = now;
+        p.connected = true;
+        found.push_back(std::move(p));
     }
-    if (found.empty() && have && age <= BT_PEERS_STALE) {
-        // bluetoothctl silent/timeout — the last snapshot beats a false "none"
-        std::string cached = util::read_file(BT_PEERS_CACHE, 64 * 1024);
-        if (!cached.empty()) { res.body = cached; return; }
-    }
-    if (found.empty()) found = bt_rnsstatus_peers();
 
-    std::map<std::string, std::string> ident;
-    if (!found.empty()) ident = bt_identity_names();
-
-    std::string out = "{\"devices\":[";
-    bool first = true;
-    for (const auto& d : found) {
-        std::string name = d.second;
-        if (name.empty() || name_looks_like_mac(name)) {
-            auto it = ident.find(d.first);
-            if (it != ident.end()) name = it->second;
+    // BlueZ can be temporarily unusable (D-Bus assertion while a peer does
+    // service discovery). Keep the previous list untouched — a false "none"
+    // or a row disappearing for one poll is worse than a stale row. Only
+    // when there is no cache at all, show the live RNS peers.
+    if (found.empty() && old.empty()) {
+        for (const auto& d : bt_rnsstatus_peers()) {
+            BtPeer p;
+            p.address = d.second;
+            p.name = d.first;
+            p.last_seen = now;
+            p.connected = true;
+            found.push_back(std::move(p));
         }
-        if (!first) out += ",";
-        first = false;
-        out += "{\"address\":\"" + http::json_escape(d.first) +
-               "\",\"name\":\"" + http::json_escape(name) + "\"}";
     }
-    out += "]";
+
+    std::vector<BtPeer> merged;
+    std::map<std::string, size_t> idx;
+    for (auto& p : found) {
+        if (p.address.size() == 17)
+            for (char& c : p.address) c = (char)toupper((unsigned char)c);
+        p.last_seen = now;
+        p.connected = true;
+        std::string k = bt_peer_key(p);
+        auto it = idx.find(k);
+        if (it == idx.end()) {
+            idx[k] = merged.size();
+            merged.push_back(std::move(p));
+        } else {
+            merged[it->second] = std::move(p);
+        }
+    }
+
+    // Per-device grace: a device missing from a successful scan stays for up
+    // to BT_PEERS_GRACE seconds, so a transient disconnect does not make the
+    // row blink. A failed scan keeps the previous state as-is.
+    for (auto& p : old) {
+        std::string k = bt_peer_key(p);
+        if (idx.count(k)) continue;
+        if (!scan_ok) {
+            idx[k] = merged.size();
+            merged.push_back(std::move(p));
+            continue;
+        }
+        if (p.last_seen <= 0) p.last_seen = now;
+        if (now - p.last_seen > BT_PEERS_GRACE) continue;
+        p.connected = false;
+        idx[k] = merged.size();
+        merged.push_back(std::move(p));
+    }
+
+    // Replace a MAC address used as a fallback name with the Reticulum
+    // identity logged by the BLE transport, when available.
+    std::map<std::string, std::string> ident;
+    for (auto& p : merged) {
+        if (p.address.size() != 17) continue;
+        if (!p.name.empty() && !name_looks_like_mac(p.name)) continue;
+        if (ident.empty()) ident = bt_identity_names();
+        auto it = ident.find(p.address);
+        if (it != ident.end()) p.name = it->second;
+    }
+
     std::string ttx, trx;
-    if (rnstatus_interface_traffic("BLE", ttx, trx))
-        out += ",\"traffic\":{\"tx\":\"" + http::json_escape(ttx) +
-               "\",\"rx\":\"" + http::json_escape(trx) + "\"}";
-    out += "}";
+    bool have_traffic = ble_traffic_stats(ttx, trx);
+    if (!have_traffic) have_traffic = rnstatus_interface_traffic("BLE", ttx, trx);
+    std::string out = bt_peers_json(merged, now, have_traffic, ttx, trx);
     util::write_file_atomic(BT_PEERS_CACHE, out, 0600);
-    res.body = out;
+}
+
+static void bt_peers_trigger() {
+#ifdef _WIN32
+    return;
+#else
+    pid_t pid = ::fork();
+    if (pid != 0) return;
+    ::setsid();
+    ::nice(10);
+    (void)::chdir("/");
+    int nul = ::open("/dev/null", O_RDWR);
+    if (nul >= 0) {
+        ::dup2(nul, 0); ::dup2(nul, 1); ::dup2(nul, 2);
+        if (nul > 2) ::close(nul);
+    }
+    int lfd = ::open(BT_PEERS_LOCK, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (lfd >= 0 && ::flock(lfd, LOCK_EX | LOCK_NB) == 0) {
+        bt_peers_collect();
+        ::close(lfd);
+    }
+    _exit(0);
+#endif
+}
+
+bool bt_peers_refresh() {
+#ifdef _WIN32
+    bt_peers_collect();
+    return true;
+#else
+    int lfd = ::open(BT_PEERS_LOCK, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (lfd >= 0 && ::flock(lfd, LOCK_EX | LOCK_NB) != 0) {
+        ::close(lfd);
+        return true;   // another refresh is already running
+    }
+    bt_peers_collect();
+    if (lfd >= 0) ::close(lfd);
+    return true;
+#endif
+}
+
+void reticulum_bluetooth_peers(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, true)) return;
+    res.content_type = "application/json";
+
+    // Signal rnsbox-mon that a page is open: it switches to its 5 s cadence.
+    bt_peers_touch_request();
+
+    time_t age = -1;
+    bool have = bt_peers_cache_age(age);
+    if (have) {
+        std::string cached = util::read_file(BT_PEERS_CACHE, 64 * 1024);
+        if (!cached.empty()) {
+            if (age > BT_PEERS_FRESH) bt_peers_trigger();
+            res.body = cached;
+            return;
+        }
+    }
+
+    // First request after boot: show the counters we have and let the
+    // background refresh populate the device list; the page polls again in
+    // five seconds, so it never waits for bluetoothctl here.
+    bt_peers_trigger();
+    std::string ttx, trx;
+    bool have_traffic = ble_traffic_stats(ttx, trx);
+    if (!have_traffic) have_traffic = rnstatus_interface_traffic("BLE", ttx, trx);
+    res.body = bt_peers_json(std::vector<BtPeer>(), (long long)::time(nullptr),
+                             have_traffic, ttx, trx);
 }
 
 // ===================== rnstatus (JSON, cached) =====================
@@ -1888,6 +2059,27 @@ bool rnstatus_interface_traffic(const char* needle, std::string& tx, std::string
         return true;
     }
     return false;
+}
+
+// Direct BLE byte counters from BLEInterface's /run snapshot. rnstatus can
+// be unavailable while BlueZ is busy; the interface writes this file every
+// two seconds and it covers both the mesh transport and the RNode NUS link.
+bool ble_traffic_stats(std::string& tx, std::string& rx) {
+    std::string s = util::read_file("/run/rnsbox-ble-stats.json", 4096);
+    if (s.empty()) return false;
+    json::Value root; std::string err;
+    if (!json::parse(s, root, err) || !root.is_object()) return false;
+    const json::Value* ts = root.find("ts");
+    if (!ts || !ts->is_number()) return false;
+    long long when = (long long)ts->as_number(0);
+    long long now = (long long)::time(nullptr);
+    if (when <= 0 || now - when > 10) return false;   // rnsd stopped updating
+    const json::Value* txb = root.find("tx_bytes");
+    const json::Value* rxb = root.find("rx_bytes");
+    if (!txb || !rxb || !txb->is_number() || !rxb->is_number()) return false;
+    tx = pretty_size(txb->as_number(0));
+    rx = pretty_size(rxb->as_number(0));
+    return true;
 }
 
 // ===================== RNode (USB serial / BLE) =====================

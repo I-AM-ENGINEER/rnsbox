@@ -107,6 +107,16 @@ class RNodeBLEEmulator(Interface):
         self.bitrate = self.BITRATE
         self.HW_MTU = 500
         self.FIXED_MTU = True
+        self.mtu = self.HW_MTU
+        # The RNode bridge is appended to Transport.interfaces; rnstatus's
+        # ifstats RPC reads the announce-rate policy fields from every
+        # interface, so they must exist even though this endpoint never
+        # announces on its own.
+        self.announce_rate_target = None
+        self.announce_rate_grace = None
+        self.announce_rate_penalty = None
+        self.announce_rate = 0
+        self.announce_cap = None
         self.ifac_size = getattr(parent, "ifac_size", None)
         if getattr(parent, "announce_cap", None) is not None:
             self.announce_cap = parent.announce_cap

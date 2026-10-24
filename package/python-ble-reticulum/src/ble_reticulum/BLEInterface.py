@@ -37,6 +37,7 @@ Key features:
 import RNS
 import sys
 import os
+import json
 import threading
 import time
 import asyncio
@@ -254,6 +255,9 @@ class BLEInterface(Interface):
     CHARACTERISTIC_RX_UUID = "37145b00-442d-4a94-917f-8f42c5da28e5"  # RX characteristic
     CHARACTERISTIC_TX_UUID = "37145b00-442d-4a94-917f-8f42c5da28e4"  # TX characteristic
     CHARACTERISTIC_IDENTITY_UUID = "37145b00-442d-4a94-917f-8f42c5da28e6"  # Identity characteristic (Protocol v2)
+    # Snapshot read by the portal: byte counters for the BLE transport (mesh
+    # plus the RNode NUS endpoint), refreshed every two seconds.
+    STATS_FILE = "/run/rnsbox-ble-stats.json"
 
     # Discovery and connection settings
     DISCOVERY_INTERVAL = 5.0  # seconds between discovery scans
@@ -571,7 +575,18 @@ class BLEInterface(Interface):
 
         # Set interface online
         self.online = True
+        if getattr(self, "rnode", None) is not None:
+            self.rnode.online = True
         RNS.log(f"{self} interface online", RNS.LOG_INFO)
+
+        # Keep a small, always-fresh byte-counter snapshot for the dashboard.
+        # rnstatus is a Python cold start and can miss the BLE interface while
+        # the adapter is busy; the interface itself already owns the counters.
+        if not getattr(self, "_stats_thread", None) or not self._stats_thread.is_alive():
+            self._stats_stop = threading.Event()
+            self._stats_thread = threading.Thread(
+                target=self._stats_writer_loop, daemon=True, name="BLE-Stats")
+            self._stats_thread.start()
 
     def final_init(self):
         """
@@ -585,6 +600,30 @@ class BLEInterface(Interface):
             RNS.log(f"{self} Launching driver advertising startup thread (will wait for Transport.identity)", RNS.LOG_DEBUG)
             startup_thread = threading.Thread(target=self._start_advertising_when_identity_ready, daemon=True, name="BLE-Advertising-Startup")
             startup_thread.start()
+
+    def _stats_writer_loop(self):
+        """Publish tx/rx byte counters for the portal's BLE card."""
+        while not self._stats_stop.is_set():
+            try:
+                txb = int(getattr(self, "txb", 0) or 0)
+                rxb = int(getattr(self, "rxb", 0) or 0)
+                rn = getattr(self, "rnode", None)
+                if rn is not None:
+                    txb += int(getattr(rn, "txb", 0) or 0)
+                    rxb += int(getattr(rn, "rxb", 0) or 0)
+                payload = json.dumps({
+                    "tx_bytes": txb,
+                    "rx_bytes": rxb,
+                    "ts": time.time(),
+                })
+                tmp = self.STATS_FILE + ".tmp"
+                with open(tmp, "w") as f:
+                    f.write(payload)
+                os.chmod(tmp, 0o600)
+                os.replace(tmp, self.STATS_FILE)
+            except Exception:
+                pass
+            self._stats_stop.wait(2.0)
 
     def _setup_logging_redirect(self):
         """
@@ -2488,11 +2527,16 @@ class BLEInterface(Interface):
 
         # Detach the RNode endpoint before the GATT server goes away
         if getattr(self, "rnode", None) is not None:
+            self.rnode.online = False
             try:
                 self.rnode.detach()
             except Exception as e:
                 RNS.log(f"{self} error detaching RNode endpoint: {e}", RNS.LOG_DEBUG)
             self.rnode = None
+
+        # Stop the stats writer before the driver goes away.
+        if getattr(self, "_stats_stop", None) is not None:
+            self._stats_stop.set()
 
         # Stop the driver (handles graceful disconnection and cleanup)
         try:

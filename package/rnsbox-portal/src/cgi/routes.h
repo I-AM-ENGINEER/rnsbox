@@ -54,6 +54,11 @@ void reticulum_bluetooth_peers(const http::Request&, http::Response&);  // GET  
 // Interface byte counters from the parsed rnstatus cache (pretty strings);
 // false when no cached snapshot matches the needle (e.g. "BLE").
 bool rnstatus_interface_traffic(const char* needle, std::string& tx, std::string& rx);
+// Byte counters written by BLEInterface every 2 s (mesh + RNode NUS);
+// false when the snapshot is missing or stale.
+bool ble_traffic_stats(std::string& tx, std::string& rx);
+// Rebuild the BLE peers/traffic cache now (rnsbox-mon and the CGI).
+bool bt_peers_refresh();
 // Rebuild the parsed rnstatus cache now (boot warm-up); false if rnstatus
 // produced no parseable output.
 bool rnstatus_prewarm();
