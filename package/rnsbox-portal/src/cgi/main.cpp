@@ -297,6 +297,12 @@ int main(int argc, char** argv) {
     // cache after rnsd is up, so the first page load does not block on it).
     if (argc >= 2 && strcmp(argv[1], "rnstatus-refresh") == 0)
         return routes::rnstatus_prewarm() ? 0 : 1;
+    // `rnsbox-portal mapnodes` — the Map tab's JSON on stdout, so the native
+    // discovery reader can be timed/inspected without an authenticated tab.
+    if (argc >= 2 && strcmp(argv[1], "mapnodes") == 0) {
+        routes::map_nodes_cli();
+        return 0;
+    }
     // `rnsbox-portal bt-peers-refresh` (rnsbox-mon / the peers endpoint):
     // update the connected-device cache in the background.
     if (argc >= 2 && strcmp(argv[1], "bt-peers-refresh") == 0)

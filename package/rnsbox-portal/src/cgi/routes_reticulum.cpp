@@ -9,6 +9,9 @@
 #include "sysinfo.h"
 #include "updatecheck.h"
 #include "util.h"
+#ifndef _WIN32
+#include "rnstatusd_client.h"
+#endif
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -1706,7 +1709,14 @@ void reticulum_bluetooth_peers(const Request& req, Response& res) {
 // instant (at most TTL-old) snapshot instead of a console dump.
 constexpr const char* RNSTATUS_CACHE = "/run/rnsbox-rnstatus-v2.json";
 constexpr const char* RNSTATUS_LOCK  = "/run/rnsbox-rnstatus-v2.lock";
-constexpr int RNSTATUS_TTL = 5;   // seconds
+constexpr const char* RNSTATUS_ATTEMPT = "/run/rnsbox-rnstatus-v2.attempt";
+constexpr int RNSTATUS_TTL = 5;   // serve a cached snapshot up to 5 s old
+// Without the resident helper every refresh is a full Python start. On a
+// low-RAM board that must not happen every poll: the CLI path is floored at
+// this age, and the page says how old the table is meanwhile.
+constexpr int RNSTATUS_CLI_TTL = 120;
+// A failed/aborted refresh must not spawn a new helper on every poll.
+constexpr int RNSTATUS_RETRY = 10;
 // A mesh node can run a lot of interfaces (every discovered AutoInterface
 // peer is one); rnstatus's JSON is ~1-2 KB per interface, so allow 1 MB.
 constexpr size_t RNSTATUS_MAX = 1024 * 1024;
@@ -1904,23 +1914,12 @@ static long rnstatus_age() {
     return (long)(now - st.st_mtime);
 }
 
-// Run `rnstatus -a -j`, normalise, rewrite the cache. Shared by the
-// synchronous path and the stale-while-revalidate child.
-static std::string rnstatus_collect(bool* ok) {
-    // 60 s: a Python cold start plus the shared-instance query is slow on the
-    // 580 MHz boards and slower still while rnsd is busy with the public TCP
-    // clients; 25 s cut it off mid-output and the parse failed.
-    util::RunResult rr = util::run({"/usr/bin/rnstatus", "-a", "-j"}, "", 60, RNSTATUS_MAX);
+// Normalise one rnstatus JSON document and rewrite the cache. `raw` is the
+// text `rnstatus -a -j` prints, or the same document from the resident helper.
+static bool rnstatus_normalise(const std::string& raw, std::string& out) {
     std::vector<IfStat> ifs;
     std::string thash, tupt, tstate;
-    if (!rnstatus_parse(rr.out, ifs, thash, tupt, tstate)) {
-        if (ok) *ok = false;
-        std::string d = rr.out.substr(0, 200);
-        for (char& c : d) if (c == '\n' || c == '\r' || c == '\t') c = ' ';
-        return "{\"error\":\"rnstatus returned nothing (is rnsd running?)\","
-               "\"detail\":\"" + http::json_escape(d) + "\"}";
-    }
-    if (ok) *ok = true;
+    if (!rnstatus_parse(raw, ifs, thash, tupt, tstate)) return false;
     std::string o = "{\"v\":2,\"age\":" + std::to_string(::time(nullptr)) + ",\"interfaces\":[";
     for (size_t i = 0; i < ifs.size(); ++i) {
         const IfStat& f = ifs[i];
@@ -1947,16 +1946,112 @@ static std::string rnstatus_collect(bool* ok) {
          "\",\"uptime\":\"" + http::json_escape(tupt) +
          "\",\"state\":\"" + http::json_escape(tstate) + "\"}}";
     util::write_file_atomic(RNSTATUS_CACHE, o, 0600);
-    return o;
+    out = std::move(o);
+    return true;
 }
 
-// Boot-time cache warm-up (S83mon/rnsbox-mon): the first page load after a reboot
-// would otherwise run rnstatus synchronously and sit on "loading…" for the
-// Python cold start plus the shared-instance query.
+static std::string rnstatus_error_json(const std::string& detail) {
+    std::string d = detail.substr(0, 200);
+    for (char& c : d)
+        if (c == '\n' || c == '\r' || c == '\t') c = ' ';
+    return "{\"error\":\"rnstatus returned nothing (is rnsd running?)\","
+           "\"detail\":\"" + http::json_escape(d) + "\"}";
+}
+
+// Cold path: spawn `rnstatus -a -j`. 60 s: a Python cold start plus the
+// shared-instance query is slow on the 580 MHz boards and slower still while
+// rnsd is busy with the public TCP clients; 25 s cut it off mid-output.
+static bool rnstatus_from_cli(std::string& out, std::string& detail) {
+    util::RunResult rr = util::run({"/usr/bin/rnstatus", "-a", "-j"}, "", 60, RNSTATUS_MAX);
+    if (!rnstatus_normalise(rr.out, out)) {
+        detail = rr.out.substr(0, 200);
+        return false;
+    }
+    return true;
+}
+
+#ifndef _WIN32
+static void touch_file(const char* path) {
+    int fd = ::open(path, O_WRONLY | O_CREAT | O_CLOEXEC, 0600);
+    if (fd >= 0) ::close(fd);
+    ::utimensat(AT_FDCWD, path, nullptr, 0);
+}
+#endif
+
+// Refresh job for the detached child. The resident helper answers in well
+// under a second; the CLI is only a fallback and must not run on every poll
+// (that is what saturated the single core when a page stayed open). Returns
+// false only when nothing was written, so the caller can back off.
+static bool rnstatus_refresh_job() {
+    std::string body, detail;
+#ifndef _WIN32
+    std::string raw;
+    if (rnstatusd::fetch_raw(raw) && rnstatus_normalise(raw, body)) {
+        ::unlink(RNSTATUS_ATTEMPT);
+        return true;
+    }
+    // Remember the failure; the endpoint backs off for RNSTATUS_RETRY.
+    touch_file(RNSTATUS_ATTEMPT);
+#endif
+    long age = rnstatus_age();
+    if (age >= 0 && age < RNSTATUS_CLI_TTL) return true;  // keep the stale one
+    if (rnstatus_from_cli(body, detail)) {
+        ::unlink(RNSTATUS_ATTEMPT);
+        return true;
+    }
+    return false;
+}
+
+static long rnstatus_attempt_age() {
+    struct stat st;
+    if (::stat(RNSTATUS_ATTEMPT, &st) != 0) return -1;
+    time_t now = ::time(nullptr);
+    if (st.st_mtime > now) return 0;
+    return (long)(now - st.st_mtime);
+}
+
+// Boot-time cache warm-up (S83mon/rnsbox-mon): the first page load after a
+// reboot would otherwise run rnstatus synchronously and sit on "loading…" for
+// the Python cold start plus the shared-instance query. This is also the only
+// caller that starts the resident helper when nobody has the portal open, so
+// the expensive import happens once at boot and the helper stays warm (mon
+// pings it every minute). On boards where the helper is not allowed (low RAM,
+// no python3) it falls back to the old CLI path, floored at RNSTATUS_CLI_TTL.
 bool rnstatus_prewarm() {
-    bool ok = false;
-    (void)rnstatus_collect(&ok);
-    return ok;
+    long age = rnstatus_age();
+    if (age >= 0 && age < RNSTATUS_CLI_TTL) return true;
+    int lfd = ::open(RNSTATUS_LOCK, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (lfd >= 0) ::flock(lfd, LOCK_EX);
+    struct LockGuard { int fd; ~LockGuard() { if (fd >= 0) ::close(fd); } } guard{lfd};
+    age = rnstatus_age();
+    if (age >= 0 && age < RNSTATUS_CLI_TTL) return true;
+#ifndef _WIN32
+    std::string raw, hbody;
+    if (rnstatusd::fetch_raw(raw, 45000) && rnstatus_normalise(raw, hbody)) {
+        ::unlink(RNSTATUS_ATTEMPT);
+        return true;
+    }
+#endif
+    std::string body, detail;
+    return rnstatus_from_cli(body, detail);
+}
+
+// Synchronous refresh for the (rare) no-cache path: the page has nothing to
+// show, so trying the helper first is worth it even if it has to start.
+static std::string rnstatus_refresh_sync(bool* ok) {
+    std::string raw, body, detail;
+#ifndef _WIN32
+    if (rnstatusd::fetch_raw(raw, 20000) && rnstatus_normalise(raw, body)) {
+        if (ok) *ok = true;
+        return body;
+    }
+#endif
+    if (rnstatus_from_cli(body, detail)) {
+        if (ok) *ok = true;
+        return body;
+    }
+    if (ok) *ok = false;
+    return rnstatus_error_json(detail);
 }
 
 // Add "age_s" = seconds since the snapshot was taken. Computed on the server
@@ -1976,12 +2071,14 @@ static std::string with_age_s(const std::string& j) {
 
 // GET /reticulum/rnstatus.json — the parsed interface table.
 //
-// rnstatus -a -j costs a python cold start (5-10 s on this CPU), so a request
-// never waits for it: ANY parseable snapshot is served IMMEDIATELY, no
-// matter how old (the table shows when it was taken), and a detached child
-// refreshes it when it is older than RNSTATUS_TTL (non-blocking lock:
-// concurrent refreshers collapse into one). Only a missing or corrupt
-// cache takes the synchronous path.
+// A refresh used to be a fresh `rnstatus` process (~4 s of CPU, 15-20 s of
+// wall time here), and the page polls every 5 s: with a tab open the box ran
+// Python back-to-back and never caught up. Now the detached refresher asks
+// the resident helper (already-imported RNS, ~0.2 s), so the polling cadence
+// is affordable; only when the helper is unavailable does the CLI run, and
+// then no more than once per RNSTATUS_CLI_TTL. A request never waits for a
+// refresh: any parseable snapshot is served immediately (the page shows its
+// age). Only a missing or corrupt cache takes the synchronous path.
 void reticulum_rnstatus(const Request& req, Response& res) {
     if (!web::require_auth(req, res, true)) return;
     res.content_type = "application/json";
@@ -1993,11 +2090,12 @@ void reticulum_rnstatus(const Request& req, Response& res) {
         std::string stale = util::read_file(RNSTATUS_CACHE, RNSTATUS_MAX);
         std::string t = util::trim(stale);
         if (!t.empty() && t[0] == '{') {
-            if (age >= RNSTATUS_TTL) {
+            long attempt = rnstatus_attempt_age();
+            if (age >= RNSTATUS_TTL && (attempt < 0 || attempt >= RNSTATUS_RETRY)) {
 #ifdef _WIN32
                 // No detached child here: rnstatus is a local Python process
                 // and a cold start is ~1 s, so refresh inline and serve fresh.
-                res.body = with_age_s(rnstatus_collect(nullptr));
+                res.body = with_age_s(rnstatus_refresh_sync(nullptr));
                 return;
 #else
                 pid_t pid = ::fork();
@@ -2016,7 +2114,7 @@ void reticulum_rnstatus(const Request& req, Response& res) {
                     int lfd = ::open(RNSTATUS_LOCK, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
                     if (lfd >= 0 && ::flock(lfd, LOCK_EX | LOCK_NB) == 0) {
                         if (rnstatus_age() >= RNSTATUS_TTL)
-                            rnstatus_collect(nullptr);
+                            rnstatus_refresh_job();
                         ::close(lfd);
                     }
                     _exit(0);
@@ -2034,7 +2132,7 @@ void reticulum_rnstatus(const Request& req, Response& res) {
     if (lfd >= 0) ::flock(lfd, LOCK_EX);
     struct LockGuard { int fd; ~LockGuard() { if (fd >= 0) ::close(fd); } } guard{lfd};
     if (rnstatus_fresh(cached)) { res.body = with_age_s(cached); return; }
-    res.body = with_age_s(rnstatus_collect(nullptr));
+    res.body = with_age_s(rnstatus_refresh_sync(nullptr));
 }
 
 // Traffic (tx/rx, pretty strings) of one interface out of the parsed rnstatus

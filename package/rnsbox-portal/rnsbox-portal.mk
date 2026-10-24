@@ -63,9 +63,14 @@ define RNSBOX_PORTAL_INSTALL_TARGET_CMDS
 	# so page views cost the box nothing and an update only replaces the .md
 	# files in /www/manual/docs.
 	$(INSTALL) -D -m 0755 $(@D)/cgi/helpers/manual.py $(TARGET_DIR)/usr/lib/rnsbox/manual.py
-	# Map tab: read rnsd's persisted interface-discovery records (coordinates
-	# from announces) and a small offline land outline; the browser draws it.
+	# Map tab: the Linux portal decodes rnsd's persisted discovery records
+	# natively (routes_map.cpp); this helper remains the Windows front end's
+	# fallback, and the browser draws the offline land outline.
 	$(INSTALL) -D -m 0755 $(@D)/cgi/helpers/mapnodes.py $(TARGET_DIR)/usr/lib/rnsbox/mapnodes.py
+	# Resident rnstatus provider: pays the RNS import once instead of once per
+	# portal poll (the C906 spends 4+ s of CPU on a cold start). Started on
+	# demand by the portal's refresher, idle-exits after 5 min.
+	$(INSTALL) -D -m 0755 $(@D)/cgi/helpers/rnstatusd.py $(TARGET_DIR)/usr/lib/rnsbox/rnstatusd.py
 	mkdir -p $(TARGET_DIR)/www/map
 	$(INSTALL) -m 0644 $(@D)/cgi/www/map/countries.geojson $(TARGET_DIR)/www/map/countries.geojson
 	$(INSTALL) -m 0644 $(@D)/cgi/www/map/cities.geojson $(TARGET_DIR)/www/map/cities.geojson

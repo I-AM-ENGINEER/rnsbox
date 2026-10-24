@@ -17,7 +17,9 @@
 //     EVENT lines for rnsd PID changes. Config: /etc/rnsbox/memlog.conf.
 //   * rnstatus warm (every 60 s, 10 s while the cache is still empty):
 //     run `rnsbox-portal rnstatus-refresh` at nice 10, single-flight via
-//     /run/rnsstatus.lock.
+//     /run/rnsstatus.lock. The command is a stat() while the cache is warm,
+//     or a query to the resident helper; only its first run at boot pays the
+//     RNS import.
 //   * BLE peers cache (every 30 s idle, every 5 s while a portal page is
 //     polling /reticulum/bluetooth/peers): rebuild the connected-device list
 //     with a 60 s grace period, so a transient disconnect does not make the
@@ -542,6 +544,16 @@ int main(int argc, char** argv) {
 
     while (!g_stop) {
         long now = mono_s();
+
+        // The rnstatus warm-up can now finish in milliseconds (resident
+        // helper), so reap it here instead of leaving a zombie until the
+        // next 60 s tick. The same applies to the BT peers refresher.
+        if (g_rn_pid > 0 && waitpid(g_rn_pid, NULL, WNOHANG) == g_rn_pid) {
+            g_rn_pid = -1;
+            rmdir(RNSTATUS_LOCK);
+        }
+        if (g_bt_pid > 0 && waitpid(g_bt_pid, NULL, WNOHANG) == g_bt_pid)
+            g_bt_pid = -1;
 
         if (now >= next_watch) {
             next_watch = now + MEMWATCH_INTERVAL;

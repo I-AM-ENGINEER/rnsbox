@@ -112,6 +112,7 @@ void rnode_action(const http::Request&, http::Response&);          // GET  JSON 
 // Map tab: announced nodes with coordinates (offline render)
 void map_page(const http::Request&, http::Response&);              // GET  render
 void map_nodes(const http::Request&, http::Response&);             // GET  JSON nodes
+void map_nodes_cli();                                              // CLI  JSON nodes
 
 // settings tab
 void settings_page(const http::Request&, http::Response&);         // GET  render
