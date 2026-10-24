@@ -466,6 +466,7 @@ void handle(const http::Request& req, http::Response& res) {
     else if (p == "/manual")                     routes::manual_page(req, res);
     else if (p == "/manual/check")               routes::manual_check(req, res);
     else if (p == "/manual/download")            routes::manual_download(req, res);
+    else if (p == "/manual/progress")            routes::manual_progress(req, res);
     else if (p == "/settings")                   routes::settings_page(req, res);
     else if (p == "/settings/password")          routes::settings_password(req, res);
     else if (p == "/settings/hostname")          routes::hostname_set(req, res);

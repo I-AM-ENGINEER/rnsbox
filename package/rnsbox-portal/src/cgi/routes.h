@@ -97,6 +97,7 @@ void nomadnet_resize(const http::Request&, http::Response&);       // POST cols/
 void manual_page(const http::Request&, http::Response&);           // GET  render
 void manual_check(const http::Request&, http::Response&);          // POST PRG
 void manual_download(const http::Request&, http::Response&);       // POST PRG
+void manual_progress(const http::Request&, http::Response&);     // GET  JSON progress
 
 // settings tab
 void settings_page(const http::Request&, http::Response&);         // GET  render
