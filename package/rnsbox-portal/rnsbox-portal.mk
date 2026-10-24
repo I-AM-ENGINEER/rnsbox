@@ -111,6 +111,7 @@ define RNSBOX_PORTAL_INSTALL_TARGET_CMDS
 	mkdir -p $(TARGET_DIR)/usr/share/rnsbox-portal/halow-firmware
 	$(INSTALL) -m 0644 $(@D)/firmware/halow-fw.tar $(TARGET_DIR)/usr/share/rnsbox-portal/halow-firmware/halow-fw.tar
 	$(INSTALL) -m 0644 $(@D)/firmware/VERSION $(TARGET_DIR)/usr/share/rnsbox-portal/halow-firmware/VERSION
+	chmod 0755 $(TARGET_DIR)/usr/share/rnsbox-portal/halow-firmware
 	$(INSTALL) -D -m 0755 $(@D)/cgi/helpers/rnodebridge $(TARGET_DIR)/usr/lib/rnsbox/rnodebridge
 	# S88rnodebridge — ws://:7634 KISS bridge for the embedded RNode flasher;
 	# no-op (and no daemon) unless rnode.conf names a transport.

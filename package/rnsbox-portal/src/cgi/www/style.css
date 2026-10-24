@@ -608,6 +608,7 @@ body.login-screen { background: var(--primary); }
 .meter-fill.ok   { background: var(--ok); }
 .meter-fill.warn { background: var(--warn); }
 .meter-fill.crit { background: var(--err); }
+.meter-fill.run  { background: var(--accent); }
 
 /* ---- Donate ---- */
 .sitefoot {

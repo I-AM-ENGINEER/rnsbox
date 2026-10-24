@@ -10,8 +10,6 @@
 .fl-src select { min-width: 240px; }
 .fl-src input[type=file] { flex: 0 1 320px; }
 .fl-log { margin: 10px 0 0; max-height: 280px; overflow: auto; }
-#fl-auto-status { line-height: 1.75; }
-#fl-auto-status .k { display: inline-block; min-width: 150px; color: var(--muted); }
 </style>
 
 <h2>RNode HaLow flasher</h2>
@@ -55,11 +53,8 @@
     <button type="button" class="btn-primary" id="fl-flash" onclick="flFlash()">Flash selected device</button>
     <button type="button" class="btn" id="fl-reboot" onclick="flReboot()">Reboot</button>
   </div>
-  <p class="muted" style="margin:8px 0 0">www/ files are always uploaded. The vendor preflash runs
-    automatically when the device is factory firmware or when the router firmware's major version
-    changes; within the same major version it is skipped.</p>
-  <p class="muted" id="fl-msg" style="margin:6px 0 0"></p>
-  <div class="meter" style="margin-top:8px"><div class="meter-fill" id="fl-bar" style="width:0%"></div></div>
+  <p class="muted" id="fl-msg" style="margin:8px 0 0"></p>
+  <div class="meter" style="margin-top:8px"><div class="meter-fill run" id="fl-bar" style="width:0%"></div></div>
   <pre id="fl-log" class="rnode-out fl-log" hidden></pre>
 </section>
 
@@ -69,10 +64,10 @@
     <label class="check" style="margin:0"><input type="checkbox" id="fl-auto-upd" onchange="flAutoToggle()">
       enabled</label>
   </div>
-  <p class="muted" style="margin-top:0">Stable releases only. As soon as a newer stable release is
-    published it is scheduled for <strong>published + 3 days + a random 0–7 days</strong>. The image is
+  <p class="muted" style="margin-top:0">Stable releases only. Each modem is scheduled separately at
+    <strong>published + 3 days + a random 0–7 days</strong> and updated one at a time; the image is
     downloaded at that moment, never before.</p>
-  <div id="fl-auto-status" class="muted">checking…</div>
+  <div id="fl-auto-status">checking…</div>
 </section>
 
 <script>
@@ -82,7 +77,9 @@
 
   function esc(s){ return (''+(s==null?'':s)).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
   function msg(t){ var e=document.getElementById('fl-msg'); if(e) e.textContent=t; }
-  function bar(p){ var e=document.getElementById('fl-bar'); if(e) e.style.width=Math.max(0,Math.min(100,p))+'%'; }
+  function bar(p, cls){ var e=document.getElementById('fl-bar'); if(!e) return;
+    e.style.width=Math.max(0,Math.min(100,p))+'%';
+    e.className='meter-fill '+(cls||'run'); }
   function log(s){ var e=document.getElementById('fl-log'); if(!e) return;
     if(s){ e.hidden=false; e.textContent=s; } else { e.hidden=true; e.textContent=''; } }
   function setBusy(b){ busy=b; var e=document.getElementById('fl-flash'); if(e) e.disabled=b; }
@@ -176,10 +173,11 @@
           if(s.log) log(s.log.join('\n'));
           setTimeout(function(){ poll(transport); },1200);
         } else if(s.state==='done'){
-          bar(100); if(s.log) log(s.log.join('\n'));
+          bar(100,'ok'); if(s.log) log(s.log.join('\n'));
           msg('Flash done'+(s.version?' — '+s.version:'')+'.');
           setBusy(false); flScan();
         } else if(s.state==='failed'){
+          bar(s.pct||0,'crit');
           if(s.log) log(s.log.join('\n'));
           msg('Flash failed: '+(s.error||'unknown error'));
           setBusy(false); flScan();
@@ -204,7 +202,8 @@
       msg('Flashing…');
       var body='action=flash&source='+encodeURIComponent(src)+
                '&transport='+encodeURIComponent(d.transport)+
-               '&iface='+encodeURIComponent(d.iface)+'&mac='+encodeURIComponent(d.mac);
+               '&iface='+encodeURIComponent(d.iface)+'&mac='+encodeURIComponent(d.mac)+
+               '&version='+encodeURIComponent(src==='github'?tag:'');
       fetch(BASE+'/flasher/action',{method:'POST',credentials:'same-origin',
         headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
         .then(function(r){ return r.json(); }).then(function(j){
@@ -244,22 +243,33 @@
     if(!box) return;
     var on=document.getElementById('fl-auto-upd');
     if(on) on.checked=!!s.auto;
-    var rows=[];
-    rows.push(['Installed', esc(s.installed||'unknown')]);
-    rows.push(['Latest stable', esc(s.latest||'unknown')]);
-    if(s.state==='scheduled')
-      rows.push(['Scheduled for', '<strong>'+esc(s.scheduled_iso||'—')+'</strong>']);
-    if(s.state==='current')
-      rows.push(['Status', 'up to date']);
-    if(s.state==='updating')
-      rows.push(['Status', 'updating to '+(s.tag||'?')+' now']);
-    if(s.state==='failed')
-      rows.push(['Status', 'failed'+(s.error?' — '+esc(s.error):'')+(s.scheduled_iso?' · retry '+esc(s.scheduled_iso):'')]);
-    if(s.error && !s.state)
-      rows.push(['GitHub', esc(s.error)]);
-    if(s.eligible_iso && s.state==='scheduled')
-      rows.push(['Soak ends', esc(s.eligible_iso)]);
-    box.innerHTML=rows.map(function(r){ return '<div><span class="k">'+r[0]+'</span>'+r[1]+'</div>'; }).join('');
+    var head='<div style="margin-bottom:6px">Latest stable <strong>'+esc(s.latest||'—')+'</strong>'+
+      (s.error?' · GitHub: '+esc(s.error):'')+'</div>';
+    var ds=s.devices||[];
+    if(!ds.length){
+      box.innerHTML=head+'<div>No HaLow modem found.</div>';
+      return;
+    }
+    var rows=ds.map(function(d){
+      var when='';
+      if(d.state==='current') when='<span class="badge ok">up to date</span>';
+      else if(d.state==='updating') when='<span class="badge warn">updating now</span>';
+      else if(d.state==='failed') when='failed — '+(d.error?esc(d.error):'unknown error')+
+        (d.scheduled_iso?' · retry '+esc(d.scheduled_iso):'');
+      else when='scheduled for <strong>'+esc(d.scheduled_iso||'—')+'</strong>';
+      if(d.state==='scheduled' && !d.online) when+=' <span class="muted">(offline)</span>';
+      var link=d.transport==='slip'?'SLIP':(d.iface||'');
+      return '<tr>'+
+        '<td>'+(d.hostname?esc(d.hostname):'<span class="muted">—</span>')+'</td>'+
+        '<td class="mono">'+esc(d.mac||'—')+'</td>'+
+        '<td>'+esc(link||'—')+'</td>'+
+        '<td class="mono">'+esc(d.ip||'—')+'</td>'+
+        '<td class="mono">'+esc(d.installed||'—')+'</td>'+
+        '<td>'+when+'</td></tr>';
+    }).join('');
+    box.innerHTML=head+
+      '<table class="fl-dev"><thead><tr><th>Device</th><th>MAC</th><th>Link</th><th>IP</th>'+
+      '<th>Installed</th><th>Update</th></tr></thead><tbody>'+rows+'</tbody></table>';
   }
 
   window.flAutoStatus = function(){

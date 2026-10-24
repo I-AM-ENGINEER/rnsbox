@@ -24,10 +24,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <string>
+#include <vector>
 #include <zlib.h>
 
 #ifndef _WIN32
+#include <arpa/inet.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -43,12 +46,31 @@ constexpr const char* OTA_LOCK    = "/run/rnsbox-halow-ota.lock";
 constexpr size_t OTA_CHUNK        = 512;          // the modem UI's chunk size
 constexpr uint64_t OTA_MAX        = 8ull * 1024 * 1024;
 
+// A short rolling log for the flasher tab (the modem UI's own progress view).
+std::vector<std::string> g_log;
+
+void logline(const std::string& s) {
+    char ts[16];
+    time_t t = time(nullptr);
+    struct tm tmv;
+    localtime_r(&t, &tmv);
+    strftime(ts, sizeof ts, "%H:%M:%S", &tmv);
+    g_log.push_back(std::string(ts) + " " + s);
+    if (g_log.size() > 40) g_log.erase(g_log.begin());
+}
+
 void status(const char* state, const char* stage, uint64_t done, uint64_t total,
             const std::string& error, const std::string& version) {
 #ifdef _WIN32
     (void)state; (void)stage; (void)done; (void)total; (void)error; (void)version;
 #else
     uint64_t pct = total ? (done * 100 / total) : 0;
+    std::string logj = "[";
+    for (size_t i = 0; i < g_log.size(); ++i) {
+        if (i) logj += ",";
+        logj += "\"" + http::json_escape(g_log[i]) + "\"";
+    }
+    logj += "]";
     std::string j =
         "{\"state\":\"" + std::string(state) +
         "\",\"stage\":\"" + http::json_escape(stage) +
@@ -56,7 +78,8 @@ void status(const char* state, const char* stage, uint64_t done, uint64_t total,
         ",\"total\":" + std::to_string(total) +
         ",\"pct\":" + std::to_string(pct) +
         ",\"error\":\"" + http::json_escape(error) +
-        "\",\"version\":\"" + http::json_escape(version) + "\"}\n";
+        "\",\"version\":\"" + http::json_escape(version) +
+        "\",\"log\":" + logj + "}\n";
     util::write_file_atomic(OTA_STATE, j, 0644);
 #endif
 }
@@ -177,13 +200,20 @@ std::string version_from(const std::string& json) {
 
 }  // namespace
 
-int halow_ota_cli(const std::string& path) {
+int halow_ota_cli(const std::string& path, const std::string& peer_ip) {
 #ifdef _WIN32
-    (void)path;
+    (void)path; (void)peer_ip;
     return 1;
 #else
     store::SlipConfig sl = store::read_slip();
-    std::string peer = sl.peer_ip.empty() ? "192.168.7.2" : sl.peer_ip;
+    std::string peer = peer_ip.empty() ? (sl.peer_ip.empty() ? "192.168.7.2" : sl.peer_ip)
+                                       : peer_ip;
+    // Only a dotted quad reaches the HTTP URL.
+    struct in_addr addr;
+    if (inet_pton(AF_INET, peer.c_str(), &addr) != 1) {
+        status("failed", "peer", 0, 0, "bad modem address", "");
+        return 1;
+    }
     // Only uploads under /run are ours to delete; a bundled firmware file
     // under /usr/share must survive for offline re-flashing.
     const bool ephemeral = path.rfind("/run/", 0) == 0;
@@ -224,6 +254,12 @@ int halow_ota_cli(const std::string& path) {
     }
 
     std::string resp, err;
+    char cbuf[16];
+    snprintf(cbuf, sizeof cbuf, "%08x", crc);
+    logline(std::string("target ") + peer + ", image " + std::to_string(r.size) +
+            " bytes, crc32 " + cbuf);
+    if (!files.empty())
+        logline("filesystem: " + std::to_string(files.size()) + " file(s)");
 
     // Bundle www/ files are part of the update: format the LittleFS and upload
     // each file before the firmware (the order the modem's own UI uses).
@@ -231,6 +267,7 @@ int halow_ota_cli(const std::string& path) {
         auto fail = [&](const std::string& why) {
             fclose(f);
             status("failed", "www", 0, r.size, why, "");
+            logline("ERROR: " + why);
             unlink(OTA_LOCK);
             if (ephemeral) unlink(path.c_str());
         };
@@ -248,6 +285,8 @@ int halow_ota_cli(const std::string& path) {
             uint32_t fc = 0;
             if (!crc_of(f, rr, fc)) { fail(std::string("cannot read ") + fr.name); return 1; }
             status("running", (std::string("www: ") + fr.name).c_str(), www_done, www_total, "", "");
+            logline("uploading /www/" + fr.name + " (" +
+                    std::to_string(fr.size) + " bytes)");
             std::string begin = std::string("{\"path\":\"/www/") + http::json_escape(fr.name) +
                                 "\",\"size\":" + std::to_string(fr.size) +
                                 ",\"crc32\":" + std::to_string(fc) + "}";
@@ -285,9 +324,11 @@ int halow_ota_cli(const std::string& path) {
         fclose(f);
         status("failed", "start", 0, r.size,
                "the modem did not accept ota_fw_begin (is the link up?)", "");
+        logline("ERROR: the modem did not accept ota_fw_begin");
         unlink(OTA_LOCK); if (ephemeral) unlink(path.c_str());
         return 1;
     }
+    logline("ota_fw_begin accepted");
 
     status("running", "upload", 0, r.size, "", "");
     unsigned char buf[OTA_CHUNK];
@@ -318,6 +359,8 @@ int halow_ota_cli(const std::string& path) {
             fclose(f);
             status("failed", "upload", off, r.size,
                    "chunk at offset " + std::to_string(off) + " was not accepted", "");
+            logline("ERROR: chunk at offset " + std::to_string(off) +
+                    " was not accepted");
             unlink(OTA_LOCK); if (ephemeral) unlink(path.c_str());
             return 1;
         }
@@ -325,18 +368,24 @@ int halow_ota_cli(const std::string& path) {
         int pct = (int)(off * 100 / r.size);
         if (pct != last_pct && (pct % 1 == 0)) {
             status("running", "upload", off, r.size, "", "");
+            if (pct / 10 != last_pct / 10 || pct == 100)
+                logline("upload " + std::to_string(pct) + "% (" +
+                        std::to_string(off) + "/" + std::to_string(r.size) + ")");
             last_pct = pct;
         }
     }
     fclose(f);
 
     status("running", "verify", r.size, r.size, "", "");
+    logline("image uploaded; the modem is verifying the CRC");
     if (!modem::post(peer, "ota_fw_end", "{}", resp, 120)) {
         status("failed", "verify", r.size, r.size,
                "the modem rejected the image (CRC mismatch or flash write error)", "");
+        logline("ERROR: the modem rejected the image (CRC mismatch)");
         unlink(OTA_LOCK); if (ephemeral) unlink(path.c_str());
         return 1;
     }
+    logline("image verified by the modem; rebooting");
 
     status("running", "reboot", r.size, r.size, "", "");
     std::string ignored;
@@ -354,6 +403,10 @@ int halow_ota_cli(const std::string& path) {
             if (!version.empty()) break;
         }
     }
+    if (!version.empty())
+        logline("device is running " + version);
+    else
+        logline("the device did not answer after the reboot");
     status("done", "finished", r.size, r.size, "", version);
     unlink(OTA_LOCK);
     if (ephemeral) unlink(path.c_str());
