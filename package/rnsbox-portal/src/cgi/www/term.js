@@ -35,14 +35,68 @@
     background: '#fbfcfd', foreground: '#1f2933', cursor: '#0b6bcb',
     cursorAccent: '#fbfcfd', selectionBackground: 'rgba(11,107,203,0.20)',
     black: '#1f2933', red: '#b42318', green: '#1a7f37', yellow: '#8a6100',
-    blue: '#0b6bcb', magenta: '#8250df', cyan: '#0e7490', white: '#e8edf2',
+    blue: '#0b6bcb', magenta: '#8250df', cyan: '#0e7490',
+    // white/brightWhite are foregrounds in urwid/NomadNet; pure white on a
+    // white terminal is invisible. Use readable slate tones instead.
+    white: '#64748b',
     brightBlack: '#5b6770', brightRed: '#d1242f', brightGreen: '#2da44e',
-    brightYellow: '#9a6700', brightBlue: '#218bff', brightMagenta: '#a475f9',
-    brightCyan: '#1b9aaa', brightWhite: '#ffffff'
+    brightYellow: '#9a6700', brightBlue: '#1d4ed8', brightMagenta: '#a475f9',
+    brightCyan: '#1b9aaa', brightWhite: '#1f2933'
   };
+
+  // NomadNet/urwid paint with the 256-colour cube, not just the 16 ANSI
+  // colours. xterm.js renders that cube at fixed brightness: bright yellow
+  // disappears on the light theme and dark blue disappears on the dark one.
+  // extendedAnsi maps indices 16..255 to theme-appropriate values.
+  function xterm256(mode) {
+    var cube = [0, 95, 135, 175, 215, 255];
+    var out = [];
+    function hx(v) {
+      var s = v.toString(16);
+      return s.length < 2 ? '0' + s : s;
+    }
+    function light(v) { return Math.round(v * 0.5); }
+    function dark(r, g, b) {
+      // Keep the neutral greys (panel backgrounds) dark; lift only hues that
+      // are too dark to read as text on the dark terminal.
+      var lo = Math.min(r, g, b), hi = Math.max(r, g, b);
+      if (hi - lo < 24) return r;
+      return Math.round(r + (255 - r) * 0.45);
+    }
+    for (var r = 0; r < 6; r++)
+      for (var g = 0; g < 6; g++)
+        for (var b = 0; b < 6; b++) {
+          if (mode === 'light') {
+            out.push('#' + hx(light(cube[r])) + hx(light(cube[g])) + hx(light(cube[b])));
+          } else {
+            var rr = dark(cube[r], cube[g], cube[b]);
+            var gg = dark(cube[g], cube[r], cube[b]);
+            var bb = dark(cube[b], cube[r], cube[g]);
+            out.push('#' + hx(rr) + hx(gg) + hx(bb));
+          }
+        }
+    for (var i = 0; i < 24; i++) {
+      var v = mode === 'light' ? light(8 + i * 10) : 8 + i * 10;
+      out.push('#' + hx(v) + hx(v) + hx(v));
+    }
+    return out;
+  }
+  darkTheme.extendedAnsi = xterm256('dark');
+  lightTheme.extendedAnsi = xterm256('light');
+
+  function themeName() {
+    var a = document.documentElement.getAttribute('data-theme');
+    if (a === 'light' || a === 'dark') return a;
+    // The terminal can be an iframe whose <html> does not carry the parent's
+    // attribute; the theme toggle stores the choice in localStorage.
+    try {
+      var t = localStorage.getItem('rnsbox-theme');
+      if (t === 'light' || t === 'dark') return t;
+    } catch (e) { /* storage disabled */ }
+    return 'dark';
+  }
   function currentTheme() {
-    return document.documentElement.getAttribute('data-theme') === 'light'
-      ? lightTheme : darkTheme;
+    return themeName() === 'light' ? lightTheme : darkTheme;
   }
 
   var term = new Terminal({
@@ -125,9 +179,16 @@
   window.addEventListener('resize', scheduleFit);
   wrap.addEventListener('mousedown', function () { term.focus(); });
 
-  new MutationObserver(function () {
-    term.options.theme = currentTheme();
-  }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  function applyTheme() { term.options.theme = currentTheme(); }
+  new MutationObserver(applyTheme)
+    .observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  // A terminal embedded in an iframe does not get the parent's data-theme
+  // changes; the toggle also writes localStorage, and the storage event is
+  // delivered across same-origin documents.
+  window.addEventListener('storage', function (e) {
+    if (e.key === 'rnsbox-theme') applyTheme();
+  });
+  document.addEventListener('rnsbox-theme', applyTheme);
 
   // ---- input ----
   // Legacy: raw key bytes are POSTed, coalesced into ~15 ms batches.

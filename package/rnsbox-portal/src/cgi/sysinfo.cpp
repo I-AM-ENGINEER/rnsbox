@@ -315,9 +315,18 @@ Network network_summary() {
 }
 
 std::string wan_display_iface(const std::string& wan_setting, const Network& net) {
+    auto exists = [&](const std::string& n) {
+        for (const auto& i : net.ifaces) if (i.name == n) return true;
+        return false;
+    };
     if (wan_setting != "auto") return wan_setting;
     if (net.default_dev == "eth0" || net.default_dev == "wlan0") return net.default_dev;
-    return "eth0";
+    // No usable default route. Show a port that actually exists instead of
+    // always assuming eth0: the Pi Zero 2 W has no Ethernet at all, and its
+    // dashboard used to render an "Ethernet (eth0) — down, none" card.
+    if (exists("eth0")) return "eth0";
+    if (exists("wlan0")) return "wlan0";
+    return "";
 }
 
 std::string wan_gateway(const std::string& wan_setting, const Network& net) {

@@ -940,13 +940,26 @@ void reticulum_slip(const Request& req, Response& res) {
     }
     web::run_init("S31slip", "reload");
     halow_cache_drop();   // link/peer changed: don't serve up to 10 s of the old modem state
-    if (c.enabled == "yes")
-        render::redirect_flash(res, ret_redirect(), "success",
-            "SLIP link enabled on " + c.device + " @ " + c.baud + " baud. Once the modem is "
-            "reachable, use “Add to rnsd config” on the HaLow card below to route "
-            "Reticulum through it (a TCPClientInterface to " + c.peer_ip +
-            " on the modem's TCP Radio Bridge port).");
-    else
+    if (c.enabled == "yes") {
+        // The HaLow interface used to be a second, manual step. Add it here so
+        // ticking "Enable SLIP link" is the whole setup: the modem's TCP Radio
+        // Bridge is always on the peer IP, port 4242. rnsd is restarted after
+        // sl0 is up, which also drops the previous (now dead) TCP connection.
+        std::string peer = c.peer_ip.empty() ? std::string("192.168.7.2") : c.peer_ip;
+        std::string msg;
+        bool added = store::add_halow_interface("RNode-Halow", peer, 4242, msg);
+        web::run_init("S82rnsd");
+        std::string extra;
+        if (added)
+            extra = " HaLow interface “" + msg + "” added to the rnsd config.";
+        else if (msg == "already")
+            extra = " HaLow interface is already in the rnsd config.";
+        else
+            extra = " Could not add the HaLow interface: " + msg + ".";
+        render::redirect_flash(res, ret_redirect(), added || msg == "already" ? "success" : "warn",
+            "SLIP link enabled on " + c.device + " @ " + c.baud + " baud." + extra +
+            " rnsd restarted.");
+    } else
         render::redirect_flash(res, ret_redirect(), "success", "SLIP link disabled.");
 }
 
