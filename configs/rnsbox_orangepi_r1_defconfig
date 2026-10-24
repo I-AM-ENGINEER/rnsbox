@@ -2,7 +2,7 @@
 # Sources: configs/base.config + configs/boards/orangepi_r1.config
 
 # RNSBox common configuration — every external-tree board (rpi-universal,
-# orangepi-r1, pc-x86_64, milkv-duo-cv1800b-mainline, the Sophgo mainline
+# orangepi-r1, pc-x86_64, milkv-duo-cv1800b, the Sophgo
 # boards).  The vendor-BSP flows under patches/ keep their own defconfigs:
 # their Kconfig/package set differs and build.sh stamps the vendor policy.
 #
@@ -74,7 +74,7 @@ BR2_PACKAGE_RNSBOX_PORTAL=y
 # RNSBox Orange Pi R1 — Allwinner H2+ (4x Cortex-A7), 256 MB RAM, 100M
 # Ethernet, RTL8189ETV SDIO WiFi, micro-USB OTG (CDC-NCM gadget).
 #
-# Mainline Buildroot flow: upstream Buildroot + mainline Linux 6.6 LTS +
+# Buildroot flow: upstream Buildroot + Linux 6.6 LTS +
 # U-Boot 2024.01 (the same pinned pair as Buildroot's own orangepi_r1
 # defconfig), with the RNSBox external tree supplying the router stack.
 BR2_arm=y
@@ -97,7 +97,7 @@ BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_RNSBOX_PATH)/board/orangepi-r1/post
 BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_RNSBOX_PATH)/board/orangepi-r1/rootfs-overlay"
 BR2_PACKAGE_BUSYBOX_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_RNSBOX_PATH)/board/orangepi-r1/busybox.fragment"
 
-# ---- mainline kernel + U-Boot (upstream orangepi_r1 pair) ----
+# ---- kernel + U-Boot (upstream orangepi_r1 pair) ----
 BR2_LINUX_KERNEL_CUSTOM_VERSION=y
 BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="6.6.31"
 BR2_LINUX_KERNEL_DEFCONFIG="sunxi"

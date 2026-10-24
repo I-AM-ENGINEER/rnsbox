@@ -39,7 +39,7 @@ echo "RNSBox"                 > "${FW}/usb.manufacturer"
 echo "RNSBox Reticulum router (Raspberry Pi, universal 64-bit)" > "${FW}/usb.product"
 echo "02:1d:6b:01:04:02"      > "${FW}/usb.ncm.mac"
 echo "rnsbox"                 > "${FW}/hostname"
-# Lite image: one NCM gadget, no clients disc.
+# One NCM gadget; no clients disc.
 
 # Our kernel cmdline (no GPIO-serial console — the PL011 belongs to SLIP on
 # the Zero 2 W; the Pi 5 debug-UART console rides on ttyAMA10).

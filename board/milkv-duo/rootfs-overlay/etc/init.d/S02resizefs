@@ -1,6 +1,6 @@
 #!/bin/sh
 # S02resizefs — grow the rootfs partition + ext4 to fill the whole SD card
-# on first boot (the shipped image is sized for the lite build; a DVD-class
+# on first boot (the shipped image is sized for this build; a DVD-class
 # card has more space). No-op when there is already <32 MiB of unallocated
 # space after the partition.
 DISK=/dev/mmcblk0

@@ -1,7 +1,7 @@
 From: RNSBox <rnsbox@localhost>
 Subject: [PATCH] thermal: add the Sophgo CV1800 temperature sensor driver
 
-Mainline v7.3-rc7 still lacks a driver for the TEMPSEN block found in
+Linux v7.3-rc7 still lacks a driver for the TEMPSEN block found in
 the CV1800B/SG2000/SG2002 family.  This is the upstream submission
 "thermal: cv1800: Add cv1800 thermal driver support" (Haylen Chu,
 series v5, 2024-10-14), which did not land before this tree's freeze.

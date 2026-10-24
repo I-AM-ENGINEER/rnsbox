@@ -1,11 +1,11 @@
 ################################################################################
 #
-# aic8800 — AIC8800D80 SDIO WiFi/BT driver (SG2000/SG2002 mainline)
+# aic8800 — AIC8800D80 SDIO WiFi/BT driver (SG2000/SG2002 upstream)
 #
 ################################################################################
 
 AIC8800_VERSION = 1.0
-AIC8800_SITE = $(BR2_EXTERNAL_RNSBOX_PATH)/board/sg2000-mainline/aic8800
+AIC8800_SITE = $(BR2_EXTERNAL_RNSBOX_PATH)/board/sg2000/aic8800
 AIC8800_SITE_METHOD = local
 AIC8800_LICENSE = GPL-2.0
 AIC8800_DEPENDENCIES = linux

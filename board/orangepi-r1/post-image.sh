@@ -27,7 +27,7 @@ echo "RNSBox"                 > "${BINARIES_DIR}/usb.manufacturer"
 echo "RNSBox Reticulum router (Orange Pi R1)" > "${BINARIES_DIR}/usb.product"
 echo "02:1d:6b:01:04:03"      > "${BINARIES_DIR}/usb.ncm.mac"
 echo "rnsbox"                 > "${BINARIES_DIR}/hostname"
-# Lite image: one NCM gadget, no clients disc.
+# One NCM gadget; no clients disc.
 
 # boot.cmd -> boot.scr (mkimage comes from host-uboot-tools, enabled in the
 # defconfig). Buildroot already generated it through the *_BOOT_SCRIPT
@@ -48,10 +48,8 @@ genimage \
 	--outputpath "${BINARIES_DIR}" \
 	--config "${BOARD_DIR}/genimage.cfg"
 
-# build.sh exports RNSBOX_BOARD/RNSBOX_VARIANT for the external-tree boards.
-VARIANT="${RNSBOX_VARIANT:-lite}"
-SUFFIX=""
-if [ "$VARIANT" != lite ]; then SUFFIX="-$VARIANT"; fi
-TAGGED="${BINARIES_DIR}/rnsbox-${RNSBOX_BOARD:-orangepi-r1}${SUFFIX}.img"
+# build.sh exports RNSBOX_BOARD for the external-tree boards.
+
+TAGGED="${BINARIES_DIR}/rnsbox-${RNSBOX_BOARD:-orangepi-r1}.img"
 cp -f "${BINARIES_DIR}/sdcard.img" "${TAGGED}"
 echo "post-image: ${TAGGED} ($(stat -c%s "${TAGGED}") bytes)"

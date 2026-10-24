@@ -4,7 +4,7 @@ Subject: [PATCH] textui: use the in-process log view on all platforms
 
 urwid.Terminal runs tail(1) on a private PTY for the Log tab. Tearing that
 vterm down while switching tabs can raise from os.read() and terminate the
-whole TUI (observed on the SG2000 mainline board), and the extra process,
+whole TUI (observed on the SG2000 upstream board), and the extra process,
 PTY and continuous redraw are costly on small routers. The in-process
 last-N-lines view is already used on win32; use it everywhere.
 ---

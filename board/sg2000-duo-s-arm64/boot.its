@@ -1,0 +1,51 @@
+/*
+ * RNSBox boot.sd FIT for the Milk-V Duo S (SG2000, Cortex-A53).
+ * Same scheme as board/sg2000/boot.its: the vendor u-boot boots
+ * the FIT's default configuration, Image is loaded at 0x80200000.
+ *
+ * The vendor u-boot blob is the ARM64 one from the SG2000 vendor BSP
+ * (sg2000_duo01evb_arm64_sd); it names its boot config after the board
+ * directory, so the default and the named config both use that name.
+ */
+/dts-v1/;
+
+/ {
+	description = "RNSBox (sg2000 milkv-duo-s arm64)";
+	#address-cells = <2>;
+
+	images {
+		kernel-1 {
+			description = "linux arm64 Image";
+			data = /incbin/("./Image");
+			type = "kernel";
+			arch = "arm64";
+			os = "linux";
+			compression = "none";
+			load = <0x0 0x80200000>;
+			entry = <0x0 0x80200000>;
+			hash-1 {
+				algo = "crc32";
+			};
+		};
+
+		fdt-sg2000_duo01evb_arm64_sd {
+			description = "sg2000-milkv-duo-s device tree";
+			data = /incbin/("./sg2000-milkv-duo-s.dtb");
+			type = "flat_dt";
+			arch = "arm64";
+			compression = "none";
+			hash-1 {
+				algo = "crc32";
+			};
+		};
+	};
+
+	configurations {
+		default = "config-sg2000_duo01evb_arm64_sd";
+		config-sg2000_duo01evb_arm64_sd {
+			description = "RNSBox sg2000 arm64 (vendor u-boot name)";
+			kernel = "kernel-1";
+			fdt = "fdt-sg2000_duo01evb_arm64_sd";
+		};
+	};
+};

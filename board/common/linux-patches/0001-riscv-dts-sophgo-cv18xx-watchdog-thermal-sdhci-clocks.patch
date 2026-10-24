@@ -6,8 +6,7 @@ The CV1800B/SG2000/SG2002 family shares the DesignWare APB watchdog
 and the soc-thermal zone (passive 85 C, hot 95 C, critical 110 C) so
 every board inherits /dev/watchdog0 and a temperature readout.
 
-The SDHCI clock order is deliberately NOT touched here. The mainline
-driver's existing core/bus mapping is what the known-good images used;
+The SDHCI clock order is deliberately NOT touched here. The driver's existing core/bus mapping is what the known-good images used;
 swapping it to feed the card clock as "core" made the Module 01 EVB hang
 before the console. Restore that fix only after it is proven on hardware.
 

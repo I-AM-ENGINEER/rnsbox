@@ -1,11 +1,11 @@
 /*
- * RNSBox mainline boot.sd FIT for the vendor u-boot (milkv-duo-cv1800b flow
+ * RNSBox boot.sd FIT for the vendor u-boot (milkv-duo-cv1800b flow
  * blobs, see README.fip.md). Packed by post-image.sh with cwd = BINARIES_DIR
  * (the /incbin/ paths are relative to it).
  *
  * - config name is NOT free: the vendor u-boot runs
  *   `bootm ${uImage_addr}#config-cv1800b_sophpi_duo_sd`.
- * - load/entry 0x80200000: mainline riscv needs a 2MB-aligned load address;
+ * - load/entry 0x80200000: riscv needs a 2MB-aligned load address;
  *   0x80200000 is clear of the OpenSBI region (0x80000000..0x80080000,
  *   reserved in the DTS) and of the FAT-load buffer at 0x81400000 (u-boot
  *   has already relocated itself to the top of RAM by bootm time).
@@ -16,12 +16,12 @@
 /dts-v1/;
 
 / {
-	description = "RNSBox mainline (milkv-duo cv1800b)";
+	description = "RNSBox (milkv-duo cv1800b)";
 	#address-cells = <2>;
 
 	images {
 		kernel-1 {
-			description = "mainline linux Image.gz";
+			description = "linux Image.gz";
 			data = /incbin/("./Image.gz");
 			type = "kernel";
 			arch = "riscv";
@@ -35,7 +35,7 @@
 		};
 
 		fdt-cv1800b_sophpi_duo_sd {
-			description = "mainline cv1800b-milkv-duo device tree";
+			description = "cv1800b-milkv-duo device tree";
 			data = /incbin/("./cv1800b-milkv-duo.dtb");
 			type = "flat_dt";
 			arch = "riscv";
@@ -49,7 +49,7 @@
 	configurations {
 		default = "config-cv1800b_sophpi_duo_sd";
 		config-cv1800b_sophpi_duo_sd {
-			description = "RNSBox mainline cv1800b (vendor u-boot name)";
+			description = "RNSBox cv1800b (vendor u-boot name)";
 			kernel = "kernel-1";
 			fdt = "fdt-cv1800b_sophpi_duo_sd";
 		};

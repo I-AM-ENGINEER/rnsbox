@@ -1,8 +1,7 @@
 #!/bin/bash
 # RNSBox PC/VM post-image: assemble the BIOS disk (MBR grub + one ext4 root)
-# with genimage and tag it the house way: images/rnsbox-pc-x86_64-<variant>.img.
-# The pc target ships the lite shape only (no clients-DVD gadget LUN — the VM
-# has no USB gadget to expose it on).
+# with genimage and tag it images/rnsbox-pc-x86_64.img (no clients-DVD gadget
+# LUN — the VM has no USB gadget to expose it on).
 set -e
 
 BOARD_DIR="$(dirname "$0")"
@@ -27,12 +26,10 @@ genimage \
 rm -rf "${ROOTPATH_TMP}"
 trap - EXIT
 
-VARIANT="${RNSBOX_VARIANT:-lite}"
+
 NEW="${BINARIES_DIR}/disk.img"
-SUFFIX=""
-if [ "$VARIANT" != lite ]; then SUFFIX="-$VARIANT"; fi
-TAGGED="${BINARIES_DIR}/rnsbox-${RNSBOX_BOARD:-pc-x86_64}${SUFFIX}.img"
+TAGGED="${BINARIES_DIR}/rnsbox-${RNSBOX_BOARD:-pc-x86_64}.img"
 cp -f "$NEW" "$TAGGED"
-echo "=================== IMAGE OK [${VARIANT}] $(date) ==================="
+echo "=================== IMAGE OK $(date) ==================="
 ls -lh "$TAGGED" | awk '{print "  "$5"  "$NF}'
 echo "DONE-SENTINEL-OK"

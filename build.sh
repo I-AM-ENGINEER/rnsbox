@@ -16,7 +16,7 @@
 #         sg2000-duo-s-rv64
 #
 # Env overrides: UPSTREAM_URL, UPSTREAM_COMMIT, UPSTREAM_BASE, ODIR,
-# BR2_DL_DIR. Every image is lite (one NCM gadget; no clients disc).
+# BR2_DL_DIR. One image per board (one NCM gadget; no clients disc).
 #
 # RNS version policy: the shipped `rns` (Reticulum) is the LATEST release at
 # build time — build.sh asks PyPI, re-pins package/python-rns and verifies
@@ -43,7 +43,6 @@ BOARD=""
 for a in "$@"; do
     BOARD="$a"
 done
-VARIANT=lite
 BOARD="${BOARD:-rpi-universal}"
 
 BOARDS="rpi-universal pc-x86_64 orangepi-r1 milkv-duo-cv1800b-rv64 sg2000-duo-s-arm64 sg2000-duomodule01-rv64 sg2002-licheerv-nano-rv64 sg2002-duo256m-rv64 sg2000-duo-s-rv64"
@@ -66,12 +65,12 @@ case "$BOARD" in
     rpi-universal)             DEFCONFIG=rnsbox_rpi_universal_defconfig ;;
     pc-x86_64)                 DEFCONFIG=rnsbox_pc_x86_64_defconfig ;;
     orangepi-r1)               DEFCONFIG=rnsbox_orangepi_r1_defconfig ;;
-    milkv-duo-cv1800b-rv64)    DEFCONFIG=rnsbox_milkv_duo_cv1800b_mainline_defconfig ;;
-    sg2000-duo-s-arm64)        DEFCONFIG=rnsbox_duo_s_arm64_mainline_defconfig ;;
-    sg2000-duomodule01-rv64)   DEFCONFIG=rnsbox_sg2000_duomodule01_mainline_defconfig ;;
-    sg2002-licheerv-nano-rv64) DEFCONFIG=rnsbox_licheerv_nano_mainline_defconfig ;;
-    sg2002-duo256m-rv64)       DEFCONFIG=rnsbox_duo256m_mainline_defconfig ;;
-    sg2000-duo-s-rv64)         DEFCONFIG=rnsbox_duo_s_mainline_defconfig ;;
+    milkv-duo-cv1800b-rv64)    DEFCONFIG=rnsbox_milkv_duo_cv1800b_defconfig ;;
+    sg2000-duo-s-arm64)        DEFCONFIG=rnsbox_duo_s_arm64_defconfig ;;
+    sg2000-duomodule01-rv64)   DEFCONFIG=rnsbox_sg2000_duomodule01_defconfig ;;
+    sg2002-licheerv-nano-rv64) DEFCONFIG=rnsbox_licheerv_nano_defconfig ;;
+    sg2002-duo256m-rv64)       DEFCONFIG=rnsbox_duo256m_defconfig ;;
+    sg2000-duo-s-rv64)         DEFCONFIG=rnsbox_duo_s_defconfig ;;
 esac
 BUILD_STYLE=external
 UPSTREAM_URL="${UPSTREAM_URL:-https://github.com/buildroot/buildroot.git}"
@@ -133,7 +132,6 @@ rnsbox_build_external() {
     export PATH=$(printf '%s' "$PATH" | tr ':' '
 ' | grep -v '^/mnt/[a-z]/' | paste -sd:)
     export PATH=/usr/sbin:/sbin:$PATH
-    export RNSBOX_VARIANT="$VARIANT"
     echo ">> configuring ($DEFCONFIG) + building (first run compiles everything; be patient)"
     make -C "$UPSTREAM" O="$ODIR" BR2_EXTERNAL="$EXT" "$DEFCONFIG"
     rnsbox_pin_dl
@@ -202,7 +200,7 @@ if [ "${BUILD_STYLE:-external}" = external ]; then
     # how a "fresh" RPi/EVB image shipped a week-old portal). Drop the
     # extracted copies and their stamps; the next make re-extracts them
     # from $EXT. aic8800 is the
-    # out-of-tree WiFi driver source shipped in board/sg2000-mainline/.
+    # out-of-tree WiFi driver source shipped in board/sg2000/.
     # hostapd: board/common/buildroot-patches/hostapd patches the nl80211
     # driver (monitor-less AP mgmt frames), which is only applied at extract.
     for p in rnsbox-update rnsbox-portal python-rns python-lxmf python-nomadnet python-ble-reticulum rnsbox-python-bluezero aic8800 hostapd wpa_supplicant; do
@@ -276,7 +274,7 @@ if [ "${BUILD_STYLE:-external}" = external ]; then
     rnsbox_build_external
 
     echo ">> done — image(s) under $ODIR/images/"
-    ls -lh "$ODIR/images/rnsbox-$BOARD.img" "$ODIR/images/rnsbox-$BOARD-$VARIANT.img" 2>/dev/null | tail -2 || true
+    ls -lh "$ODIR/images/rnsbox-$BOARD.img" 2>/dev/null || true
     exit 0
 fi
 

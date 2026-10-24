@@ -1,0 +1,52 @@
+/*
+ * RNSBox boot.sd FIT for the LicheeRV Nano (SG2002, C906).
+ * Same scheme as board/sg2000/boot.its: the vendor u-boot boots
+ * the FIT's default configuration (older generations append
+ * #config-sg2002_licheervnano_sd), Image.gz is gunzipped to 0x80200000.
+ *
+ * Built by configs/rnsbox_licheerv_nano_defconfig; the
+ * v7.3-rc7 tree already ships sg2002-licheerv-nano-b.dts and
+ * linux-patches/0001-* enables its gmac0 + mdio nodes (internal EPHY).
+ */
+/dts-v1/;
+
+/ {
+	description = "RNSBox (sg2002 licheerv-nano)";
+	#address-cells = <2>;
+
+	images {
+		kernel-1 {
+			description = "linux Image.gz";
+			data = /incbin/("./Image.gz");
+			type = "kernel";
+			arch = "riscv";
+			os = "linux";
+			compression = "gzip";
+			load = <0x0 0x80200000>;
+			entry = <0x0 0x80200000>;
+			hash-1 {
+				algo = "crc32";
+			};
+		};
+
+		fdt-sg2002_licheervnano_sd {
+			description = "sg2002-licheerv-nano-b device tree";
+			data = /incbin/("./sg2002-licheerv-nano-b.dtb");
+			type = "flat_dt";
+			arch = "riscv";
+			compression = "none";
+			hash-1 {
+				algo = "crc32";
+			};
+		};
+	};
+
+	configurations {
+		default = "config-sg2002_licheervnano_sd";
+		config-sg2002_licheervnano_sd {
+			description = "RNSBox sg2002 (vendor u-boot name)";
+			kernel = "kernel-1";
+			fdt = "fdt-sg2002_licheervnano_sd";
+		};
+	};
+};
