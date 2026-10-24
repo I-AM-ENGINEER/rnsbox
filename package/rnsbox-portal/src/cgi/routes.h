@@ -123,6 +123,13 @@ void rnode_page(const http::Request&, http::Response&);            // GET  rende
 void rnode_serial(const http::Request&, http::Response&);          // GET  JSON port list
 void rnode_action(const http::Request&, http::Response&);          // GET  JSON action result
 
+// RNode HaLow flasher tab (factory HGIC devices over raw Ethernet + RNode)
+void flasher_page(const http::Request&, http::Response&);          // GET  render
+void flasher_scan(const http::Request&, http::Response&);          // GET  JSON devices
+void flasher_status(const http::Request&, http::Response&);        // GET  JSON progress
+void flasher_action(const http::Request&, http::Response&);        // POST JSON (flash/reboot/ip/format)
+void flasher_fetch(const http::Request&, http::Response&);         // POST JSON (GitHub download)
+
 // Map tab: announced nodes with coordinates (offline render)
 void map_page(const http::Request&, http::Response&);              // GET  render
 void map_nodes(const http::Request&, http::Response&);             // GET  JSON nodes
