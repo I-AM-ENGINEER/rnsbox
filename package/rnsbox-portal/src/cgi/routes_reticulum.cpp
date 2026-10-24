@@ -571,6 +571,7 @@ void reticulum_page(const Request& req, Response& res) {
         badge = "<span class=\"badge warn\">update available: " + E(latest) + "</span>";
     else if (!latest.empty() && uerror.empty())
         badge = "<span class=\"badge ok\">up to date</span>";
+    if (badge.empty()) badge = "<span class=\"muted\">&mdash;</span>";
     h = R(std::move(h), "__UPDATE_BADGE__", badge);
 
     std::string chk;
@@ -634,21 +635,37 @@ void reticulum_page(const Request& req, Response& res) {
     h = R(std::move(h), "__RESTART_DAYS_OPTIONS__", opts);
     h = R(std::move(h), "__RNSD_RESTART_TIME__", E(store::read_rnsd_restart_time()));
 
+    // Status rows carry a badge or text, never both: a coloured state chip
+    // next to a sentence reads as two different values on one line.
     std::string link;
-    if (slst.up)
-        link = "<span class=\"badge ok\">UP</span> " + E(sl.local_ip) + " &rarr; " + E(sl.peer_ip);
-    else if (slst.present)
-        link = "<span class=\"badge warn\">DOWN</span> (attached, no address)";
-    else if (slip_on)
-        link = "<span class=\"badge warn\">not attached</span> (modem wired?)";
-    else
-        link = "<span class=\"badge\">disabled</span>";
+    if (slst.up)            link = "<span class=\"badge ok\">UP</span>";
+    else if (slst.present)  link = "<span class=\"badge warn\">DOWN</span>";
+    else if (slip_on)       link = "<span class=\"badge warn\">not attached</span>";
+    else                    link = "<span class=\"muted\">disabled</span>";
     h = R(std::move(h), "__SLIP_LINK_STATUS__", link);
 
     std::string halow;
     if (slip_on) {
+        std::string note;
+        if (!slst.up)
+            note = slst.present
+                ? "The UART is attached but sl0 has no address."
+                : "The UART is not attached &mdash; is the modem wired?";
+        std::string addr = slst.up
+            ? E(sl.local_ip) + " &rarr; " + E(sl.peer_ip)
+            : "<span class=\"muted\">&mdash;</span>";
         halow =
-            "<div id=\"halow-live\" class=\"halow-live muted\">Loading modem status…</div>\n"
+            "<table class=\"kv\" id=\"halow-kv\">\n"
+            "    <tr><th>Link (sl0)</th><td id=\"halow-link\">" + link + "</td></tr>\n"
+            "    <tr><th>Addresses</th><td id=\"halow-addr\">" + addr + "</td></tr>\n"
+            "    <tr><th>rnsd interface</th><td id=\"halow-iface\"><span class=\"muted\">&mdash;</span></td></tr>\n"
+            "    <tr><th>Radio</th><td id=\"halow-radio\"><span class=\"muted\">&mdash;</span></td></tr>\n"
+            "    <tr><th>Airtime</th><td id=\"halow-air\"><span class=\"muted\">&mdash;</span></td></tr>\n"
+            "    <tr><th>Noise floor</th><td id=\"halow-noise\"><span class=\"muted\">&mdash;</span></td></tr>\n"
+            "    <tr><th>Throughput</th><td id=\"halow-thru\"><span class=\"muted\">&mdash;</span></td></tr>\n"
+            "    <tr><th>Modem</th><td id=\"halow-modem\"><span class=\"muted\">&mdash;</span></td></tr>\n"
+            "  </table>\n"
+            "  <p class=\"muted\" id=\"halow-note\"" + (note.empty() ? " hidden" : "") + ">" + note + "</p>\n"
             "  <details class=\"neigh\" id=\"halow-neigh\" hidden>\n"
             "    <summary>Neighbours heard (<span id=\"halow-ncount\">0</span>)</summary>\n"
             "    <div class=\"body\"><table class=\"data\" id=\"halow-ntable\"></table></div>\n"
@@ -660,8 +677,9 @@ void reticulum_page(const Request& req, Response& res) {
             "      <input type=\"hidden\" name=\"iface_port\" id=\"halow-add-port\" value=\"4242\">\n"
             "      <button type=\"submit\" class=\"btn-primary\">+ Add to rnsd config</button>\n"
             "    </form>\n"
-            "  </div>\n"
-            "  <p class=\"muted\" style=\"margin:6px 0 0\">Full stats, graphs &amp; config live in the modem's own web page.</p>";
+            "  </div>";
+    } else {
+        halow = "<table class=\"kv\"><tr><th>Link (sl0)</th><td>" + link + "</td></tr></table>";
     }
     h = R(std::move(h), "__HALOW_LIVE_BLOCK__", halow);
 

@@ -63,6 +63,7 @@ __DEFAULT_PASS_WARN__
       <tr><th>Memory</th><td id="d-rnsd-mem">__RNSD_MEM__</td></tr>
       <tr><th>Uptime</th><td id="d-rnsd-uptime">__RNSD_UPTIME__</td></tr>
       <tr><th>Version</th><td id="d-rnsd-version">__RNSD_VERSION__</td></tr>
+      <tr><th>Update</th><td id="d-rnsd-update">__RNSD_UPDATE__</td></tr>
     </table>
     <p class="cardfoot"><a class="btn" href="__BASE__/reticulum">Manage &rarr;</a></p>
   </section>
@@ -143,10 +144,11 @@ __HALOW_SCRIPT__
     setText('d-rnsd-dest', rn.destinations != null ? String(rn.destinations) : '—');
     setText('d-rnsd-mem', rn.running && rn.rss_mb ? rn.rss_mb+' MB' : '—');
     setText('d-rnsd-uptime', (rn.uptime_s >= 0 && rn.uptime) ? 'up '+rn.uptime : '—');
-    var vh='<strong>'+esc(up.installed||'unknown')+'</strong>';
-    if(up.update_available) vh+=' <span class="badge warn">update available: '+esc(up.latest)+'</span>';
-    else if(up.latest && !up.error) vh+=' <span class="badge ok">up to date</span>';
-    setHTML('d-rnsd-version', vh);
+    setHTML('d-rnsd-version', '<strong>'+esc(up.installed||'unknown')+'</strong>');
+    var uv='';
+    if(up.update_available) uv='<span class="badge warn">update available: '+esc(up.latest)+'</span>';
+    else if(up.latest && !up.error) uv='<span class="badge ok">up to date</span>';
+    setHTML('d-rnsd-update', uv||'<span class="muted">&mdash;</span>');
   }
   function patchWifi(d){
     if (!document.getElementById('d-wifi-sta-state')) return;
