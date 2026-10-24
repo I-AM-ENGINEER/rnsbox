@@ -4,18 +4,21 @@ Subject: [PATCH] riscv: dts: sophgo: clock the EVB SLIP UARTs at 96 MHz
 Set the camera PLL to 96 MHz; UART1/UART2 take it as their baud clock
 (previous patch), which makes the modem 2 Mbaud exact.
 
-clk_cam0_200 is deliberately left alone: it stays at the bootloader
-rate (25 MHz crystal) for the console, and disppll is not touched at
-all (it also feeds AXI/CPU, so changing it hangs userspace).
+The PLL gets mipimpll as its reference and therefore runs in fractional
+mode (fpll_set_parent clears the bypass enable). clk_cam0_200 is
+deliberately left alone: it stays at the bootloader rate (25 MHz crystal)
+for the console, and disppll is not touched at all (it also feeds
+AXI/CPU, so changing it hangs userspace).
 
 --- a/arch/riscv/boot/dts/sophgo/sg2000-duomodule01-evb.dts
 +++ b/arch/riscv/boot/dts/sophgo/sg2000-duomodule01-evb.dts
-@@ -304,8 +304,7 @@
+@@ -304,8 +304,8 @@
   * this mux in a state Linux can rely on, so pin parent and rate here.
   */
  &clk {
 -	assigned-clocks = <&clk CLK_CAM0_200>;
 -	assigned-clock-parents = <&clk CLK_DISPPLL>;
 +	assigned-clocks = <&clk CLK_CAM0PLL>;
++	assigned-clock-parents = <&clk CLK_MIPIMPLL>;
  	assigned-clock-rates = <96000000>;
  };
