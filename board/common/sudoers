@@ -1,0 +1,3 @@
+# Managed by RNSBox. root is locked; admin is the operator account.
+root ALL=(ALL:ALL) ALL
+#includedir /etc/sudoers.d

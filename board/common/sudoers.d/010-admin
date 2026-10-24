@@ -1,0 +1,4 @@
+# The operator account: SSH and the browser Console log in as admin, root is
+# locked. Passwordless is deliberate — the admin login is the credential and
+# the router appliance has no other privileged account.
+admin ALL=(ALL) NOPASSWD: ALL

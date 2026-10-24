@@ -52,6 +52,14 @@ fi
 if [ -f "$COMMON_DIR/S10consoleuser" ] && [ -d "$T/etc/init.d" ]; then
 	install -m 0755 "$COMMON_DIR/S10consoleuser" "$T/etc/init.d/S10consoleuser"
 fi
+# Privilege escalation for the operator account. SSH and the browser Console
+# log in as admin while root is locked, so sudo is the only path to root.
+# Overwrite the sudo package's default /etc/sudoers with the appliance policy;
+# the NOPASSWD rule lives in sudoers.d/010-admin.
+if [ -x "$T/usr/bin/sudo" ] || [ -x "$T/bin/sudo" ]; then
+	install -D -m 0440 "$COMMON_DIR/sudoers" "$T/etc/sudoers"
+	install -D -m 0440 "$COMMON_DIR/sudoers.d/010-admin" "$T/etc/sudoers.d/010-admin"
+fi
 # PTY broker behind the Console tab (xterm.js over the portal's HTTP port).
 if [ -f "$COMMON_DIR/S11console" ] && [ -d "$T/etc/init.d" ]; then
 	install -m 0755 "$COMMON_DIR/S11console" "$T/etc/init.d/S11console"

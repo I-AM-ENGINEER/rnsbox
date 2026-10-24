@@ -1,6 +1,6 @@
 # RNSBox buildroot users table (BR2_ROOTFS_USERS_TABLES).
 #
-# admin — the unprivileged operator account: SSH login (Settings -> SSH in the
+# admin — the operator account (sudo-enabled): SSH login (Settings -> SSH in the
 # portal) and the serial console. The password is LOCKED ('!') at build
 # time; the user sets it in the portal when enabling SSH (the portal's CGI
 # runs `passwd -a sha512 admin`). uid/gid are auto-allocated (1000).

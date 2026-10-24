@@ -208,10 +208,11 @@ service. Details: `package/rnsbox-portal/src/win/README.md`.
 | SSH     | admin | admin    |
 | Web UI  | admin | admin    |
 
-Root login is disabled; `admin` is the operator account and sudo is not
-installed. Change the password on first use (Settings → Change admin
-password; it updates both the web and Unix accounts). The web password is
-stored hashed (pbkdf2) in `/etc/rnsbox/auth.json` after first login.
+Root login is disabled; `admin` is the operator account and has passwordless
+sudo (`admin ALL=(ALL) NOPASSWD: ALL`), the one privileged path for SSH and
+the browser Console. Change the password on first use (Settings → Change
+admin password; it updates both the web and Unix accounts). The web password
+is stored hashed (pbkdf2) in `/etc/rnsbox/auth.json` after first login.
 
 ## Licensing
 
