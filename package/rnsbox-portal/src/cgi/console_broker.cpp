@@ -34,6 +34,7 @@
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/un.h>
+#include <sys/wait.h>
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
@@ -73,9 +74,61 @@ std::string port_path()   { return run_dir() + "/rnsbox-term.port"; }
 namespace {
 
 const char NOMADNET_EXE[] = "/usr/bin/nomadnet";
+// The TUI and the daemon share one NomadNet identity/storage. The TUI runs
+// as root (like the daemon) with these explicit paths; it cannot use the
+// admin home because that would be a second, unrelated identity.
+const char NOMADNET_CONFIG[]     = "/var/lib/nomadnetwork";
+const char NOMADNET_RNS_CONFIG[] = "/etc/reticulum";
+const char NOMADNET_PIDFILE[]    = "/var/run/nomadnet.pid";
+const char NOMADNET_INIT[]       = "/etc/init.d/S83nomadnet";
 
 std::string sock_path() { return run_dir() + "/rnsbox-console.sock"; }
 std::string pid_path()  { return run_dir() + "/rnsbox-console.pid"; }
+std::string nomadnet_flag_path() { return run_dir() + "/rnsbox-nomadnet-tui"; }
+std::string nomadnet_req_path()  { return run_dir() + "/rnsbox-nomadnet.req"; }
+
+bool nomadnet_daemon_running() {
+    FILE* f = ::fopen(NOMADNET_PIDFILE, "r");
+    if (!f) return false;
+    long pid = 0;
+    int n = ::fscanf(f, "%ld", &pid);
+    ::fclose(f);
+    return n == 1 && pid > 0 && ::kill((pid_t)pid, 0) == 0;
+}
+
+// Stop the daemon before the TUI opens the same config dir. The init script
+// is serialized by its own lock and normally exits in ~2 s; wait for it so
+// the TUI never races the daemon for the identity/storage.
+// Fire-and-forget: the init script takes seconds and the broker must keep
+// serving the Console/NomadNet WebSockets meanwhile. spawn_session() sets
+// nomad_stop_at and the main loop starts the TUI once the pidfile is gone.
+void kick_nomadnet_stop() {
+    pid_t pid = ::fork();
+    if (pid < 0) return;
+    if (pid == 0) {
+        ::setsid();
+        pid_t inner = ::fork();
+        if (inner != 0) ::_exit(0);
+        int nul = ::open("/dev/null", O_RDWR);
+        if (nul >= 0) {
+            ::dup2(nul, 0); ::dup2(nul, 1); ::dup2(nul, 2);
+            if (nul > 2) ::close(nul);
+        }
+        ::execl(NOMADNET_INIT, "S83nomadnet", "stop", (char*)nullptr);
+        ::_exit(127);
+    }
+    int st = 0;
+    (void)::waitpid(pid, &st, 0);   // reap the short-lived intermediate child
+}
+
+// rnsbox-mon uses this file's mtime to stop the daemon after an idle period;
+// the page and the attached terminal keep it fresh.
+void touch_nomadnet_req() {
+    std::string p = nomadnet_req_path();
+    int fd = ::open(p.c_str(), O_WRONLY | O_CREAT | O_CLOEXEC, 0644);
+    if (fd >= 0) ::close(fd);
+    ::utimensat(AT_FDCWD, p.c_str(), nullptr, 0);
+}
 
 long long now_ms() {
     struct timespec ts;
@@ -102,6 +155,10 @@ constexpr int    HEARTBEAT_SEC  = 10;           // keeps the HTTP stream live an
 // A closed tab must not throw away a running NomadNet TUI: keep it attachable
 // for five minutes, then reap it (it is started lazily to save RAM).
 constexpr int    NOMADNET_IDLE_SEC = 5 * 60;
+// A detached TUI keeps running its event loop (and can burn 20-30% of this
+// single core). Stop the process group after this long without a client;
+// the next attach sends SIGCONT and the session resumes in place.
+constexpr int    NOMADNET_SUSPEND_SEC = 30;
 
 volatile sig_atomic_t g_stop = 0;
 
@@ -174,6 +231,8 @@ struct Session {
     time_t      spawned = 0;
     time_t      respawn_at = 0;
     time_t      idle_since = 0;   // NomadNet: no attached stream since this time
+    time_t      nomad_stop_at = 0;// NomadNet: waiting for the daemon to exit
+    bool        suspended = false;// NomadNet TUI stopped while detached
     int         cols = 80;
     int         rows = 24;
     std::string ring;      // replay window (legacy transport)
@@ -260,14 +319,15 @@ std::string account_shell() {
 // `args`. The broker itself stays root (it owns the root-only socket); the
 // terminal process is unprivileged.
 bool spawn_pty(Session& s, const std::string& exe,
-               const std::vector<std::string>& args) {
+               const std::vector<std::string>& args, bool as_root = false) {
     struct passwd* pw = getpwnam("admin");
     bool have_admin = pw != nullptr;
+    bool drop_admin = have_admin && !as_root;
     uid_t uid = 0;
     gid_t gid = 0;
     std::string home = "/root";
     std::string user = "root";
-    if (pw) {
+    if (drop_admin) {
         uid = pw->pw_uid;
         gid = pw->pw_gid;
         home = (pw->pw_dir && *pw->pw_dir) ? pw->pw_dir : "/home/admin";
@@ -305,7 +365,7 @@ bool spawn_pty(Session& s, const std::string& exe,
         dup2(slave, 0); dup2(slave, 1); dup2(slave, 2);
         if (slave > 2) close(slave);
         close(m);
-        if (have_admin) {
+        if (drop_admin) {
             (void)initgroups(user.c_str(), gid);
             if (setgid(gid) != 0 || setuid(uid) != 0) _exit(127);
         }
@@ -348,27 +408,58 @@ void ensure_screen(Session& s) {
     s.grid = true;
 }
 
+// Defined with the session plumbing below; used for the startup notice.
+void ring_append(Session& s, const char* p, size_t n);
+void feed_screen(Session& s, const char* p, size_t n);
+void broadcast(Session& s, const char* p, size_t n);
+
 bool spawn_session(Session& s) {
     if (s.name == SESSION_NOMADNET) {
         const char* env_exe = getenv("RNSBOX_TERM_NOMADNET_EXE");
         std::string exe = (env_exe && *env_exe) ? std::string(env_exe) : std::string(NOMADNET_EXE);
         s.grid = true;
         ensure_screen(s);
+        static const char starting[] =
+            "\r\n[NomadNet: starting the TUI with the node identity...]\r\n";
+        ring_append(s, starting, sizeof(starting) - 1);
+        feed_screen(s, starting, sizeof(starting) - 1);
+        broadcast(s, starting, sizeof(starting) - 1);
         if (access(exe.c_str(), X_OK) != 0) {
             s.error = std::string("NomadNet is not installed on this system (") +
                       exe + " missing).";
             return false;
         }
-        // The TUI reads the same config rnsd/nomadnet use, or creates its own
-        // under the admin home; it attaches to rnsd's shared instance when
-        // that is up, exactly like running `nomadnet` over SSH.
+        // Use the daemon's NomadNet config/identity (not a second identity
+        // under the admin home): the browser TUI is the same node. Stop the
+        // daemon first — one config dir, one instance at a time — and leave
+        // /run/rnsbox-nomadnet-tui for S83nomadnet/wanwatch so they cannot
+        // start a second instance while the TUI is alive.
         std::vector<std::string> args;
         args.push_back("nomadnet");
-        if (!spawn_pty(s, exe, args)) {
+        args.push_back("--config");
+        args.push_back(NOMADNET_CONFIG);
+        args.push_back("--rnsconfig");
+        args.push_back(NOMADNET_RNS_CONFIG);
+        int flag = ::open(nomadnet_flag_path().c_str(),
+                          O_WRONLY | O_CREAT | O_CLOEXEC, 0644);
+        if (flag >= 0) ::close(flag);
+        touch_nomadnet_req();
+        if (nomadnet_daemon_running()) {
+            kick_nomadnet_stop();
+            s.nomad_stop_at = time(nullptr) + 25;
+            s.error = "Stopping the NomadNet daemon...";
+            return true;   // no PTY yet; the main loop starts it when gone
+        }
+        s.nomad_stop_at = 0;
+        if (!spawn_pty(s, exe, args, true)) {
+            ::unlink(nomadnet_flag_path().c_str());
             s.error = "Could not start NomadNet (PTY setup failed).";
             return false;
         }
         s.screen->reset();
+        ring_append(s, starting, sizeof(starting) - 1);
+        feed_screen(s, starting, sizeof(starting) - 1);
+        broadcast(s, starting, sizeof(starting) - 1);
         s.dirty = true;
         s.flush_at = now_ms() + g_frame_ms;
         for (Client& c : g_clients)
@@ -526,6 +617,14 @@ void feed_screen(Session& s, const char* p, size_t n) {
     if (any_ws_attached(s) && !s.flush_at) s.flush_at = now_ms() + g_frame_ms;
 }
 
+// Resume a suspended NomadNet TUI; called when a client attaches.
+void resume_nomadnet(Session& s) {
+    if (s.name != SESSION_NOMADNET) return;
+    if (s.suspended && s.child > 0) ::kill(-s.child, SIGCONT);
+    s.suspended = false;
+    s.idle_since = 0;
+}
+
 // master_dead — the PTY reached EOF (the session process exited). The shell
 // is restarted immediately, as it always was: the Console tab is the operator's
 // way in and must not stay dead after a stray `exit`. NomadNet is not
@@ -536,10 +635,15 @@ void master_dead(Session& s) {
     s.master = -1;
     s.child = 0;
     s.idle_since = 0;
+    s.suspended = false;
+    s.nomad_stop_at = 0;
     s.to_pty.clear();
     s.pty_off = 0;
 
     if (s.name == SESSION_NOMADNET) {
+        // The TUI no longer owns /var/lib/nomadnetwork; the next start may
+        // bring the daemon back (wanwatch/operator).
+        ::unlink(nomadnet_flag_path().c_str());
         // Keep the last screen (a crash traceback is worth reading) and add
         // the hint; spawn_session() clears the ring when it starts again.
         static const char msg[] =
@@ -708,7 +812,7 @@ void handle_ws_handshake(Client& c) {
     c.state = Client::ATTACHED;
     c.need_snapshot = true;
     c.last_mode_epoch = 0;
-    s->idle_since = 0;
+    resume_nomadnet(*s);
 
     set_winsize(*s, cols, rows);
     if (s->master < 0) {
@@ -792,7 +896,7 @@ void handle_handshake(Client& c) {
         // starts at the right size instead of 80x24.
         set_winsize(*s, cols, rows);
         c.state = Client::ATTACHED;
-        s->idle_since = 0;
+        resume_nomadnet(*s);
         if (s->master < 0) {
             s->error.clear();
             spawn_session(*s);
@@ -890,6 +994,7 @@ void cleanup() {
     }
     if (g_listen >= 0) close(g_listen);
     if (g_ws_listen >= 0) close(g_ws_listen);
+    unlink(nomadnet_flag_path().c_str());
     unlink(sock_path().c_str());
     unlink(pid_path().c_str());
     unlink(port_path().c_str());
@@ -996,6 +1101,14 @@ int broker_main(bool foreground, int ws_port, const char* ws_bind) {
         time_t now = time(nullptr);
         for (auto& kv : g_sessions) {
             Session& s = kv.second;
+            // The NomadNet TUI waited for the daemon to release the shared
+            // config; start it as soon as the pidfile is gone (or on timeout).
+            if (s.name == SESSION_NOMADNET && s.nomad_stop_at && s.master < 0) {
+                if (!nomadnet_daemon_running() || now >= s.nomad_stop_at) {
+                    s.nomad_stop_at = 0;
+                    spawn_session(s);
+                }
+            }
             if (s.respawn_at && now >= s.respawn_at) {
                 s.respawn_at = 0;
                 if (s.master < 0) {
@@ -1129,12 +1242,22 @@ int broker_main(bool foreground, int ws_port, const char* ws_bind) {
         for (auto& kv : g_sessions) {
             Session& s = kv.second;
             if (s.name != SESSION_NOMADNET) continue;
-            if (any_attached(s)) { s.idle_since = 0; continue; }
+            if (any_attached(s)) { resume_nomadnet(s); continue; }
             if (s.master < 0) { s.idle_since = 0; continue; }
             if (!s.idle_since) { s.idle_since = now; continue; }
-            if (now - s.idle_since >= NOMADNET_IDLE_SEC) {
+            long idle = now - s.idle_since;
+            if (idle >= NOMADNET_SUSPEND_SEC && !s.suspended && s.child > 0) {
+                // No client: the TUI's event loop still burns CPU. Freeze the
+                // whole session; the next attach sends SIGCONT.
+                ::kill(-s.child, SIGSTOP);
+                s.suspended = true;
+            }
+            if (idle >= NOMADNET_IDLE_SEC) {
                 s.idle_since = 0;
-                if (s.child > 0) ::kill(-s.child, SIGHUP);
+                if (s.child > 0) {
+                    ::kill(-s.child, SIGHUP);
+                    ::kill(-s.child, SIGCONT);  // let a stopped group exit
+                }
             }
         }
 
@@ -1144,6 +1267,7 @@ int broker_main(bool foreground, int ws_port, const char* ws_bind) {
             for (auto& kv : g_sessions) {
                 Session& s = kv.second;
                 if (!any_attached(s)) continue;
+                if (s.name == SESSION_NOMADNET) touch_nomadnet_req();
                 ring_append(s, &nul, 1);
                 for (Client& c : g_clients) {
                     if (!c.ws && c.state == Client::ATTACHED && !c.dead &&

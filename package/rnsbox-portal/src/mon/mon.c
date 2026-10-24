@@ -56,8 +56,14 @@
 #define RNSTATUS_LOCK  "/run/rnsstatus.lock"
 #define BT_PEERS_REQ   "/run/rnsbox-bt-peers.req"
 #define CPU_FILE       "/run/rnsbox-cpu"
+#define NOMADNET_CONF  "/etc/rnsbox/nomadnet.conf"
+#define NOMADNET_PID   "/var/run/nomadnet.pid"
+#define NOMADNET_REQ   "/run/rnsbox-nomadnet.req"
+#define NOMADNET_TUI   "/run/rnsbox-nomadnet-tui"
+#define NOMADNET_INIT  "/etc/init.d/S83nomadnet"
 
 #define CPU_INTERVAL 5
+#define NOMADNET_CHECK 30
 #define MEMWATCH_INTERVAL 30
 #define MEMWATCH_COOLDOWN 600
 #define MEMWATCH_MIN_UPTIME 120
@@ -420,6 +426,86 @@ static void top_procs(struct TopProc top[4]) {
     closedir(d);
 }
 
+// ---- NomadNet idle stop ---------------------------------------------------
+// The portal's NomadNet page / attached TUI touch NOMADNET_REQ every few
+// seconds. Without it, an enabled daemon is stopped after idle_stop seconds
+// (config), so it does not burn CPU while nobody uses NomadNet. The portal
+// starts the TUI on demand; /run/rnsbox-nomadnet-tui means the TUI currently
+// owns the same config dir, so never start or stop the daemon from here then.
+static long g_nomad_last_stop = -99999;
+
+static int nomadnet_running(void) {
+    FILE* f = fopen(NOMADNET_PID, "r");
+    if (!f) return 0;
+    long pid = 0;
+    int n = fscanf(f, "%ld", &pid);
+    fclose(f);
+    return n == 1 && pid > 0 && kill((pid_t)pid, 0) == 0;
+}
+
+static void touch_nomadnet_req(void) {
+    int fd = open(NOMADNET_REQ, O_WRONLY | O_CREAT | O_CLOEXEC, 0644);
+    if (fd >= 0) close(fd);
+    utimensat(AT_FDCWD, NOMADNET_REQ, NULL, 0);
+}
+
+static void stop_nomadnet_daemon(void) {
+    pid_t pid = fork();
+    if (pid < 0) return;
+    if (pid == 0) {
+        setsid();
+        pid_t inner = fork();
+        if (inner != 0) _exit(0);
+        setpriority(PRIO_PROCESS, 0, 10);
+        (void)chdir("/");
+        int nul = open("/dev/null", O_RDWR);
+        if (nul >= 0) {
+            dup2(nul, 0); dup2(nul, 1); dup2(nul, 2);
+            if (nul > 2) close(nul);
+        }
+        execl(NOMADNET_INIT, "S83nomadnet", "stop", (char*)NULL);
+        _exit(127);
+    }
+    int st = 0;
+    (void)waitpid(pid, &st, 0);   // reap the short-lived intermediate child
+}
+
+static void maybe_stop_idle_nomadnet(void) {
+    if (!cfg_truthy(NOMADNET_CONF, "enabled", 0)) return;
+    if (access(NOMADNET_TUI, F_OK) == 0) {
+        // The TUI owns the config, but a broker crash can leave the flag
+        // behind. Clear it once the console broker itself is gone.
+        FILE* bf = fopen("/run/rnsbox-console.pid", "r");
+        long bpid = 0;
+        int alive = 0;
+        if (bf) {
+            if (fscanf(bf, "%ld", &bpid) == 1) alive = kill((pid_t)bpid, 0) == 0;
+            fclose(bf);
+        }
+        if (alive) return;
+        unlink(NOMADNET_TUI);
+    }
+    int idle = cfg_int(NOMADNET_CONF, "idle_stop", 600);
+    if (idle <= 0) return;
+
+    struct stat st;
+    long age = -1;
+    if (stat(NOMADNET_REQ, &st) == 0) age = now_s() - (long)st.st_mtime;
+    if (age < 0) {
+        // No request file yet (fresh boot) or the clock moved backwards:
+        // establish a fresh baseline and let the timeout run from here.
+        touch_nomadnet_req();
+        return;
+    }
+    if (age < idle) return;
+    if (!nomadnet_running()) return;
+    long mono = mono_s();
+    if (mono - g_nomad_last_stop < 120) return;
+    g_nomad_last_stop = mono;
+    syslog(LOG_NOTICE, "nomadnet idle for %lds - stopping daemon", age);
+    stop_nomadnet_daemon();
+}
+
 // ---- jobs ------------------------------------------------------------------
 static void usage_event(long up, long avail, long zram) {
     log_line("EVENT memlog_start log=%s interval=%ds\n", g_log_path,
@@ -579,6 +665,7 @@ int main(int argc, char** argv) {
     long next_rn = mono_s() + 5;
     long next_bt = mono_s() + 2;
     long next_cpu = mono_s();              // baseline now, publish after 5 s
+    long next_nomad = mono_s() + 5;
 
     while (!g_stop) {
         long now = mono_s();
@@ -586,6 +673,11 @@ int main(int argc, char** argv) {
         if (now >= next_cpu) {
             next_cpu = now + CPU_INTERVAL;
             sample_cpu5();
+        }
+
+        if (now >= next_nomad) {
+            next_nomad = now + NOMADNET_CHECK;
+            maybe_stop_idle_nomadnet();
         }
 
         // The rnstatus warm-up can now finish in milliseconds (resident

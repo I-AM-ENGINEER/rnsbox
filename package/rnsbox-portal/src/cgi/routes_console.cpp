@@ -16,7 +16,9 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
+#include <fcntl.h>
 #include <string>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace routes {
@@ -193,11 +195,23 @@ void console_resize(const http::Request& req, http::Response& res) {
     term_resize(req, res, console::SESSION_SHELL);
 }
 
+// rnsbox-mon stops the NomadNet daemon after idle_stop seconds without this
+// file being touched. The page open and the broker's 10 s heartbeat (while a
+// terminal is attached) keep it fresh.
+static void touch_nomadnet_req() {
+    const char* p = "/run/rnsbox-nomadnet.req";
+    int fd = ::open(p, O_WRONLY | O_CREAT | O_CLOEXEC, 0644);
+    if (fd >= 0) ::close(fd);
+    ::utimensat(AT_FDCWD, p, nullptr, 0);
+}
+
 // ---- NomadNet tab: the NomadNet TUI client ----
 void nomadnet_page(const http::Request& req, http::Response& res) {
+    touch_nomadnet_req();
     term_page(req, res, "NomadNet", "nomadnet", "/nomadnet", false);
 }
 void nomadnet_full_page(const http::Request& req, http::Response& res) {
+    touch_nomadnet_req();
     term_page(req, res, "NomadNet", "nomadnet", "/nomadnet", true);
 }
 void nomadnet_stream(const http::Request& req, http::Response& res) {

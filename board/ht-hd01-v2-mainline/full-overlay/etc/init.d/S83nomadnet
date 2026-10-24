@@ -56,6 +56,16 @@ if [ ! -x "$DAEMON" ]; then
 	exit 0
 fi
 
+# The portal's NomadNet TUI runs with this same config dir (one identity).
+# While it is alive, never start a second instance against it; stop is still
+# allowed (the console broker stops the daemon before spawning the TUI).
+if [ -f /run/rnsbox-nomadnet-tui ]; then
+	case "$1" in
+		enabled) exit 1 ;;
+		start) exit 0 ;;
+	esac
+fi
+
 # rns_shared_up — true once rnsd's shared instance accepts clients: RNS on
 # Linux listens on the abstract AF_UNIX socket @rns/<instance> (flags
 # 00010000 = listening, in /proc/net/unix; @rns/<instance>/rpc is its RPC
