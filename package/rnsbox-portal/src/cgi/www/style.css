@@ -942,7 +942,8 @@ body.term-full .term-wrap {
 .manual-doc h2 { margin: 30px 0 10px; padding-top: 16px; border-top: 1px solid var(--border); font-size: 20px; }
 .manual-doc h3 { margin: 24px 0 8px; font-size: 17px; }
 .manual-doc h4 { margin: 18px 0 6px; font-size: 15.5px; }
-.manual-doc p { margin: 0 0 13px; }
+.manual-doc p { margin: 0 0 13px; text-align: justify; text-indent: 1.5em; hyphens: auto; }
+.manual-doc h1 + p, .manual-doc h2 + p, .manual-doc h3 + p, .manual-doc h4 + p { text-indent: 0; }
 .manual-doc ul, .manual-doc ol { margin: 0 0 14px; padding-left: 24px; }
 .manual-doc li { margin: 3px 0; }
 .manual-doc code { background: var(--code-bg); border-radius: 4px; padding: 1px 5px; font-family: var(--mono); font-size: .92em; }
