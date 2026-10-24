@@ -1,0 +1,63 @@
+From: RNSBox <rnsbox@localhost>
+Subject: [PATCH] riscv: dts: sophgo: clock the SG2000 UARTs from 96 MHz and enable UART1-4
+
+The HaLow modem talks SLIP over UART1 at 2 Mbaud. With the UART parent
+left at the bootloader rate the 8250 driver cannot reach 2 Mbaud (the
+ceiling is uartclk/16), and UART1 itself is disabled in the SoC dtsi, so
+/dev/ttyS1 has no uartclk at all.
+
+Pin clk_cam0_200 (the UART baud clock parent) to disppll/8 = 96 MHz:
+96 MHz / 16 / 3 = 2,000,000 exactly, and the 115200 console falls on
+divisor 52 (0.16% error). Enable UART1-4 without pinctrl states (the
+pinctrl driver does not model these pads; S31slip muxes UART1
+through /dev/mem, the other pads are board-specific) and without a reset
+on uart1, matching uart0.
+
+--- a/arch/riscv/boot/dts/sophgo/sg2000-duomodule01-evb.dts
++++ b/arch/riscv/boot/dts/sophgo/sg2000-duomodule01-evb.dts
+@@ -288,7 +288,41 @@
+ 	};
+ };
+ 
+-/* No assigned-clock reclock: the bootloader (fip/u-boot) already leaves the
+- * UART clock in a state where its 115200 console is exact, and reprogramming
+- * disppll from Linux was never proven on hardware. The 8250 driver reads the
+- * real rate back from the PLL/divider registers via the clocks property. */
++/*
++ * UART clock: feed the UARTs from disppll/8 = 96 MHz. 2 Mbaud is then an
++ * exact divisor (96 MHz / 16 / 3) for the HaLow/SLIP port, and the 115200
++ * console lands on divisor 52 (0.16% error). The bootloader does not leave
++ * this mux in a state Linux can rely on, so pin parent and rate here.
++ */
++&clk {
++	assigned-clocks = <&clk CLK_CAM0_200>;
++	assigned-clock-parents = <&clk CLK_DISPPLL>;
++	assigned-clock-rates = <96000000>;
++};
++
++/*
++ * UART1 is the HaLow modem / SLIP port on XGPIOA[28] TX and XGPIOA[29] RX.
++ * No pinctrl state: pinctrl does not model these pads yet, S31slip
++ * muxes them through /dev/mem. The reset controller is left in place so the
++ * driver deasserts RST_UART1 itself.
++ */
++&uart1 {
++	status = "okay";
++};
++
++
++/* UART2/3/4 controllers are enabled for general use. Their pads are
++ * board-specific; the per-board pin table lives in /etc/rnsbox/uart-pins.conf
++ * and the UART card in Settings shows it. UART1 is muxed by S31slip; the
++ * other pads need a board-specific fmux setup before use. */
++&uart2 {
++	status = "okay";
++};
++
++&uart3 {
++	status = "okay";
++};
++
++&uart4 {
++	status = "okay";
++};

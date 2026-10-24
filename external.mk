@@ -16,14 +16,14 @@ DNSMASQ_COPTS += -DHAVE_BROKEN_RTC
 UHTTPD_CONF_OPTS += -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 LIBUBOX_CONF_OPTS += -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 
-# HT-HD01-V2: mainline has no board DTS for this box and its Ralink Kconfig
+# HT-HD01-V2: there is no board DTS for this box and its Ralink Kconfig
 # has no DTB symbol for a custom board.  Drop the DTS into the kernel tree and
 # add the one-line Kconfig/Makefile entries before kconfig runs, so the DTB is
 # built into the kernel (the stock U-Boot 1.1.3 cannot pass a DTB).
 ifeq ($(call qstrip,$(BR2_LINUX_KERNEL_INTREE_DTS_NAME)),ralink/ht-hd01-v2)
 define HT_HD01_V2_KERNEL_DTS
 	$(INSTALL) -D -m 0644 \
-		$(BR2_EXTERNAL_RNSBOX_PATH)/board/ht-hd01-v2-mainline/ht-hd01-v2.dts \
+		$(BR2_EXTERNAL_RNSBOX_PATH)/board/ht-hd01-v2/ht-hd01-v2.dts \
 		$(LINUX_DIR)/arch/mips/boot/dts/ralink/ht-hd01-v2.dts
 	grep -q '^config DTB_EKH03V3$$' $(LINUX_DIR)/arch/mips/Kconfig || \
 		printf '\nconfig DTB_EKH03V3\n\tbool "Heltec HT-HD01-V2"\n\tdepends on SOC_MT7620\n\tselect BUILTIN_DTB\n' \

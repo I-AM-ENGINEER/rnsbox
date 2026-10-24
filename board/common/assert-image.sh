@@ -15,7 +15,7 @@
 # images went out with no admin user and an always-on root sshd. Run it
 # after every build — build.sh does not (yet) call it; CI/nightly wraps:
 #
-#   ./build.sh <board> lite && ./board/common/assert-image.sh \
+#   ./build.sh <board> && ./board/common/assert-image.sh \
 #       <workdir>/buildroot/output/target cvitek
 #
 # Exit 0 = all assertions hold; exit 1 = list of failures printed.

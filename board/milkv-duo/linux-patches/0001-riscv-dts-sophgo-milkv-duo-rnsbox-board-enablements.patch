@@ -11,7 +11,7 @@ index 0e6d79e..6dcc039 100644
 +		/*
 +		 * The vendor OpenSBI in fip.bin lives here and does not
 +		 * reserve itself through the FDT (the vendor kernel parses
-+		 * the riscv.fwsz bootarg instead, which mainline ignores):
++		 * the riscv.fwsz bootarg instead, which the kernel ignores):
 +		 * hide the firmware region from the allocator explicitly.
 +		 * The stock coprocessor_rtos carve-out (C906L FreeRTOS) is
 +		 * dropped - RNSBox does not run FreeRTOS.

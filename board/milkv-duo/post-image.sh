@@ -1,11 +1,11 @@
 #!/bin/bash
-# RNSBox mainline milkv-duo (CV1800B) image assembly:
-#   boot.sd    = u-boot FIT: mainline Image.gz @ 0x80200000 + mainline DTB,
+# RNSBox milkv-duo (CV1800B) image assembly:
+#   boot.sd    = u-boot FIT: Image.gz @ 0x80200000 + DTB,
 #                config-cv1800b_sophpi_duo_sd (the name vendor u-boot boots);
 #   boot.vfat  = vendor fip.bin + boot.sd + usb.* gadget flag files;
 #   sdcard.img = boot FAT + rootfs.ext4 (root=/dev/mmcblk0p2 comes baked into
 #                the vendor u-boot bootargs).
-# Address map and boot-chain facts: local_docs/cvitek-mainline-port.md.
+# Address map and boot-chain facts: local_docs/cvitek-port.md.
 set -e
 
 BOARD_DIR="$(dirname "$0")"
@@ -40,7 +40,7 @@ echo 0x1d6b                   > "${BINARIES_DIR}/usb.idVendor"
 echo 0x0105                   > "${BINARIES_DIR}/usb.idProduct"
 echo 0x0105                   > "${BINARIES_DIR}/usb.bcdDevice"
 echo "RNSBox"                 > "${BINARIES_DIR}/usb.manufacturer"
-echo "RNSBox Reticulum router (milkv-duo cv1800b, mainline)" > "${BINARIES_DIR}/usb.product"
+echo "RNSBox Reticulum router (milkv-duo cv1800b)" > "${BINARIES_DIR}/usb.product"
 echo "02:1d:6b:01:04:02"      > "${BINARIES_DIR}/usb.ncm.mac"
 echo "rnsbox"                 > "${BINARIES_DIR}/hostname"
 date -u +%Y-%m-%dT%H:%M:%SZ   > "${BINARIES_DIR}/ver"
@@ -59,12 +59,8 @@ rm -rf "${GENIMAGE_TMP}"
 rm -rf "${ROOTPATH_TMP}"
 trap - EXIT
 
-# Tag the image the house way. RNSBOX_BOARD / RNSBOX_VARIANT are exported by
-# build.sh.
-VARIANT="${RNSBOX_VARIANT:-lite}"
+
 NEW="${BINARIES_DIR}/sdcard.img"
-SUFFIX=""
-if [ "$VARIANT" != lite ]; then SUFFIX="-$VARIANT"; fi
-TAGGED="${BINARIES_DIR}/rnsbox-${RNSBOX_BOARD:-milkv-duo-cv1800b-rv64}${SUFFIX}.img"
+TAGGED="${BINARIES_DIR}/rnsbox-${RNSBOX_BOARD:-milkv-duo-cv1800b-rv64}.img"
 cp -f "$NEW" "$TAGGED"
-echo "=================== IMAGE OK [${VARIANT}] $(date) ==================="
+echo "=================== IMAGE OK $(date) ==================="

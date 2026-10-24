@@ -1,7 +1,7 @@
 #!/bin/sh
 # S10hostname — stable, unique device name (rnsbox-XXXXXX).
 #
-# The mainline stmmac driver assigns a RANDOM eth0 MAC on every boot, so the
+# The stmmac driver assigns a RANDOM eth0 MAC on every boot, so the
 # Ethernet address alone cannot be the identity. Prefer the first globally
 # administered MAC (wlan0 on -W boards); if there is none, generate an ID once
 # and persist it in /etc/rnsbox/device-id. The same ID names the box and gives

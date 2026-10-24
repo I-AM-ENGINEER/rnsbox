@@ -1,0 +1,97 @@
+#!/bin/sh
+# S10hostname — stable, unique device name (rnsbox-XXXXXX).
+#
+# The stmmac driver assigns a RANDOM eth0 MAC on every boot, so the
+# Ethernet address alone cannot be the identity. Prefer the first globally
+# administered MAC (wlan0 on -W boards); if there is none, generate an ID once
+# and persist it in /etc/rnsbox/device-id. The same ID names the box and gives
+# a random-MAC eth0 a stable locally administered address.
+#
+# A hostname chosen through Settings -> Hostname is left alone: this script
+# only replaces the shipped defaults (empty, "localhost", "rnsbox").
+set -u
+
+ID_FILE=/etc/rnsbox/device-id
+HOST_FILE=/etc/hostname
+MAC_PREFIX=02:52:4e
+
+hex_id() {
+	tr 'a-f' 'A-F' | tr -cd '0-9A-F' | cut -c1-6
+}
+
+# mac_is_global <aa:bb:...> — true when the first octet has the
+# locally-administered bit clear (a real vendor MAC).
+mac_is_global() {
+	_o=${1%%:*}
+	case "$_o" in
+		[0-9A-Fa-f][0-9A-Fa-f]) ;;
+		*) return 1 ;;
+	esac
+	[ $((0x$_o & 2)) -eq 0 ] 2>/dev/null
+}
+
+derive_id() {
+	for _if in eth0 wlan0; do
+		[ -r "/sys/class/net/$_if/address" ] || continue
+		_m=$(cat "/sys/class/net/$_if/address" 2>/dev/null)
+		mac_is_global "$_m" || continue
+		# Last three bytes of the MAC (six hex digits after the OUI).
+		_id=$(printf '%s' "$_m" | tr -d ':' | tr 'a-f' 'A-F' | cut -c7-12)
+		[ ${#_id} -eq 6 ] || continue
+		echo "$_id"
+		return 0
+	done
+	return 1
+}
+
+mkdir -p /etc/rnsbox
+id=
+if [ -s "$ID_FILE" ]; then
+	id=$(hex_id < "$ID_FILE")
+	[ ${#id} -eq 6 ] || id=
+fi
+[ -n "$id" ] || id=$(derive_id) || id=$(dd if=/dev/urandom bs=3 count=1 2>/dev/null | od -An -tx1 | hex_id)
+[ ${#id} -eq 6 ] || id=000000
+if [ "$(cat "$ID_FILE" 2>/dev/null)" != "$id" ]; then
+	printf '%s\n' "$id" > "$ID_FILE"
+	chmod 0644 "$ID_FILE"
+fi
+
+# Keep an operator-chosen hostname; replace only the shipped default.
+cur=$(cat "$HOST_FILE" 2>/dev/null)
+case "$cur" in
+	""|localhost|rnsbox) ;;
+	*) exit 0 ;;
+esac
+
+name="rnsbox-$id"
+printf '%s\n' "$name" > "$HOST_FILE"
+hostname "$name" 2>/dev/null || true
+
+# Local resolver entry (the skeleton may ship 127.0.1.1 rnsbox).
+if [ -f /etc/hosts ]; then
+	if grep -qE '^127\.0\.1\.1[[:space:]]' /etc/hosts; then
+		sed -i -E "s/^127\.0\.1\.1[[:space:]].*/127.0.1.1\t$name/" /etc/hosts
+	else
+		printf '127.0.1.1\t%s\n' "$name" >> /etc/hosts
+	fi
+fi
+
+# The p1 boot FAT carries the gadget/hostname flag file (S10usbdev reads it).
+if [ -d /boot ] && [ "$(cat /boot/hostname 2>/dev/null)" != "$name" ]; then
+	printf '%s\n' "$name" > /boot/hostname 2>/dev/null || true
+fi
+
+# A random eth0 MAC changes every boot and confuses DHCP leases. Replace only
+# a locally administered (random) address; real vendor MACs stay untouched.
+if [ -r /sys/class/net/eth0/address ]; then
+	emac=$(cat /sys/class/net/eth0/address 2>/dev/null)
+	if ! mac_is_global "$emac"; then
+		want="$MAC_PREFIX:${id:0:2}:${id:2:2}:${id:4:2}"
+		[ "$emac" = "$want" ] || {
+			ip link set eth0 down 2>/dev/null || true
+			ip link set eth0 address "$want" 2>/dev/null || true
+		}
+	fi
+fi
+exit 0

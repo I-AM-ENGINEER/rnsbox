@@ -1,7 +1,7 @@
 /*
  * mt7628_esw - minimal MT7628 built-in switch initialisation.
  *
- * Mainline Linux has no driver for the MT7628 ESW, so after the bootloader
+ * Linux has no driver for the MT7628 ESW, so after the bootloader
  * hands over the switch is left in a state where broadcast/multicast reach the
  * CPU but unicast does not (no working VLAN/CPU-port configuration).
  *

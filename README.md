@@ -10,16 +10,16 @@ the **Sipeed LicheeRV Nano-e**, **Milk-V Duo / Duo S / Duo 256M** and
 the board files differing.
 
 The repository is a Buildroot **external tree**, and there is exactly one
-build flow: pinned upstream Buildroot + mainline Linux + this repo as
+build flow: pinned upstream Buildroot + Linux + this repo as
 `BR2_EXTERNAL`. The only vendor artifact left is the CVITEK first-stage boot
 blob (`fip.bin`), which a board's post-image script writes to the boot FAT;
 there is no vendor Buildroot, no per-board packer and no patch series.
 
 - **Common base:** [`buildroot/buildroot`](https://github.com/buildroot/buildroot)
-  2026.02.3 LTS at `679b9ead` + mainline Linux.
-- **CVITEK SG2000/SG2002:** mainline DTS and drivers under the
-  `board/*-mainline/` directories; the vendor `fip.bin` is only a boot blob.
-- **Raspberry Pi, Orange Pi R1, PC/VM:** upstream Buildroot + mainline Linux,
+  2026.02.3 LTS at `679b9ead` + Linux.
+- **CVITEK SG2000/SG2002:** DTS and drivers under the
+  `board/` directories; the vendor `fip.bin` is only a boot blob.
+- **Raspberry Pi, Orange Pi R1, PC/VM:** upstream Buildroot + Linux,
   no vendor blob at all.
 
 ## Quick start
@@ -198,7 +198,7 @@ service. Details: `package/rnsbox-portal/src/win/README.md`.
   is the WiFi station). Optional DS3231 RTC on i2c1: SDA GPIO2 (pin 3),
   SCL GPIO3 (pin 5).
 - Orange Pi R1 (Allwinner H2+) and a generic PC/VM disk (`pc-x86_64`).
-- microSD: every image is lite (no clients disc). The rootfs auto-grows to
+- microSD: one image per board (one USB-NCM gadget; no clients disc). The rootfs auto-grows to
   fill the card on first boot.
 
 ## Default credentials
