@@ -222,7 +222,17 @@ static std::vector<UartRow> uart_rows() {
             {"uart4", "ttyS4", "PWR_GPIO26 TX / PWR_GPIO25 RX"},
         };
     } else if (m.find("Raspberry Pi") != std::string::npos) {
-        v = {{"ttyS0", "ttyS0", "GPIO14 TX / GPIO15 RX"}};
+        // The 40-pin header has exactly one UART, but which controller sits
+        // on it depends on the model and the overlays: Zero 2 W runs
+        // miniuart-bt, so the PL011 (ttyAMA0) is on GPIO14/15; Pi 3/4
+        // default to the mini-UART (ttyS0) there; Pi 5 uses ttyAMA0 and
+        // keeps its debug UART (ttyAMA10) off the header. /dev/serial0 is
+        // the firmware alias that follows the header — use it, not a
+        // controller node, or the same card stops working on another model.
+        v = {{"serial0", "serial0", "GPIO14 TX / GPIO15 RX (40-pin header)"}};
+        if (::access("/dev/ttyAMA10", F_OK) == 0)
+            v.push_back({"ttyAMA10", "ttyAMA10",
+                         "debug UART (Pi 5 console; not on the header)"});
     } else if (m.find("Orange Pi R1") != std::string::npos) {
         v = {{"uart0", "ttyS0", "UART0 header pins (PA4 TX / PA5 RX)"}};
     } else {

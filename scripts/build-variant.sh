@@ -64,11 +64,19 @@ echo "--- re-make (repack rootfs + image) ---"
 $MAKE olddefconfig || { echo "FATAL: olddefconfig"; exit 93; }
 $MAKE || { echo "FATAL: make"; exit 94; }
 
+# post-image.sh may consume sdcard.img and publish its own board-named file
+# (the rpi board does exactly that), so the generic name is only the first
+# candidate. Copying a file onto itself is not a no-op for cp — it fails and
+# used to print "BUILD OK" over a stale image.
 NEW="$O/images/sdcard.img"
+[ -f "$NEW" ] || NEW="$O/images/rnsbox-${RNSBOX_BOARD:?RNSBOX_BOARD not set}.img"
 SUFFIX=""
 if [ "$VARIANT" != lite ]; then SUFFIX="-$VARIANT"; fi
-TAGGED="$O/images/rnsbox-${RNSBOX_BOARD:?RNSBOX_BOARD not set}${SUFFIX}.img"
-cp -f "$NEW" "$TAGGED"
+TAGGED="$O/images/rnsbox-${RNSBOX_BOARD}${SUFFIX}.img"
+[ -f "$NEW" ] || { echo "FATAL: no image produced (looked in $NEW)" >&2; exit 95; }
+if [ "$NEW" != "$TAGGED" ]; then
+	cp -f "$NEW" "$TAGGED" || { echo "FATAL: cannot publish $TAGGED" >&2; exit 96; }
+fi
 echo "=================== BUILD OK [$VARIANT] $(date) ==================="
 ls -lh "$TAGGED" | awk '{print "  "$5"  "$NF}'
 echo "DONE-SENTINEL-OK"
