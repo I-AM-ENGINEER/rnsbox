@@ -155,17 +155,15 @@ std::string layout(const http::Request& req, http::Response& res,
     // WiFi and the browser console are router features: on Windows there is
     // no radio and no PTY broker, so their tabs are left out of the nav (the
     // routes answer 503 if something still links to them).
-    std::string nav_wifi, nav_console, nav_rnode, nav_map, nav_flasher;
+    std::string nav_wifi, nav_console, nav_map, nav_flasher;
 #ifndef _WIN32
     nav_wifi = "<a href=\"" + esc(web::base()) + "/wifi\" class=\"" +
                std::string((active && std::string(active) == "wifi") ? "active" : "") + "\">WiFi</a>";
     nav_console = "<a href=\"" + esc(web::base()) + "/console\" class=\"" +
                   std::string((active && std::string(active) == "console") ? "active" : "") + "\">Console</a>";
-    // Both tabs are always present on the Linux appliance: the Map tab owns
-    // the location settings (it must stay reachable even with every publish
-    // path off), and the RNode tab hosts rnodeconf-style modem tools.
-    nav_rnode = "<a href=\"" + esc(web::base()) + "/rnode\" class=\"" +
-                std::string((active && std::string(active) == "rnode") ? "active" : "") + "\">RNode</a>";
+    // The Map tab owns the location settings (it must stay reachable even with
+    // every publish path off). The RNode tools live on the Reticulum tab, so
+    // there is no separate RNode entry.
     nav_map = "<a href=\"" + esc(web::base()) + "/map\" class=\"" +
               std::string((active && std::string(active) == "map") ? "active" : "") + "\">Map</a>";
     nav_flasher = "<a href=\"" + esc(web::base()) + "/flasher\" class=\"" +
@@ -174,7 +172,6 @@ std::string layout(const http::Request& req, http::Response& res,
 #endif
     kv.push_back({"__NAV_WIFI__", nav_wifi});
     kv.push_back({"__NAV_CONSOLE__", nav_console});
-    kv.push_back({"__NAV_RNODE__", nav_rnode});
     kv.push_back({"__NAV_MAP__", nav_map});
     kv.push_back({"__NAV_FLASHER__", nav_flasher});
     kv.push_back({"__FLASH__", take_flash(req, res)});
