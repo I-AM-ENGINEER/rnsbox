@@ -203,7 +203,7 @@ void console_resize(const http::Request& req, http::Response& res) {
 // Deliberately NOT started when the page opens: urwid + LXMF on the single
 // C906 is a heavy client, so it starts from the Connect button only.
 static const char* NOMADNET_NOTE =
-    "<p class=\"muted\" style=\"margin:0 0 10px;max-width:80ch\">"
+    "<p class=\"muted\" style=\"margin:0 0 10px\">"
     "NomadNet substantially loads the CPU. On single-core SoCs it runs "
     "slowly, and launching it on a 256 MB RAM system is not recommended.</p>";
 

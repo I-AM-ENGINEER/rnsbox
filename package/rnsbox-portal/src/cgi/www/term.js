@@ -19,6 +19,7 @@
   // connecting as soon as the page opens.
   var autostart = card.getAttribute('data-autostart') !== '0';
   var connectBtn = document.getElementById('term-connect');
+  var disconnectBtn = document.getElementById('term-disconnect');
   var started = autostart;
 
   var darkTheme = {
@@ -267,7 +268,7 @@
   }
 
   function scheduleFastReconnect() {
-    if (closed || fastTimer) return;
+    if (!started || closed || fastTimer) return;
     var delay = Math.min(500 * Math.pow(2, fast.failed), 5000);
     setStatus('reconnecting in ' + Math.round(delay / 1000) + 's…', 'warn');
     fastTimer = setTimeout(function () {
@@ -278,7 +279,7 @@
 
   // ---- fast path: WebSocket ----
   function connectFast() {
-    if (closed || fast.disabled) return false;
+    if (!started || closed || fast.disabled) return false;
     if (!window.WebSocket || location.protocol !== 'http:') return false;
     fast.attempting = true;
     setStatus('connecting…', '');
@@ -374,7 +375,7 @@
   }
 
   function scheduleReconnect() {
-    if (closed || reconnectTimer) return;
+    if (!started || closed || reconnectTimer) return;
     var delay = Math.min(500 * Math.pow(2, attempts), 5000);
     attempts++;
     setStatus('reconnecting in ' + Math.round(delay / 1000) + 's…', 'warn');
@@ -388,12 +389,12 @@
     connected = false;
     clearWatchdogs();
     if (streamAbort) { try { streamAbort.abort(); } catch (e) {} }
-    if (closed) return;
+    if (!started || closed) return;
     scheduleReconnect();
   }
 
   function connectLegacy() {
-    if (closed) return;
+    if (!started || closed) return;
     clearWatchdogs();
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
     if (streamAbort) {
@@ -461,7 +462,7 @@
   }
 
   function connect() {
-    if (closed) return;
+    if (!started || closed) return;
     clearWatchdogs();
     clearFastWatchdog();
     if (fastTimer) { clearTimeout(fastTimer); fastTimer = null; }
@@ -503,15 +504,44 @@
     connect();
     term.focus();
     if (connectBtn) connectBtn.style.display = 'none';
+    if (disconnectBtn && !autostart) disconnectBtn.style.display = '';
   }
   document.getElementById('term-reconnect').addEventListener('click', startConnect);
   if (connectBtn) {
     connectBtn.addEventListener('click', startConnect);
     if (!autostart) {
       connectBtn.style.display = '';
+      if (disconnectBtn) disconnectBtn.style.display = 'none';
+      var rcBtn = document.getElementById('term-reconnect');
+      var clBtn = document.getElementById('term-clear');
+      if (rcBtn) rcBtn.style.display = 'none';
+      if (clBtn) clBtn.style.display = 'none';
       setStatus('disconnected — press Connect', 'warn');
     }
   }
+
+  // Detach from the session without reloading the page. The broker freezes
+  // the NomadNet TUI after 30 s with no client, so this also stops the CPU
+  // load. A later Connect re-attaches to the same session.
+  function disconnect() {
+    started = false;
+    connected = false;
+    fast.attempting = false;
+    if (fastTimer) { clearTimeout(fastTimer); fastTimer = null; }
+    if (fast.ws) {
+      try { fast.ws.onclose = null; fast.ws.close(); } catch (e) {}
+      fast.ws = null;
+      fast.open = false;
+    }
+    if (streamAbort) { try { streamAbort.abort(); } catch (e) {} }
+    clearWatchdogs();
+    clearFastWatchdog();
+    setStatus('disconnected — press Connect', 'warn');
+    dotEl.className = 'term-dot';
+    if (connectBtn) connectBtn.style.display = '';
+    if (disconnectBtn) disconnectBtn.style.display = 'none';
+  }
+  if (disconnectBtn) disconnectBtn.addEventListener('click', disconnect);
   document.getElementById('term-clear').addEventListener('click', function () {
     term.clear();
     term.focus();

@@ -463,16 +463,6 @@ static std::string wifi_card_html(const std::string& base, const sysinfo::Networ
         std::string tx = sta_if->tx.empty() ? std::string("0") : E(sta_if->tx);
         sta_rxtx = rx + " / " + tx;
     }
-    // While eth0 carries the default route, wlan0 is a connected second
-    // uplink with its own DHCP lease. Say so: two addresses on one subnet are
-    // otherwise easy to read as a bug.
-    std::string sta_note;
-    if (st.sta.connected && !net.default_dev.empty() && net.default_dev != wifi::STA_IF) {
-        sta_note = "<p class=\"muted\" style=\"margin:6px 0 0\">Secondary uplink: the active default route is " +
-                   E(net.default_dev) +
-                   (net.default_gateway.empty() ? std::string() : " (" + E(net.default_gateway) + ")") +
-                   ".</p>";
-    }
 
     std::string ap_state;
     if (!ap_on) {
@@ -508,7 +498,7 @@ static std::string wifi_card_html(const std::string& base, const sysinfo::Networ
            "    <tr><th>Gateway</th><td id=\"d-wifi-sta-gw\">" + sta_gw + "</td></tr>\n"
            "    <tr><th>MAC</th><td id=\"d-wifi-sta-mac\">" + sta_mac + "</td></tr>\n"
            "    <tr><th>RX / TX</th><td id=\"d-wifi-sta-rxtx\">" + sta_rxtx + "</td></tr>\n"
-           "  </table>\n" + sta_note +
+           "  </table>\n" +
            "  <p class=\"cardfoot\"><a class=\"btn\" href=\"" + base + "/wifi#sta\">Manage &rarr;</a></p>\n"
            "</section>\n"
            "<section class=\"card\" id=\"wifi-ap-card\">\n"
