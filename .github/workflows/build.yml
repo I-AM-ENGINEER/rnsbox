@@ -1,20 +1,13 @@
 name: build-images
 
-# Multi-board image builder. Each matrix entry is one board (see build.sh).
-# External-tree boards (BUILD_STYLE=external, e.g. rpi-universal) build straight
-# from this repository used as a BR2_EXTERNAL tree: build.sh clones the
-# pinned upstream once, shares the download cache and builds into a
-# per-board O= directory. Adding a board = one more matrix include.
+# One matrix entry per board. Every board uses the same external-Buildroot
+# flow (see build.sh): a defconfig plus a board post-image script. Adding a
+# board means adding its defconfig and a matrix include, nothing else.
 on:
   workflow_dispatch:
     inputs:
-      variant:
-        description: "Image variant to build"
-        type: choice
-        options: [lite, dvd]
-        default: lite
       version:
-        description: "Release tag (blank = r<date>-<shortsha>). One release per run holds every board's image; checksums are in the notes."
+        description: "Release tag (blank = r<date>-<shortsha>)"
         type: string
         default: ""
   push:
@@ -24,18 +17,15 @@ on:
       - 'board/**'
       - 'configs/**'
       - 'scripts/**'
-      - 'patches/**'
       - 'build.sh'
       - '.github/workflows/build.yml'
 
 concurrency:
-  # NB: the workflow-level context has no `matrix`, so the group is ref-only;
-  # boards build as parallel matrix jobs of this one workflow.
   group: build-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
-  contents: write   # needed to publish a Release
+  contents: write
 
 jobs:
   build:
@@ -45,45 +35,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # external tree: images land in $ODIR/images/
           - board: rpi-universal
             imgdir: /mnt/rnsbox/out/rpi-universal/images
           - board: pc-x86_64
             imgdir: /mnt/rnsbox/out/pc-x86_64/images
-          # patch series over the vendor BSP: build.sh clones the BSP into
-          # $WORKDIR and the packer leaves <board>-<variant>.img under
-          # install/soc_*/images — one directory level up, because the
-          # universal flows (cv1800b) pack SEVERAL boards per run; the
-          # packaging step finds every image recursively. The SG boards are
-          # SoC-arch pairs (the boot core is the board's rv/arm switch):
-          # one image each, named via PRODUCT_NAMES below.
-          - board: sg2002-rv64
-            imgdir: /mnt/rnsbox/lichee/install
-          - board: sg2000-rv64
-            imgdir: /mnt/rnsbox/lichee/install
-          # The legacy vendor-BSP arm64 flows (sg2000-arm64, sg2002-arm64,
-          # sg2002-licheerv-arm64) are out of the release matrix: their
-          # out-of-tree wireless module does not compile on a cold CI tree.
-          # Mainline arm64 is covered by sg2000-duo-s-arm64, and
-          # the LicheeRV Nano by sg2002-licheerv-nano-rv64.
-          # The legacy vendor-BSP arm64 flows (sg2000-arm64, sg2002-arm64,
-          # sg2002-licheerv-arm64) are out of the release matrix: their
-          # out-of-tree wireless module does not compile on a cold CI tree.
-          # Mainline arm64 is covered by sg2000-duo-s-arm64, and
-          # the LicheeRV Nano by sg2002-licheerv-nano-rv64.
-          # The legacy vendor-BSP arm64 flows (sg2000-arm64, sg2002-arm64,
-          # sg2002-licheerv-arm64) are out of the release matrix: their
-          # out-of-tree wireless module does not compile on a cold CI tree.
-          # Mainline arm64 is covered by sg2000-duo-s-arm64, and
-          # the LicheeRV Nano by sg2002-licheerv-nano-rv64.
-          # external tree: ARM Orange Pi R1 and mainline ARM64 Duo S
           - board: orangepi-r1
             imgdir: /mnt/rnsbox/out/orangepi-r1/images
+          - board: milkv-duo-cv1800b-rv64
+            imgdir: /mnt/rnsbox/out/milkv-duo-cv1800b-rv64/images
           - board: sg2000-duo-s-arm64
             imgdir: /mnt/rnsbox/out/sg2000-duo-s-arm64/images
-          # external mainline boards: the release images for the current
-          # hardware generation (Duo Module 01 EVB, LicheeRV Nano, Duo256M,
-          # Duo S rv64). Same flow as the entry above.
           - board: sg2000-duomodule01-rv64
             imgdir: /mnt/rnsbox/out/sg2000-duomodule01-rv64/images
           - board: sg2002-licheerv-nano-rv64
@@ -92,20 +53,8 @@ jobs:
             imgdir: /mnt/rnsbox/out/sg2002-duo256m-rv64/images
           - board: sg2000-duo-s-rv64
             imgdir: /mnt/rnsbox/out/sg2000-duo-s-rv64/images
-          # cv1800b: cold-build bring-up pending (the vendor initramfs is
-          # not populated from a fresh workdir — busybox/blkid missing at
-          # gen_init_cpio). The flow builds locally; return it to the
-          # matrix once the initramfs population stage lands.
-          # - board: milkv-duo-cv1800b
-          #   imgdir: /mnt/rnsbox/lichee/install
     env:
       BOARD: ${{ matrix.board }}
-      VARIANT: ${{ github.event.inputs.variant || 'lite' }}
-      # BSP-internal soc_<board> dir -> product name. The release assets are
-      # SoC-arch pairs (what the rv/arm boot switch needs to match), not
-      # board-dir names: Duo Module 01 on the EVB = sg2000-*, LicheeRV
-      # Nano-e = sg2002-*, and the suffix is the core the switch selects.
-      PRODUCT_NAMES: sg2000_duomodule01_sd=sg2000-rv64 sg2000_duo01evb_arm64_sd=sg2000-arm64 sg2002_licheervnano_sd=sg2002-rv64 sg2002_duo_arm64_sd=sg2002-arm64 sg2002_licheervnano_arm64_sd=sg2002-licheerv-arm64 cv1800b_sophpi_duo_sd=cv1800b-rv64
     steps:
       - name: Free up disk space
         uses: jlumbroso/free-disk-space@main
@@ -114,15 +63,15 @@ jobs:
           android: true
           dotnet: true
           docker-images: true
-          large-packages: false   # slow apt-remove; /mnt gives us the room
+          large-packages: false
           haskell: false
-          swap-storage: false     # keep swap — the build wants memory
+          swap-storage: false
 
       - name: Disk + memory before
         run: |
           echo "## disk"; df -h / /mnt
-          echo "## mem";  free -h
-          echo "## cpu";  nproc
+          echo "## mem"; free -h
+          echo "## cpu"; nproc
 
       - name: Install build dependencies
         run: |
@@ -133,7 +82,7 @@ jobs:
             libssl-dev flex bison gawk texinfo help2man gettext \
             autoconf automake libtool pkg-config cmake ninja-build \
             libncurses5-dev device-tree-compiler u-boot-tools \
-            genext2fs dosfstools mtools parted squashfs-tools jq
+            genext2fs dosfstools mtools parted squashfs-tools jq scons
 
       - name: Checkout rnsbox (the external tree)
         uses: actions/checkout@v4
@@ -143,12 +92,12 @@ jobs:
       - name: Verify generated defconfigs are current
         run: rnsbox/scripts/gen-defconfigs.sh --check
 
-      - name: Prepare scratch on /mnt (the roomy disk)
+      - name: Prepare scratch on /mnt
         run: |
           sudo mkdir -p /mnt/rnsbox/upstream /mnt/rnsbox/out /mnt/dl /mnt/tmp
           sudo chown -R "$USER":"$USER" /mnt/rnsbox /mnt/dl /mnt/tmp
 
-      - name: Cache buildroot downloads (shared across boards)
+      - name: Cache buildroot downloads
         uses: actions/cache@v4
         with:
           path: /mnt/dl
@@ -157,39 +106,24 @@ jobs:
             br-dl-${{ matrix.board }}-
             br-dl-
 
-      - name: Build ${{ matrix.board }} ${{ env.VARIANT }} (up to 2 attempts)
+      - name: Build ${{ matrix.board }} (up to 2 attempts)
         env:
           UPSTREAM_BASE: /mnt/rnsbox/upstream
           BR2_DL_DIR: /mnt/dl
           TMPDIR: /mnt/tmp
           ODIR: /mnt/rnsbox/out/${{ matrix.board }}
-          # patch-flow boards (licheerv-nano) clone the BSP here, off the
-          # checkout dir; the external flow ignores it
-          WORKDIR: /mnt/rnsbox/lichee
         run: |
           export PATH=/usr/sbin:/sbin:$PATH
           cd rnsbox
           START=$(date +%s)
           set -o pipefail
-          # Rust's bootstrap (x.py) panics on --stage 1 when it detects CI
-          # markers (GITHUB_ACTIONS / TF_BUILD) and demands a full stage-2
-          # bootstrap. Scrub those markers for the build only (relevant the
-          # day a board pulls host-rust).
-          # Cold builds die on flaky source downloads (fresh dl cache, no
-          # retry). Both flows are incremental, so a second attempt resumes
-          # in place instead of restarting: buildroot's make just continues,
-          # the BSP flow is .rnsbox-done-* stamped / incremental make. The
-          # build.sh wget shim (--tries=5 --timeout=60) catches most of this
-          # already; this loop is the backstop for git clones & curl fetches.
           status=1
           for attempt in 1 2; do
             if [ "$attempt" -gt 1 ]; then
-              echo "::warning::attempt 1 failed (exit $status) — retrying; buildroot/BSP flows are incremental, the retry resumes"
+              echo "::warning::attempt 1 failed (exit $status) - retrying"
               cp /mnt/tmp/build.log /mnt/tmp/build.log.try1
             fi
-            ( unset GITHUB_ACTIONS TF_BUILD CI
-              /usr/bin/time -v ./build.sh "$BOARD" "$VARIANT" ) \
-              2>&1 | tee /mnt/tmp/build.log
+            /usr/bin/time -v ./build.sh "$BOARD" lite 2>&1 | tee /mnt/tmp/build.log
             status=$?
             echo ">> attempt $attempt exit: $status"
             [ "$status" -eq 0 ] && break
@@ -197,15 +131,15 @@ jobs:
           echo "BUILD_SECONDS=$(( $(date +%s) - START ))" | tee -a "$GITHUB_ENV"
           exit $status
 
-      - name: Build-log tail on failure (step summary is anonymously readable)
+      - name: Build-log tail on failure
         if: failure()
         run: |
           {
             if [ -f /mnt/tmp/build.log.try1 ]; then
-              echo "### build.log tail — attempt 1 (of 2)"
+              echo "### build.log tail - attempt 1"
               echo '```'; tail -n 60 /mnt/tmp/build.log.try1; echo '```'
             fi
-            echo "### build.log tail — last attempt"
+            echo "### build.log tail - last attempt"
             echo '```'; tail -n 150 /mnt/tmp/build.log; echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -214,63 +148,24 @@ jobs:
         run: |
           echo "## disk after"; df -h / /mnt
           echo "## build minutes: $(( ${BUILD_SECONDS:-0} / 60 ))"
-          echo "## images"; ls -lh "${{ matrix.imgdir }}" 2>/dev/null || echo "(no images dir — build did not reach packaging)"
+          echo "## images"; ls -lh "${{ matrix.imgdir }}" 2>/dev/null || echo "(no images dir)"
           echo "## last 40 build.log lines"; tail -n 40 /mnt/tmp/build.log 2>/dev/null || true
 
-      - name: Package images (.img.xz, normalized names)
+      - name: Package image
         if: success()
         run: |
-          set -x
+          set -eux
           IMGDIR="${{ matrix.imgdir }}"
-          df -h / /mnt
-          # One job can produce SEVERAL images (the universal CVITEK/ARM64
-          # flows pack the whole board family). Find them recursively, keep
-          # every board's image, normalize: strip the internal -<variant>
-          # suffix, prefix with rnsbox- when the packer didn't.
-          # lite is the default and carries no suffix anywhere now; dvd keeps
-          # "-dvd". A default run has either the external-tree name
-          # (rnsbox-<board>.img) or the vendor BSP date-hash name; skip the
-          # generic sdcard.img intermediates those post-image scripts leave.
-          if [ "$VARIANT" = dvd ]; then
-            mapfile -t IMGS < <(find "$IMGDIR" -type f -name "*-dvd.img" | sort)
-          else
-            mapfile -t IMGS < <(find "$IMGDIR" -type f \
-              \( -name "rnsbox-*.img" -o -name "20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]-*.img" \) \
-              ! -name "*-dvd.img" | sort)
-          fi
-          [ "${#IMGS[@]}" -gt 0 ] || { echo "::error::no image for $BOARD ($VARIANT) under $IMGDIR"; find "$IMGDIR" -name '*.img' | head; exit 1; }
+          IMG="$IMGDIR/rnsbox-$BOARD.img"
+          [ -f "$IMG" ] || { echo "::error::no $IMG"; ls -lh "$IMGDIR"; exit 1; }
           STAGE="$RUNNER_TEMP/pkg"; rm -rf "$STAGE"; mkdir -p "$STAGE"
-          for f in "${IMGS[@]}"; do
-            BASE="$(basename "$f" .img)"
-            BASE="${BASE%-$VARIANT}"
-            # BSP packers name images by date+hash ("2026-10-16-05-43-a3912f").
-            # The board identity lives in the path — install/soc_<board>/… —
-            # so name from that when present (underscores to dashes, drop the
-            # trailing _sd); the matrix board key resolves collisions between
-            # flows that pack the same SoC.
-            if [[ "$(basename "$f")" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}- ]] && [[ "$f" =~ soc_([^/]+)/ ]]; then
-              SOC="${BASH_REMATCH[1]}"
-              for pair in $PRODUCT_NAMES; do
-                [ "${pair%%=*}" = "$SOC" ] && SOC="${pair#*=}" && break
-              done
-              case "$SOC" in *_*) SOC="${SOC//_/-}"; SOC="${SOC%-sd}"; SOC="${SOC%-sd}";; esac
-              BASE="rnsbox-$SOC"
-              [ -f "$STAGE/$BASE.img" ] && BASE="rnsbox-$SOC.$BOARD"
-            fi
-            case "$BASE" in rnsbox-*) ;; *) BASE="rnsbox-$BASE" ;; esac
-            echo "Packaging $(basename "$f") -> $BASE.img"
-            cp -v "$f" "$STAGE/$BASE.img" || { echo "::error::cp failed; df=$(df -h / /mnt | tr -s ' ' | tr '\n' ';')"; exit 1; }
-          done
+          cp -v "$IMG" "$STAGE/"
           cd "$STAGE"
-          for f in *.img; do
-            if ! xz -T2 -9 -k -f "$f"; then
-              echo "::warning::xz -9 failed for $f; df=$(df -h / /mnt | tr -s ' ' | tr '\n' ';')"
-              xz -T2 -6 -k -f "$f" || { echo "::error::xz -6 failed too"; ls -la; exit 1; }
-            fi
-          done
-          # checksums go into the release notes text; keep the file internal
-          # to the artifact so the release job can quote it there
-          sha256sum *.img.xz | tee SHA256SUMS
+          if ! xz -T2 -9 -k -f "$(basename "$IMG")"; then
+            echo "::warning::xz -9 failed; trying -6"
+            xz -T2 -6 -k -f "$(basename "$IMG")"
+          fi
+          sha256sum *.img.xz > SHA256SUMS
           ls -lh
           echo "IMGDIR=$STAGE" >> "$GITHUB_ENV"
 
@@ -282,7 +177,7 @@ jobs:
           path: |
             ${{ env.IMGDIR }}/*.img.xz
             ${{ env.IMGDIR }}/SHA256SUMS
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 7
 
       - name: Upload build log
@@ -295,16 +190,12 @@ jobs:
           retention-days: 7
 
   release:
-    # ONE release per run holding every board's image. The matrix jobs only
-    # upload artifacts; the tag is created exactly once, here, so parallel
-    # boards can never collide on it. Checksums are quoted in the notes —
-    # no SHA256SUMS asset.
+    # One release per run; matrix jobs only upload artifacts. A push run is a
+    # pre-release, a manual workflow_dispatch is a full release.
     name: release (all boards)
     needs: build
     if: success()
     runs-on: ubuntu-latest
-    env:
-      VARIANT: ${{ github.event.inputs.variant || 'lite' }}
     steps:
       - name: Collect images from all boards
         uses: actions/download-artifact@v4
@@ -316,30 +207,25 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          set -x
+          set -eux
           VER="${{ github.event.inputs.version }}"
           [ -z "$VER" ] && VER="r$(date -u +%Y.%m.%d)-${GITHUB_SHA:0:7}"
-          # Push-triggered runs are auto-builds -> PRERELEASE. Manual
-          # workflow_dispatch runs are the owner's "this one is real" signal
-          # -> FULL release. The edit keeps the state in sync even when a
-          # re-run hits the already-exists path (e.g. a manual run on the
-          # same commit/date after a push run created the tag).
           if [ "$GITHUB_EVENT_NAME" = push ]; then IS_PRE=true; else IS_PRE=false; fi
           mkdir -p rel
           {
-            echo "Automated RNSBox build from \`${GITHUB_SHA:0:7}\` (branch \`${GITHUB_REF_NAME}\`, internal variant: \`$VARIANT\`)."
+            echo "Automated RNSBox build from \`${GITHUB_SHA:0:7}\` (branch \`${GITHUB_REF_NAME}\`)."
             echo
             if [ "$IS_PRE" = true ]; then
               echo "> Auto-build: marked as a **pre-release**. Full releases are cut by running this workflow manually."
               echo
             fi
-            echo "| Board | Image | sha256 |"
-            echo "|---|---|---|"
+            echo "| Image | sha256 |"
+            echo "|---|---|"
             for d in dist/*/; do
               for xz in "$d"*.img.xz; do
-                [ -e "$xz" ] || { echo "::error::no .img.xz in $d"; exit 1; }
+                [ -e "$xz" ] || { echo "::error::no image in $d"; exit 1; }
                 cp "$xz" rel/
-                echo "| $(basename "$xz" | sed 's/^rnsbox-//; s/\.img\.xz$//') | \`$(basename "$xz")\` | \`(see SHA256SUMS in build artifacts; quoted below)\` |"
+                echo "| \`$(basename "$xz")\` | \`(see SHA256SUMS below)\` |"
               done
             done
             echo
@@ -354,9 +240,8 @@ jobs:
             echo "sudo dd if=rnsbox-<board>.img of=/dev/sdX bs=4M conv=fsync status=progress"
             echo '```'
             echo
-            echo "Web admin: http://10.42.0.1 (factory login admin/admin — the portal
-            nags you to change it, and WAN login is blocked until you do). SSH is
-            OFF by default; enable it in Settings → SSH."
+            echo "Web admin: http://10.42.0.1 (admin/admin; change it after first login)."
+            echo "SSH: ssh admin@10.42.0.1 (admin/admin; change the password in Settings)."
           } > /tmp/notes.md
           cd rel
           if gh release view "$VER" --repo "${{ github.repository }}" >/dev/null 2>&1; then
@@ -367,15 +252,3 @@ jobs:
               --title "RNSBox $VER" --notes-file /tmp/notes.md "--prerelease=$IS_PRE" *.img.xz
           fi
           cat /tmp/notes.md
-
-      - name: One-off cleanup — remove the two per-board releases this scheme replaced
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # remove this step after it has run once. The tag literals are
-          # HISTORICAL GitHub release names (cut while the RPi board key was
-          # still "rpi0-2w") — do not rename them with the board key.
-          for t in r2026.09.28-fb5b1ab-rpi0-2w r2026.09.28-fb5b1ab-licheerv-nano; do
-            gh release delete "$t" --repo "${{ github.repository }}" --yes --cleanup-tag || true
-          done

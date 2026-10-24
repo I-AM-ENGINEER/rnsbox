@@ -8,7 +8,7 @@ image boot.vfat {
 	# image-size: sized to the payload (Image ~24M + firmware blobs ~9M +
 	# dtbs/overlays ~4M + usb.* flags), not to the card — /boot is a fixed
 	# FAT that nothing grows at runtime, so keep ~8M of slack for a future
-	# kernel and the dvd-variant flag files. 48M (was 128M).
+	# gadget flag files. 48M (was 128M).
 	size = 48M
 }
 

@@ -59,9 +59,8 @@ rm -rf "${GENIMAGE_TMP}"
 rm -rf "${ROOTPATH_TMP}"
 trap - EXIT
 
-# Tag the image the house way (the pc-x86_64 post-image does the same;
-# scripts/build-variant.sh only covers the rpi-universal). RNSBOX_BOARD /
-# RNSBOX_VARIANT are exported by build.sh.
+# Tag the image the house way. RNSBOX_BOARD / RNSBOX_VARIANT are exported by
+# build.sh.
 VARIANT="${RNSBOX_VARIANT:-lite}"
 NEW="${BINARIES_DIR}/sdcard.img"
 SUFFIX=""
