@@ -97,6 +97,7 @@ define RNSBOX_PORTAL_INSTALL_TARGET_CMDS
 	$(INSTALL) -D -m 0755 $(@D)/cgi/helpers/rnode.py $(TARGET_DIR)/usr/lib/rnsbox/rnode.py
 	$(INSTALL) -D -m 0755 $(@D)/cgi/helpers/rnshaccess.py $(TARGET_DIR)/usr/lib/rnsbox/rnshaccess.py
 	$(INSTALL) -D -m 0755 $(@D)/cgi/helpers/halow.py $(TARGET_DIR)/usr/lib/rnsbox/halow.py
+	$(INSTALL) -D -m 0755 $(@D)/cgi/helpers/halow_fw.py $(TARGET_DIR)/usr/lib/rnsbox/halow_fw.py
 	$(INSTALL) -D -m 0755 $(@D)/cgi/helpers/rnodebridge $(TARGET_DIR)/usr/lib/rnsbox/rnodebridge
 	# S88rnodebridge — ws://:7634 KISS bridge for the embedded RNode flasher;
 	# no-op (and no daemon) unless rnode.conf names a transport.

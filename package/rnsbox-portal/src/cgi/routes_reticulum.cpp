@@ -710,12 +710,18 @@ void reticulum_page(const Request& req, Response& res) {
         ota_block = R"HTML(<div class="rnsh-block" style="margin-top:16px">
     <h4>Firmware update</h4>
     <div class="row-form">
+      <label style="margin:0">GitHub release
+        <select id="halow-ota-release"><option value="">loading…</option></select></label>
+      <button type="button" class="btn-primary" onclick="halowOtaRelease()">Download &amp; flash</button>
+      <button type="button" class="btn" onclick="halowOtaReleases()" title="Reload the release list">Reload</button>
+    </div>
+    <div class="row-form" style="margin-top:8px">
       <input type="file" id="halow-ota-file" accept=".bin,.tar">
       <button type="button" class="btn-primary" id="halow-ota-upload" onclick="halowOtaUpload()">Upload &amp; flash</button>
       <button type="button" class="btn" onclick="halowOtaOnline('check')">Check online</button>
       <button type="button" class="btn" onclick="halowOtaOnline('install')">Install latest</button>
     </div>
-    <p class="muted" id="halow-ota-msg" style="margin:8px 0 0">Local upload accepts a raw .bin or an ota.tar with fw.bin. Keep the modem powered during the write.</p>
+    <p class="muted" id="halow-ota-msg" style="margin:8px 0 0">The GitHub list includes beta releases; the box downloads the archive and flashes it. Local upload accepts a raw .bin or an ota.tar with fw.bin. Keep the modem powered during the write.</p>
     <div class="meter" style="margin-top:8px"><div class="meter-fill" id="halow-ota-bar" style="width:0%"></div></div>
   </div>
   <script>
@@ -723,6 +729,36 @@ void reticulum_page(const Request& req, Response& res) {
     var BASE = '__BASE__';
     function msg(t){ var e=document.getElementById('halow-ota-msg'); if(e) e.textContent=t; }
     function bar(p){ var e=document.getElementById('halow-ota-bar'); if(e) e.style.width=Math.max(0,Math.min(100,p))+'%'; }
+    function esc(s){ return (''+(s==null?'':s)).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
+    window.halowOtaReleases = function(){
+      var sel = document.getElementById('halow-ota-release');
+      if (!sel) return;
+      fetch(BASE + '/reticulum/halow/ota/releases', {credentials:'same-origin', cache:'no-store'})
+        .then(function(r){ return r.json(); }).then(function(list){
+          if (!Array.isArray(list) || !list.length) { sel.innerHTML = '<option value="">no releases found</option>'; return; }
+          sel.innerHTML = list.map(function(x){
+            var kb = Math.round((x.size || 0) / 1024);
+            return '<option value="' + esc(x.tag) + '">' + esc(x.tag) +
+                   (x.prerelease ? ' (beta)' : '') + ' — ' + kb + ' KiB</option>';
+          }).join('');
+        }).catch(function(){ sel.innerHTML = '<option value="">release list failed</option>'; });
+    };
+    window.halowOtaRelease = function(){
+      var sel = document.getElementById('halow-ota-release');
+      var tag = sel ? sel.value : '';
+      if (!tag) { msg('Choose a release.'); return; }
+      if (!confirm('Download and flash ' + tag + ' on the modem? It will reboot.')) return;
+      msg('Downloading ' + tag + ' on the box…'); bar(0);
+      fetch(BASE + '/reticulum/halow/ota/fetch', {
+        method:'POST', credentials:'same-origin',
+        headers:{'Content-Type':'application/x-www-form-urlencoded'},
+        body:'tag=' + encodeURIComponent(tag)
+      }).then(function(r){ return r.json().then(function(j){ return {ok:r.ok, j:j}; }); })
+        .then(function(x){
+          if (!x.ok || x.j.ok === false) { msg('Failed: ' + (x.j.error || 'download failed')); return; }
+          msg('Flashing…'); poll();
+        }).catch(function(e){ msg('Failed: ' + e); });
+    };
     function poll(){
       fetch(BASE + '/reticulum/halow/ota/status', {credentials:'same-origin', cache:'no-store'})
         .then(function(r){ return r.json(); }).then(function(s){
@@ -794,6 +830,7 @@ void reticulum_page(const Request& req, Response& res) {
         }
       }).catch(function(e){ msg('Failed: ' + e); });
     };
+    halowOtaReleases();
   })();
   </script>)HTML";
         ota_block = web::replace_all(std::move(ota_block), "__BASE__", base);
@@ -2977,6 +3014,19 @@ void reticulum_halow_ota_chunk(const Request& req, Response& res) {
     res.body = "{\"ok\":true,\"off\":" + std::to_string(total) + "}";
 }
 
+// Detach the flasher worker; it writes /run/rnsbox-halow-ota.json itself.
+static bool ota_worker_spawn() {
+    pid_t pid = fork();
+    if (pid == 0) {
+        setsid();
+        int nul = open("/dev/null", O_RDWR);
+        if (nul >= 0) { dup2(nul, 0); dup2(nul, 1); dup2(nul, 2); if (nul > 2) close(nul); }
+        execl("/usr/sbin/rnsbox-portal", "rnsbox-portal", "halow-ota", OTA_UPLOAD, (char *)nullptr);
+        _exit(127);
+    }
+    return pid >= 0;
+}
+
 void reticulum_halow_ota_start(const Request& req, Response& res) {
     if (!web::require_auth(req, res, true)) return;
     res.content_type = "application/json";
@@ -2996,21 +3046,70 @@ void reticulum_halow_ota_start(const Request& req, Response& res) {
         "{\"state\":\"starting\",\"stage\":\"queued\",\"done\":0,\"total\":" +
         std::to_string((long long)st.st_size) + ",\"pct\":0,\"error\":\"\",\"version\":\"\"}\n",
         0644);
-    pid_t pid = fork();
-    if (pid == 0) {
-        setsid();
-        int nul = open("/dev/null", O_RDWR);
-        if (nul >= 0) { dup2(nul, 0); dup2(nul, 1); dup2(nul, 2); if (nul > 2) close(nul); }
-        execl("/usr/sbin/rnsbox-portal", "rnsbox-portal", "halow-ota", OTA_UPLOAD, (char *)nullptr);
-        _exit(127);
-    }
-    if (pid < 0) {
+    if (!ota_worker_spawn()) {
         res.status = "500 Internal Server Error";
         res.body = "{\"ok\":false,\"error\":\"could not start the updater\"}";
         return;
     }
     res.status = "202 Accepted";
     res.body = "{\"ok\":true}";
+}
+
+void reticulum_halow_ota_releases(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, true)) return;
+    res.content_type = "application/json";
+    util::RunResult rr = util::run(
+        {"/usr/bin/python3", "/usr/lib/rnsbox/halow_fw.py", "list"}, "", 30);
+    std::string out = util::trim(rr.out);
+    if (rr.exit_code != 0 || out.empty() || out[0] != '[') {
+        res.status = "502 Bad Gateway";
+        std::string why = rr.timed_out ? "GitHub request timed out" : out;
+        res.body = "{\"error\":\"" + http::json_escape(why.empty() ? "release list failed" : why) + "\"}";
+        return;
+    }
+    res.body = out;
+}
+
+void reticulum_halow_ota_fetch(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, true)) return;
+    res.content_type = "application/json";
+    std::string tag = util::trim(req.f("tag"));
+    // GitHub tags: letters, digits, dot, dash, underscore. Never a path/URL.
+    if (tag.empty() || tag.size() > 40 ||
+        tag.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-") != std::string::npos) {
+        res.status = "400 Bad Request";
+        res.body = "{\"ok\":false,\"error\":\"bad release tag\"}";
+        return;
+    }
+    if (access(OTA_LOCK, F_OK) == 0) {
+        res.status = "409 Conflict";
+        res.body = "{\"ok\":false,\"error\":\"an update is already running\"}";
+        return;
+    }
+    util::write_file_atomic(OTA_STATE,
+        "{\"state\":\"starting\",\"stage\":\"downloading " + http::json_escape(tag) +
+        "\",\"done\":0,\"total\":0,\"pct\":0,\"error\":\"\",\"version\":\"\"}\n", 0644);
+    util::RunResult rr = util::run(
+        {"/usr/bin/python3", "/usr/lib/rnsbox/halow_fw.py", "fetch", tag, OTA_UPLOAD}, "", 120);
+    struct stat st;
+    if (rr.exit_code != 0 || stat(OTA_UPLOAD, &st) != 0 || st.st_size <= 0) {
+        res.status = "502 Bad Gateway";
+        std::string why = rr.timed_out ? "download timed out" : util::trim(rr.out);
+        res.body = "{\"ok\":false,\"error\":\"" +
+                   http::json_escape(why.empty() ? "download failed" : why) + "\"}";
+        return;
+    }
+    util::write_file_atomic(OTA_STATE,
+        "{\"state\":\"starting\",\"stage\":\"queued\",\"done\":0,\"total\":" +
+        std::to_string((long long)st.st_size) + ",\"pct\":0,\"error\":\"\",\"version\":\"\"}\n",
+        0644);
+    if (!ota_worker_spawn()) {
+        res.status = "500 Internal Server Error";
+        res.body = "{\"ok\":false,\"error\":\"could not start the updater\"}";
+        return;
+    }
+    res.status = "202 Accepted";
+    res.body = "{\"ok\":true,\"bytes\":" + std::to_string((long long)st.st_size) + "}";
 }
 
 void reticulum_halow_ota_status(const Request& req, Response& res) {
