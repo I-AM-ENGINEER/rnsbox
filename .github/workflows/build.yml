@@ -227,9 +227,17 @@ jobs:
           # flows pack the whole board family). Find them recursively, keep
           # every board's image, normalize: strip the internal -<variant>
           # suffix, prefix with rnsbox- when the packer didn't.
-          # lite is the default: external-tree packers now drop the suffix,
-          # while the vendor BSP packers keep -lite. Accept both.
-          mapfile -t IMGS < <(find "$IMGDIR" -type f -name "*.img"             \( -name "*-$VARIANT.img" -o -name "rnsbox-$BOARD.img" \) | sort)
+          # lite is the default and carries no suffix anywhere now; dvd keeps
+          # "-dvd". A default run has either the external-tree name
+          # (rnsbox-<board>.img) or the vendor BSP date-hash name; skip the
+          # generic sdcard.img intermediates those post-image scripts leave.
+          if [ "$VARIANT" = dvd ]; then
+            mapfile -t IMGS < <(find "$IMGDIR" -type f -name "*-dvd.img" | sort)
+          else
+            mapfile -t IMGS < <(find "$IMGDIR" -type f \
+              \( -name "rnsbox-*.img" -o -name "20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]-*.img" \) \
+              ! -name "*-dvd.img" | sort)
+          fi
           [ "${#IMGS[@]}" -gt 0 ] || { echo "::error::no image for $BOARD ($VARIANT) under $IMGDIR"; find "$IMGDIR" -name '*.img' | head; exit 1; }
           STAGE="$RUNNER_TEMP/pkg"; rm -rf "$STAGE"; mkdir -p "$STAGE"
           for f in "${IMGS[@]}"; do

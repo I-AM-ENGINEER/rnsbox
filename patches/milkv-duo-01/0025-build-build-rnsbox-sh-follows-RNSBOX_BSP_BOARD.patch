@@ -43,11 +43,11 @@ index bd7a4f80b..22cf8d34c 100755
 @@ -88,7 +93,7 @@ echo "--- pack_burn_image ---"
  pack_burn_image || { echo "FATAL: pack_burn_image"; exit 96; }
  
- # tag the produced image with the variant suffix
+ # tag the produced image with the variant suffix (none for lite)
 -NEW=$(ls -t install/soc_sg2002_licheervnano_sd/images/*.img | head -1)
 +NEW=$(ls -t install/soc_${BSP_BOARD}/images/*.img | head -1)
- TAGGED="${NEW%.img}-${SUFFIX}.img"
- cp -f "$NEW" "$TAGGED"
+ TAGGED="${NEW%.img}${SUFFIX}.img"
+ [ "$NEW" = "$TAGGED" ] || cp -f "$NEW" "$TAGGED"
  echo "=================== BUILD OK [$VARIANT] $(date) ==================="
 -- 
 2.43.0

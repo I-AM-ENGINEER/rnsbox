@@ -55,7 +55,7 @@ index bd7a4f8..56bf4ac 100755
 +	# committed file is stashed so the restore() trap puts it back afterwards.
 +	cp -f "$GENIMG" "$GENIMG.abstash"
 +	cp -f "$GENIMG_AB" "$GENIMG"
- 	SUFFIX=lite
+ 	SUFFIX=
  fi
  
 diff --git a/build/tools/common/sd_tools/genimage_rootless_ab.cfg b/build/tools/common/sd_tools/genimage_rootless_ab.cfg

@@ -350,7 +350,7 @@ index 000000000..bd7a4f80b
 +	sed -i "s/^BR2_TARGET_ROOTFS_EXT2_SIZE=.*/BR2_TARGET_ROOTFS_EXT2_SIZE=\"${EXT2_MB}M\"/" "$DEFCONFIG"
 +	sed -i "s#\(<partition label=\"ROOTFS\" size_in_kb=\)\"[0-9]*\"#\1\"${PART_KB}\"#" "$PARTXML"
 +	grep -q '"usb.disk0"' "$GENIMG" || sed -i 's#\("usb.ncm.mac",\)#\1\n                        "usb.disk0",\n                        "usb.disk0.size",#' "$GENIMG"
-+	SUFFIX=dvd
++	SUFFIX=-dvd
 +else
 +	export RNSBOX_WITH_DVD=0
 +	echo "--- LITE: NCM-only, strip ISO + shrink sizes ---"
@@ -361,7 +361,7 @@ index 000000000..bd7a4f80b
 +	sed -i 's#\(<partition label="ROOTFS" size_in_kb=\)"[0-9]*"#\1"1638400"#' "$PARTXML"
 +	# drop the usb.disk0 lines from the genimage boot.vfat list (would error if absent)
 +	sed -i '/"usb.disk0",/d; /"usb.disk0.size",/d' "$GENIMG"
-+	SUFFIX=lite
++	SUFFIX=
 +fi
 +
 +echo "--- ensure all overlay init scripts are executable ---"
@@ -383,10 +383,10 @@ index 000000000..bd7a4f80b
 +echo "--- pack_burn_image ---"
 +pack_burn_image || { echo "FATAL: pack_burn_image"; exit 96; }
 +
-+# tag the produced image with the variant suffix
++# tag the produced image with the variant suffix (none for lite)
 +NEW=$(ls -t install/soc_sg2002_licheervnano_sd/images/*.img | head -1)
-+TAGGED="${NEW%.img}-${SUFFIX}.img"
-+cp -f "$NEW" "$TAGGED"
++TAGGED="${NEW%.img}${SUFFIX}.img"
++[ "$NEW" = "$TAGGED" ] || cp -f "$NEW" "$TAGGED"
 +echo "=================== BUILD OK [$VARIANT] $(date) ==================="
 +ls -lh "$TAGGED" | awk '{print "  "$5"  "$NF}'
 +echo "DONE-SENTINEL-OK"
