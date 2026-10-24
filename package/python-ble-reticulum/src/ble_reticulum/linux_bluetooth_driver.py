@@ -433,6 +433,11 @@ class LinuxBluetoothDriver(BLEDriverInterface):
         self.gatt_server: Optional['BluezeroGATTServer'] = None
         self.ble_agent = None
 
+        # Optional RNode-over-BLE emulator (RNodeBLE.py).  The BLE interface
+        # assigns it before start(); the GATT server then advertises the
+        # Nordic UART service and routes its writes to the emulator.
+        self.rnode_emulator = None
+
         # BlueZ version detection
         self.bluez_version: Optional[tuple] = None
         self.has_connect_device = None  # None = unknown, True/False = tested
@@ -523,7 +528,8 @@ class LinuxBluetoothDriver(BLEDriverInterface):
                     identity_char_uuid=identity_char_uuid,
                     adapter_index=self.adapter_index,
                     agent_capability=self.agent_capability,
-                    advertise_interval_ms=self.advertise_interval_ms
+                    advertise_interval_ms=self.advertise_interval_ms,
+                    rnode_emulator=self.rnode_emulator
                 )
                 self._log("GATT server initialized")
             except Exception as e:
@@ -1616,6 +1622,12 @@ class LinuxBluetoothDriver(BLEDriverInterface):
         else:
             raise RuntimeError(f"Unknown connection type: {peer.connection_type}")
 
+    def rnode_send(self, data: bytes, address: Optional[str] = None):
+        """Send an RNode frame to paired centrals over the NUS TX characteristic."""
+        if not self.gatt_server:
+            return
+        self.gatt_server.rnode_send(data, address)
+
     # ========================================================================
     # GATT Characteristic Operations
     # ========================================================================
@@ -1823,6 +1835,10 @@ class BluezeroGATTServer:
     - Sending data via TX characteristic (we notify centrals)
     """
 
+    RNODE_SERVICE_UUID = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
+    RNODE_RX_CHAR_UUID = "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
+    RNODE_TX_CHAR_UUID = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
+
     def __init__(
         self,
         driver: LinuxBluetoothDriver,
@@ -1832,7 +1848,8 @@ class BluezeroGATTServer:
         identity_char_uuid: str,
         adapter_index: int = 0,
         agent_capability: str = "NoInputNoOutput",
-        advertise_interval_ms: int = 100
+        advertise_interval_ms: int = 100,
+        rnode_emulator=None
     ):
         """Initialize GATT server."""
         if not BLUEZERO_AVAILABLE:
@@ -1845,6 +1862,7 @@ class BluezeroGATTServer:
         self.identity_char_uuid = identity_char_uuid
         self.adapter_index = adapter_index
         self.agent_capability = agent_capability
+        self.rnode = rnode_emulator
         try:
             self.advertise_interval_ms = int(advertise_interval_ms)
         except (TypeError, ValueError):
@@ -1856,6 +1874,7 @@ class BluezeroGATTServer:
         self.peripheral_obj = None
         self.tx_characteristic = None
         self.identity_characteristic = None
+        self.rnode_tx_characteristic = None
 
         # State
         self.running = False
@@ -2505,6 +2524,21 @@ class BluezeroGATTServer:
             adapter_address = local_adapter.address
             self._log(f"Using adapter: {adapter_address}", "DEBUG")
 
+            # RNode BLE clients pair before they will use the endpoint (RNS's
+            # device filter refuses unbonded devices), and pairing needs the
+            # adapter to be pairable.  Advertising already makes it
+            # discoverable; set both best-effort, some kernels/BlueZ builds
+            # refuse them while the adapter is powered.
+            if self.rnode is not None:
+                try:
+                    if not local_adapter.powered:
+                        local_adapter.powered = True
+                    local_adapter.pairable = True
+                    local_adapter.discoverable = True
+                    self._log("Adapter set pairable + discoverable for RNode BLE", "DEBUG")
+                except Exception as e:
+                    self._log(f"Could not set pairable/discoverable: {e}", "WARNING")
+
             # Create peripheral (omit local_name if None to save advertisement packet space)
             if device_name:
                 self.peripheral_obj = peripheral.Peripheral(
@@ -2579,6 +2613,39 @@ class BluezeroGATTServer:
             self.identity_characteristic.set_value(list(self.identity_bytes))
             self._log(f"Identity characteristic set to: {self.identity_bytes.hex()}")
 
+            # Optional RNode-over-BLE endpoint: the Nordic UART Service that
+            # RNS's RNodeInterface (Sideband, rnodeconf) knows how to talk to.
+            # It is a second primary service, so BlueZ advertises its UUID
+            # alongside the Reticulum mesh service (fields that do not fit in
+            # the 31-byte legacy advertisement go to the scan response).
+            if self.rnode is not None:
+                self.peripheral_obj.add_service(
+                    srv_id=2,
+                    uuid=self.RNODE_SERVICE_UUID,
+                    primary=True
+                )
+                self.peripheral_obj.add_characteristic(
+                    srv_id=2,
+                    chr_id=1,
+                    uuid=self.RNODE_RX_CHAR_UUID,
+                    value=[],
+                    notifying=False,
+                    # Sideband pairs with the box before using it as an RNode;
+                    # requiring an encrypted link makes BlueZ enforce that.
+                    flags=['write', 'write-without-response', 'encrypt-write'],
+                    write_callback=self._handle_write_rnode
+                )
+                self.peripheral_obj.add_characteristic(
+                    srv_id=2,
+                    chr_id=2,
+                    uuid=self.RNODE_TX_CHAR_UUID,
+                    value=[],
+                    notifying=True,
+                    flags=['read', 'notify', 'encrypt-read'],
+                )
+                self.rnode_tx_characteristic = self.peripheral_obj.characteristics[-1]
+                self._log("Added RNode NUS service (RX write / TX notify)", "DEBUG")
+
             # Save TX characteristic reference
             if len(self.peripheral_obj.characteristics) >= 2:
                 self.tx_characteristic = self.peripheral_obj.characteristics[1]  # chr_id=2
@@ -2606,6 +2673,46 @@ class BluezeroGATTServer:
         finally:
             self.running = False
             self._log("Server thread exiting", "DEBUG")
+
+    def _handle_write_rnode(self, value, options):
+        """Handle a write to the RNode NUS RX characteristic."""
+        if self.rnode is None:
+            return value
+        if isinstance(value, list):
+            data = bytes(value)
+        else:
+            data = bytes(value)
+        central_address = options.get("device", "unknown")
+        if central_address and central_address != "unknown":
+            try:
+                central_address = central_address.split("/")[-1].split("dev_")[-1].replace("_", ":")
+            except Exception:
+                pass
+        mtu = options.get("mtu", None)
+        # A client may use only the RNode endpoint and never touch the mesh
+        # RX characteristic, so track its connection here too.
+        with self.centrals_lock:
+            if central_address not in self.connected_centrals:
+                self._handle_central_connected(central_address, mtu)
+        self._log(f"RNode RX {len(data)} B from {central_address}", "DEBUG")
+        self.rnode.feed(data, central_address)
+        return value
+
+    def rnode_send(self, data: bytes, address: Optional[str] = None):
+        """Notify subscribed centrals with an RNode protocol frame."""
+        if self.rnode_tx_characteristic is None:
+            return False
+        try:
+            # An ATT notification carries at most MTU-3 bytes.  HDLC frames
+            # for a 500-byte RNode packet fit in one, but a frame full of
+            # escaped FEND/FESC bytes can exceed it; the client's decoder
+            # works on the byte stream, so split instead of failing.
+            for off in range(0, len(data), 512):
+                self.rnode_tx_characteristic.set_value(list(data[off:off + 512]))
+            return True
+        except Exception as e:
+            self._log(f"RNode notify failed: {e}", "ERROR")
+            return False
 
     def _handle_write_rx(self, value, options):
         """Handle write to RX characteristic (bluezero callback)."""
@@ -2721,6 +2828,13 @@ class BluezeroGATTServer:
         """
         with self.centrals_lock:
             if central_address not in self.connected_centrals:
+                # Could still be an RNode-only client that was never added
+                # through the mesh RX path.
+                if self.rnode is not None:
+                    try:
+                        self.rnode.central_disconnected(central_address)
+                    except Exception:
+                        pass
                 self._log(f"Central {central_address} not in connected list during disconnect", "DEBUG")
                 return
 
@@ -2750,6 +2864,12 @@ class BluezeroGATTServer:
                 )
 
             del self.connected_centrals[central_address]
+
+        if self.rnode is not None:
+            try:
+                self.rnode.central_disconnected(central_address)
+            except Exception as e:
+                self._log(f"RNode central_disconnected error: {e}", "ERROR")
 
         # Notify driver via callback (if wired up)
         if hasattr(self, 'on_central_disconnected') and self.on_central_disconnected:

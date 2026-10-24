@@ -37,6 +37,7 @@ Key features:
 import RNS
 import sys
 import os
+import json
 import threading
 import time
 import asyncio
@@ -94,6 +95,17 @@ except ImportError:
         HAS_GATT_SERVER = True
     except ImportError:
         HAS_GATT_SERVER = False
+
+# RNode serial-protocol endpoint (Nordic UART Service) for Sideband/rnodeconf
+try:
+    from RNodeBLE import RNodeBLEEmulator
+    HAS_RNODE_BLE = True
+except ImportError:
+    try:
+        from ble_reticulum.RNodeBLE import RNodeBLEEmulator
+        HAS_RNODE_BLE = True
+    except ImportError:
+        HAS_RNODE_BLE = False
 
 # Import driver abstraction
 try:
@@ -243,6 +255,9 @@ class BLEInterface(Interface):
     CHARACTERISTIC_RX_UUID = "37145b00-442d-4a94-917f-8f42c5da28e5"  # RX characteristic
     CHARACTERISTIC_TX_UUID = "37145b00-442d-4a94-917f-8f42c5da28e4"  # TX characteristic
     CHARACTERISTIC_IDENTITY_UUID = "37145b00-442d-4a94-917f-8f42c5da28e6"  # Identity characteristic (Protocol v2)
+    # Snapshot read by the portal: byte counters for the BLE transport (mesh
+    # plus the RNode NUS endpoint), refreshed every two seconds.
+    STATS_FILE = "/run/rnsbox-ble-stats.json"
 
     # Discovery and connection settings
     DISCOVERY_INTERVAL = 5.0  # seconds between discovery scans
@@ -365,6 +380,25 @@ class BLEInterface(Interface):
             RNS.log(f"{self} Peripheral mode requested but BLEGATTServer not available", RNS.LOG_WARNING)
             self.enable_peripheral = False
 
+        # RNode-over-BLE: expose a Nordic UART Service endpoint that speaks
+        # the RNode serial protocol, so Sideband/rnodeconf can pair with the
+        # box and use it as an RNode.  This is independent of the mesh
+        # service above; it bridges RNode frames into the local transport.
+        rnode_val = c.get("rnode_ble", True)
+        if isinstance(rnode_val, str):
+            self.rnode_ble = rnode_val.lower() in ["yes", "true", "1"]
+        else:
+            self.rnode_ble = bool(rnode_val) and self.enable_peripheral
+
+        # RNS's RNode BLE scanner auto-selects devices whose name starts with
+        # "RNode " (and requires the NUS UUID in the advertisement).  Keep the
+        # operator's name, just give it the prefix the clients look for.
+        if self.rnode_ble:
+            if not self.device_name:
+                self.device_name = "RNode RNSBox"
+            elif not self.device_name.startswith("RNode "):
+                self.device_name = "RNode " + self.device_name
+
         # Local announce forwarding workaround
         # WORKAROUND: Reticulum Transport.py doesn't forward locally-originated announces (hops=0)
         # to physical interfaces. This option enables manual forwarding of local announces to BLE peers.
@@ -438,6 +472,21 @@ class BLEInterface(Interface):
             adapter_index=0  # TODO: Make configurable
         )
         RNS.log(f"{self} Using driver: {type(self.driver).__name__}", RNS.LOG_DEBUG)
+
+        # RNode-over-BLE endpoint.  Created before driver.start() so the
+        # GATT server can add the NUS service in the same publish pass.
+        self.rnode = None
+        if self.rnode_ble and HAS_RNODE_BLE:
+            try:
+                self.rnode = RNodeBLEEmulator(self)
+                self.driver.rnode_emulator = self.rnode
+                RNS.Transport.interfaces.append(self.rnode)
+                RNS.log(f"{self} RNode-over-BLE endpoint enabled (NUS)", RNS.LOG_INFO)
+            except Exception as e:
+                RNS.log(f"{self} could not start RNode-over-BLE endpoint: {e}", RNS.LOG_WARNING)
+                self.rnode = None
+        elif self.rnode_ble:
+            RNS.log(f"{self} RNode-over-BLE requested but RNodeBLE module is missing", RNS.LOG_WARNING)
 
         # Set driver callbacks
         self.driver.on_device_discovered = self._device_discovered_callback
@@ -526,7 +575,18 @@ class BLEInterface(Interface):
 
         # Set interface online
         self.online = True
+        if getattr(self, "rnode", None) is not None:
+            self.rnode.online = True
         RNS.log(f"{self} interface online", RNS.LOG_INFO)
+
+        # Keep a small, always-fresh byte-counter snapshot for the dashboard.
+        # rnstatus is a Python cold start and can miss the BLE interface while
+        # the adapter is busy; the interface itself already owns the counters.
+        if not getattr(self, "_stats_thread", None) or not self._stats_thread.is_alive():
+            self._stats_stop = threading.Event()
+            self._stats_thread = threading.Thread(
+                target=self._stats_writer_loop, daemon=True, name="BLE-Stats")
+            self._stats_thread.start()
 
     def final_init(self):
         """
@@ -540,6 +600,30 @@ class BLEInterface(Interface):
             RNS.log(f"{self} Launching driver advertising startup thread (will wait for Transport.identity)", RNS.LOG_DEBUG)
             startup_thread = threading.Thread(target=self._start_advertising_when_identity_ready, daemon=True, name="BLE-Advertising-Startup")
             startup_thread.start()
+
+    def _stats_writer_loop(self):
+        """Publish tx/rx byte counters for the portal's BLE card."""
+        while not self._stats_stop.is_set():
+            try:
+                txb = int(getattr(self, "txb", 0) or 0)
+                rxb = int(getattr(self, "rxb", 0) or 0)
+                rn = getattr(self, "rnode", None)
+                if rn is not None:
+                    txb += int(getattr(rn, "txb", 0) or 0)
+                    rxb += int(getattr(rn, "rxb", 0) or 0)
+                payload = json.dumps({
+                    "tx_bytes": txb,
+                    "rx_bytes": rxb,
+                    "ts": time.time(),
+                })
+                tmp = self.STATS_FILE + ".tmp"
+                with open(tmp, "w") as f:
+                    f.write(payload)
+                os.chmod(tmp, 0o600)
+                os.replace(tmp, self.STATS_FILE)
+            except Exception:
+                pass
+            self._stats_stop.wait(2.0)
 
     def _setup_logging_redirect(self):
         """
@@ -2440,6 +2524,19 @@ class BLEInterface(Interface):
         with self.frag_lock:
             self.fragmenters.clear()
             self.reassemblers.clear()
+
+        # Detach the RNode endpoint before the GATT server goes away
+        if getattr(self, "rnode", None) is not None:
+            self.rnode.online = False
+            try:
+                self.rnode.detach()
+            except Exception as e:
+                RNS.log(f"{self} error detaching RNode endpoint: {e}", RNS.LOG_DEBUG)
+            self.rnode = None
+
+        # Stop the stats writer before the driver goes away.
+        if getattr(self, "_stats_stop", None) is not None:
+            self._stats_stop.set()
 
         # Stop the driver (handles graceful disconnection and cleanup)
         try:

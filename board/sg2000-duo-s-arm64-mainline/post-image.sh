@@ -67,6 +67,6 @@ VARIANT="${RNSBOX_VARIANT:-lite}"
 NEW="${BINARIES_DIR}/sdcard.img"
 SUFFIX=""
 if [ "$VARIANT" != lite ]; then SUFFIX="-$VARIANT"; fi
-TAGGED="${BINARIES_DIR}/rnsbox-${RNSBOX_BOARD:-sg2000-duo-s-arm64-mainline}${SUFFIX}.img"
+TAGGED="${BINARIES_DIR}/rnsbox-${RNSBOX_BOARD:-sg2000-duo-s-arm64}${SUFFIX}.img"
 cp -f "$NEW" "$TAGGED"
 echo "=================== IMAGE OK [${VARIANT}] $(date) ==================="

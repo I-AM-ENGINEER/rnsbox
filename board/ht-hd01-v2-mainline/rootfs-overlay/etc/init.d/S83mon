@@ -1,5 +1,5 @@
 #!/bin/sh
-# S83mon — one small C daemon for the three periodic jobs that used to be
+# S83mon — one small C daemon for the periodic jobs that used to be
 # separate BusyBox shell loops:
 #   * memory watchdog (restart rnsd above mem_threshold, S46memwatch)
 #   * RAM/swap/zram/CPU sampler (S47memlog)
@@ -27,6 +27,7 @@ case "$1" in
 			exit 1
 		fi
 		rm -rf /run/rnsstatus.lock
+		rm -f /run/rnsbox-bt-peers.lock /run/rnsbox-bt-peers.req
 		"$DAEMON" </dev/null >/dev/null 2>&1 &
 		echo $! > "$PIDFILE"
 		echo "OK (pid $!)"
@@ -38,6 +39,7 @@ case "$1" in
 			rm -f "$PIDFILE"
 		fi
 		rm -rf /run/rnsstatus.lock
+		rm -f /run/rnsbox-bt-peers.lock /run/rnsbox-bt-peers.req
 		echo "OK"
 		;;
 	restart|reload)

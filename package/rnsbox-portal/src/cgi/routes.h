@@ -54,6 +54,11 @@ void reticulum_bluetooth_peers(const http::Request&, http::Response&);  // GET  
 // Interface byte counters from the parsed rnstatus cache (pretty strings);
 // false when no cached snapshot matches the needle (e.g. "BLE").
 bool rnstatus_interface_traffic(const char* needle, std::string& tx, std::string& rx);
+// Byte counters written by BLEInterface every 2 s (mesh + RNode NUS);
+// false when the snapshot is missing or stale.
+bool ble_traffic_stats(std::string& tx, std::string& rx);
+// Rebuild the BLE peers/traffic cache now (rnsbox-mon and the CGI).
+bool bt_peers_refresh();
 // Rebuild the parsed rnstatus cache now (boot warm-up); false if rnstatus
 // produced no parseable output.
 bool rnstatus_prewarm();
@@ -100,6 +105,15 @@ void manual_page(const http::Request&, http::Response&);           // GET  rende
 void manual_check(const http::Request&, http::Response&);          // POST PRG
 void manual_download(const http::Request&, http::Response&);       // POST PRG
 void manual_progress(const http::Request&, http::Response&);     // GET  JSON progress
+
+// RNode tab: rnodeconf + live counters + display + pairing
+void rnode_page(const http::Request&, http::Response&);            // GET  render
+void rnode_serial(const http::Request&, http::Response&);          // GET  JSON port list
+void rnode_action(const http::Request&, http::Response&);          // GET  JSON action result
+
+// Map tab: announced nodes with coordinates (offline render)
+void map_page(const http::Request&, http::Response&);              // GET  render
+void map_nodes(const http::Request&, http::Response&);             // GET  JSON nodes
 
 // settings tab
 void settings_page(const http::Request&, http::Response&);         // GET  render

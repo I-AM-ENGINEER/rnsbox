@@ -61,17 +61,37 @@ jobs:
             imgdir: /mnt/rnsbox/lichee/install
           - board: sg2000-rv64
             imgdir: /mnt/rnsbox/lichee/install
-          - board: sg2000-arm64
-            imgdir: /mnt/rnsbox/lichee/install
-          - board: sg2002-arm64
-            imgdir: /mnt/rnsbox/lichee/install
-          - board: sg2002-licheerv-arm64
-            imgdir: /mnt/rnsbox/lichee/install
+          # The legacy vendor-BSP arm64 flows (sg2000-arm64, sg2002-arm64,
+          # sg2002-licheerv-arm64) are out of the release matrix: their
+          # out-of-tree wireless module does not compile on a cold CI tree.
+          # Mainline arm64 is covered by sg2000-duo-s-arm64, and
+          # the LicheeRV Nano by sg2002-licheerv-nano-rv64.
+          # The legacy vendor-BSP arm64 flows (sg2000-arm64, sg2002-arm64,
+          # sg2002-licheerv-arm64) are out of the release matrix: their
+          # out-of-tree wireless module does not compile on a cold CI tree.
+          # Mainline arm64 is covered by sg2000-duo-s-arm64, and
+          # the LicheeRV Nano by sg2002-licheerv-nano-rv64.
+          # The legacy vendor-BSP arm64 flows (sg2000-arm64, sg2002-arm64,
+          # sg2002-licheerv-arm64) are out of the release matrix: their
+          # out-of-tree wireless module does not compile on a cold CI tree.
+          # Mainline arm64 is covered by sg2000-duo-s-arm64, and
+          # the LicheeRV Nano by sg2002-licheerv-nano-rv64.
           # external tree: ARM Orange Pi R1 and mainline ARM64 Duo S
           - board: orangepi-r1
             imgdir: /mnt/rnsbox/out/orangepi-r1/images
-          - board: sg2000-duo-s-arm64-mainline
-            imgdir: /mnt/rnsbox/out/sg2000-duo-s-arm64-mainline/images
+          - board: sg2000-duo-s-arm64
+            imgdir: /mnt/rnsbox/out/sg2000-duo-s-arm64/images
+          # external mainline boards: the release images for the current
+          # hardware generation (Duo Module 01 EVB, LicheeRV Nano, Duo256M,
+          # Duo S rv64). Same flow as the entry above.
+          - board: sg2000-duomodule01-rv64
+            imgdir: /mnt/rnsbox/out/sg2000-duomodule01-rv64/images
+          - board: sg2002-licheerv-nano-rv64
+            imgdir: /mnt/rnsbox/out/sg2002-licheerv-nano-rv64/images
+          - board: sg2002-duo256m-rv64
+            imgdir: /mnt/rnsbox/out/sg2002-duo256m-rv64/images
+          - board: sg2000-duo-s-rv64
+            imgdir: /mnt/rnsbox/out/sg2000-duo-s-rv64/images
           # cv1800b: cold-build bring-up pending (the vendor initramfs is
           # not populated from a fresh workdir — busybox/blkid missing at
           # gen_init_cpio). The flow builds locally; return it to the

@@ -22,6 +22,9 @@
   shared_instance_port = 37428
   instance_control_port = 37429
   panic_on_interface_error = No
+  # Collect interface-discovery announces so the Map tab can show nodes
+  # that publish coordinates. Listening only: autoconnect stays off.
+  discover_interfaces = Yes
 
 [logging]
   loglevel = 4
@@ -118,8 +121,9 @@
     type = BLEInterface
     # Forwarded announces get at most 1% of the link (RNS default: 2%).
     announce_cap = 1
-    # Peripheral-only: advertise the GATT server and let phones connect.
-    enable_central = no
+    # Both roles: advertise the GATT server (phones connect to us) and
+    # scan for peers that only advertise (Columba/Sideband on Android).
+    enable_central = yes
     enabled = yes
     # Balanced scanning (every 5 s).
     power_mode = balanced
@@ -127,5 +131,10 @@
     advertise_interval_ms = 100
     # Keep it short: BLE advertisements have a 31-byte budget.
     device_name = RNSBox
+    # RNode-over-BLE: also expose the Nordic UART service, so Sideband
+    # (or rnodeconf) can pair with the box and use it as an RNode. The
+    # radio parameters are acknowledged locally and RNode DATA frames
+    # are bridged into this transport; there is no LoRa hardware behind it.
+    rnode_ble = yes
     # Realistic GATT throughput; RNS paces announces and routing on it.
     bitrate = 50000

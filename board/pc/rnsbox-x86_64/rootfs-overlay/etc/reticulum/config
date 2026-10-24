@@ -22,6 +22,9 @@
   shared_instance_port = 37428
   instance_control_port = 37429
   panic_on_interface_error = No
+  # Collect interface-discovery announces so the Map tab can show nodes
+  # that publish coordinates. Listening only: autoconnect stays off.
+  discover_interfaces = Yes
 
 [logging]
   loglevel = 4

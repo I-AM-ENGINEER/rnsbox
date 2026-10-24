@@ -1,0 +1,462 @@
+<style>
+.map-layout{display:flex;flex-direction:column;gap:14px}
+.map-canvas-wrap{position:relative;width:100%;min-width:0}
+#map-canvas{display:block;width:100%;height:68vh;min-height:400px;border:1px solid var(--border);border-radius:8px;cursor:grab}
+.map-list{width:100%;border:1px solid var(--border);border-radius:8px;background:var(--code-bg)}
+.map-summary-badge{position:absolute;top:10px;right:10px;z-index:2;background:rgba(8,15,24,.92);border:1px solid var(--border);border-radius:6px;padding:5px 9px;font-size:12px;color:var(--muted);pointer-events:none}
+.map-tools{top:44px}
+.map-search{padding:8px 10px;border-bottom:1px solid var(--border)}
+.map-search input{width:100%;box-sizing:border-box;padding:7px 9px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text)}
+.map-list-note{padding:0 12px 8px;font-size:11.5px;color:var(--muted)}
+#map-nodes{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:8px;padding:10px}
+#map-nodes>p{grid-column:1/-1;margin:4px}
+.map-node{border:1px solid var(--border);border-radius:6px}
+.map-credit{margin-top:10px;font-size:12px}
+@media(max-width:900px){#map-canvas{height:58vh;min-height:340px}}
+</style>
+<h2>Map</h2>
+
+<div class="map-layout">
+  <div class="map-canvas-wrap">
+    <canvas id="map-canvas"></canvas>
+    <div id="map-summary" class="map-summary-badge">Loading…</div>
+    <div class="map-tools">
+      <button type="button" class="btn" onclick="mapZoom(1.4)">+</button>
+      <button type="button" class="btn" onclick="mapZoom(0.7)">−</button>
+      <button type="button" class="btn" onclick="mapFit()">Fit</button>
+      <button type="button" class="btn" onclick="mapLoad()">Refresh</button>
+    </div>
+    <div id="map-tip" class="map-tip" hidden></div>
+  </div>
+</div>
+
+<div class="card map-detail" id="map-detail" hidden>
+  <h3 id="map-detail-name"></h3>
+  <div id="map-detail-body"></div>
+</div>
+
+<p class="muted map-credit">Map data: Natural Earth 1:50m (public domain), served from the box — no internet requests.</p>
+
+<aside class="map-list">
+  <div class="map-list-head"><span>Heard nodes</span><span id="map-count" class="badge">0</span></div>
+  <div class="map-search"><input id="map-search" type="search" placeholder="Search name, type or ID" autocomplete="off"></div>
+  <div id="map-list-note" class="map-list-note">Latest 32</div>
+  <div id="map-nodes"></div>
+</aside>
+
+<script>
+(function(){
+  var BASE = '__BASE__';
+  var canvas = document.getElementById('map-canvas');
+  var ctx = canvas.getContext('2d');
+  var countries = null, cities = null, nodes = [];
+  var mapError = '';
+  var view = {z: 1, ox: 0, oy: 0};   // canvas transform (base px -> screen px)
+  var baseW = 1000, baseH = 500;      // map pixel size at z=1
+  var markers = [];                   // {x,y,node}
+  var drag = null;
+
+  function esc(s){
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+    });
+  }
+
+  function resize(){
+    var dpr = window.devicePixelRatio || 1;
+    var r = canvas.getBoundingClientRect();
+    canvas.width = Math.max(320, Math.round(r.width * dpr));
+    canvas.height = Math.max(220, Math.round(r.height * dpr));
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    baseW = Math.min(canvas.width / dpr, (canvas.height / dpr) * 2);
+    baseH = baseW / 2;
+    mapFit();
+  }
+
+  function mapFit(){
+    var r = canvas.getBoundingClientRect();
+    view.z = Math.min(r.width / baseW, r.height / baseH);
+    view.ox = (r.width - baseW * view.z) / 2;
+    view.oy = (r.height - baseH * view.z) / 2;
+    draw();
+  }
+
+  function mapZoom(f, sx, sy){
+    var r = canvas.getBoundingClientRect();
+    sx = (sx == null) ? r.width / 2 : sx;
+    sy = (sy == null) ? r.height / 2 : sy;
+    var nz = Math.max(0.5, Math.min(128, view.z * f));
+    var bx = (sx - view.ox) / view.z, by = (sy - view.oy) / view.z;
+    view.z = nz;
+    view.ox = sx - bx * nz;
+    view.oy = sy - by * nz;
+    draw();
+  }
+
+  function lonlat(lon, lat){
+    return { x: (lon + 180) / 360 * baseW, y: (90 - lat) / 180 * baseH };
+  }
+
+  function addGeometry(g){
+    if (!g) return;
+    var polys = g.type === 'Polygon' ? [g.coordinates] : (g.coordinates || []);
+    polys.forEach(function(poly){
+      poly.forEach(function(ring){
+        if (!ring.length) return;
+        ring.forEach(function(c, i){
+          var p = lonlat(c[0], c[1]);
+          if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
+        });
+        ctx.closePath();
+      });
+    });
+  }
+
+  function draw(){
+    var r = canvas.getBoundingClientRect();
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.restore();
+
+    ctx.save();
+    ctx.translate(view.ox, view.oy);
+    ctx.scale(view.z, view.z);
+
+    // ocean
+    ctx.fillStyle = '#0b1622';
+    ctx.fillRect(0, 0, baseW, baseH);
+
+    // graticule: coarser when zoomed out, finer when zoomed in
+    var step = view.z >= 20 ? 5 : (view.z >= 8 ? 10 : 30);
+    ctx.strokeStyle = 'rgba(90,120,150,.18)';
+    ctx.lineWidth = 1 / view.z;
+    ctx.beginPath();
+    for (var lon = -180; lon <= 180; lon += step) {
+      var x = (lon + 180) / 360 * baseW;
+      ctx.moveTo(x, 0); ctx.lineTo(x, baseH);
+    }
+    for (var lat = -90 + step; lat < 90; lat += step) {
+      var y = (90 - lat) / 180 * baseH;
+      ctx.moveTo(0, y); ctx.lineTo(baseW, y);
+    }
+    ctx.stroke();
+
+    // countries: one even-odd path fills land and punches out lakes, then
+    // the same rings become the country borders.
+    if (countries) {
+      ctx.beginPath();
+      countries.features.forEach(function(f){ addGeometry(f.geometry); });
+      ctx.fillStyle = '#243447';
+      ctx.fill('evenodd');
+      ctx.strokeStyle = '#3b4d63';
+      ctx.lineWidth = 0.7 / view.z;
+      ctx.stroke();
+
+      // Country names only at world/continental zoom; at closer zoom the
+      // city labels carry the orientation information.
+      if (view.z < 4) {
+        var maxRank = view.z < 1.5 ? 3 : (view.z < 2.5 ? 5 : 7);
+        var usedCountry = {};
+        ctx.font = (10 / view.z) + 'px system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = 'rgba(189,205,221,.72)';
+        countries.features.forEach(function(f){
+          var p = f.properties || {};
+          if (p.LABEL_X == null || p.LABEL_Y == null || !p.NAME) return;
+          if (p.LABELRANK != null && +p.LABELRANK > maxRank) return;
+          var q = lonlat(p.LABEL_X, p.LABEL_Y);
+          var sx = view.ox + q.x * view.z, sy = view.oy + q.y * view.z;
+          if (sx < 0 || sx > r.width || sy < 0 || sy > r.height) return;
+          var key = Math.round(sy / 14) + ':' + Math.round(sx / 90);
+          if (usedCountry[key]) return;
+          usedCountry[key] = 1;
+          ctx.fillText(p.NAME, q.x, q.y);
+        });
+        ctx.textAlign = 'left';
+      }
+    }
+
+    // cities: more of them as the map is zoomed in; screen-space collision
+    // keeps labels from turning into a solid block.
+    if (cities) {
+      var z = view.z;
+      var minPop = z < 1.5 ? 8000000 : z < 2.5 ? 4000000 : z < 4 ? 1500000 : z < 6 ? 700000 : z < 10 ? 250000 : z < 16 ? 100000 : 30000;
+      var maxRank = z < 2 ? 1 : z < 4 ? 3 : z < 8 ? 6 : 10;
+      var usedCity = {};
+      cities.features.forEach(function(f){
+        var p = f.properties || {}, g = f.geometry;
+        if (!g || !g.coordinates) return;
+        var q = lonlat(g.coordinates[0], g.coordinates[1]);
+        var sx = view.ox + q.x * z, sy = view.oy + q.y * z;
+        if (sx < -20 || sx > r.width + 20 || sy < -20 || sy > r.height + 20) return;
+        var pop = +p.pop_max || 0;
+        var rank = p.scalerank != null ? +p.scalerank : 10;
+        var capital = /capital/i.test(p.featurecla || '');
+        if (!(pop >= minPop || (rank <= maxRank && z >= 2) || (capital && z >= 3 && pop >= 300000))) return;
+
+        ctx.beginPath();
+        ctx.arc(q.x, q.y, 1.6 / z, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(190,205,220,.75)';
+        ctx.fill();
+
+        if (!p.name) return;
+        var key = Math.round(sy / 13) + ':' + Math.round(sx / 80);
+        if (usedCity[key]) return;
+        usedCity[key] = 1;
+        ctx.font = (9 / z) + 'px system-ui, sans-serif';
+        ctx.fillStyle = 'rgba(210,222,235,.84)';
+        ctx.fillText(p.name, q.x + 3 / z, q.y - 2 / z);
+      });
+    }
+
+    ctx.restore();
+
+    // Heard Reticulum nodes in screen space. Nodes closer than 14 px are
+    // fanned out around the true point so two nearby boxes never merge into
+    // one dot; zoom 128 plus this fan-out keeps even co-located nodes
+    // individually clickable.
+    var dpr = window.devicePixelRatio || 1;
+    ctx.save();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    var visible = [];
+    nodes.forEach(function(n){
+      var p = lonlat(n.lon, n.lat);
+      var sx = view.ox + p.x * view.z, sy = view.oy + p.y * view.z;
+      if (sx < -20 || sx > r.width + 20 || sy < -20 || sy > r.height + 20) return;
+      visible.push({sx: sx, sy: sy, node: n});
+    });
+    var used = new Array(visible.length);
+    var usedNodeLabel = {};
+    markers = [];
+    for (var i = 0; i < visible.length; i++) {
+      if (used[i]) continue;
+      var group = [i];
+      used[i] = 1;
+      for (var j = i + 1; j < visible.length; j++) {
+        if (used[j]) continue;
+        var dx = visible[j].sx - visible[i].sx;
+        var dy = visible[j].sy - visible[i].sy;
+        if (dx * dx + dy * dy <= 14 * 14) { group.push(j); used[j] = 1; }
+      }
+      var rad = group.length > 1 ? (9 + Math.min(12, (group.length - 1) * 2)) : 0;
+      group.forEach(function(idx, k){
+        var q = visible[idx];
+        var ax = q.sx, ay = q.sy;
+        if (group.length > 1) {
+          var a = -Math.PI / 2 + 2 * Math.PI * k / group.length;
+          q.sx = ax + Math.cos(a) * rad;
+          q.sy = ay + Math.sin(a) * rad;
+          ctx.beginPath();
+          ctx.moveTo(ax, ay);
+          ctx.lineTo(q.sx, q.sy);
+          ctx.strokeStyle = 'rgba(56,189,248,.25)';
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        }
+        markers.push({sx: q.sx, sy: q.sy, node: q.node});
+        ctx.beginPath();
+        ctx.arc(q.sx, q.sy, 4.5, 0, Math.PI * 2);
+        ctx.fillStyle = '#38bdf8';
+        ctx.fill();
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = '#082f49';
+        ctx.stroke();
+        if (view.z >= 2.5 && group.length === 1) {
+          var lk = Math.round(q.sy / 12) + ':' + Math.round(q.sx / 90);
+          if (!usedNodeLabel[lk]) {
+            usedNodeLabel[lk] = 1;
+            ctx.font = '10px system-ui, sans-serif';
+            ctx.fillStyle = '#7dd3fc';
+            ctx.fillText(q.node.name, q.sx + 6, q.sy - 6);
+          }
+        }
+      });
+    }
+    ctx.restore();
+  }
+
+  function renderList(){
+    var box = document.getElementById('map-nodes');
+    var note = document.getElementById('map-list-note');
+    var q = (document.getElementById('map-search').value || '').trim().toLowerCase();
+    document.getElementById('map-count').textContent = nodes.length;
+    if (!nodes.length) {
+      note.textContent = '';
+      box.innerHTML = '<p class="muted">No nodes with coordinates heard yet. Interface discovery announces arrive over the mesh; this can take a while.</p>';
+      return;
+    }
+    var items;
+    if (q) {
+      items = [];
+      nodes.forEach(function(n, i){
+        var hay = (n.name + ' ' + (n.type || '') + ' ' + (n.id || '') + ' ' +
+                   (n.impl || '') + ' ' + (n.version || '')).toLowerCase();
+        if (hay.indexOf(q) >= 0) items.push({n: n, i: i});
+      });
+      items = items.slice(0, 50);
+      note.textContent = items.length + ' match' + (items.length === 1 ? '' : 'es') +
+                         (items.length === 50 ? ' (first 50)' : '');
+    } else {
+      items = nodes.slice(0, 32).map(function(n, i){ return {n: n, i: i}; });
+      note.textContent = 'Latest ' + items.length + ' of ' + nodes.length +
+                         ' — search to find any heard node';
+    }
+    if (!items.length) {
+      box.innerHTML = '<p class="muted">No matches.</p>';
+      return;
+    }
+    box.innerHTML = items.map(function(it){
+      var n = it.n;
+      var when = n.last_heard ? new Date(n.last_heard * 1000).toLocaleString() : '';
+      return '<button type="button" class="map-node" data-i="' + it.i + '">' +
+        '<span class="map-node-name">' + esc(n.name) + '</span>' +
+        '<span class="map-node-meta">' + esc(n.type || 'node') +
+        (n.hops != null ? ' · ' + n.hops + ' hop' + (n.hops === 1 ? '' : 's') : '') +
+        '</span><span class="map-node-when">' + esc(when) + '</span></button>';
+    }).join('');
+    Array.prototype.forEach.call(box.querySelectorAll('.map-node'), function(b){
+      b.addEventListener('click', function(){ selectNode(parseInt(b.dataset.i, 10), true); });
+    });
+  }
+
+  function selectNode(i, center){
+    var n = nodes[i];
+    if (!n) return;
+    document.getElementById('map-detail').hidden = false;
+    document.getElementById('map-detail-name').textContent = n.name || 'Reticulum node';
+    var rows = [
+      ['Type', n.type],
+      ['Coordinates', n.lat.toFixed(5) + ', ' + n.lon.toFixed(5) + (n.height != null ? ' · ' + n.height + ' m' : '')],
+      ['Transport ID', n.id],
+      ['Implementation', (n.impl || '') + (n.version ? ' ' + n.version : '')],
+      ['Hops', n.hops],
+      ['Last heard', n.last_heard ? new Date(n.last_heard * 1000).toLocaleString() : ''],
+      ['Radio', n.frequency != null ? (n.frequency + ' Hz · ' + (n.bandwidth || '?') + ' Hz BW · SF' + (n.spreading_factor || '?') + ' · CR' + (n.coding_rate || '?')) : ''],
+      ['Reachable on', n.reachable_on ? n.reachable_on + (n.port ? ':' + n.port : '') : '']
+    ].filter(function(r){ return r[1] != null && r[1] !== ''; });
+    document.getElementById('map-detail-body').innerHTML = '<table class="kv">' + rows.map(function(r){
+      return '<tr><th>' + esc(r[0]) + '</th><td>' + esc(String(r[1])) + '</td></tr>';
+    }).join('') + '</table>';
+
+    if (center) {
+      var p = lonlat(n.lon, n.lat);
+      var r = canvas.getBoundingClientRect();
+      view.z = Math.max(view.z, 2);
+      view.ox = r.width / 2 - p.x * view.z;
+      view.oy = r.height / 2 - p.y * view.z;
+      draw();
+      // The list is at the very bottom; bring the node info (which sits
+      // directly under the map) into view after a list click.
+      var d = document.getElementById('map-detail');
+      setTimeout(function(){ d.scrollIntoView({behavior: 'smooth', block: 'center'}); }, 60);
+    }
+  }
+
+  function hitTest(sx, sy){
+    var best = null, bestd = Infinity;
+    markers.forEach(function(m){
+      var d = (m.sx - sx) * (m.sx - sx) + (m.sy - sy) * (m.sy - sy);
+      if (d < bestd) { bestd = d; best = m; }
+    });
+    return (best && bestd <= 12 * 12) ? best : null;
+  }
+
+  canvas.addEventListener('mousemove', function(ev){
+    var r = canvas.getBoundingClientRect();
+    var sx = ev.clientX - r.left, sy = ev.clientY - r.top;
+    if (drag) {
+      view.ox += sx - drag.sx;
+      view.oy += sy - drag.sy;
+      drag.sx = sx; drag.sy = sy;
+      draw();
+      return;
+    }
+    var m = hitTest(sx, sy);
+    var tip = document.getElementById('map-tip');
+    if (m) {
+      tip.hidden = false;
+      tip.textContent = m.node.name + (m.node.type ? ' · ' + m.node.type : '');
+      tip.style.left = (sx + 12) + 'px';
+      tip.style.top = (sy + 12) + 'px';
+      canvas.style.cursor = 'pointer';
+    } else {
+      tip.hidden = true;
+      canvas.style.cursor = 'grab';
+    }
+  });
+
+  canvas.addEventListener('mousedown', function(ev){
+    var r = canvas.getBoundingClientRect();
+    drag = {sx: ev.clientX - r.left, sy: ev.clientY - r.top};
+    canvas.style.cursor = 'grabbing';
+  });
+  window.addEventListener('mouseup', function(){ drag = null; canvas.style.cursor = 'grab'; });
+  canvas.addEventListener('mouseleave', function(){ document.getElementById('map-tip').hidden = true; });
+
+  canvas.addEventListener('click', function(ev){
+    var r = canvas.getBoundingClientRect();
+    var m = hitTest(ev.clientX - r.left, ev.clientY - r.top);
+    if (!m) return;
+    var i = nodes.indexOf(m.node);
+    if (i >= 0) selectNode(i, false);
+  });
+
+  canvas.addEventListener('wheel', function(ev){
+    ev.preventDefault();
+    var r = canvas.getBoundingClientRect();
+    mapZoom(ev.deltaY < 0 ? 1.2 : 1 / 1.2, ev.clientX - r.left, ev.clientY - r.top);
+  }, {passive: false});
+
+  window.mapFit = mapFit;
+  window.mapZoom = function(f){ mapZoom(f); };
+
+  function setSummary(){
+    var msg = nodes.length + ' node' + (nodes.length === 1 ? '' : 's') + ' heard';
+    if (mapError) msg += ' — ' + mapError;
+    document.getElementById('map-summary').textContent = msg;
+  }
+
+  function loadCountries(){
+    if (countries) return;
+    fetch('/map/countries.geojson', {cache:'force-cache'})
+      .then(function(r){ if (!r.ok) throw 0; return r.json(); })
+      .then(function(d){ countries = d; draw(); })
+      .catch(function(){ mapError = 'country outlines unavailable'; setSummary(); });
+  }
+
+  function loadCities(){
+    if (cities) return;
+    fetch('/map/cities.geojson', {cache:'force-cache'})
+      .then(function(r){ if (!r.ok) throw 0; return r.json(); })
+      .then(function(d){ cities = d; draw(); })
+      .catch(function(){ /* labels are optional */ });
+  }
+
+  window.mapLoad = function(){
+    document.getElementById('map-summary').textContent = 'Loading map…';
+    document.getElementById('map-nodes').innerHTML = '<p class="muted">Loading nodes…</p>';
+    loadCountries();
+    loadCities();
+    fetch(BASE + '/map/nodes', {credentials:'same-origin', cache:'no-store'})
+      .then(function(r){ return r.json(); })
+      .then(function(data){
+        data = data || {};
+        nodes = (data.nodes || []).filter(function(n){ return n.lat != null && n.lon != null; });
+        if (data.error && !mapError) mapError = data.error;
+        renderList();
+        setSummary();
+        draw();
+      })
+      .catch(function(){
+        document.getElementById('map-summary').textContent = 'Could not load node data.';
+        document.getElementById('map-nodes').innerHTML = '<p class="muted">Could not load node data.</p>';
+      });
+  };
+
+  document.getElementById('map-search').addEventListener('input', renderList);
+  window.addEventListener('resize', function(){ resize(); });
+  resize();
+  mapLoad();
+})();
+</script>

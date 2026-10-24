@@ -46,6 +46,23 @@ BR2_PACKAGE_NTP=y
 BR2_PACKAGE_NTP_NTPDATE=y
 BR2_PACKAGE_OPENSSH=y
 
+# --- WiFi userspace (every board except the 64 MB CV1800B and MT7628) ---
+# S35wifi and the portal's WiFi tab drive iw/wpa_supplicant/hostapd. The
+# per-board radio module is separate: AIC8800 boards select
+# BR2_PACKAGE_AIC8800, RPi/OrangePi carry their SoC driver in the kernel.
+# The two small-RAM deltas turn this whole block off.
+BR2_PACKAGE_IW=y
+BR2_PACKAGE_WIRELESS_REGDB=y
+BR2_PACKAGE_WPA_SUPPLICANT=y
+BR2_PACKAGE_WPA_SUPPLICANT_NL80211=y
+BR2_PACKAGE_WPA_SUPPLICANT_CLI=y
+BR2_PACKAGE_WPA_SUPPLICANT_PASSPHRASE=y
+BR2_PACKAGE_WPA_SUPPLICANT_WPA3=y
+BR2_PACKAGE_HOSTAPD=y
+BR2_PACKAGE_HOSTAPD_DRIVER_NL80211=y
+BR2_PACKAGE_HOSTAPD_ACS=y
+BR2_PACKAGE_HOSTAPD_WPA3=y
+
 # --- rnsd (Reticulum) and the portal stack ---
 BR2_PACKAGE_CA_CERTIFICATES=y
 # git is required by rngit / git-remote-rns (Git over Reticulum)
@@ -74,7 +91,7 @@ BR2_ROOTFS_DEVICE_TABLE="system/device_table_dev.txt system/device_table.txt"
 BR2_TARGET_GENERIC_ROOT_PASSWD="admin"
 # Shared SoC-independent RNSBox overlay first, SG2002-specific bits last
 # (the later overlay wins: tuned fstab + zram/fstrim policy).
-BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_RNSBOX_PATH)/board/sg2000-mainline/rootfs-overlay $(BR2_EXTERNAL_RNSBOX_PATH)/board/sg2002-duo256m-mainline/rootfs-overlay"
+BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_RNSBOX_PATH)/board/sg2000-mainline/rootfs-overlay"
 BR2_ROOTFS_POST_BUILD_SCRIPT="$(BR2_EXTERNAL_RNSBOX_PATH)/board/common/slim-target.sh"
 BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_RNSBOX_PATH)/board/sg2002-duo256m-mainline/post-image.sh"
 BR2_LINUX_KERNEL_CUSTOM_GIT=y

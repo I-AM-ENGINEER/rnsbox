@@ -1965,31 +1965,31 @@ index a3edf568c..4929dcf3e 100644
 +BR2_PACKAGE_PYTHON_CRYPTOGRAPHY=y
 +BR2_PACKAGE_PYTHON_RNS=y
 +BR2_PACKAGE_PYTHON_LXMF=y
-+BR2_PACKAGE_PYTHON_NOMADNET=y
++# BR2_PACKAGE_PYTHON_NOMADNET is not set
 +BR2_PACKAGE_RNSBOX_PORTAL=y
 +
-+# === RNSBox W variant: AIC8800 WiFi userspace stack ===
++# === 64 MB CV1800B: no WiFi userspace and no NomadNet ===
 +# Firmware blobs (lxowalle repo) install to /usr/lib/firmware/aic8800_sdio/,
 +# which is exactly the path aic8800_fdrv's Kconfig AIC_FW_PATH points at.
-+BR2_PACKAGE_AIC8800_SDIO_FIRMWARE=y
++# BR2_PACKAGE_AIC8800_SDIO_FIRMWARE is not set
 +# STA: wpa_supplicant with nl80211 + AP mode + wpa_cli + control socket so
 +# the portal can drive scan/connect over /var/run/wpa_supplicant.
-+BR2_PACKAGE_WPA_SUPPLICANT=y
-+BR2_PACKAGE_WPA_SUPPLICANT_NL80211=y
-+BR2_PACKAGE_WPA_SUPPLICANT_AP_SUPPORT=y
-+BR2_PACKAGE_WPA_SUPPLICANT_CLI=y
-+BR2_PACKAGE_WPA_SUPPLICANT_PASSPHRASE=y
++# BR2_PACKAGE_WPA_SUPPLICANT is not set
++# BR2_PACKAGE_WPA_SUPPLICANT_NL80211 is not set
++# BR2_PACKAGE_WPA_SUPPLICANT_AP_SUPPORT is not set
++# BR2_PACKAGE_WPA_SUPPLICANT_CLI is not set
++# BR2_PACKAGE_WPA_SUPPLICANT_PASSPHRASE is not set
 +# AP: hostapd (nl80211) for the hotspot mode. (WPA3/SAE is compiled in by
 +# this buildroot's hostapd by default — no separate toggle symbol.)
-+BR2_PACKAGE_HOSTAPD=y
-+BR2_PACKAGE_HOSTAPD_DRIVER_NL80211=y
++# BR2_PACKAGE_HOSTAPD is not set
++# BR2_PACKAGE_HOSTAPD_DRIVER_NL80211 is not set
 +# ACS = automatic channel selection (channel=0 / "auto" in the WiFi tab).
 +# Needs the AIC8800 driver to implement nl80211 survey; S35wifi falls back
 +# to channel 6 if it doesn't.
-+BR2_PACKAGE_HOSTAPD_ACS=y
++# BR2_PACKAGE_HOSTAPD_ACS is not set
 +# CLI tooling for scan + iface management from portal + shell.
-+BR2_PACKAGE_IW=y
-+BR2_PACKAGE_WIRELESS_REGDB=y
++# BR2_PACKAGE_IW is not set
++# BR2_PACKAGE_WIRELESS_REGDB is not set
 +
 +# Force the NJU mirror as the primary download site (sources.buildroot.net
 +# can be unreliable). NJU mirrors the full buildroot sources tree; buildroot

@@ -33,6 +33,11 @@ fixup_file=fixup_cd.dat
 gpu_mem=16
 dtoverlay=miniuart-bt
 dtoverlay=dwc2,dr_mode=peripheral
+# The Zero 2 W has a single USB port. It is the NCM LAN above. To use a
+# USB RNode or LTE modem there instead, replace this line with
+#   dtoverlay=dwc2,dr_mode=host
+# and remove /boot/usb.dev so S10usbdev does not bind the gadget.
+# Pi 3/4/5 have separate USB-A host ports and need no change.
 # Optional DS3231 RTC: SDA=GPIO2 (pin 3), SCL=GPIO3 (pin 5), 3.3 V
 dtoverlay=i2c-rtc,ds3231
 

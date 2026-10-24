@@ -11,7 +11,7 @@
 #                         x86_64 BIOS disk (grub in the MBR + one ext4 root)
 #                         for QEMU/VirtualBox/VMware — the full router stack
 #                         with no hardware attached.
-#   milkv-duo-cv1800b-mainline (external) — same external shape, but the
+#   milkv-duo-cv1800b-rv64 (external) — same external shape, but the
 #                         kernel is MAINLINE Linux (pinned kernel.org stable
 #                         tag + the board/milkv-duo/linux-patches DTS/driver
 #                         deltas) and the boot blobs are the vendor fip.bin
@@ -51,7 +51,7 @@ HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 # same SoCs, not different boards): sg2000-rv64 = Duo Module 01 (EVB),
 # sg2000-arm64 = same on the A53, sg2002-rv64 = LicheeRV Nano-e,
 # sg2002-arm64 = same on the A53. cv1800b (Duo 64M) is RV-only.
-BOARDS="sg2000-rv64 sg2000-arm64 sg2002-rv64 sg2002-arm64 sg2002-licheerv-arm64 milkv-duo-cv1800b rpi-universal orangepi-r1 pc-x86_64 milkv-duo-cv1800b-mainline sg2000-duo-s-arm64-mainline sg2000-duomodule01-mainline sg2002-licheerv-nano-mainline sg2002-duo256m-mainline sg2000-duo-s-mainline"
+BOARDS="sg2000-rv64 sg2000-arm64 sg2002-rv64 sg2002-arm64 sg2002-licheerv-arm64 milkv-duo-cv1800b rpi-universal orangepi-r1 pc-x86_64 milkv-duo-cv1800b-rv64 sg2000-duo-s-arm64 sg2000-duomodule01-rv64 sg2002-licheerv-nano-rv64 sg2002-duo256m-rv64 sg2000-duo-s-rv64"
 
 # ---- image version stamp (read by rnsbox-sysupdate for update decisions) ----
 # Same formula as the CI release job's tag: r<UTC date>-<short sha>. On CI,
@@ -197,7 +197,7 @@ case "$BOARD" in
         UPSTREAM_COMMIT="${UPSTREAM_COMMIT:-679b9ead7620bbf193620d1ebf56f53c1764d37a}"  # 2026.02.3
         DEFCONFIG=rnsbox_pc_x86_64_defconfig
         ;;
-    milkv-duo-cv1800b-mainline)
+    milkv-duo-cv1800b-rv64)
         # Milk-V Duo 64M (CV1800B, C906) on MAINLINE Linux. External build
         # (shared buildroot clone + dl cache with rpi0-2w); the kernel comes
         # from the pinned kernel.org stable tag with board/milkv-duo patches;
@@ -209,7 +209,7 @@ case "$BOARD" in
         UPSTREAM_COMMIT="${UPSTREAM_COMMIT:-679b9ead7620bbf193620d1ebf56f53c1764d37a}"  # 2026.02.3
         DEFCONFIG=rnsbox_milkv_duo_cv1800b_mainline_defconfig
         ;;
-    sg2000-duo-s-arm64-mainline)
+    sg2000-duo-s-arm64)
         # Milk-V Duo S on the Cortex-A53 with MAINLINE Linux: upstream
         # sg2000-milkv-duo-s.dts (Ethernet, eMMC, SDIO WiFi, USB), the
         # vendor ARM64 fip.bin (SG2000) and our boot.sd FIT around the
@@ -220,7 +220,7 @@ case "$BOARD" in
         DEFCONFIG=rnsbox_duo_s_arm64_mainline_defconfig
         ;;
 
-    sg2000-duomodule01-mainline|sg2002-licheerv-nano-mainline|sg2002-duo256m-mainline|sg2000-duo-s-mainline)
+    sg2000-duomodule01-rv64|sg2002-licheerv-nano-rv64|sg2002-duo256m-rv64|sg2000-duo-s-rv64)
         # The other mainline CVITEK boards: same external buildroot shape as
         # the duo-s-arm64 entry, vendor fip.bin + our boot.sd FIT around the
         # mainline Image/DTB. lite only (no clients DVD on these).
@@ -228,10 +228,10 @@ case "$BOARD" in
         UPSTREAM_URL="${UPSTREAM_URL:-https://github.com/buildroot/buildroot.git}"
         UPSTREAM_COMMIT="${UPSTREAM_COMMIT:-679b9ead7620bbf193620d1ebf56f53c1764d37a}"  # 2026.02.3
         case "$BOARD" in
-            sg2000-duomodule01-mainline) DEFCONFIG=rnsbox_sg2000_duomodule01_mainline_defconfig ;;
-            sg2002-licheerv-nano-mainline) DEFCONFIG=rnsbox_licheerv_nano_mainline_defconfig ;;
-            sg2002-duo256m-mainline) DEFCONFIG=rnsbox_duo256m_mainline_defconfig ;;
-            sg2000-duo-s-mainline) DEFCONFIG=rnsbox_duo_s_mainline_defconfig ;;
+            sg2000-duomodule01-rv64) DEFCONFIG=rnsbox_sg2000_duomodule01_mainline_defconfig ;;
+            sg2002-licheerv-nano-rv64) DEFCONFIG=rnsbox_licheerv_nano_mainline_defconfig ;;
+            sg2002-duo256m-rv64) DEFCONFIG=rnsbox_duo256m_mainline_defconfig ;;
+            sg2000-duo-s-rv64) DEFCONFIG=rnsbox_duo_s_mainline_defconfig ;;
         esac
         ;;
 esac
@@ -829,11 +829,11 @@ rnsbox_build_rpi_universal() {    # Set up by the external flow below: $UPSTREAM
 
 rnsbox_build_sg2000_duo_s_arm64_mainline() {
     # External flow, lite-only (one NCM gadget; the dvd clients LUN is not
-    # wired for this board). Same shape as milkv-duo-cv1800b-mainline.
+    # wired for this board). Same shape as milkv-duo-cv1800b-rv64.
     export PATH=$(echo "$PATH" | tr ':' '\n' | grep -v '^/mnt/[a-z]/' | paste -sd:)
     export PATH=/usr/sbin:/sbin:$PATH
     if [ "$VARIANT" != lite ]; then
-        echo ">> sg2000-duo-s-arm64-mainline: lite only, building lite"
+        echo ">> sg2000-duo-s-arm64: lite only, building lite"
         VARIANT=lite
     fi
     export RNSBOX_VARIANT="$VARIANT"
@@ -888,7 +888,7 @@ rnsbox_build_milkv_duo_cv1800b_mainline() {
     export PATH=$(echo "$PATH" | tr ':' '\n' | grep -v '^/mnt/[a-z]/' | paste -sd:)
     export PATH=/usr/sbin:/sbin:$PATH
     if [ "$VARIANT" != lite ]; then
-        echo ">> milkv-duo-cv1800b-mainline: the '$VARIANT' variant needs the USB gadget - building lite"
+        echo ">> milkv-duo-cv1800b-rv64: the '$VARIANT' variant needs the USB gadget - building lite"
         VARIANT=lite
     fi
     export RNSBOX_VARIANT="$VARIANT"
@@ -917,15 +917,15 @@ rnsbox_build_external() {
 rnsbox_build() {
     case "$BOARD" in
         sg2002-rv64)      rnsbox_build_licheerv_nano ;;
-        sg2000-arm64|sg2002-arm64) rnsbox_build_milkv_duo_01_arm ;;
+        sg2000-arm64|sg2002-arm64|sg2002-licheerv-arm64) rnsbox_build_milkv_duo_01_arm ;;
         sg2000-rv64)      rnsbox_build_milkv_duo_01 ;;
         milkv-duo-cv1800b)     rnsbox_build_milkv_duo_cv1800b ;;
         rpi-universal)    rnsbox_build_rpi_universal ;;
         orangepi-r1)      rnsbox_build_orangepi_r1 ;;
         pc-x86_64)        rnsbox_build_pc_x86_64 ;;
-        milkv-duo-cv1800b-mainline) rnsbox_build_milkv_duo_cv1800b_mainline ;;
-        sg2000-duo-s-arm64-mainline) rnsbox_build_sg2000_duo_s_arm64_mainline ;;
-        sg2000-duomodule01-mainline|sg2002-licheerv-nano-mainline|sg2002-duo256m-mainline|sg2000-duo-s-mainline) rnsbox_build_external ;;
+        milkv-duo-cv1800b-rv64) rnsbox_build_milkv_duo_cv1800b_mainline ;;
+        sg2000-duo-s-arm64) rnsbox_build_sg2000_duo_s_arm64_mainline ;;
+        sg2000-duomodule01-rv64|sg2002-licheerv-nano-rv64|sg2002-duo256m-rv64|sg2000-duo-s-rv64) rnsbox_build_external ;;
     esac
 }
 

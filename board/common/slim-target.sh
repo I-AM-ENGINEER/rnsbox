@@ -49,6 +49,11 @@ fi
 if [ -f "$COMMON_DIR/S11console" ] && [ -d "$T/etc/init.d" ]; then
 	install -m 0755 "$COMMON_DIR/S11console" "$T/etc/init.d/S11console"
 fi
+# Periodic monitor: rnstatus warm-up, memory watchdog and the Bluetooth
+# peers/traffic cache (30 s idle, 5 s while the portal page is open).
+if [ -f "$COMMON_DIR/S83mon" ] && [ -d "$T/etc/init.d" ]; then
+	install -m 0755 "$COMMON_DIR/S83mon" "$T/etc/init.d/S83mon"
+fi
 # Drop the former ttyd service, the screen snapshot helper and the screen
 # binary: the console is now a PTY broker streamed to xterm.js on :80.
 rm -f "$T/etc/init.d/S87ttyd" "$T/usr/bin/ttyd" "$T/etc/rnsbox/console.conf" \
@@ -118,6 +123,15 @@ find "$T"/usr/lib/python3.*/site-packages -type d -name tests -prune -exec rm -r
 # too: the same bsp requests them for the AIC8801 chipid.
 FW="$T/usr/lib/firmware/aic8800_sdio"
 rm -rf "$FW/aic8800DC" "$FW/aic8800D80X2"
+
+# ---- stale AIC bring-up script -------------------------------------------
+# S99wifi7310 used to insmod /root/*.ko after S35wifi had already given up.
+# S35wifi loads them itself now (BR2_PACKAGE_AIC8800), so the separate script
+# must not run: it unbinds/rebinds SDHCI and pulses chip_reset a second time,
+# resetting a radio S35wifi may already have configured. Buildroot's overlay
+# copy never deletes files, so an incremental build keeps the old entry —
+# remove it here as well as from the overlays.
+rm -f "$T/etc/init.d/S99wifi7310"
 
 # ---- vendor ko stash: modules nothing loads -------------------------------
 # S00kmod insmods soph_* (kernel-built here), S35wifi finds cfg80211/rfkill/

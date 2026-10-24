@@ -39,7 +39,24 @@ bool nomadnet_on() {
     return false;
 }
 
-// Percent-encode everything but the unreserved set — for the flash cookie value.
+// Map tab only when rnsd is configured to collect interface-discovery
+// announces; without that store the page would always be empty.
+bool map_on() {
+    std::string c = util::read_file("/etc/reticulum/config", 64 * 1024);
+    size_t p = 0;
+    while (p < c.size()) {
+        size_t e = c.find('\n', p);
+        if (e == std::string::npos) e = c.size();
+        std::string line = util::trim(c.substr(p, e - p));
+        if (line.compare(0, 21, "discover_interfaces =") == 0) {
+            std::string v = util::trim(line.substr(21));
+            return v == "yes" || v == "Yes" || v == "1" || v == "true";
+        }
+        p = e + 1;
+    }
+    return false;
+}
+
 std::string pct(const std::string& s) {
     static const char* hex = "0123456789ABCDEF";
     std::string o;
@@ -138,7 +155,7 @@ std::string layout(const http::Request& req, http::Response& res,
         {"__CSSV__",     asset_version()},
     };
     // Active-nav: exactly one id gets "active", the rest collapse to "".
-    static const char* ids[] = {"dashboard", "network", "wifi", "reticulum", "console", "nomadnet", "manual", "updates", "echobot", "settings", "donate", "access"};
+    static const char* ids[] = {"dashboard", "network", "wifi", "reticulum", "rnode", "map", "console", "nomadnet", "manual", "updates", "echobot", "settings", "donate", "access"};
     for (const char* id : ids)
         kv.push_back({std::string("__ACT_") + id + "__",
                       (active && std::string(active) == id) ? "active" : ""});
@@ -156,15 +173,23 @@ std::string layout(const http::Request& req, http::Response& res,
     // WiFi and the browser console are router features: on Windows there is
     // no radio and no PTY broker, so their tabs are left out of the nav (the
     // routes answer 503 if something still links to them).
-    std::string nav_wifi, nav_console;
+    std::string nav_wifi, nav_console, nav_rnode, nav_map;
 #ifndef _WIN32
     nav_wifi = "<a href=\"" + esc(web::base()) + "/wifi\" class=\"" +
                std::string((active && std::string(active) == "wifi") ? "active" : "") + "\">WiFi</a>";
     nav_console = "<a href=\"" + esc(web::base()) + "/console\" class=\"" +
                   std::string((active && std::string(active) == "console") ? "active" : "") + "\">Console</a>";
+    // RNode and Map need the Linux helpers (rnodeconf/serial, rnsd storage).
+    nav_rnode = "<a href=\"" + esc(web::base()) + "/rnode\" class=\"" +
+                std::string((active && std::string(active) == "rnode") ? "active" : "") + "\">RNode</a>";
+    if (map_on())
+        nav_map = "<a href=\"" + esc(web::base()) + "/map\" class=\"" +
+                  std::string((active && std::string(active) == "map") ? "active" : "") + "\">Map</a>";
 #endif
     kv.push_back({"__NAV_WIFI__", nav_wifi});
     kv.push_back({"__NAV_CONSOLE__", nav_console});
+    kv.push_back({"__NAV_RNODE__", nav_rnode});
+    kv.push_back({"__NAV_MAP__", nav_map});
     kv.push_back({"__FLASH__", take_flash(req, res)});
     kv.push_back({"__CONTENT__", content});
     return fill(page_file("base"), kv);

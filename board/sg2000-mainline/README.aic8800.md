@@ -91,6 +91,25 @@ software; the UART transport is a fallback only.
 Modules built by this repo's sg2000-mainline flow:
 `aic8800_bsp.ko`, `aic8800_fdrv.ko` (and `aic8800_btlpm.ko`, unloaded).
 
+The external-tree build does this through two packages, selected by
+`BR2_PACKAGE_AIC8800` on every AIC board (Duo Module 01, Duo S, LicheeRV
+Nano):
+
+  * `package/aic8800` builds the two modules out-of-tree against the
+    board's `$(LINUX_DIR)` and installs them to `/root/`;
+  * `package/aic8800-sdio-firmware` installs the blob set to
+    `/usr/lib/firmware/aic8800_sdio/` (the `CONFIG_AIC_FW_PATH` the bsp
+    compiles in).
+
+S35wifi runs `/root/wifi.sh` in the background on every start (skipped
+once wlan0 exists, so a portal apply never resets a live chip) and then
+waits for wlan0. There is no separate S99 bring-up script any more: the
+old one loaded the modules after S35wifi had already given up.
+
+The vendor-BSP flows get the same pair from their own build system
+(`build_osdrv` -> `/mnt/system/ko/3rd` plus the `aic8800-sdio-firmware`
+Buildroot package).
+
 ## Debug log flood (fixed 2026-10-22)
 
 The vendor driver ships with both debug levels wide open — fdrv
