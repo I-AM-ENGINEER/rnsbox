@@ -442,29 +442,80 @@ std::string store_signature(const std::string& store,
 
 }  // namespace
 
+// Reticulum's discovery store is a cache of recent announces: rnsd validates
+// and prunes it on every start, so after a reboot the map would start empty
+// again. Keep a copy of every valid record under /var/lib/rnsbox (outside the
+// RNS store) and merge it back in; the map then accumulates nodes across
+// reboots and updates them in place as fresh announces arrive.
+constexpr const char* MAP_PERSIST = "/var/lib/rnsbox/map-store";
+
+void map_persist_update(const std::string& store,
+                        const std::vector<std::string>& names) {
+    for (const std::string& n : names) {
+        std::string src = store + "/" + n;
+        std::string dst = std::string(MAP_PERSIST) + "/" + n;
+        struct stat ss, ds;
+        if (::stat(src.c_str(), &ss) != 0 || !S_ISREG(ss.st_mode)) continue;
+        if (::stat(dst.c_str(), &ds) == 0 &&
+            ds.st_mtim.tv_sec >= ss.st_mtim.tv_sec &&
+            ds.st_size == ss.st_size)
+            continue;
+        MP rec;
+        if (!load_record(src, rec)) continue;   // partial write; retry next time
+        std::string data = util::read_file(src, 4 * 1024 * 1024);
+        if (!data.empty()) util::write_file_atomic(dst, data, 0600);
+    }
+}
+
 std::string map_nodes_body() {
     std::string store = pick_store();
+    // RNSBOX_MAP_STORE is the diagnostics/test override; never mix its
+    // output with the persistent accumulation.
+    const bool use_cache = ::getenv("RNSBOX_MAP_STORE") == nullptr;
+
+    std::vector<std::string> live;
     DIR* dir = ::opendir(store.c_str());
-    if (!dir) {
+    if (dir) {
+        while (struct dirent* e = ::readdir(dir)) {
+            if (e->d_name[0] == '.') continue;
+            live.push_back(e->d_name);
+        }
+        ::closedir(dir);
+        std::sort(live.begin(), live.end());
+    }
+
+    std::vector<std::string> persist;
+    if (use_cache) {
+        ::mkdir("/var/lib/rnsbox", 0700);
+        ::mkdir(MAP_PERSIST, 0700);
+        map_persist_update(store, live);
+        DIR* pd = ::opendir(MAP_PERSIST);
+        if (pd) {
+            while (struct dirent* e = ::readdir(pd)) {
+                if (e->d_name[0] == '.') continue;
+                persist.push_back(e->d_name);
+            }
+            ::closedir(pd);
+            std::sort(persist.begin(), persist.end());
+        }
+    }
+
+    if (live.empty() && persist.empty()) {
         return "{\"nodes\":[],\"total\":0,\"store\":\"" +
                http::json_escape(store) +
                "\",\"error\":\"interface discovery has not collected anything yet\"}";
     }
 
-    std::vector<std::string> names;
-    while (struct dirent* e = ::readdir(dir)) {
-        if (e->d_name[0] == '.') continue;
-        names.push_back(e->d_name);
-    }
-    ::closedir(dir);
+    std::vector<std::string> names = live;
+    for (const std::string& n : persist)
+        if (std::find(names.begin(), names.end(), n) == names.end())
+            names.push_back(n);
     std::sort(names.begin(), names.end());
 
-    // RNSBOX_MAP_STORE is the diagnostics/test override; never mix its
-    // output with the cache built from the real store.
-    const bool use_cache = ::getenv("RNSBOX_MAP_STORE") == nullptr;
     std::string signature;
     if (use_cache) {
-        signature = store_signature(store, names);
+        signature = store_signature(store, live) + ":" +
+                    store_signature(MAP_PERSIST, persist);
         std::string stamp = util::trim(util::read_file(MAP_STAMP, 128));
         std::string cached = util::read_file(MAP_CACHE, 4 * 1024 * 1024);
         if (stamp == signature && !cached.empty() && cached[0] == '{')
@@ -475,7 +526,10 @@ std::string map_nodes_body() {
     std::string first_error;
     for (const std::string& name : names) {
         MP rec;
-        if (!load_record(store + "/" + name, rec)) {
+        bool ok = load_record(store + "/" + name, rec);
+        if (!ok && use_cache)
+            ok = load_record(std::string(MAP_PERSIST) + "/" + name, rec);
+        if (!ok) {
             if (first_error.empty()) first_error = name + ": invalid record";
             continue;
         }
