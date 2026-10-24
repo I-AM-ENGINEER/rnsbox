@@ -9,13 +9,39 @@ store — it never touches the network — and prints a JSON array for the Map
 tab.  Data therefore lives on flash across reboots and needs no internet.
 """
 import glob
+import importlib.util
 import json
 import os
 import sys
 import time
 
-import RNS
-from RNS.vendor import umsgpack
+
+def _load_umsgpack():
+    """Load RNS's vendored umsgpack without importing the RNS package.
+
+    ``import RNS`` pulls in the whole Reticulum stack (seconds on a C906);
+    the map helper only needs the msgpack decoder.  Loading the vendor file
+    directly keeps this endpoint fast and independent of rnsd.
+    """
+    for pattern in ("/usr/lib/python3*/site-packages/RNS/vendor/umsgpack.py",
+                    "/usr/lib/python3/dist-packages/RNS/vendor/umsgpack.py"):
+        for path in glob.glob(pattern):
+            try:
+                spec = importlib.util.spec_from_file_location("_rns_umsgpack", path)
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                return mod
+            except Exception:
+                continue
+    try:
+        import umsgpack as mod
+        return mod
+    except ImportError:
+        from RNS.vendor import umsgpack as mod
+        return mod
+
+
+umsgpack = _load_umsgpack()
 
 CANDIDATES = [
     # rnsd runs with --config /etc/reticulum: RNS puts storage/ next to the
@@ -82,8 +108,10 @@ def load():
             "status": info.get("status") or "",
             "frequency": info.get("frequency"),
             "bandwidth": info.get("bandwidth"),
-            "spreading_factor": info.get("spreading_factor"),
-            "coding_rate": info.get("coding_rate"),
+            # Interface-discovery records use the short radio keys sf/cr;
+            # accept the long spellings too for other publishers.
+            "spreading_factor": info.get("spreading_factor") or info.get("sf"),
+            "coding_rate": info.get("coding_rate") or info.get("cr"),
             "modulation": info.get("modulation"),
             "channel": info.get("channel"),
             "reachable_on": info.get("reachable_on"),
