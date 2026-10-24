@@ -38,6 +38,7 @@ static std::string E(const std::string& s) { return render::esc(s); }
 static std::string ret_redirect() { return web::base() + "/reticulum"; }
 
 static std::string pretty_uptime(double seconds);   // defined with rnstatus below
+static std::string pretty_size(double num, const char* suffix);  // defined with rnstatus below
 
 // ===================== RNS Shell (rnsh) =====================
 
@@ -708,8 +709,9 @@ void reticulum_page(const Request& req, Response& res) {
             "    </div>\n"
             "  </form>\n"
             "  <h4 style=\"margin-top:16px\">Connected devices</h4>\n"
-            "  <table class=\"data\"><thead><tr><th>Name</th><th>Address</th></tr></thead>\n"
-            "  <tbody id=\"bt-peers\"><tr><td colspan=\"2\" class=\"muted\">none</td></tr></tbody></table>\n";
+            "  <table class=\"data\"><thead><tr><th>Name</th><th>Address</th>"
+            "<th>RSSI</th><th>RX</th><th>TX</th><th>Connected</th></tr></thead>\n"
+            "  <tbody id=\"bt-peers\"><tr><td colspan=\"6\" class=\"muted\">none</td></tr></tbody></table>\n";
     }
     h = R(std::move(h), "__BT_FORM_BLOCK__", bt_form);
     h = R(std::move(h), "__BT_CARD_STYLE__",
@@ -1350,11 +1352,19 @@ constexpr const char* BT_PEERS_LOCK = "/run/rnsbox-bt-peers.lock";
 constexpr int BT_PEERS_FRESH = 5;    // s a snapshot is served as-is
 constexpr int BT_PEERS_GRACE = 60;   // s a missing device is kept after last_seen
 
+static bool name_looks_like_mac(const std::string& s);
+
 struct BtPeer {
     std::string address;
     std::string name;
     long long last_seen = 0;
     bool connected = false;
+    // Filled from the BLE transport's per-peer counters (the only accurate
+    // source: BlueZ/HCI expose no per-link byte counts on this controller).
+    long long rx_bytes = -1, tx_bytes = -1;
+    long long connected_for = -1;   // seconds
+    int rssi = 0;
+    bool has_rssi = false;
 };
 
 static std::string bt_peer_key(const BtPeer& p) {
@@ -1384,9 +1394,96 @@ static std::vector<BtPeer> bt_peers_read_cache() {
         p.last_seen = (x && x->is_number()) ? (long long)x->as_number(0) : mtime;
         x = v.find("connected");
         p.connected = x ? x->as_bool(false) : false;
+        x = v.find("rx_bytes");
+        p.rx_bytes = (x && x->is_number()) ? (long long)x->as_number(0) : -1;
+        x = v.find("tx_bytes");
+        p.tx_bytes = (x && x->is_number()) ? (long long)x->as_number(0) : -1;
+        x = v.find("connected_for");
+        p.connected_for = (x && x->is_number()) ? (long long)x->as_number(0) : -1;
+        x = v.find("rssi");
+        p.has_rssi = (x && x->is_number());
+        if (p.has_rssi) p.rssi = (int)x->as_number(0);
         if (!p.address.empty()) out.push_back(std::move(p));
     }
     return out;
+}
+
+// Per-peer counters published by the BLE transport itself
+// (/run/rnsbox-ble-stats.json, written every 2 s). BlueZ's Device1 has no
+// per-link byte counters and this controller rejects HCI_Read_RSSI, so the
+// transport's BLEPeerInterface objects are the authoritative source.
+struct PeerStat {
+    std::string name;
+    long long rx = -1, tx = -1, connected_for = -1;
+    int rssi = 0;
+    bool has_rssi = false;
+};
+
+static std::map<std::string, PeerStat> bt_peer_stats() {
+    std::map<std::string, PeerStat> out;
+    std::string s = util::read_file("/run/rnsbox-ble-stats.json", 64 * 1024);
+    if (s.empty()) return out;
+    json::Value root; std::string err;
+    if (!json::parse(s, root, err) || !root.is_object()) return out;
+    const json::Value* ts = root.find("ts");
+    if (!ts || !ts->is_number()) return out;
+    long long when = (long long)ts->as_number(0);
+    long long now = (long long)::time(nullptr);
+    if (when <= 0 || now - when > 10) return out;   // rnsd stopped updating
+    const json::Value* arr = root.find("peers");
+    if (!arr || !arr->is_array()) return out;
+    for (const json::Value& v : arr->arr) {
+        if (!v.is_object()) continue;
+        const json::Value* a = v.find("address");
+        std::string addr = a ? a->as_string() : std::string();
+        if (addr.size() != 17) continue;
+        for (char& c : addr) c = (char)toupper((unsigned char)c);
+        PeerStat st;
+        if (const json::Value* x = v.find("name")) st.name = x->as_string();
+        if (const json::Value* x = v.find("rx_bytes"))
+            if (x->is_number()) st.rx = (long long)x->as_number(0);
+        if (const json::Value* x = v.find("tx_bytes"))
+            if (x->is_number()) st.tx = (long long)x->as_number(0);
+        if (const json::Value* x = v.find("connected_for"))
+            if (x->is_number()) st.connected_for = (long long)x->as_number(0);
+        if (const json::Value* x = v.find("rssi")) {
+            st.has_rssi = x->is_number();
+            if (st.has_rssi) st.rssi = (int)x->as_number(0);
+        }
+        out[addr] = st;
+    }
+    return out;
+}
+
+static void bt_peer_apply(BtPeer& p, const PeerStat& st) {
+    p.rx_bytes = st.rx;
+    p.tx_bytes = st.tx;
+    p.connected_for = st.connected_for;
+    p.has_rssi = st.has_rssi;
+    p.rssi = st.rssi;
+    if ((p.name.empty() || name_looks_like_mac(p.name)) && !st.name.empty())
+        p.name = st.name;
+}
+
+// BlueZ knows the human alias ("Xperia 1 V") even when `devices Connected`
+// omits the link; `info <MAC>` is reliable. Only called when the bulk
+// `devices` listing did not supply a friendly name.
+static std::string bt_peer_info_name(const std::string& address) {
+    if (address.size() != 17) return std::string();
+    util::RunResult r = util::run(
+        {"/usr/bin/bluetoothctl", "info", address}, "", 5);
+    std::string name, alias;
+    const std::string& s = r.out;
+    size_t pos = 0;
+    while (pos <= s.size()) {
+        size_t e = s.find('\n', pos);
+        if (e == std::string::npos) e = s.size();
+        std::string ln = util::trim(s.substr(pos, e - pos));
+        pos = e + 1;
+        if (ln.compare(0, 6, "Name: ") == 0) name = util::trim(ln.substr(6));
+        else if (ln.compare(0, 7, "Alias: ") == 0) alias = util::trim(ln.substr(7));
+    }
+    return !name.empty() ? name : alias;
 }
 
 static void bt_peers_touch_request() {
@@ -1407,10 +1504,23 @@ static std::string bt_peers_json(const std::vector<BtPeer>& peers, long long upd
     for (const auto& p : peers) {
         if (!first) o += ",";
         first = false;
+        std::string rx = "null", tx = "null", dur = "null", rssi = "null";
+        if (p.connected) {
+            if (p.rx_bytes >= 0)
+                rx = "\"" + http::json_escape(pretty_size((double)p.rx_bytes, "B")) + "\"";
+            if (p.tx_bytes >= 0)
+                tx = "\"" + http::json_escape(pretty_size((double)p.tx_bytes, "B")) + "\"";
+            if (p.connected_for >= 0) dur = std::to_string(p.connected_for);
+            if (p.has_rssi) rssi = std::to_string(p.rssi);
+        }
         o += "{\"address\":\"" + http::json_escape(p.address) +
              "\",\"name\":\"" + http::json_escape(p.name) +
              "\",\"last_seen\":" + std::to_string(p.last_seen) +
-             ",\"connected\":" + (p.connected ? "true" : "false") + "}";
+             ",\"connected\":" + (p.connected ? "true" : "false") +
+             ",\"rx_bytes\":" + (p.rx_bytes >= 0 ? std::to_string(p.rx_bytes) : std::string("null")) +
+             ",\"tx_bytes\":" + (p.tx_bytes >= 0 ? std::to_string(p.tx_bytes) : std::string("null")) +
+             ",\"rx\":" + rx + ",\"tx\":" + tx +
+             ",\"connected_for\":" + dur + ",\"rssi\":" + rssi + "}";
     }
     o += "]";
     if (have_traffic)
@@ -1540,27 +1650,66 @@ static void bt_peers_collect() {
     const long long now = (long long)::time(nullptr);
     std::vector<BtPeer> old = bt_peers_read_cache();
     std::vector<BtPeer> found;
+    std::map<std::string, PeerStat> stats = bt_peer_stats();
 
-    util::RunResult r = util::run(
-        {"/usr/bin/bluetoothctl", "--timeout", "5", "devices", "Connected"}, "", 8);
-    bool scan_ok = (r.exit_code == 0);
-    size_t pos = 0;
-    const std::string& s = r.out;
-    while (pos <= s.size()) {
-        size_t e = s.find('\n', pos);
-        if (e == std::string::npos) e = s.size();
-        std::string ln = util::trim(s.substr(pos, e - pos));
-        pos = e + 1;
-        if (!ln.empty() && ln.back() == '\r') ln.pop_back();
-        if (ln.compare(0, 7, "Device ") != 0) continue;
-        std::string rest = ln.substr(7);
-        size_t sp = rest.find(' ');
-        BtPeer p;
-        p.address = sp == std::string::npos ? rest : rest.substr(0, sp);
-        p.name = sp == std::string::npos ? std::string() : util::trim(rest.substr(sp + 1));
-        p.last_seen = now;
-        p.connected = true;
-        found.push_back(std::move(p));
+    bool scan_ok = true;
+    if (!stats.empty()) {
+        // The BLE transport is the authoritative connected list: it already
+        // knows every live peer, its byte counters and RSSI. No bluetoothctl
+        // call is needed for the list itself; only the first sighting of a
+        // new address asks BlueZ for the human alias, then the cache reuses
+        // it (one less process per 5 s refresh on a single-core box).
+        auto friendly = [](const std::string& n) {
+            return !n.empty() && !name_looks_like_mac(n) &&
+                   n.rfind("RNS ", 0) != 0;
+        };
+        for (const auto& kv : stats) {
+            BtPeer p;
+            p.address = kv.first;
+            p.name = kv.second.name.empty() ? kv.first : kv.second.name;
+            if (!friendly(p.name)) {
+                for (const auto& op : old) {
+                    if (op.address == p.address && friendly(op.name)) {
+                        p.name = op.name;
+                        break;
+                    }
+                }
+            }
+            if (!friendly(p.name)) {
+                std::string hint = bt_peer_info_name(p.address);
+                if (friendly(hint)) p.name = hint;
+            }
+            p.last_seen = now;
+            p.connected = true;
+            bt_peer_apply(p, kv.second);
+            found.push_back(std::move(p));
+        }
+    } else {
+        // Old BLE interface / rnsd not publishing peers: fall back to the
+        // BlueZ Connected filter (one process, once per refresh).
+        util::RunResult r = util::run(
+            {"/usr/bin/bluetoothctl", "--timeout", "5", "devices", "Connected"}, "", 8);
+        scan_ok = (r.exit_code == 0);
+        size_t pos = 0;
+        const std::string& s = r.out;
+        while (pos <= s.size()) {
+            size_t e = s.find('\n', pos);
+            if (e == std::string::npos) e = s.size();
+            std::string ln = util::trim(s.substr(pos, e - pos));
+            pos = e + 1;
+            if (!ln.empty() && ln.back() == '\r') ln.pop_back();
+            if (ln.compare(0, 7, "Device ") != 0) continue;
+            std::string rest = ln.substr(7);
+            size_t sp = rest.find(' ');
+            BtPeer p;
+            p.address = sp == std::string::npos ? rest : rest.substr(0, sp);
+            if (p.address.size() == 17)
+                for (char& c : p.address) c = (char)toupper((unsigned char)c);
+            p.name = sp == std::string::npos ? std::string() : util::trim(rest.substr(sp + 1));
+            p.last_seen = now;
+            p.connected = true;
+            found.push_back(std::move(p));
+        }
     }
 
     // BlueZ can be temporarily unusable (D-Bus assertion while a peer does
@@ -1585,6 +1734,8 @@ static void bt_peers_collect() {
             for (char& c : p.address) c = (char)toupper((unsigned char)c);
         p.last_seen = now;
         p.connected = true;
+        auto st = stats.find(p.address);
+        if (st != stats.end()) bt_peer_apply(p, st->second);
         std::string k = bt_peer_key(p);
         auto it = idx.find(k);
         if (it == idx.end()) {

@@ -611,9 +611,49 @@ class BLEInterface(Interface):
                 if rn is not None:
                     txb += int(getattr(rn, "txb", 0) or 0)
                     rxb += int(getattr(rn, "rxb", 0) or 0)
+
+                # Per-peer counters for the "Connected devices" table. Each
+                # spawned BLEPeerInterface already counts its own payload
+                # bytes; BlueZ/HCI do not expose per-link byte counters, so
+                # this is the only accurate source.
+                peers = []
+                try:
+                    lock = getattr(self, "peer_lock", None)
+                    if lock is not None:
+                        with lock:
+                            items = list(self.spawned_interfaces.items())
+                    else:
+                        items = list(self.spawned_interfaces.items())
+                    now_mono = time.monotonic()
+                    for identity_hash, pif in items:
+                        if not getattr(pif, "online", False):
+                            continue
+                        started = getattr(pif, "_connected_mono", None)
+                        connected_for = max(0, int(now_mono - started)) if started else 0
+                        address = str(getattr(pif, "peer_address", "") or "")
+                        rssi = None
+                        try:
+                            dp = getattr(self, "discovered_peers", {}).get(address)
+                            if dp is not None and getattr(dp, "rssi", None) is not None:
+                                rssi = int(dp.rssi)
+                        except Exception:
+                            pass
+                        peers.append({
+                            "address": address,
+                            "name": str(getattr(pif, "peer_name", "") or ""),
+                            "identity": identity_hash,
+                            "rx_bytes": int(getattr(pif, "rxb", 0) or 0),
+                            "tx_bytes": int(getattr(pif, "txb", 0) or 0),
+                            "connected_for": connected_for,
+                            "rssi": rssi,
+                        })
+                except Exception:
+                    peers = []
+
                 payload = json.dumps({
                     "tx_bytes": txb,
                     "rx_bytes": rxb,
+                    "peers": peers,
                     "ts": time.time(),
                 })
                 tmp = self.STATS_FILE + ".tmp"
@@ -2589,6 +2629,9 @@ class BLEPeerInterface(Interface):
         self.peer_name = peer_name
         self.peer_identity = peer_identity  # 16-byte identity for stable tracking
         self.online = True
+        # Portal "Connected" column: the link duration survives MAC rotation
+        # because the peer interface is keyed by identity and not re-created.
+        self._connected_mono = time.monotonic()
 
         # Copy settings from parent
         self.HW_MTU = parent.HW_MTU

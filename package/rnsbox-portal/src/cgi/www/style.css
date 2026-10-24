@@ -150,6 +150,11 @@ strong { font-weight: 600; }
 .dash-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 0 0 6px; }
 .dash-head h2 { margin: 0; }
 .card > p { max-width: 80ch; }
+/* Sub-sections inside the single RNS Shell card (access files, issued
+   grants, manual hashes) instead of four separate cards. */
+.rnsh-block { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
+.rnsh-block h4 { margin: 0 0 6px; }
+.rnsh-block > p { margin: 0 0 8px; max-width: 80ch; }
 
 .cards {
   display: grid;

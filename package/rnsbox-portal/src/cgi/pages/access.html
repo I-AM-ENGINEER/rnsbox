@@ -1,39 +1,42 @@
-<!-- Remote access (rnsh): rendered as cards inside the Reticulum tab,
-     directly under the RNS Shell card (routes_access.cpp access_cards());
-     the id anchors the old /access bookmark redirect. The server status and
-     destination live in the RNS Shell card right above. -->
-<section class="card" id="rnsh-access">
-  <h3>Remote access — issued key files</h3>
-  <p class="muted">Issuing an access mints a <em>fresh client identity</em>, adds its public hash
-  to the rnsh allow-list above and downloads a plain-text file with the private key and
-  ready-to-paste Linux instructions (<code>pip install rns</code>, then
-  <code>rnsh&nbsp;-i &lt;key&gt; &lt;destination&gt;</code>).</p>
-  <p class="muted"><strong>The private key is never stored on the box</strong> — the downloaded
-  file is its only copy. Save it immediately; a lost file cannot be re-downloaded, use
-  <em>Revoke &amp; re-issue</em>. Revoking makes the old file useless.</p>
-
-  <form method="post" action="__BASE__/access/issue" style="margin-top:12px">
+<!-- Remote access (rnsh): rendered INSIDE the RNS Shell card, directly under
+     its form (routes_access.cpp access_cards()); the id anchors the old
+     /access bookmark redirect. Server status/destination live in the RNS
+     Shell card above. Kept as sub-blocks, not separate cards. -->
+<div class="rnsh-block" id="rnsh-access">
+  <h4>Client access files</h4>
+  <p class="muted">Issue a fresh client identity and download a one-time file with its
+  private key and connect instructions. The key is never stored on the box.</p>
+  <form method="post" action="__BASE__/access/issue">
     <button type="submit" class="btn-primary">Issue access &amp; download file</button>
-    <span class="muted" style="margin-left:8px">POST — responds with <code>text/plain</code> download; do this from a trusted network.</span>
+    <span class="muted" style="margin-left:8px">POST download &mdash; use a trusted network.</span>
   </form>
-</section>
+  <details style="margin-top:8px">
+    <summary class="muted">How issued key files work</summary>
+    <p class="muted" style="margin-top:6px">Issuing mints a fresh Reticulum identity, adds its
+    public hash to the allow-list above and returns a plain-text file with the private key and
+    ready-to-paste Linux instructions (<code>pip install rns</code>, then
+    <code>rnsh&nbsp;-i &lt;key&gt; &lt;destination&gt;</code>). The private key exists only in
+    that download; a lost file cannot be re-downloaded &mdash; use
+    <em>Revoke &amp; re-issue</em>.</p>
+  </details>
+</div>
 
-<section class="card">
-  <h3>Issued accesses</h3>
+<div class="rnsh-block">
+  <h4>Issued accesses</h4>
   <table class="data">
     <thead><tr><th>Key hash</th><th>Issued</th><th>Status</th><th>Actions</th></tr></thead>
     <tbody>__A_GRANTS__</tbody>
   </table>
-  <p class="muted">One file per row was downloaded at issue time; the box holds no copies.
-  “Revoke &amp; re-issue” retires the old key and downloads a fresh file in one step.</p>
-</section>
+  <p class="muted" style="margin-top:6px">One file per row was downloaded at issue time; the box
+  holds no copies.</p>
+</div>
 
-<section class="card">
-  <h3>Manually added client hashes</h3>
-  <p class="muted">Hashes typed by hand in the RNS Shell card above (<code>rnsh -p</code> output) —
-  no key file was issued for these.</p>
+<div class="rnsh-block">
+  <h4>Manual allow-list entries</h4>
   <table class="data">
     <thead><tr><th>Hash</th><th>Actions</th></tr></thead>
     <tbody>__A_MANUAL__</tbody>
   </table>
-</section>
+  <p class="muted" style="margin-top:6px">Hashes typed by hand in the allow-list above
+  (<code>rnsh -p</code> output); no key file was issued for these.</p>
+</div>

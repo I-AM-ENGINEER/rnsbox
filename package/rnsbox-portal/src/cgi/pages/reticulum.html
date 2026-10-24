@@ -344,9 +344,9 @@ setInterval(rnodeStatusRefresh, 15000);
       <button type="submit" class="btn-primary">Save &amp; apply</button>
     </div>
   </form>
-</section>
 
-__RNSH_ACCESS_CARDS__
+  __RNSH_ACCESS_CARDS__
+</section>
 
 __ECHOBOT_CARDS__
 
@@ -707,7 +707,25 @@ function doUpdate(action, btn, isInstall){
 })();
 </script>
 <script>
-// Bluetooth card: live list of devices connected to the adapter (BlueZ ACL).
+// Bluetooth card: live list of devices connected to the adapter (BlueZ ACL)
+// with the BLE transport's per-peer counters, RSSI (when the controller
+// reports it) and the link duration. The duration ticks locally every second
+// so it does not move in 5 s poll steps.
+function btFmtDur(s){
+  if (s < 60) return s + ' s';
+  if (s < 3600) return Math.floor(s / 60) + ' min ' + (s % 60) + ' s';
+  var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  return h + ' h ' + (m < 10 ? '0' : '') + m + ' min';
+}
+function btTick(){
+  var els = document.querySelectorAll('.bt-since');
+  for (var i = 0; i < els.length; i++) {
+    var at = +els[i].getAttribute('data-at');
+    if (!at) continue;
+    var s = Math.max(0, Math.floor((Date.now() - at) / 1000));
+    els[i].textContent = btFmtDur(s);
+  }
+}
 function btPeersRefresh(){
   var body = document.getElementById('bt-peers');
   if (!body) return;
@@ -716,13 +734,30 @@ function btPeersRefresh(){
     return r.json();
   }).then(function(d){
     var rows = (d.devices || []).map(function(x){
-      return '<tr><td>' + escH(x.name || '?') + '</td><td class="mono">' + escH(x.address) + '</td></tr>';
+      var live = !!x.connected;
+      var rssi = '<span class="muted">&mdash;</span>';
+      if (live && typeof x.rssi === 'number') {
+        var c = x.rssi >= -60 ? 'sig-g' : (x.rssi >= -75 ? 'sig-a' : 'sig-r');
+        rssi = '<span class="' + c + '">' + x.rssi + ' dBm</span>';
+      }
+      var rx = (live && x.rx) ? escH(x.rx) : '<span class="muted">&mdash;</span>';
+      var tx = (live && x.tx) ? escH(x.tx) : '<span class="muted">&mdash;</span>';
+      var dur = '<span class="muted">&mdash;</span>';
+      if (live && typeof x.connected_for === 'number') {
+        var at = Date.now() - x.connected_for * 1000;
+        dur = '<span class="bt-since" data-at="' + at + '">' + btFmtDur(x.connected_for) + '</span>';
+      }
+      return '<tr><td>' + escH(x.name || '?') + '</td><td class="mono">' + escH(x.address) +
+        '</td><td>' + rssi + '</td><td class="val">' + rx + '</td><td class="val">' + tx +
+        '</td><td>' + dur + '</td></tr>';
     });
-    body.innerHTML = rows.length ? rows.join('') : '<tr><td colspan="2" class="muted">none</td></tr>';
+    body.innerHTML = rows.length ? rows.join('') : '<tr><td colspan="6" class="muted">none</td></tr>';
+    btTick();
   }).catch(function(){
-    body.innerHTML = '<tr><td colspan="2" class="muted">status unavailable</td></tr>';
+    body.innerHTML = '<tr><td colspan="6" class="muted">status unavailable</td></tr>';
   });
 }
 document.addEventListener('DOMContentLoaded', btPeersRefresh);
 setInterval(btPeersRefresh, 5000);
+setInterval(btTick, 1000);
 </script>
