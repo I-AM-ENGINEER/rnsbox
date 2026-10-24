@@ -32,7 +32,7 @@ cd rnsbox
 ./build.sh sg2002-licheerv-arm64 lite  # LicheeRV Nano on the A53 (vendor arm64)
 ./build.sh rpi-universal lite    # Raspberry Pi — Zero 2 W / 3 / 4 / 5 (~433 MB)
 ./build.sh orangepi-r1 lite      # Orange Pi R1 (Allwinner H2+, ARMv7)
-./build.sh sg2000-duo-s-arm64-mainline lite  # Duo S, mainline Linux on the A53
+./build.sh sg2000-duo-s-arm64 lite  # Duo S, mainline Linux on the A53
 ./build.sh all lite             # every board, sequentially
 # dvd instead of lite adds a read-only disc of the latest Reticulum clients
 ```
@@ -85,7 +85,9 @@ Build host: a Linux machine set up for Buildroot (the upstream repo's
   (boot and live-apply both call the same module).
 - Optional **NomadNet** LXMF / pages node (off by default) and **WiFi**
   STA/AP support where the board has a radio (AIC8800 on the Nano-e *W*,
-  brcmfmac on the Pi).
+  brcmfmac on the Pi). A fresh image raises the AP by default, named after
+  the box (`rnsbox-xxxxxx`) with password `reticulum`; change it in the
+  WiFi tab. Boards without a radio keep `mode=off`.
 - Optional **SLIP-over-UART link to an external WiFi-HaLow (RNode) modem** — a
   [RNode_Halow_Firmware](https://github.com/I-AM-ENGINEER/RNode_Halow_Firmware)
   bridge — for long-range sub-GHz Reticulum over a 3-wire serial link, with the

@@ -49,6 +49,11 @@ fi
 if [ -f "$COMMON_DIR/S11console" ] && [ -d "$T/etc/init.d" ]; then
 	install -m 0755 "$COMMON_DIR/S11console" "$T/etc/init.d/S11console"
 fi
+# Periodic monitor: rnstatus warm-up, memory watchdog and the Bluetooth
+# peers/traffic cache (30 s idle, 5 s while the portal page is open).
+if [ -f "$COMMON_DIR/S83mon" ] && [ -d "$T/etc/init.d" ]; then
+	install -m 0755 "$COMMON_DIR/S83mon" "$T/etc/init.d/S83mon"
+fi
 # Drop the former ttyd service, the screen snapshot helper and the screen
 # binary: the console is now a PTY broker streamed to xterm.js on :80.
 rm -f "$T/etc/init.d/S87ttyd" "$T/usr/bin/ttyd" "$T/etc/rnsbox/console.conf" \
