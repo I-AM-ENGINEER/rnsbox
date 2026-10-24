@@ -917,7 +917,7 @@ rnsbox_build_external() {
 rnsbox_build() {
     case "$BOARD" in
         sg2002-rv64)      rnsbox_build_licheerv_nano ;;
-        sg2000-arm64|sg2002-arm64) rnsbox_build_milkv_duo_01_arm ;;
+        sg2000-arm64|sg2002-arm64|sg2002-licheerv-arm64) rnsbox_build_milkv_duo_01_arm ;;
         sg2000-rv64)      rnsbox_build_milkv_duo_01 ;;
         milkv-duo-cv1800b)     rnsbox_build_milkv_duo_cv1800b ;;
         rpi-universal)    rnsbox_build_rpi_universal ;;
