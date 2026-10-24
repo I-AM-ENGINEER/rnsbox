@@ -42,6 +42,9 @@ constexpr const char* FW_HELPER = "/usr/lib/rnsbox/halow_flasher.py";
 constexpr const char* FW_IMAGE  = "/run/rnsbox-halow-ota.fw";
 constexpr const char* FW_STATE  = "/run/rnsbox-halow-flasher.json";
 constexpr const char* FW_LOCK   = "/run/rnsbox-halow-flasher.lock";
+constexpr const char* PREFLASH  = "/usr/share/rnsbox-portal/preflash.bin";
+constexpr const char* BUNDLED   = "/usr/share/rnsbox-portal/halow-firmware/halow-fw.tar";
+constexpr const char* OTA_STATE = "/run/rnsbox-halow-ota.json";
 
 bool iface_ok(const std::string& s) {
     if (s.empty() || s.size() > 16) return false;
@@ -78,6 +81,17 @@ void flasher_page(const Request& req, Response& res) {
     if (!web::require_auth(req, res, false)) return;
     std::string h = render::page_file("flasher");
     h = web::replace_all(std::move(h), "__BASE__", render::esc(web::base()));
+    std::string meta = util::read_file(
+        "/usr/share/rnsbox-portal/halow-firmware/VERSION", 1024);
+    std::string tag;
+    size_t p = meta.find("tag=");
+    if (p != std::string::npos) {
+        size_t e = meta.find((char)10, p);
+        tag = util::trim(meta.substr(p + 4, e == std::string::npos ? std::string::npos : e - p - 4));
+    }
+    h = web::replace_all(std::move(h), "__FLASHER_BUNDLED__",
+                         tag.empty() ? std::string("not bundled in this image")
+                                     : (tag + " — bundled at build time, works offline"));
     res.body = render::layout(req, res, "RNode HaLow flasher", "flasher", h);
 }
 
@@ -100,12 +114,22 @@ void flasher_action(const Request& req, Response& res) {
     std::string action = req.f("action");
     std::string iface = util::trim(req.f("iface"));
     std::string mac = util::trim(req.f("mac"));
-    if (!iface_ok(iface) || !mac_ok(mac)) {
-        res.status = "400 Bad Request";
-        res.body = "{\"ok\":false,\"error\":\"bad interface or MAC\"}";
-        return;
-    }
+    std::string transport = req.f("transport") == "slip" ? "slip" : "raw";
+    std::string source = req.f("source");          // github | local | factory
+    bool factory = (source == "factory");
+    bool bundled = (source == "bundled");
+
     if (action == "ip" || action == "reboot" || action == "format") {
+        if (transport == "slip") {
+            res.status = "400 Bad Request";
+            res.body = "{\"ok\":false,\"error\":\"not available over SLIP\"}";
+            return;
+        }
+        if (!iface_ok(iface) || !mac_ok(mac)) {
+            res.status = "400 Bad Request";
+            res.body = "{\"ok\":false,\"error\":\"bad interface or MAC\"}";
+            return;
+        }
         res.body = run_helper({action, iface, mac}, action == "format" ? 70 : 15);
         return;
     }
@@ -114,25 +138,76 @@ void flasher_action(const Request& req, Response& res) {
         res.body = "{\"ok\":false,\"error\":\"unknown action\"}";
         return;
     }
+    if (transport != "slip" && (!iface_ok(iface) || !mac_ok(mac))) {
+        res.status = "400 Bad Request";
+        res.body = "{\"ok\":false,\"error\":\"bad interface or MAC\"}";
+        return;
+    }
     if (access(FW_LOCK, F_OK) == 0) {
         res.status = "409 Conflict";
         res.body = "{\"ok\":false,\"error\":\"an update is already running\"}";
         return;
     }
-    struct stat st;
-    if (stat(FW_IMAGE, &st) != 0 || st.st_size <= 0) {
-        res.status = "400 Bad Request";
-        res.body = "{\"ok\":false,\"error\":\"no firmware uploaded or downloaded\"}";
+
+    // Factory image is the bundled vendor binary (flashable as-is, no
+    // preflash stage). GitHub/local images live in FW_IMAGE.
+    std::string fw_path = FW_IMAGE;
+    if (factory) {
+        if (transport == "slip") {
+            res.status = "400 Bad Request";
+            res.body = "{\"ok\":false,\"error\":\"the vendor image needs the raw Ethernet path\"}";
+            return;
+        }
+        if (access(PREFLASH, R_OK) != 0) {
+            res.status = "500 Internal Server Error";
+            res.body = "{\"ok\":false,\"error\":\"bundled vendor image is missing\"}";
+            return;
+        }
+        fw_path = PREFLASH;
+    } else if (bundled) {
+        if (access(BUNDLED, R_OK) != 0) {
+            res.status = "500 Internal Server Error";
+            res.body = "{\"ok\":false,\"error\":\"the bundled firmware is missing\"}";
+            return;
+        }
+        fw_path = BUNDLED;
+    } else {
+        struct stat st;
+        if (stat(FW_IMAGE, &st) != 0 || st.st_size <= 0) {
+            res.status = "400 Bad Request";
+            res.body = "{\"ok\":false,\"error\":\"no firmware uploaded or downloaded\"}";
+            return;
+        }
+    }
+
+    if (transport == "slip") {
+        // Same HTTP OTA worker as the Reticulum HaLow card.
+        util::write_file_atomic(OTA_STATE,
+            "{\"state\":\"starting\",\"stage\":\"queued\",\"done\":0,\"total\":0,"
+            "\"pct\":0,\"error\":\"\",\"version\":\"\"}\n", 0644);
+        pid_t pid = fork();
+        if (pid == 0) {
+            setsid();
+            int nul = open("/dev/null", O_RDWR);
+            if (nul >= 0) { dup2(nul, 0); dup2(nul, 1); dup2(nul, 2); if (nul > 2) close(nul); }
+            execl("/usr/sbin/rnsbox-portal", "rnsbox-portal", "halow-ota", fw_path.c_str(), (char *)nullptr);
+            _exit(127);
+        }
+        if (pid < 0) {
+            res.status = "500 Internal Server Error";
+            res.body = "{\"ok\":false,\"error\":\"could not start the updater\"}";
+            return;
+        }
+        res.status = "202 Accepted";
+        res.body = "{\"ok\":true,\"transport\":\"slip\"}";
         return;
     }
-    std::vector<std::string> args = {"flash", iface, mac, FW_IMAGE};
-    if (req.f("preflash") == "on") args.push_back("--preflash");
-    if (req.f("tftp") == "on") args.push_back("--tftp");
 
     util::write_file_atomic(FW_STATE,
         "{\"state\":\"starting\",\"stage\":\"queued\",\"done\":0,\"total\":0,"
         "\"pct\":0,\"error\":\"\",\"log\":[]}\n", 0644);
 
+    std::vector<std::string> args = {"flash", iface, mac, fw_path};
     pid_t pid = fork();
     if (pid == 0) {
         setsid();
@@ -152,7 +227,41 @@ void flasher_action(const Request& req, Response& res) {
         return;
     }
     res.status = "202 Accepted";
-    res.body = "{\"ok\":true}";
+    res.body = "{\"ok\":true,\"transport\":\"raw\"}";
+}
+
+void flasher_autoupdate(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, true)) return;
+    res.content_type = "application/json";
+    if (req.method != "GET" && req.method != "HEAD") {
+        bool on = req.f("enabled") == "on";
+        std::string conf = "# Managed by the portal HaLow flasher tab.";
+        conf += (char)10;
+        conf += "# Stable releases only; the schedule is published + 3 days +";
+        conf += (char)10;
+        conf += "# a random 0..7 days, and the image is downloaded at that moment.";
+        conf += (char)10;
+        conf += "auto=" + std::string(on ? "yes" : "no");
+        conf += (char)10;
+        if (!util::write_file_atomic("/etc/rnsbox/halow_update.conf", conf, 0644)) {
+            res.status = "500 Internal Server Error";
+            res.body = "{\"ok\":false,\"error\":\"cannot write the update config\"}";
+            return;
+        }
+        web::run_init("S84cron", "reload");
+        res.body = std::string("{\"ok\":true,\"auto\":\"") + (on ? "yes" : "no") + "\"}";
+        return;
+    }
+    util::RunResult rr = util::run(
+        {"/usr/bin/python3", "/usr/lib/rnsbox/halow_update.py", "status"}, "", 25);
+    std::string out = util::trim(rr.out);
+    if (rr.exit_code != 0 || out.empty() || out[0] != '{') {
+        res.status = "502 Bad Gateway";
+        res.body = "{\"ok\":false,\"error\":\"" +
+                   http::json_escape(rr.timed_out ? "timed out" : out) + "\"}";
+        return;
+    }
+    res.body = out;
 }
 
 void flasher_fetch(const Request& req, Response& res) {
@@ -196,6 +305,12 @@ void flasher_status(const Request& req, Response& res) {
     res.body = "{\"state\":\"idle\"}";
 }
 void flasher_action(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, true)) return;
+    res.content_type = "application/json";
+    res.status = "501 Not Implemented";
+    res.body = "{\"ok\":false,\"error\":\"not available on this platform\"}";
+}
+void flasher_autoupdate(const Request& req, Response& res) {
     if (!web::require_auth(req, res, true)) return;
     res.content_type = "application/json";
     res.status = "501 Not Implemented";

@@ -79,6 +79,12 @@ gen_crontab() {
 			# daily at 05:00: check for a newer rnsd and download its wheel (offline-safe)
 			echo "0 5 * * * /usr/sbin/rnsbox-update-check >> $LOG 2>&1"
 		fi
+		# Hourly at :23: scheduled HaLow firmware updates. The wrapper exits
+		# before spawning Python when auto-update is off; when on, it only
+		# downloads/flashes at the pre-computed scheduled moment.
+		if [ -x /usr/sbin/rnsbox-halow-update ]; then
+			echo "23 * * * * /usr/sbin/rnsbox-halow-update >> $LOG 2>&1"
+		fi
 		# hourly at :17 (clear of the jobs above): clock checked against NTP
 		# and written to the RTC; logs to /var/log/ntp-step.log itself
 		echo "17 * * * * /etc/init.d/S45ntpsync resync >> $LOG 2>&1"

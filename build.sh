@@ -128,6 +128,52 @@ rnsbox_track_latest_rns() {
     echo ">> rns (Reticulum) version: $want (latest from PyPI, sha256-verified)"
 }
 
+# Bundle the latest STABLE RNode HaLow firmware in the image, so the flasher
+# tab can install/repair a modem with no network. GitHub's /releases/latest
+# excludes prereleases by definition. A failed fetch keeps the pinned file
+# committed in package/rnsbox-portal/src/firmware/ (same offline-first rule as
+# the rns fallback above).
+rnsbox_track_latest_halow() {
+    local tree="$1" dir api tag asset url want_tag cur_tag tmp sum
+    local fw="halow-fw.tar" ver="VERSION"
+    dir="$tree/package/rnsbox-portal/src/firmware"
+    [ -d "$tree/package/rnsbox-portal" ] || return 0
+    mkdir -p "$dir"
+
+    cur_tag=$(sed -n 's/^tag=//p' "$dir/$ver" 2>/dev/null | tail -1)
+    api=$(curl -fsSL --max-time 30 \
+        https://api.github.com/repos/I-AM-ENGINEER/RNode_Halow_Firmware/releases/latest \
+        2>/dev/null) || api=""
+    if [ -z "$api" ]; then
+        echo ">> GitHub unreachable — keeping the bundled HaLow firmware ${cur_tag:-unknown}"
+        return 0
+    fi
+    tag=$(printf '%s' "$api" | jq -r '.tag_name // empty')
+    asset=$(printf '%s' "$api" | jq -r '[.assets[] | select(.name|test("\\.(tar|bin)$"))][0].name // empty')
+    url=$(printf '%s' "$api" | jq -r '[.assets[] | select(.name|test("\\.(tar|bin)$"))][0].browser_download_url // empty')
+    if [ -z "$tag" ] || [ -z "$url" ]; then
+        echo ">> HaLow release has no firmware asset — keeping ${cur_tag:-none}"
+        return 0
+    fi
+    if [ "$tag" = "$cur_tag" ] && [ -s "$dir/$fw" ]; then
+        echo ">> RNode HaLow firmware: $tag (bundled)"
+        return 0
+    fi
+
+    echo ">> fetching RNode HaLow firmware $tag ($asset)"
+    tmp="$dir/.halow-fw.download"
+    rm -f "$tmp"
+    if ! curl -fsSL --retry 3 --max-time 300 -o "$tmp" "$url"; then
+        rm -f "$tmp"
+        echo ">> WARNING: could not download $tag — keeping the bundled ${cur_tag:-file}" >&2
+        return 0
+    fi
+    sum=$(sha256sum "$tmp" | cut -d' ' -f1)
+    mv -f "$tmp" "$dir/$fw"
+    printf 'tag=%s\nasset=%s\nsha256=%s\n' "$tag" "$asset" "$sum" > "$dir/$ver"
+    echo ">> RNode HaLow firmware: $tag bundled (sha256 $sum)"
+}
+
 rnsbox_build_external() {
     export PATH=$(printf '%s' "$PATH" | tr ':' '
 ' | grep -v '^/mnt/[a-z]/' | paste -sd:)
@@ -240,6 +286,7 @@ if [ "${BUILD_STYLE:-external}" = external ]; then
     }
 
     rnsbox_track_latest_rns "$EXT" "$DL"
+    rnsbox_track_latest_halow "$EXT"
 
     # Buildroot writes BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE into build/linux-*/
     # only when it configures the tree, so a hand-edited .config survives every
