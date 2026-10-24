@@ -11,6 +11,13 @@
 # atomically via tmp file + rename.
 [ "$1" = start ] || exit 0
 
+# The factory image is .py-only; one full compileall pass writes ~60 MB of
+# .pyc. On a small rootfs that fills the disk in the background and later
+# writes (nftables, auth.json, sshd) fail with ENOSPC. Skip when the free
+# space is tight; Python then compiles only the modules it imports.
+free_kb=$(df -k / 2>/dev/null | awk 'NR == 2 { print $4 }')
+[ "${free_kb:-0}" -ge 98304 ] || exit 0
+
 (
 	for d in /usr/lib/python3.*; do
 		nice -n 19 python3 -m compileall -q -j 0 "$d" 2>/dev/null
