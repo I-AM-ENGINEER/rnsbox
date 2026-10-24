@@ -116,27 +116,16 @@
   # restart rnsd to apply.
   [[BLE Interface]]
     type = BLEInterface
-    # Share at most 1% of the link with forwarded announces (RNS
-    # default is 2%); the BLE peer inherits this cap.
+    # Forwarded announces get at most 1% of the link (RNS default: 2%).
     announce_cap = 1
-    # Peripheral-only, like the other boards: with central mode on, the box
-    # chased every advertising phone (their addresses rotate) and collided
-    # with the phone's own connection attempts - the link never stayed up.
+    # Peripheral-only: advertise the GATT server and let phones connect.
     enable_central = no
     enabled = yes
-    # Balanced: scan every 5 s. Saver (30 s idle / 60 s connected)
-    # made discovery and reconnects take half a minute.
+    # Balanced scanning (every 5 s).
     power_mode = balanced
-    # The second phone (Xperia 5 II) advertises at -89 dBm; the old -85
-    # threshold silently filtered it while the closer phone connected.
     min_rssi = -95
-    # Fast advertising: a scanning phone finds the box within a couple of
-    # scan windows. 100 ms is the portal default.
     advertise_interval_ms = 100
-    # Advertised name — keep it short, BLE ads have a 31-byte budget.
-    # Leave unset to advertise the service UUID only (the peer learns the
-    # node name from the Reticulum announce anyway).
+    # Keep it short: BLE advertisements have a 31-byte budget.
     device_name = RNSBox
-    # BLE GATT reality is well below the driver 700 kbit/s guess; pacing
-    # announces/routing on ~50 kbit/s keeps RNS honest about this link.
+    # Realistic GATT throughput; RNS paces announces and routing on it.
     bitrate = 50000
