@@ -1,0 +1,101 @@
+From: RNSBox <rnsbox@localhost>
+Date: Sat, 24 Oct 2026 04:46:00 +0300
+Subject: [PATCH] peering: one stamp job per peer, do not queue threads
+
+sync() is called for every incoming propagation sync request.  When the
+peer's peering key was not ready it spawned generate_peering_key() in a
+new thread, and every one of those blocked on the same lock while one
+CPU-bound stamp job ran.  A busy propagation node accumulated ~2000
+threads on the SG2000 (8 MB of address space each, 17 GB committed) and
+exhausted RLIMIT_NPROC for the admin user, so the whole box could no
+longer fork.
+
+Take the lock without blocking and let one job do the work; skip
+spawning a second job while the first is still running.
+---
+--- a/LXMF/LXMPeer.py	2026-05-10 18:20:26.000000000 +0300
++++ b/LXMF/LXMPeer.py	2026-10-24 04:46:15.518970000 +0300
+@@ -209,6 +209,9 @@
+         self._um_counts_synced = False
+ 
+         self._peering_key_lock = threading.Lock()
++        # Set while a stamp job is running, so sync() does not spawn a
++        # thread for every request that arrives during generation.
++        self._peering_key_job = False
+ 
+         self.link = None
+         self.state = LXMPeer.IDLE
+@@ -241,28 +244,40 @@
+ 
+     def generate_peering_key(self):
+         if self.peering_cost == None: return False
+-        with self._peering_key_lock:
++        # Non-blocking: a stamp job is CPU-bound and can take minutes on a
++        # small router.  LXMPeer.sync() is called for every incoming sync
++        # request, and the old blocking acquire made each caller sit on the
++        # lock in its own thread.  On the SG2000 that piled up ~2000 threads
++        # and exhausted RLIMIT_NPROC for the admin user, so no process on
++        # the box could fork any more.  Whoever gets the lock does the work;
++        # everyone else returns and will find the finished key next cycle.
++        if not self._peering_key_lock.acquire(blocking=False):
++            return False
++
++        try:
+             if self.peering_key != None: return True
+-            else:
+-                RNS.log(f"Generating peering key for {self}", RNS.LOG_NOTICE)
+-                if self.router.identity == None:
+-                    RNS.log(f"Could not update peering key for {self} since the local LXMF router identity is not configured", RNS.LOG_ERROR)
+-                    return False
+ 
++            RNS.log(f"Generating peering key for {self}", RNS.LOG_NOTICE)
++            if self.router.identity == None:
++                RNS.log(f"Could not update peering key for {self} since the local LXMF router identity is not configured", RNS.LOG_ERROR)
++                return False
++
++            if self.identity == None:
++                self.identity = RNS.Identity.recall(destination_hash)
+                 if self.identity == None:
+-                    self.identity = RNS.Identity.recall(destination_hash)
+-                    if self.identity == None:
+-                        RNS.log(f"Could not update peering key for {self} since its identity could not be recalled", RNS.LOG_ERROR)
+-                        return False
+-
+-                key_material        = self.identity.hash+self.router.identity.hash
+-                peering_key, value  = LXStamper.generate_stamp(key_material, self.peering_cost, expand_rounds=LXStamper.WORKBLOCK_EXPAND_ROUNDS_PEERING)
+-                if value >= self.peering_cost:
+-                    self.peering_key = [peering_key, value]
+-                    RNS.log(f"Peering key successfully generated for {self}", RNS.LOG_NOTICE)
+-                    return True
++                    RNS.log(f"Could not update peering key for {self} since its identity could not be recalled", RNS.LOG_ERROR)
++                    return False
+ 
+-        return False
++            key_material        = self.identity.hash+self.router.identity.hash
++            peering_key, value  = LXStamper.generate_stamp(key_material, self.peering_cost, expand_rounds=LXStamper.WORKBLOCK_EXPAND_ROUNDS_PEERING)
++            if value >= self.peering_cost:
++                self.peering_key = [peering_key, value]
++                RNS.log(f"Peering key successfully generated for {self}", RNS.LOG_NOTICE)
++                return True
++
++            return False
++        finally:
++            self._peering_key_lock.release()
+ 
+     def sync(self):
+         RNS.log("Initiating LXMF Propagation Node sync with peer "+RNS.prettyhexrep(self.destination_hash), RNS.LOG_DEBUG)
+@@ -282,8 +297,12 @@
+                     postpone_reason = " since its required stamp costs are not yet known"
+                 elif not peering_key_ready:
+                     postpone_reason = " since a peering key has not been generated yet"
+-                    def job(): self.generate_peering_key()
+-                    threading.Thread(target=job, daemon=True).start()
++                    if not self._peering_key_job:
++                        self._peering_key_job = True
++                        def job():
++                            try: self.generate_peering_key()
++                            finally: self._peering_key_job = False
++                        threading.Thread(target=job, daemon=True).start()
+ 
+                 delay = self.next_sync_attempt-time.time()
+                 postpone_delay =  f" for {RNS.prettytime(delay)}" if delay > 0 else ""

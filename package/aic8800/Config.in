@@ -1,0 +1,14 @@
+config BR2_PACKAGE_AIC8800
+	bool "aic8800 (AIC8800D80 SDIO WiFi/BT)"
+	depends on BR2_LINUX_KERNEL
+	select BR2_PACKAGE_AIC8800_SDIO_FIRMWARE
+	help
+	  Out-of-tree AIC8800D80 SDIO WiFi + Bluetooth driver for the Sophgo
+	  SG2000/SG2002 boards (Duo Module 01, Duo S, LicheeRV Nano). The
+	  modules land in /root/, where /root/wifi.sh loads them after the
+	  LPO + WL_REG_ON chip-reset sequence S35wifi runs at boot.
+
+	  Not needed on boards without the radio (CV1800B, Duo 256M, MT7628).
+
+comment "aic8800 needs a Linux kernel to be built"
+	depends on !BR2_LINUX_KERNEL

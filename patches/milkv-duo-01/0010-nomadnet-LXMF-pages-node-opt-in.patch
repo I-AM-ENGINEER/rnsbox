@@ -1,12 +1,12 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: smit1237 <smit1237@gmail.com>
 Date: Tue, 8 Sep 2026 22:47:49 +0300
-Subject: [PATCH 10/23] nomadnet: LXMF/pages node (opt-in)
+Subject: [PATCH 10/23] nomadnet: LXMF/pages node (enabled by default)
 
 Add the python-lxmf and python-nomadnet recipes and bump python-urwid to
 2.6.16 (nomadnet floor), selecting its wcwidth and typing_extensions imports.
-S83nomadnet runs the LXMF/pages node but is disabled by default via
-/etc/rnsbox/nomadnet.conf.
+S83nomadnet runs the LXMF/pages node and is enabled by default via
+/etc/rnsbox/nomadnet.conf (the CV1800B and MT7628 images turn it off).
 ---
  .../SG200X/overlay/etc/init.d/S83nomadnet     | 101 ++++++++++++++++++
  .../SG200X/overlay/etc/rnsbox/nomadnet.conf   |  20 ++++
@@ -37,13 +37,13 @@ index 000000000..238a02573
 @@ -0,0 +1,101 @@
 +#!/bin/sh
 +# S83nomadnet — Nomadnet daemon (LXMF propagation node + nomadnet pages
-+# server). Shipped DISABLED by default — most RNSBox owners only want
-+# rnsd (S82rnsd). Enable by flipping `enabled=no` -> `enabled=yes` in
-+# /etc/rnsbox/nomadnet.conf, then run this script with `start`.
++# server). Enabled by default; the 64 MB CV1800B and MT7628 images keep
++# it off. Disable with enabled=no in
++# /etc/rnsbox/nomadnet.conf, then run this script with `stop`.
 +#
-+# Like S82rnsd, gates on /run/clock-synced. Nomadnet stamps every LXMF
-+# message + announce with wall-clock time; a 1970 clock makes peers
-+# reject everything we send.
++# No clock gate, like the external-tree script: Reticulum must work on a
++# mesh with no internet. Until the clock is trusted, LXMF stamps what it
++# sends with a 1970 date; the RNSBox LXMF patch re-dates stored state.
 +
 +NAME=nomadnet
 +DAEMON=/usr/bin/nomadnet
@@ -86,12 +86,12 @@ index 000000000..238a02573
 +		return 0
 +	fi
 +
-+	if [ ! -f /run/clock-synced ]; then
-+		echo "S83nomadnet: refusing to start - /run/clock-synced absent"
-+		echo "             (S45ntpsync did not succeed; check WAN link)"
-+		return 1
-+	fi
-+
++	#
++	# No clock gate: Reticulum must work on a mesh with no internet. LXMF
++	# stamps outgoing messages/announces with wall-clock time, so until the
++	# clock is trusted they carry a 1970 date; the RNSBox LXMF patch re-dates
++	# the stored state once the clock steps.
++	#
 +	printf "Starting %s: " "$NAME"
 +	"$DAEMON" --daemon --configdir "$configdir" >>"$LOG" 2>&1 &
 +	PID=$!
@@ -141,24 +141,23 @@ new file mode 100644
 index 000000000..170da45ee
 --- /dev/null
 +++ b/buildroot/board/cvitek/SG200X/overlay/etc/rnsbox/nomadnet.conf
-@@ -0,0 +1,20 @@
+@@ -0,0 +1,19 @@
 +# Nomadnet daemon config — read at boot by /etc/init.d/S83nomadnet.
 +#
 +# Nomadnet is the Reticulum-based LXMF propagation node + page server
-+# ("pages" = gopher-like browsable content over the mesh). It's shipped
-+# with the image but NOT started at boot by default — most RNSBox owners
-+# just want rnsd (transport), and adding nomadnet pulls another ~30 MB
-+# of Python state at runtime plus listens on extra Reticulum destinations.
++# ("pages" = gopher-like browsable content over the mesh). It starts at
++# boot on every board this repo builds except the 64 MB CV1800B and
++# MT7628 images; those keep it off because the stack does not fit.
 +#
-+# To enable: change `enabled=no` to `enabled=yes` below, then either
++# To disable: change `enabled=yes` to `enabled=no` below, then either
 +# reboot or run:
-+#   /etc/init.d/S83nomadnet start
++#   /etc/init.d/S83nomadnet stop
 +#
 +# Content lives under `configdir` (default /var/lib/nomadnetwork).
 +# Edit page sources in $configdir/storage/pages/ — see
 +# https://github.com/markqvist/NomadNet for the page format.
 +
-+enabled=no
++enabled=yes
 +
 +# Optional overrides (uncomment to use):
 +#configdir=/var/lib/nomadnetwork

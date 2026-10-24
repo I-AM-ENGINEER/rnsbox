@@ -1,0 +1,142 @@
+<h2>RNode</h2>
+
+<section class="card">
+  <h3>Serial modem</h3>
+  <div class="row-form">
+    <label for="rnode-port">Port</label>
+    <select id="rnode-port"></select>
+    <button type="button" class="btn" onclick="rnodePorts()">Rescan</button>
+  </div>
+  <div class="form-actions rnode-tools" id="rnode-tools">
+    <button type="button" class="btn" onclick="rnodeAct('info')">Device info</button>
+    <button type="button" class="btn" onclick="rnodeAct('config')">Configuration</button>
+    <button type="button" class="btn" onclick="rnodeAct('stats')">Statistics</button>
+    <button type="button" class="btn" onclick="rnodeAct('display')">Read display</button>
+    <button type="button" class="btn" onclick="rnodeAct('bt-on')">Bluetooth on</button>
+    <button type="button" class="btn" onclick="rnodeAct('bt-off')">Bluetooth off</button>
+    <button type="button" class="btn" onclick="rnodeAct('bt-pair')">Pairing mode</button>
+  </div>
+  <p class="muted" id="rnode-hint">No serial RNode detected.</p>
+  <div id="rnode-display" class="rnode-display" hidden>
+    <img id="rnode-display-img" alt="RNode display">
+  </div>
+  <pre id="rnode-out" class="rnode-out" hidden></pre>
+</section>
+
+<section class="card">
+  <h3>Bluetooth RNodes</h3>
+  <div class="form-actions">
+    <button type="button" class="btn" id="rnode-scan-btn" onclick="rnodeScan()">Scan</button>
+    <span class="msg" id="rnode-scan-msg"></span>
+  </div>
+  <div id="rnode-ble-list"></div>
+</section>
+
+<section class="card">
+  <h3>RNode HaLow</h3>
+  <p class="muted">HaLow RNode firmware for IEEE 802.11ah modems:
+    <a href="https://github.com/I-AM-ENGINEER/RNode_Halow_Firmware" target="_blank" rel="noopener">RNode_Halow_Firmware</a>
+  </p>
+</section>
+
+<script>
+(function(){
+  var BASE = '__BASE__';
+
+  function esc(s){
+    return String(s).replace(/[&<>"']/g, function(c){
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+    });
+  }
+
+  function out(text){
+    var p = document.getElementById('rnode-out');
+    p.hidden = !text;
+    p.textContent = text || '';
+  }
+
+  window.rnodePorts = function(){
+    var sel = document.getElementById('rnode-port');
+    out('');
+    fetch(BASE + '/rnode/serial', {credentials:'same-origin', cache:'no-store'})
+      .then(function(r){ return r.json(); })
+      .then(function(j){
+        var ports = (j && j.ports) || [];
+        sel.innerHTML = ports.length
+          ? ports.map(function(p){ return '<option value="' + esc(p) + '">' + esc(p) + '</option>'; }).join('')
+          : '<option value="">no serial port</option>';
+        document.getElementById('rnode-tools').style.display = ports.length ? '' : 'none';
+        document.getElementById('rnode-hint').textContent = ports.length
+          ? 'rnodeconf and the modem share the port; stop the RNode interface first if a command reports it busy.'
+          : 'No serial RNode detected (plug one in and press Rescan).';
+      })
+      .catch(function(){ out('Could not list serial ports.'); });
+  };
+
+  window.rnodeAct = function(what){
+    var port = document.getElementById('rnode-port').value;
+    if (!port) { out('No serial port selected.'); return; }
+    out('Working…');
+    document.getElementById('rnode-display').hidden = true;
+    fetch(BASE + '/rnode/action?port=' + encodeURIComponent(port) + '&do=' + encodeURIComponent(what),
+          {credentials:'same-origin', cache:'no-store'})
+      .then(function(r){ return r.json(); })
+      .then(function(j){
+        if (what === 'display' && j && j.ok && j.image) {
+          document.getElementById('rnode-display-img').src = j.image;
+          document.getElementById('rnode-display').hidden = false;
+          out('');
+          return;
+        }
+        if (what === 'stats' && j && j.ok) {
+          var s = j.stats || {};
+          var rows = [];
+          if ('rx' in s) rows.push('RX packets  ' + s.rx);
+          if ('tx' in s) rows.push('TX packets  ' + s.tx);
+          if ('rssi' in s) rows.push('RSSI        ' + s.rssi + ' dBm');
+          if ('snr' in s) rows.push('SNR         ' + s.snr + ' dB');
+          out(rows.join('\n') || 'No counters reported.');
+          return;
+        }
+        out((j && (j.output || j.message)) || ('HTTP error'));
+      })
+      .catch(function(){ out('Request failed.'); });
+  };
+
+  window.rnodeScan = function(){
+    var msg = document.getElementById('rnode-scan-msg');
+    var list = document.getElementById('rnode-ble-list');
+    var btn = document.getElementById('rnode-scan-btn');
+    btn.disabled = true; msg.textContent = 'Scanning…'; list.innerHTML = '';
+    fetch(BASE + '/reticulum/rnode/scan', {credentials:'same-origin', cache:'no-store'})
+      .then(function(r){ return r.json(); })
+      .then(function(j){
+        var ds = (j && j.devices) || [];
+        if (j && j.error) msg.textContent = j.error;
+        else msg.textContent = ds.length ? '' : 'No RNode found.';
+        list.innerHTML = ds.map(function(d){
+          return '<div class="row-form rnode-ble-row"><span class="mono">' + esc(d.name || '?') + '</span>' +
+                 '<span class="mono muted">' + esc(d.address) + '</span>' +
+                 (d.bonded ? '<span class="badge ok">paired</span>'
+                           : '<button type="button" class="btn" onclick="rnodePair(\'' + esc(d.address) + '\',this)">Pair</button>') +
+                 '</div>';
+        }).join('');
+      })
+      .catch(function(){ msg.textContent = 'Scan failed.'; })
+      .then(function(){ btn.disabled = false; });
+  };
+
+  window.rnodePair = function(addr, btn){
+    btn.disabled = true;
+    fetch(BASE + '/reticulum/rnode/pair', {
+      method:'POST', credentials:'same-origin', cache:'no-store',
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body:'address=' + encodeURIComponent(addr)
+    }).then(function(r){ return r.json(); })
+      .then(function(j){ btn.textContent = (j && j.ok) ? 'paired' : 'failed'; })
+      .catch(function(){ btn.textContent = 'failed'; });
+  };
+
+  rnodePorts();
+})();
+</script>

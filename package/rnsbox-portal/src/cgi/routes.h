@@ -99,6 +99,15 @@ void manual_check(const http::Request&, http::Response&);          // POST PRG
 void manual_download(const http::Request&, http::Response&);       // POST PRG
 void manual_progress(const http::Request&, http::Response&);     // GET  JSON progress
 
+// RNode tab: rnodeconf + live counters + display + pairing
+void rnode_page(const http::Request&, http::Response&);            // GET  render
+void rnode_serial(const http::Request&, http::Response&);          // GET  JSON port list
+void rnode_action(const http::Request&, http::Response&);          // GET  JSON action result
+
+// Map tab: announced nodes with coordinates (offline render)
+void map_page(const http::Request&, http::Response&);              // GET  render
+void map_nodes(const http::Request&, http::Response&);             // GET  JSON nodes
+
 // settings tab
 void settings_page(const http::Request&, http::Response&);         // GET  render
 void settings_password(const http::Request&, http::Response&);     // POST PRG

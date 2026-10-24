@@ -63,6 +63,11 @@ define RNSBOX_PORTAL_INSTALL_TARGET_CMDS
 	# so page views cost the box nothing and an update only replaces the .md
 	# files in /www/manual/docs.
 	$(INSTALL) -D -m 0755 $(@D)/cgi/helpers/manual.py $(TARGET_DIR)/usr/lib/rnsbox/manual.py
+	# Map tab: read rnsd's persisted interface-discovery records (coordinates
+	# from announces) and a small offline land outline; the browser draws it.
+	$(INSTALL) -D -m 0755 $(@D)/cgi/helpers/mapnodes.py $(TARGET_DIR)/usr/lib/rnsbox/mapnodes.py
+	mkdir -p $(TARGET_DIR)/www/map
+	$(INSTALL) -m 0644 $(@D)/cgi/www/map/land.geojson $(TARGET_DIR)/www/map/land.geojson
 	mkdir -p $(TARGET_DIR)/www/manual/docs $(TARGET_DIR)/www/manual/img
 	$(INSTALL) -m 0644 $(@D)/www/manual/marked.min.js $(TARGET_DIR)/www/manual/
 	$(INSTALL) -m 0644 $(@D)/docs/manual/*.md $(TARGET_DIR)/www/manual/docs/

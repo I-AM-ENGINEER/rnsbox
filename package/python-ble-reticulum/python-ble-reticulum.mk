@@ -53,7 +53,7 @@ define PYTHON_BLE_RETICULUM_INSTALL_TARGET_CMDS
 		$(TARGET_DIR)$(PYTHON_BLE_RETICULUM_SPDIR)/ble_reticulum
 	for f in __init__.py BLEInterface.py BLEGATTServer.py \
 	         BLEFragmentation.py BLEAgent.py bluetooth_driver.py \
-	         linux_bluetooth_driver.py; do \
+	         linux_bluetooth_driver.py RNodeBLE.py; do \
 		$(INSTALL) -m 0644 $(@D)/ble_reticulum/$$f \
 			$(TARGET_DIR)$(PYTHON_BLE_RETICULUM_SPDIR)/ble_reticulum/$$f || exit 1; \
 	done

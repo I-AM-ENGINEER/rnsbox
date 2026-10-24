@@ -1,0 +1,281 @@
+<h2>Map</h2>
+<p class="muted" id="map-summary">Nodes heard in Reticulum announces, with coordinates.</p>
+
+<div class="map-layout">
+  <div class="map-canvas-wrap">
+    <canvas id="map-canvas"></canvas>
+    <div class="map-tools">
+      <button type="button" class="btn" onclick="mapZoom(1.4)">+</button>
+      <button type="button" class="btn" onclick="mapZoom(0.7)">−</button>
+      <button type="button" class="btn" onclick="mapFit()">Fit</button>
+      <button type="button" class="btn" onclick="mapLoad()">Refresh</button>
+    </div>
+    <div id="map-tip" class="map-tip" hidden></div>
+  </div>
+  <aside class="map-list">
+    <div class="map-list-head"><span>Heard nodes</span><span id="map-count" class="badge">0</span></div>
+    <div id="map-nodes"></div>
+  </aside>
+</div>
+
+<div class="card map-detail" id="map-detail" hidden>
+  <h3 id="map-detail-name"></h3>
+  <div id="map-detail-body"></div>
+</div>
+
+<script>
+(function(){
+  var BASE = '__BASE__';
+  var canvas = document.getElementById('map-canvas');
+  var ctx = canvas.getContext('2d');
+  var land = null, nodes = [];
+  var view = {z: 1, ox: 0, oy: 0};   // canvas transform (base px -> screen px)
+  var baseW = 1000, baseH = 500;      // map pixel size at z=1
+  var markers = [];                   // {x,y,node}
+  var drag = null;
+
+  function esc(s){
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+    });
+  }
+
+  function resize(){
+    var dpr = window.devicePixelRatio || 1;
+    var r = canvas.getBoundingClientRect();
+    canvas.width = Math.max(320, Math.round(r.width * dpr));
+    canvas.height = Math.max(220, Math.round(r.height * dpr));
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    baseW = Math.min(canvas.width / dpr, (canvas.height / dpr) * 2);
+    baseH = baseW / 2;
+    mapFit();
+  }
+
+  function mapFit(){
+    var r = canvas.getBoundingClientRect();
+    view.z = Math.min(r.width / baseW, r.height / baseH);
+    view.ox = (r.width - baseW * view.z) / 2;
+    view.oy = (r.height - baseH * view.z) / 2;
+    draw();
+  }
+
+  function mapZoom(f, sx, sy){
+    var r = canvas.getBoundingClientRect();
+    sx = (sx == null) ? r.width / 2 : sx;
+    sy = (sy == null) ? r.height / 2 : sy;
+    var nz = Math.max(0.5, Math.min(12, view.z * f));
+    var bx = (sx - view.ox) / view.z, by = (sy - view.oy) / view.z;
+    view.z = nz;
+    view.ox = sx - bx * nz;
+    view.oy = sy - by * nz;
+    draw();
+  }
+
+  function lonlat(lon, lat){
+    return { x: (lon + 180) / 360 * baseW, y: (90 - lat) / 180 * baseH };
+  }
+
+  function draw(){
+    var r = canvas.getBoundingClientRect();
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.restore();
+
+    ctx.save();
+    ctx.translate(view.ox, view.oy);
+    ctx.scale(view.z, view.z);
+
+    // ocean
+    ctx.fillStyle = '#0b1622';
+    ctx.fillRect(0, 0, baseW, baseH);
+
+    // graticule every 30 degrees
+    ctx.strokeStyle = 'rgba(90,120,150,.18)';
+    ctx.lineWidth = 1 / view.z;
+    ctx.beginPath();
+    for (var lon = -180; lon <= 180; lon += 30) {
+      var x = (lon + 180) / 360 * baseW;
+      ctx.moveTo(x, 0); ctx.lineTo(x, baseH);
+    }
+    for (var lat = -60; lat <= 60; lat += 30) {
+      var y = (90 - lat) / 180 * baseH;
+      ctx.moveTo(0, y); ctx.lineTo(baseW, y);
+    }
+    ctx.stroke();
+
+    // land
+    if (land) {
+      ctx.fillStyle = '#243447';
+      ctx.strokeStyle = '#3b4d63';
+      ctx.lineWidth = 0.6 / view.z;
+      land.features.forEach(function(f){
+        var g = f.geometry;
+        if (!g) return;
+        var polys = g.type === 'Polygon' ? [g.coordinates] : (g.coordinates || []);
+        polys.forEach(function(poly){
+          poly.forEach(function(ring, ri){
+            if (!ring.length) return;
+            ctx.beginPath();
+            ring.forEach(function(c, i){
+              var p = lonlat(c[0], c[1]);
+              if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
+            });
+            ctx.closePath();
+            if (ri === 0) { ctx.fill(); ctx.stroke(); } else { ctx.fillStyle = '#0b1622'; ctx.fill(); ctx.fillStyle = '#243447'; }
+          });
+        });
+      });
+    }
+
+    // markers
+    markers = [];
+    nodes.forEach(function(n){
+      var p = lonlat(n.lon, n.lat);
+      markers.push({x: p.x, y: p.y, node: n});
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 4.5 / view.z, 0, Math.PI * 2);
+      ctx.fillStyle = '#38bdf8';
+      ctx.fill();
+      ctx.lineWidth = 1 / view.z;
+      ctx.strokeStyle = '#082f49';
+      ctx.stroke();
+    });
+
+    ctx.restore();
+  }
+
+  function renderList(){
+    var box = document.getElementById('map-nodes');
+    document.getElementById('map-count').textContent = nodes.length;
+    if (!nodes.length) {
+      box.innerHTML = '<p class="muted">No nodes with coordinates heard yet. Interface discovery announces arrive over the mesh; this can take a while.</p>';
+      return;
+    }
+    box.innerHTML = nodes.map(function(n, i){
+      var when = n.last_heard ? new Date(n.last_heard * 1000).toLocaleString() : '';
+      return '<button type="button" class="map-node" data-i="' + i + '">' +
+        '<span class="map-node-name">' + esc(n.name) + '</span>' +
+        '<span class="map-node-meta">' + esc(n.type || 'node') +
+        (n.hops != null ? ' · ' + n.hops + ' hop' + (n.hops === 1 ? '' : 's') : '') +
+        '</span><span class="map-node-when">' + esc(when) + '</span></button>';
+    }).join('');
+    Array.prototype.forEach.call(box.querySelectorAll('.map-node'), function(b){
+      b.addEventListener('click', function(){ selectNode(parseInt(b.dataset.i, 10), true); });
+    });
+  }
+
+  function selectNode(i, center){
+    var n = nodes[i];
+    if (!n) return;
+    document.getElementById('map-detail').hidden = false;
+    document.getElementById('map-detail-name').textContent = n.name || 'Reticulum node';
+    var rows = [
+      ['Type', n.type],
+      ['Coordinates', n.lat.toFixed(5) + ', ' + n.lon.toFixed(5) + (n.height != null ? ' · ' + n.height + ' m' : '')],
+      ['Transport ID', n.id],
+      ['Implementation', (n.impl || '') + (n.version ? ' ' + n.version : '')],
+      ['Hops', n.hops],
+      ['Last heard', n.last_heard ? new Date(n.last_heard * 1000).toLocaleString() : ''],
+      ['Radio', n.frequency != null ? (n.frequency + ' Hz · ' + (n.bandwidth || '?') + ' Hz BW · SF' + (n.spreading_factor || '?') + ' · CR' + (n.coding_rate || '?')) : ''],
+      ['Reachable on', n.reachable_on ? n.reachable_on + (n.port ? ':' + n.port : '') : '']
+    ].filter(function(r){ return r[1] != null && r[1] !== ''; });
+    document.getElementById('map-detail-body').innerHTML = '<table class="kv">' + rows.map(function(r){
+      return '<tr><th>' + esc(r[0]) + '</th><td>' + esc(String(r[1])) + '</td></tr>';
+    }).join('') + '</table>';
+
+    if (center) {
+      var p = lonlat(n.lon, n.lat);
+      var r = canvas.getBoundingClientRect();
+      view.z = Math.max(view.z, 2);
+      view.ox = r.width / 2 - p.x * view.z;
+      view.oy = r.height / 2 - p.y * view.z;
+      draw();
+    }
+  }
+
+  function hitTest(sx, sy){
+    var r = canvas.getBoundingClientRect();
+    var bx = (sx - view.ox) / view.z, by = (sy - view.oy) / view.z;
+    var best = null, bestd = Infinity;
+    markers.forEach(function(m){
+      var d = (m.x - bx) * (m.x - bx) + (m.y - by) * (m.y - by);
+      if (d < bestd) { bestd = d; best = m; }
+    });
+    var lim = 10 / view.z;
+    return (best && bestd <= lim * lim) ? best : null;
+  }
+
+  canvas.addEventListener('mousemove', function(ev){
+    var r = canvas.getBoundingClientRect();
+    var sx = ev.clientX - r.left, sy = ev.clientY - r.top;
+    if (drag) {
+      view.ox += sx - drag.sx;
+      view.oy += sy - drag.sy;
+      drag.sx = sx; drag.sy = sy;
+      draw();
+      return;
+    }
+    var m = hitTest(sx, sy);
+    var tip = document.getElementById('map-tip');
+    if (m) {
+      tip.hidden = false;
+      tip.textContent = m.node.name + (m.node.type ? ' · ' + m.node.type : '');
+      tip.style.left = (sx + 12) + 'px';
+      tip.style.top = (sy + 12) + 'px';
+      canvas.style.cursor = 'pointer';
+    } else {
+      tip.hidden = true;
+      canvas.style.cursor = 'grab';
+    }
+  });
+
+  canvas.addEventListener('mousedown', function(ev){
+    var r = canvas.getBoundingClientRect();
+    drag = {sx: ev.clientX - r.left, sy: ev.clientY - r.top};
+    canvas.style.cursor = 'grabbing';
+  });
+  window.addEventListener('mouseup', function(){ drag = null; canvas.style.cursor = 'grab'; });
+  canvas.addEventListener('mouseleave', function(){ document.getElementById('map-tip').hidden = true; });
+
+  canvas.addEventListener('click', function(ev){
+    var r = canvas.getBoundingClientRect();
+    var m = hitTest(ev.clientX - r.left, ev.clientY - r.top);
+    if (!m) return;
+    var i = nodes.indexOf(m.node);
+    if (i >= 0) selectNode(i, false);
+  });
+
+  canvas.addEventListener('wheel', function(ev){
+    ev.preventDefault();
+    var r = canvas.getBoundingClientRect();
+    mapZoom(ev.deltaY < 0 ? 1.2 : 1 / 1.2, ev.clientX - r.left, ev.clientY - r.top);
+  }, {passive: false});
+
+  window.mapFit = mapFit;
+  window.mapZoom = function(f){ mapZoom(f); };
+
+  window.mapLoad = function(){
+    document.getElementById('map-summary').textContent = 'Loading…';
+    Promise.all([
+      fetch(BASE + '/map/nodes', {credentials:'same-origin', cache:'no-store'}).then(function(r){ return r.json(); }),
+      land ? Promise.resolve(land) : fetch('/map/land.geojson', {cache:'force-cache'}).then(function(r){ return r.json(); })
+    ]).then(function(res){
+      var data = res[0] || {};
+      land = res[1];
+      nodes = (data.nodes || []).filter(function(n){ return n.lat != null && n.lon != null; });
+      var msg = nodes.length + ' node' + (nodes.length === 1 ? '' : 's') + ' heard with coordinates';
+      if (data.error) msg += ' — ' + data.error;
+      document.getElementById('map-summary').textContent = msg;
+      renderList();
+      draw();
+    }).catch(function(){
+      document.getElementById('map-summary').textContent = 'Could not load map data.';
+    });
+  };
+
+  window.addEventListener('resize', function(){ resize(); });
+  resize();
+  mapLoad();
+})();
+</script>

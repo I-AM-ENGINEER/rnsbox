@@ -965,3 +965,49 @@ body.term-full .term-wrap {
 .manual-doc table { display: block; max-width: 100%; overflow-x: auto; }
 .manual-doc li, .manual-doc li p { text-align: justify; text-indent: 0; hyphens: auto; }
 .manual-doc li p { margin: 0 0 6px; }
+
+/* ---- RNode tab ---- */
+.rnode-out {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px 14px;
+  margin: 12px 0 0;
+  max-height: 420px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+.rnode-display { margin-top: 14px; }
+.rnode-display img {
+  image-rendering: pixelated;
+  width: 256px;
+  max-width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #000;
+}
+.rnode-ble-row { justify-content: flex-start; gap: 12px; align-items: center; }
+
+/* ---- Map tab ---- */
+.map-layout { display: flex; gap: 18px; align-items: stretch; }
+.map-canvas-wrap { position: relative; flex: 1; min-width: 0; }
+#map-canvas { display: block; width: 100%; height: 62vh; min-height: 340px; border: 1px solid var(--border); border-radius: 8px; cursor: grab; }
+.map-tools { position: absolute; top: 10px; right: 10px; display: flex; gap: 6px; }
+.map-tools .btn { padding: 4px 10px; }
+.map-tip { position: absolute; pointer-events: none; background: rgba(8,15,24,.94); color: #e5edf5; border: 1px solid var(--border); border-radius: 5px; padding: 4px 8px; font-size: 12px; max-width: 300px; }
+.map-list { width: 300px; flex: 0 0 300px; max-height: 62vh; overflow: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--code-bg); }
+.map-list-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--border); font-weight: 600; position: sticky; top: 0; background: var(--code-bg); }
+.map-node { display: flex; flex-direction: column; gap: 2px; width: 100%; text-align: left; padding: 8px 12px; border: 0; border-bottom: 1px solid var(--border); background: transparent; color: var(--text); cursor: pointer; }
+.map-node:hover { background: rgba(56,189,248,.08); }
+.map-node-name { font-weight: 600; font-size: 13px; overflow-wrap: anywhere; }
+.map-node-meta, .map-node-when { font-size: 11.5px; color: var(--muted); }
+.map-detail { margin-top: 16px; }
+.map-detail table.kv th { width: 150px; }
+@media (max-width: 900px) {
+  .map-layout { display: block; }
+  .map-list { width: auto; flex: none; max-height: 260px; margin-top: 12px; }
+}

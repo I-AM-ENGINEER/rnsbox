@@ -22,6 +22,9 @@
   shared_instance_port = 37428
   instance_control_port = 37429
   panic_on_interface_error = No
+  # Collect interface-discovery announces so the Map tab can show nodes
+  # that publish coordinates. Listening only: autoconnect stays off.
+  discover_interfaces = Yes
 
 [logging]
   loglevel = 4
@@ -124,12 +127,17 @@
     # Central scanning made it chase every Reticulum advert (including a
     # phone's rotating random addresses) and collide with the phone's own
     # connection attempts.
-    enable_central = no
+    enable_central = yes
     enabled = yes
     # Advertised name — keep it short, BLE ads have a 31-byte budget.
     # Leave unset to advertise the service UUID only (the peer learns the
     # node name from the Reticulum announce anyway).
     device_name = RNSBox
+    # RNode-over-BLE: also expose the Nordic UART service, so Sideband
+    # (or rnodeconf) can pair with the box and use it as an RNode. The
+    # radio parameters are acknowledged locally and RNode DATA frames
+    # are bridged into this transport; there is no LoRa hardware behind it.
+    rnode_ble = yes
     # BLE GATT reality is well below the driver 700 kbit/s guess; pacing
     # announces/routing on ~50 kbit/s keeps RNS honest about this link.
     bitrate = 50000

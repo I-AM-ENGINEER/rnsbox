@@ -95,6 +95,17 @@ except ImportError:
     except ImportError:
         HAS_GATT_SERVER = False
 
+# RNode serial-protocol endpoint (Nordic UART Service) for Sideband/rnodeconf
+try:
+    from RNodeBLE import RNodeBLEEmulator
+    HAS_RNODE_BLE = True
+except ImportError:
+    try:
+        from ble_reticulum.RNodeBLE import RNodeBLEEmulator
+        HAS_RNODE_BLE = True
+    except ImportError:
+        HAS_RNODE_BLE = False
+
 # Import driver abstraction
 try:
     from bluetooth_driver import BLEDriverInterface, BLEDevice
@@ -365,6 +376,25 @@ class BLEInterface(Interface):
             RNS.log(f"{self} Peripheral mode requested but BLEGATTServer not available", RNS.LOG_WARNING)
             self.enable_peripheral = False
 
+        # RNode-over-BLE: expose a Nordic UART Service endpoint that speaks
+        # the RNode serial protocol, so Sideband/rnodeconf can pair with the
+        # box and use it as an RNode.  This is independent of the mesh
+        # service above; it bridges RNode frames into the local transport.
+        rnode_val = c.get("rnode_ble", True)
+        if isinstance(rnode_val, str):
+            self.rnode_ble = rnode_val.lower() in ["yes", "true", "1"]
+        else:
+            self.rnode_ble = bool(rnode_val) and self.enable_peripheral
+
+        # RNS's RNode BLE scanner auto-selects devices whose name starts with
+        # "RNode " (and requires the NUS UUID in the advertisement).  Keep the
+        # operator's name, just give it the prefix the clients look for.
+        if self.rnode_ble:
+            if not self.device_name:
+                self.device_name = "RNode RNSBox"
+            elif not self.device_name.startswith("RNode "):
+                self.device_name = "RNode " + self.device_name
+
         # Local announce forwarding workaround
         # WORKAROUND: Reticulum Transport.py doesn't forward locally-originated announces (hops=0)
         # to physical interfaces. This option enables manual forwarding of local announces to BLE peers.
@@ -438,6 +468,21 @@ class BLEInterface(Interface):
             adapter_index=0  # TODO: Make configurable
         )
         RNS.log(f"{self} Using driver: {type(self.driver).__name__}", RNS.LOG_DEBUG)
+
+        # RNode-over-BLE endpoint.  Created before driver.start() so the
+        # GATT server can add the NUS service in the same publish pass.
+        self.rnode = None
+        if self.rnode_ble and HAS_RNODE_BLE:
+            try:
+                self.rnode = RNodeBLEEmulator(self)
+                self.driver.rnode_emulator = self.rnode
+                RNS.Transport.interfaces.append(self.rnode)
+                RNS.log(f"{self} RNode-over-BLE endpoint enabled (NUS)", RNS.LOG_INFO)
+            except Exception as e:
+                RNS.log(f"{self} could not start RNode-over-BLE endpoint: {e}", RNS.LOG_WARNING)
+                self.rnode = None
+        elif self.rnode_ble:
+            RNS.log(f"{self} RNode-over-BLE requested but RNodeBLE module is missing", RNS.LOG_WARNING)
 
         # Set driver callbacks
         self.driver.on_device_discovered = self._device_discovered_callback
@@ -2440,6 +2485,14 @@ class BLEInterface(Interface):
         with self.frag_lock:
             self.fragmenters.clear()
             self.reassemblers.clear()
+
+        # Detach the RNode endpoint before the GATT server goes away
+        if getattr(self, "rnode", None) is not None:
+            try:
+                self.rnode.detach()
+            except Exception as e:
+                RNS.log(f"{self} error detaching RNode endpoint: {e}", RNS.LOG_DEBUG)
+            self.rnode = None
 
         # Stop the driver (handles graceful disconnection and cleanup)
         try:

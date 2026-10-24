@@ -119,6 +119,15 @@ find "$T"/usr/lib/python3.*/site-packages -type d -name tests -prune -exec rm -r
 FW="$T/usr/lib/firmware/aic8800_sdio"
 rm -rf "$FW/aic8800DC" "$FW/aic8800D80X2"
 
+# ---- stale AIC bring-up script -------------------------------------------
+# S99wifi7310 used to insmod /root/*.ko after S35wifi had already given up.
+# S35wifi loads them itself now (BR2_PACKAGE_AIC8800), so the separate script
+# must not run: it unbinds/rebinds SDHCI and pulses chip_reset a second time,
+# resetting a radio S35wifi may already have configured. Buildroot's overlay
+# copy never deletes files, so an incremental build keeps the old entry —
+# remove it here as well as from the overlays.
+rm -f "$T/etc/init.d/S99wifi7310"
+
 # ---- vendor ko stash: modules nothing loads -------------------------------
 # S00kmod insmods soph_* (kernel-built here), S35wifi finds cfg80211/rfkill/
 # aic8800_{bsp,fdrv}; no script ever loads these:

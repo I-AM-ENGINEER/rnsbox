@@ -377,12 +377,48 @@ __ECHOBOT_CARDS__
 
 <section class="card">
   <h3>/etc/reticulum/config</h3>
-  <p class="muted">Hand-edit the rnsd configuration. Comments and interface declarations are passed verbatim to Reticulum. Click <em>Save</em> then <em>Restart rnsd</em> to apply.</p>
   <form method="post" action="__BASE__/reticulum/config">
-    <textarea name="config" rows="24" spellcheck="false">__CONFIG__</textarea>
-    <button type="submit" class="btn-primary">Save</button>
+    <div class="cfg-editor">
+      <pre class="cfg-hl" id="cfg-hl" aria-hidden="true"></pre>
+      <textarea name="config" id="cfg-text" rows="24" spellcheck="false">__CONFIG__</textarea>
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="btn-primary">Save &amp; apply</button>
+    </div>
   </form>
 </section>
+
+<script>
+(function(){
+  // Minimal highlighting for the rnsd config: comments, [sections] and keys.
+  // A transparent textarea sits on top of the coloured <pre>, so selection,
+  // editing and scrolling stay native.
+  var ta = document.getElementById('cfg-text');
+  var hl = document.getElementById('cfg-hl');
+  if (!ta || !hl) return;
+  function e(s){ return (''+s).replace(/[&<>"]/g,function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+  function render(src){
+    return src.split('\n').map(function(line){
+      if (/^\s*[#;]/.test(line)) return '<span class="c">' + e(line) + '</span>';
+      var m = line.match(/^(\s*)(\[\[[^\]]*\]\]|\[[^\]]*\])(\s*)$/);
+      if (m) return m[1] + '<span class="s">' + e(m[2]) + '</span>' + m[3];
+      m = line.match(/^(\s*)([A-Za-z0-9_.\-]+)(\s*=\s*)(.*)$/);
+      if (m) return m[1] + '<span class="k">' + e(m[2]) + '</span>' + m[3] +
+                        '<span class="v">' + e(m[4]) + '</span>';
+      return e(line);
+    }).join('\n') + '\n';
+  }
+  function sync(){
+    hl.innerHTML = render(ta.value);
+    hl.scrollTop = ta.scrollTop;
+    hl.scrollLeft = ta.scrollLeft;
+  }
+  ta.addEventListener('input', sync);
+  ta.addEventListener('scroll', function(){ hl.scrollTop = ta.scrollTop; hl.scrollLeft = ta.scrollLeft; });
+  sync();
+})();
+</script>
 
 <script>
 // HTML-escape anything dynamic before it reaches innerHTML.

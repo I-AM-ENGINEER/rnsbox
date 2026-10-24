@@ -467,6 +467,11 @@ void handle(const http::Request& req, http::Response& res) {
     else if (p == "/manual/check")               routes::manual_check(req, res);
     else if (p == "/manual/download")            routes::manual_download(req, res);
     else if (p == "/manual/progress")            routes::manual_progress(req, res);
+    else if (p == "/rnode")                      routes::rnode_page(req, res);
+    else if (p == "/rnode/serial")               routes::rnode_serial(req, res);
+    else if (p == "/rnode/action")               routes::rnode_action(req, res);
+    else if (p == "/map")                        routes::map_page(req, res);
+    else if (p == "/map/nodes")                  routes::map_nodes(req, res);
     else if (p == "/settings")                   routes::settings_page(req, res);
     else if (p == "/settings/password")          routes::settings_password(req, res);
     else if (p == "/settings/hostname")          routes::hostname_set(req, res);

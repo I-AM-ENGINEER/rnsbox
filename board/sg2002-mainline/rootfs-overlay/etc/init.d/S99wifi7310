@@ -1,5 +1,0 @@
-#!/bin/sh
-# LicheeRV Nano: AIC8800D80 on SDIO1.  The driver is passed the board's
-# WL_REG_ON pin (A26) and told not to program the EVB SD1 pad table.
-( sleep 3; /bin/sh /root/wifi.sh ) &
-exit 0

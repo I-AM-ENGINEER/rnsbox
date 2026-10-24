@@ -72,6 +72,17 @@ jobs:
             imgdir: /mnt/rnsbox/out/orangepi-r1/images
           - board: sg2000-duo-s-arm64-mainline
             imgdir: /mnt/rnsbox/out/sg2000-duo-s-arm64-mainline/images
+          # external mainline boards: the release images for the current
+          # hardware generation (Duo Module 01 EVB, LicheeRV Nano, Duo256M,
+          # Duo S rv64). Same flow as the entry above.
+          - board: sg2000-duomodule01-mainline
+            imgdir: /mnt/rnsbox/out/sg2000-duomodule01-mainline/images
+          - board: sg2002-licheerv-nano-mainline
+            imgdir: /mnt/rnsbox/out/sg2002-licheerv-nano-mainline/images
+          - board: sg2002-duo256m-mainline
+            imgdir: /mnt/rnsbox/out/sg2002-duo256m-mainline/images
+          - board: sg2000-duo-s-mainline
+            imgdir: /mnt/rnsbox/out/sg2000-duo-s-mainline/images
           # cv1800b: cold-build bring-up pending (the vendor initramfs is
           # not populated from a fresh workdir — busybox/blkid missing at
           # gen_init_cpio). The flow builds locally; return it to the

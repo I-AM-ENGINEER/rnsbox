@@ -1,0 +1,10 @@
+config BR2_PACKAGE_AIC8800_SDIO_FIRMWARE
+	bool "aic8800-sdio-firmware"
+	help
+	  AIC8800 SDIO WiFi/BT firmware blobs (plain 8800, 8800D80, DC and
+	  D80X2 families). Installed to /usr/lib/firmware/aic8800_sdio/,
+	  the path the aic8800_bsp driver compiles in as CONFIG_AIC_FW_PATH.
+
+	  Selected automatically by BR2_PACKAGE_AIC8800; the SG2000/SG2002
+	  image only needs the aic8800_and_aic8800D80 family, and
+	  board/common/slim-target.sh drops the other two after install.
