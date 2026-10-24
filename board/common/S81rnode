@@ -37,6 +37,9 @@
 # boot cost is one awk pass over the config.
 
 CONF=/etc/rnsbox/rnode.conf
+# Location/map settings are shared by every publish path (LoRa discovery,
+# TCP-server discovery, HaLow telemetry) and live in telemetry.conf.
+TCONF=/etc/rnsbox/telemetry.conf
 RNS_CFG=/etc/reticulum/config
 STATUS=/run/rnsbox-rnode.status
 BEGIN_MARK="# BEGIN RNODE"
@@ -66,6 +69,16 @@ cfg() {
 # reachable_on may legitimately contain spaces.
 cfg_text() {
 	sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$CONF" 2>/dev/null \
+	  | tail -1 | tr -d '\r' | tr -d '"' | tr -d "'"
+}
+
+# telemetry.conf counterparts (same parsers, other file).
+tcfg() {
+	sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$TCONF" 2>/dev/null \
+	  | tail -1 | tr -d '"' | tr -d "'" | awk '{print $1}'
+}
+tcfg_text() {
+	sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$TCONF" 2>/dev/null \
 	  | tail -1 | tr -d '\r' | tr -d '"' | tr -d "'"
 }
 
@@ -255,18 +268,20 @@ num_ok "$CODINGRATE" || CODINGRATE=0
 
 	# Discovery metadata (RNS interface discovery) and the interface mode.
 	# The mode defaults to access_point: the right shape for a LoRa radio.
-	DISCOVER=$(cfg discover)
+	# Coordinates come from telemetry.conf (portal Map tab); no RNode section
+	# is written in transport=off, so the LoRa publish path is naturally off.
+	case "$(tcfg discover_lora)" in yes|true|1|on) DISCOVER=yes ;; *) DISCOVER=no ;; esac
 	RNODE_MODE=$(cfg mode)
 	case "$RNODE_MODE" in
 		full|access_point|ap|gateway|gw|roaming|boundary) ;;
 		*) RNODE_MODE=access_point ;;
 	esac
-	DISC_LAT=$(cfg_text latitude)
-	DISC_LON=$(cfg_text longitude)
-	DISC_HEIGHT=$(cfg_text height)
-	DISC_NAME=$(cfg_text discovery_name)
-	DISC_INTERVAL=$(cfg announce_interval)
-	DISC_REACH=$(cfg_text reachable_on)
+	DISC_LAT=$(tcfg_text latitude)
+	DISC_LON=$(tcfg_text longitude)
+	DISC_HEIGHT=$(tcfg_text height)
+	DISC_NAME=$(tcfg_text name)
+	DISC_INTERVAL=$(tcfg announce_interval)
+	DISC_REACH=$(tcfg_text reachable_on)
 
 	# Radio ranges mirror RNodeInterface; out of range disables the
 	# interface instead of panicking rnsd.

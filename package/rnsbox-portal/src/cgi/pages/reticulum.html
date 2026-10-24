@@ -96,32 +96,56 @@
 </section>
 
 <section class="card">
-  <h3>HaLow modem (SLIP)</h3>
+  <h3>HaLow modem</h3>
   <p class="muted">RNode HaLow firmware for IEEE 802.11ah modems:
     <a href="https://github.com/I-AM-ENGINEER/RNode_Halow_Firmware"
-       target="_blank" rel="noopener">RNode_Halow_Firmware</a>.</p>
+       target="_blank" rel="noopener">RNode_Halow_Firmware</a>.
+    The modem can sit on a UART (SLIP) or anywhere on the network (TCP).</p>
 
   __HALOW_LIVE_BLOCK__
 
   <form method="post" action="__BASE__/reticulum/slip" style="margin-top:14px">
     <label class="check"><input type="checkbox" name="enabled"
       __SLIP_ENABLED_CHECKED__
-      title="Persisted in /etc/rnsbox/slip.conf; Save &amp; apply attaches sl0 now and on every boot"> Enable SLIP link</label>
+      title="Persisted in /etc/rnsbox/slip.conf; Save &amp; apply brings the link up now and at every boot"> Enable HaLow link</label>
     <div class="row-form" style="margin-top:10px">
-      <label style="margin:0">UART device
+      <label style="margin:0">Connection
+        <select name="mode" id="halow-mode">
+          <option value="slip" __SLIP_MODE_SLIP__>USB serial (SLIP)</option>
+          <option value="ip" __SLIP_MODE_IP__>Network (TCP)</option>
+        </select></label>
+      <label style="margin:0" data-halow-mode="slip">UART device
         <input type="text" name="device" value="__SLIP_DEVICE__"></label>
-      <label style="margin:0">Baud
+      <label style="margin:0" data-halow-mode="slip">Baud
         <input type="number" name="baud" value="__SLIP_BAUD__" min="1" max="4000000"
           title="1 to 4000000 — see the board README for the board's UART ceiling"></label>
-      <label style="margin:0">This box (local IP)
+      <label style="margin:0" data-halow-mode="slip">This box (SLIP IP)
         <input type="text" name="local_ip" value="__SLIP_LOCAL_IP__"></label>
-      <label style="margin:0">Modem (peer IP)
-        <input type="text" name="peer_ip" value="__SLIP_PEER_IP__"></label>
+      <label style="margin:0">Modem IP
+        <input type="text" name="peer_ip" value="__SLIP_PEER_IP__"
+          title="In SLIP mode this is the modem's SLIP address; in network mode it is the modem's LAN/WAN address"></label>
+      <label style="margin:0" data-halow-mode="ip">TCP port
+        <input type="number" name="tcp_port" value="__SLIP_TCP_PORT__" min="1" max="65535"
+          title="The modem's TCP radio bridge (Reticulum TCPClientInterface)"></label>
     </div>
     <div class="form-actions" style="margin-top:10px">
       <button type="submit" class="btn-primary">Save &amp; apply</button>
     </div>
   </form>
+  <script>
+  (function(){
+    var sel = document.getElementById('halow-mode');
+    if (!sel) return;
+    function sync(){
+      var ip = sel.value === 'ip';
+      document.querySelectorAll('[data-halow-mode]').forEach(function(el){
+        el.style.display = ((el.getAttribute('data-halow-mode') === 'ip') === ip) ? '' : 'none';
+      });
+    }
+    sel.addEventListener('change', sync);
+    sync();
+  })();
+  </script>
 </section>
 
 <section class="card"__BT_CARD_STYLE__>
@@ -210,33 +234,6 @@
       Reticulum framing, acknowledgements, retries and half-duplex turnaround all take their share.</p>
     </div>
 
-    <div class="rnsh-block" style="margin-top:12px">
-      <h4>Discovery / location</h4>
-      <label class="check"><input type="checkbox" name="discover"
-        __RNODE_DISCOVER_CHECKED__> Announce this RNode to other Reticulum nodes</label>
-      <div class="row-form" style="margin-top:8px">
-        <label style="margin:0">Latitude
-          <input type="text" name="latitude" value="__RNODE_LAT__" inputmode="decimal"
-            placeholder="55.7558"></label>
-        <label style="margin:0">Longitude
-          <input type="text" name="longitude" value="__RNODE_LON__" inputmode="decimal"
-            placeholder="37.6173"></label>
-        <label style="margin:0">Height (m)
-          <input type="text" name="height" value="__RNODE_HEIGHT__" inputmode="decimal"></label>
-      </div>
-      <div class="row-form">
-        <label style="margin:0">Name on the map
-          <input type="text" name="discovery_name" value="__RNODE_DISC_NAME__" maxlength="64"></label>
-        <label style="margin:0">Announce every (minutes)
-          <input type="number" name="announce_interval" value="__RNODE_ANNOUNCE__" min="5" max="10080"></label>
-        <label style="margin:0">Reachable on
-          <input type="text" name="reachable_on" value="__RNODE_REACHABLE__" maxlength="64"
-            placeholder="hostname / IP (optional)"></label>
-      </div>
-      <p class="muted" style="margin:6px 0 0">Other Reticulum nodes will list this
-      RNode with these coordinates; its frequency and bandwidth are published too.
-      The interval is clamped to at least 5 minutes (RNS default 6 h).</p>
-    </div>
     <div class="form-actions" style="margin-top:10px">
       <span class="muted">saving restarts rnsd</span>
       <button type="submit" class="btn-primary">Save &amp; apply</button>
@@ -729,7 +726,6 @@ function doUpdate(action, btn, isInstall){
   function num(v){ if(v==null) return null; var m=(''+v).match(/-?\d+(\.\d+)?/); return m?parseFloat(m[0]):null; }
   function unit(v,u){ if(v==null||v==='') return '?'; return /^-?\d+(\.\d+)?$/.test(''+v)? v+' '+u : esc(v); }
   function sig(v,u,g,a){ if(v==null) return '<span class="muted">&mdash;</span>'; var c=v>=g?'sig-g':(v>=a?'sig-a':'sig-r'); return '<span class="'+c+'">'+v+' '+u+'</span>'; }
-  function noise(v){ var n=num(v); if(n==null) return '<span class="muted">&mdash;</span>'; var c=n<=-80?'sig-g':(n<=-70?'sig-a':'sig-r'); return '<span class="'+c+'">'+n+' dBm</span>'; }
   function mac(m){ if(!m) return '?'; m=(''+m).replace(/[:\-]/g,''); return (m.match(/../g)||[m]).join(':').toLowerCase(); }
   // The modem's rx_last_age is in SECONDS (its own UI formats it as a duration).
   function ago(v){ var s=num(v); if(s==null) return '—'; s=Math.max(0,Math.round(s));
@@ -738,30 +734,34 @@ function doUpdate(action, btn, isInstall){
   function setNote(t){ if(!note) return; if(t){ note.textContent=t; note.hidden=false; } else { note.hidden=true; note.textContent=''; } }
   fetch('__BASE__/reticulum/halow').then(function(r){return r.json();}).then(function(d){
     if(!d.enabled) return;
+    var net = d.mode === 'ip';
     if(!d.reachable){
-      cell('halow-link', d.sl0_up ? '<span class="badge ok">UP</span>' : '<span class="badge warn">DOWN</span>');
+      cell('halow-status', '<span class="badge warn">DOWN</span>');
       cell('halow-addr', '<span class="muted">&mdash;</span>');
-      setNote(d.sl0_up ? 'The modem is not answering over SLIP.' : 'The SLIP link (sl0) is not up.');
+      setNote(net
+        ? ('No answer at ' + esc(d.peer) + ' — is the modem powered and on the network?')
+        : (d.sl0_up ? 'The modem is not answering over SLIP.' : 'The SLIP link (sl0) is not up.'));
       return;
     }
     var rd=d.radio||{}, st=d.stats||{}, dv=d.device||{}, ns=d.neighbours||[];
-    var name=(dv.hostname||'RNode-Halow'), port=(d.tcp_port||4242);
+    var port=(d.tcp_port||4242);
     // mcs_index arrives as "MCS0" on this firmware, but strip any leading
     // "MCS" and re-add it so a bare index renders identically.
     var mcs = (rd.mcs==null||rd.mcs==='') ? 'MCS?' : 'MCS'+esc((''+rd.mcs).replace(/^mcs\s*/i,''));
     var fw = (dv.fw ? esc((''+dv.fw).split(' ')[0]) : '?');   // "2.3.0 (build…)" -> "2.3.0"
-    cell('halow-link', '<span class="badge ok">UP</span>');
-    cell('halow-addr', esc(d.local)+' &rarr; '+esc(d.peer));
-    cell('halow-iface', d.rnsd_up ? '<span class="badge ok">UP</span>' : '<span class="badge warn">DOWN</span>');
-    setNote(d.rnsd_up ? '' : (HALOW_IN_CONFIG
-      ? 'rnsd has the interface configured but is not connected to it.'
-      : 'rnsd has no interface for this modem yet — add it below.'));
+    function pct(v){ var n=num(v); return n==null ? '<span class="muted">&mdash;</span>' : n.toFixed(2)+' %'; }
+    function dbm(v){ var n=num(v); return n==null ? esc(v||'?') : n+' dBm'; }
+    cell('halow-status', '<span class="badge ok">UP</span>');
+    cell('halow-addr', net ? (esc(d.peer)+':'+esc(port)) : (esc(d.local)+' &rarr; '+esc(d.peer)));
+    setNote('');
     cell('halow-radio', unit(rd.freq,'MHz')+' · '+unit(rd.bw,'MHz')+' · '+mcs+' · '+unit(rd.power,'dBm'));
-    cell('halow-air', esc(st.airtime||'?')+' <span class="dim">· ch-util '+esc(st.ch_util||'?')+'</span>');
-    cell('halow-noise', noise(st.noise));
-    cell('halow-thru', '&darr; '+esc(st.rx_speed||'?')+' · &uarr; '+esc(st.tx_speed||'?')
-      +((st.rx_bytes||st.tx_bytes)?' <span class="dim">('+esc(st.rx_bytes||'?')+' / '+esc(st.tx_bytes||'?')+')</span>':''));
-    cell('halow-modem', esc(dv.temp||'?')+' · fw '+fw+' · up '+esc(dv.uptime||'?'));
+    cell('halow-air', pct(st.airtime));
+    cell('halow-chload', pct(st.ch_util));
+    cell('halow-noise', dbm(st.noise));
+    cell('halow-rxtx', esc(st.rx_bytes||'?')+' / '+esc(st.tx_bytes||'?'));
+    cell('halow-temp', esc(dv.temp||'?'));
+    cell('halow-fw', fw);
+    cell('halow-uptime', esc(dv.uptime||'?'));
     // Quick-add: the modem is reachable but no interface routes through it yet.
     if(addForm && !HALOW_IN_CONFIG){
       var nf=document.getElementById('halow-add-name'), pf=document.getElementById('halow-add-port');

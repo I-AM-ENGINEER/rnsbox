@@ -14,8 +14,9 @@ SLIP_CONF = "/etc/rnsbox/slip.conf"
 
 
 def read_slip():
-    cfg = {"enabled": "no", "device": "/dev/serial0", "baud": "2000000",
-           "local_ip": "192.168.7.1", "peer_ip": "192.168.7.2"}
+    cfg = {"enabled": "no", "mode": "slip", "device": "/dev/serial0",
+           "baud": "2000000", "local_ip": "192.168.7.1",
+           "peer_ip": "192.168.7.2", "tcp_port": "4242"}
     try:
         with open(SLIP_CONF) as f:
             for ln in f:
@@ -65,12 +66,18 @@ def _modem_api(peer, name, timeout=2.5):
 
 def halow_status(slip):
     peer = (slip.get("peer_ip") or "192.168.7.2").strip()
+    mode = (slip.get("mode") or "slip").strip().lower()
+    network = mode == "ip"
     enabled = (slip.get("enabled", "no").strip().lower()
                not in ("no", "0", "false", "off", ""))
-    out = {"enabled": enabled, "peer": peer,
+    out = {"enabled": enabled, "peer": peer, "mode": mode,
            "local": (slip.get("local_ip") or "").strip(),
            "sl0_up": _oper_up("sl0"), "reachable": False, "neighbours": []}
-    if not out["enabled"] or not out["sl0_up"]:
+    if not out["enabled"]:
+        return out
+    # UART mode needs sl0 before anything can be asked. Network mode has no
+    # sl0 at all — the modem's own API is the liveness probe.
+    if not network and not out["sl0_up"]:
         return out
     stat = _modem_api(peer, "get_stat")
     allc = _modem_api(peer, "get_all")

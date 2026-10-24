@@ -70,6 +70,7 @@ static const char* const POST_ONLY[] = {
     "/reticulum/bluetooth/pair",
     "/reticulum/rnode",
     "/reticulum/rnode/pair",
+    "/map/telemetry",
     "/settings/password",
     "/settings/hostname",
     "/settings/time/browser",

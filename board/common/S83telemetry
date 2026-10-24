@@ -1,0 +1,39 @@
+#!/bin/sh
+# S83telemetry — receive the HaLow modem's MQTT telemetry over the link and
+# forward it to the upstream map server (see /usr/sbin/rnsbox-telemetry).
+#
+# OFF by default: started only when halow_mqtt=yes in telemetry.conf (portal
+# Map tab). The portal rewrites the modem's MQTT host to this box and restarts
+# this service on save; the modem's TCP radio bridge keeps carrying Reticulum
+# regardless.
+
+CONF=/etc/rnsbox/telemetry.conf
+BIN=/usr/sbin/rnsbox-telemetry
+PIDFILE=/run/rnsbox-telemetry.pid
+
+cfg() {
+	sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$CONF" 2>/dev/null \
+	  | tail -1 | tr -d '"' | tr -d "'" | awk '{print $1}'
+}
+
+start() {
+	[ -x "$BIN" ] || { echo "S83telemetry: $BIN missing"; return 0; }
+	case "$(cfg halow_mqtt)" in
+		yes|true|1|on) ;;
+		*) echo "S83telemetry: disabled"; return 0 ;;
+	esac
+	start-stop-daemon -S -q -m -p "$PIDFILE" -x "$BIN" -b || true
+	echo "S83telemetry: started"
+}
+
+stop() {
+	start-stop-daemon -K -q -p "$PIDFILE" -x "$BIN" 2>/dev/null || true
+	rm -f "$PIDFILE"
+}
+
+case "${1:-start}" in
+	start) start ;;
+	stop) stop ;;
+	restart|reload) stop; start ;;
+	*) echo "Usage: $0 {start|stop|restart}" >&2; exit 1 ;;
+esac

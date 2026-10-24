@@ -12,9 +12,83 @@
 #map-nodes>p{grid-column:1/-1;margin:4px}
 .map-node{border:1px solid var(--border);border-radius:6px}
 .map-credit{margin-top:10px;font-size:12px}
+.tel-paths{margin-top:2px}
+.tel-path{padding:11px 0;border-top:1px solid var(--border)}
+.tel-path:first-child{border-top:0;padding-top:2px}
+.tel-note{margin:3px 0 0 24px;font-size:12px;max-width:90ch}
+.tel-path .row-form{margin:10px 0 2px 24px;padding:10px 12px}
+.tel-status{margin-top:14px;padding-top:10px;border-top:1px solid var(--border);font-size:12.5px;line-height:1.65}
+.tel-status .tel-k{display:inline-block;min-width:132px;color:var(--muted)}
 @media(max-width:900px){#map-canvas{height:58vh;min-height:340px}}
 </style>
 <h2>Map</h2>
+
+<section class="card" id="telemetry-card">
+  <h3>Location / telemetry</h3>
+  <p class="muted" style="margin-top:0">One set of coordinates, several independent publish
+    paths — enable any combination. Nothing leaves the box until a path is on, and the map
+    below always renders offline (it never asks the internet for anything).</p>
+
+  <form method="post" action="__BASE__/map/telemetry">
+    <div class="row-form">
+      <label style="margin:0">Latitude
+        <input type="text" name="latitude" value="__TEL_LAT__" inputmode="decimal"
+          placeholder="55.7558"></label>
+      <label style="margin:0">Longitude
+        <input type="text" name="longitude" value="__TEL_LON__" inputmode="decimal"
+          placeholder="37.6173"></label>
+      <label style="margin:0">Height (m)
+        <input type="text" name="height" value="__TEL_HEIGHT__" inputmode="decimal"></label>
+    </div>
+    <div class="row-form" style="margin-top:10px">
+      <label style="margin:0">Name on the map
+        <input type="text" name="name" value="__TEL_NAME__" maxlength="64"
+          placeholder="defaults to the hostname"></label>
+      <label style="margin:0">Announce every (minutes)
+        <input type="number" name="announce_interval" value="__TEL_INTERVAL__" min="5" max="10080"></label>
+      <label style="margin:0">Reachable on
+        <input type="text" name="reachable_on" value="__TEL_REACH__" maxlength="64"
+          placeholder="hostname / IP (optional)"></label>
+    </div>
+
+    <h4>Publish paths</h4>
+    <div class="tel-paths">
+      __TEL_LORA_BLOCK__
+
+      __TEL_HALOW_BLOCK__
+
+      <div class="tel-path">
+        <label class="check"><input type="checkbox" name="discover_tcp" __TEL_TCP_CHECKED__>
+          Reticulum discovery — TCP server</label>
+        <p class="muted tel-note">Works on every box, with or without a radio.</p>
+      </div>
+    </div>
+    __TEL_KEEP__
+
+    <div class="form-actions" style="margin-top:14px">
+      <button type="submit" class="btn-primary">Save &amp; apply</button>
+    </div>
+  </form>
+
+  <div class="tel-status">__TEL_STATUS__</div>
+</section>
+
+<script>
+(function(){
+  var mqtt = document.getElementById('tel-halow-mqtt');
+  var extra = document.getElementById('tel-halow-extra');
+  var dirEn = document.getElementById('tel-dir-en');
+  var dir = document.getElementById('tel-dir');
+  if (!mqtt || !extra) return;
+  function sync(){
+    extra.style.display = mqtt.checked ? '' : 'none';
+    if (dir) dir.disabled = !(dirEn && dirEn.checked);
+  }
+  mqtt.addEventListener('change', sync);
+  if (dirEn) dirEn.addEventListener('change', sync);
+  sync();
+})();
+</script>
 
 <div class="map-layout">
   <div class="map-canvas-wrap">

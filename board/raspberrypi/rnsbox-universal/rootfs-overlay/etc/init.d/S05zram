@@ -1,0 +1,45 @@
+#!/bin/sh
+# zram swap on any board with less than 900 MB of RAM. Reticulum grows to
+# ~half a gigabyte on busy nodes; compressing swap in RAM is the cheapest
+# way to keep the router alive on 256/512 MB parts (Duo Module 01, LicheeRV
+# Nano, CV1800B Duo). zram is built into the kernel (CONFIG_ZRAM=y).
+#
+# disksize = min(50% of RAM, 512 MiB), floor 64 MiB; priority 100 so the
+# kernel prefers it over any storage-backed swap.
+
+THRESHOLD_KB=921600   # 900 MiB
+total_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null)
+[ -n "$total_kb" ] || exit 0
+[ "$total_kb" -lt "$THRESHOLD_KB" ] || exit 0
+
+start() {
+	[ -e /sys/block/zram0 ] || modprobe zram 2>/dev/null
+	[ -e /sys/block/zram0/disksize ] || { echo "zram: no device"; return 0; }
+	if grep -q '^/dev/zram0 ' /proc/swaps 2>/dev/null; then
+		return 0
+	fi
+	# reset picks up a compiler hint set by a previous boot
+	[ -e /sys/block/zram0/reset ] && echo 1 > /sys/block/zram0/reset 2>/dev/null
+
+	size=$(( total_kb * 1024 / 2 ))
+	[ "$size" -gt $((512 * 1024 * 1024)) ] && size=$((512 * 1024 * 1024))
+	[ "$size" -lt $((64 * 1024 * 1024)) ] && size=$((64 * 1024 * 1024))
+
+	echo "$size" > /sys/block/zram0/disksize 2>/dev/null || return 0
+	mkswap /dev/zram0 >/dev/null 2>&1 || return 0
+	swapon -p 100 /dev/zram0 2>/dev/null && \
+		echo "zram: $((size / 1048576)) MiB swap (RAM ${total_kb} kB)"
+}
+
+stop() {
+	grep -q '^/dev/zram0 ' /proc/swaps 2>/dev/null && swapoff /dev/zram0
+	[ -e /sys/block/zram0/reset ] && echo 1 > /sys/block/zram0/reset 2>/dev/null
+}
+
+case "$1" in
+	start) start ;;
+	stop) stop ;;
+	restart) stop; start ;;
+	*) echo "usage: $0 {start|stop|restart}"; exit 1 ;;
+esac
+exit 0

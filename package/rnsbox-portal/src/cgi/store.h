@@ -108,10 +108,12 @@ bool write_update_config(const UpdateConfig& c, std::string& err);
 // --- SLIP link to an external HaLow (RNode) modem ---
 struct SlipConfig {
     std::string enabled = "no";
+    std::string mode = "slip";            // slip (UART + ldattach) | ip (network modem)
     std::string device = "/dev/serial0";
     std::string baud = "2000000";
-    std::string local_ip = "192.168.7.1";
-    std::string peer_ip = "192.168.7.2";
+    std::string local_ip = "192.168.7.1"; // SLIP local end
+    std::string peer_ip = "192.168.7.2";  // SLIP peer, or the modem's IP in ip mode
+    std::string tcp_port = "4242";        // ip mode: modem's TCP radio bridge
 };
 SlipConfig read_slip();
 bool write_slip(const SlipConfig& c, std::string& err);   // baud 1..SLIP_MAX_BAUD
@@ -200,18 +202,40 @@ struct RnodeConfig {
     std::string spreadingfactor = "7";    // 5..12
     std::string codingrate = "7";         // 5..8
     std::string flow_control = "no";      // yes|no
-    // Interface discovery (RNS advertises this RNode to other nodes). Written
-    // into the managed [[RNode ...]] stanza by S81rnode.
-    std::string discover = "no";          // yes|no
-    std::string latitude;                 // -90..90
-    std::string longitude;                // -180..180
-    std::string height;                   // metres above sea level
-    std::string discovery_name;           // name shown on other nodes' maps
-    std::string announce_interval = "360";// minutes (RNS minimum 5)
-    std::string reachable_on;             // host/address other nodes can try
 };
 RnodeConfig read_rnode();
 bool write_rnode(const RnodeConfig& c, std::string& err);
+
+// --- Map telemetry / location publishing -------------------------------------
+// /etc/rnsbox/telemetry.conf is the single source of truth for the Map tab.
+// The same coordinates feed three independent publish paths (all off by
+// default, any combination allowed):
+//   discover_lora — rnsd interface discovery on the managed [[RNode]] stanza
+//   discover_tcp  — rnsd interface discovery on the shipped [[TCP Server]]
+//   halow_mqtt    — the HaLow modem's own MQTT telemetry, received over SLIP,
+//                   stored on flash and forwarded to the upstream server
+// S80telemetry/S81rnode read this file; the portal's Map tab owns it.
+constexpr const char* TELEMETRY_FILE = "/etc/rnsbox/telemetry.conf";
+struct TelemetryConfig {
+    std::string latitude;                 // -90..90 (required when a path is on)
+    std::string longitude;                // -180..180
+    std::string height;                   // metres above sea level (optional)
+    std::string name;                     // name shown on other nodes' maps
+    std::string announce_interval = "360";// minutes (RNS minimum 5)
+    std::string reachable_on;             // host/address other nodes can try
+    std::string discover_lora = "no";     // yes|no
+    std::string discover_tcp = "no";      // yes|no
+    std::string discover_halow = "no";    // yes|no — discovery on the RNode-Halow TCP client
+    std::string halow_mqtt = "no";        // yes|no
+    std::string halow_ext = "no";         // extended counters in the modem payload
+    std::string halow_dir_en = "no";      // publish antenna direction
+    std::string halow_direction = "0";    // degrees, 0..359
+    std::string halow_upstream = "telemetry.rnode-halow.ru";
+    std::string halow_upstream_port = "1883";
+};
+TelemetryConfig read_telemetry();
+bool write_telemetry(const TelemetryConfig& c, std::string& err);
+bool telemetry_any_path(const TelemetryConfig& c);
 
 // The live state S81rnode left behind (absent file: transport "off").
 struct RnodeStatus {

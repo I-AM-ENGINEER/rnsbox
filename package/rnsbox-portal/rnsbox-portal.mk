@@ -41,11 +41,17 @@ define RNSBOX_PORTAL_BUILD_CMDS
 	# ~2.2 MB of resident ash.
 	$(TARGET_CC) -std=c99 -Os -s \
 		-o $(@D)/rnsbox-mon $(@D)/mon/mon.c
+	# MQTT telemetry proxy for the HaLow modem (Map tab publish path):
+	# receives the modem's telemetry, stores it on flash and forwards it
+	# upstream. No TLS/JSON library, fixed buffers (~4 KB per client).
+	$(TARGET_CC) -std=c99 -Os -s \
+		-o $(@D)/rnsbox-telemetry $(@D)/telemetry/telemetry.c
 endef
 
 define RNSBOX_PORTAL_INSTALL_TARGET_CMDS
 	$(INSTALL) -D -m 0755 $(@D)/rnsbox-portal $(TARGET_DIR)/usr/sbin/rnsbox-portal
 	$(INSTALL) -D -m 0755 $(@D)/rnsbox-mon $(TARGET_DIR)/usr/sbin/rnsbox-mon
+	$(INSTALL) -D -m 0755 $(@D)/rnsbox-telemetry $(TARGET_DIR)/usr/sbin/rnsbox-telemetry
 	mkdir -p $(TARGET_DIR)/www/cgi-bin
 	rm -f $(TARGET_DIR)/www/cgi-bin/portal
 	ln -f $(TARGET_DIR)/usr/sbin/rnsbox-portal $(TARGET_DIR)/www/cgi-bin/portal 2>/dev/null || \

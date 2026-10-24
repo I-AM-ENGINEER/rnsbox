@@ -10,13 +10,25 @@
 #include "routes.h"
 #include "render.h"
 #include "web.h"
+#include "store.h"
+#include "modem.h"
+#include "sysinfo.h"
 #include "util.h"
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <string>
+#ifndef _WIN32
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <unistd.h>
+#endif
 #include <utility>
 #include <vector>
 
@@ -31,11 +43,287 @@ using http::Response;
 
 namespace routes {
 
+namespace {
+constexpr const char* HALOW_STATE = "/run/rnsbox/telemetry/halow.json";
+
+// Tiny readers for our own one-line JSON (no escapes except the name) and for
+// the modem payload snapshot written by rnsbox-telemetry.
+std::string tel_jstr(const std::string& j, const char* key) {
+    std::string pat = std::string("\"") + key + "\"";
+    size_t p = j.find(pat);
+    if (p == std::string::npos) return std::string();
+    p = j.find(':', p + pat.size());
+    if (p == std::string::npos) return std::string();
+    p++;
+    while (p < j.size() && (j[p] == ' ' || j[p] == '\t')) p++;
+    if (p >= j.size() || j[p] != '"') return std::string();
+    p++;
+    std::string out;
+    while (p < j.size() && j[p] != '"') {
+        if (j[p] == '\\' && p + 1 < j.size()) {
+            p++;
+            if (j[p] == 'n') out += '\n';
+            else if (j[p] == 't') out += '\t';
+            else if (j[p] == 'r') out += '\r';
+            else out += j[p];
+            p++;
+        } else out += j[p++];
+    }
+    return out;
+}
+
+bool tel_jnum(const std::string& j, const char* key, double& out) {
+    std::string pat = std::string("\"") + key + "\"";
+    size_t p = j.find(pat);
+    if (p == std::string::npos) return false;
+    p = j.find(':', p + pat.size());
+    if (p == std::string::npos) return false;
+    p++;
+    char* end = nullptr;
+    double v = std::strtod(j.c_str() + p, &end);
+    if (end == j.c_str() + p) return false;
+    out = v;
+    return true;
+}
+
+std::string tel_utc(double epoch) {
+    if (epoch <= 0) return std::string("—");
+    time_t t = (time_t)epoch;
+    struct tm g;
+    gmtime_r(&t, &g);
+    char b[32];
+    strftime(b, sizeof(b), "%Y-%m-%d %H:%M UTC", &g);
+    return b;
+}
+
+bool discovery_on() {
+    std::string c = util::read_file("/etc/reticulum/config", 256 * 1024);
+    size_t p = 0;
+    while (p < c.size()) {
+        size_t e = c.find('\n', p);
+        if (e == std::string::npos) e = c.size();
+        std::string line = util::trim(c.substr(p, e - p));
+        if (line.compare(0, 21, "discover_interfaces =") == 0) {
+            std::string v = util::trim(line.substr(21));
+            return v == "yes" || v == "Yes" || v == "1" || v == "true";
+        }
+        p = e + 1;
+    }
+    return false;
+}
+
+std::string tel_status_html(const store::TelemetryConfig& tc) {
+    std::string out;
+    out += "<div><span class=\"tel-k\">Interface discovery</span>";
+    out += discovery_on()
+        ? "on — announces heard over the mesh are collected below."
+        : "off — enable a discovery path to collect other nodes.";
+    out += "</div>";
+
+    std::string hj = util::read_file(HALOW_STATE, 4096);
+    double recv = 0;
+    if (!hj.empty() && tel_jnum(hj, "received", recv) && recv > 0) {
+        std::string name = tel_jstr(hj, "name");
+        std::string src = tel_jstr(hj, "source");
+        double lat = 0, lon = 0;
+        bool has = false;
+        size_t hp = hj.find("\"has_loc\"");
+        if (hp != std::string::npos) {
+            hp = hj.find(':', hp);
+            if (hp != std::string::npos) {
+                hp++;
+                while (hp < hj.size() && (hj[hp] == ' ' || hj[hp] == '\t')) hp++;
+                has = hj.compare(hp, 4, "true") == 0;
+            }
+        }
+        tel_jnum(hj, "lat", lat);
+        tel_jnum(hj, "lon", lon);
+        out += "<div><span class=\"tel-k\">HaLow telemetry</span>last packet " + tel_utc(recv);
+        if (has) {
+            char b[96];
+            std::snprintf(b, sizeof(b), " — %.5f, %.5f", lat, lon);
+            out += b;
+        }
+        if (!name.empty()) out += " (" + render::esc(name) + ")";
+        if (!src.empty()) out += " from " + render::esc(src);
+        out += ", forwarded to " + render::esc(tc.halow_upstream) + ".</div>";
+    } else if (tc.halow_mqtt == "yes") {
+        out += "<div><span class=\"tel-k\">HaLow telemetry</span>nothing received yet — the "
+               "modem sends a packet every " + render::esc(tc.announce_interval) +
+               " minute(s) once its config is pushed.</div>";
+    }
+    return out;
+}
+
+}  // namespace
+
+static std::string ret_redirect_map() { return web::base() + "/map"; }
+
 void map_page(const Request& req, Response& res) {
     if (!web::require_auth(req, res, false)) return;
+    store::TelemetryConfig tc = store::read_telemetry();
+    store::SlipConfig sl = store::read_slip();
+    store::RnodeConfig rc = store::read_rnode();
+
     std::string h = render::page_file("map");
-    h = web::replace_all(std::move(h), "__BASE__", render::esc(web::base()));
+    auto set = [&](const char* k, const std::string& v) {
+        h = web::replace_all(std::move(h), k, v);
+    };
+    set("__BASE__", render::esc(web::base()));
+    set("__TEL_LAT__", render::esc(tc.latitude));
+    set("__TEL_LON__", render::esc(tc.longitude));
+    set("__TEL_HEIGHT__", render::esc(tc.height));
+    set("__TEL_NAME__", render::esc(tc.name));
+    set("__TEL_INTERVAL__", render::esc(tc.announce_interval.empty() ? "360" : tc.announce_interval));
+    set("__TEL_REACH__", render::esc(tc.reachable_on));
+    set("__TEL_TCP_CHECKED__", tc.discover_tcp == "yes" ? "checked" : "");
+    set("__TEL_STATUS__", tel_status_html(tc));
+
+    // A path is only shown when the transport it publishes over exists. Hidden
+    // paths keep their previous state in a hidden field so saving the card does
+    // not silently switch them off (the RNode/HaLow link can be re-enabled
+    // later and the path resumes).
+    auto checked = [](const std::string& v) -> std::string {
+        return v == "yes" ? "checked" : "";
+    };
+    auto hidden = [](const char* name, const std::string& v) {
+        return std::string("<input type=\"hidden\" name=\"") + name + "\" value=\"" +
+               (v == "yes" ? "on" : "") + "\">";
+    };
+    std::string lora_block, halow_block, keep;
+    if (rc.transport != "off") {
+        lora_block =
+            "<div class=\"tel-path\">\n"
+            "        <label class=\"check\"><input type=\"checkbox\" name=\"discover_lora\" " +
+            checked(tc.discover_lora) + "> Reticulum discovery — LoRa RNode</label>\n"
+            "        <p class=\"muted tel-note\">Published by rnsd on the " +
+            render::esc(rc.name.empty() ? std::string("RNode") : rc.name) +
+            " interface; frequency and bandwidth are included.</p>\n"
+            "      </div>";
+    } else {
+        keep += hidden("discover_lora", tc.discover_lora);
+    }
+    if (sl.enabled == "yes") {
+        halow_block =
+            "<div class=\"tel-path\">\n"
+            "        <label class=\"check\"><input type=\"checkbox\" name=\"halow_mqtt\" "
+            "id=\"tel-halow-mqtt\" " + checked(tc.halow_mqtt) +
+            "> HaLow modem — Reticulum interface + MQTT telemetry</label>\n"
+            "        <p class=\"muted tel-note\">Coordinates, name and antenna direction are "
+            "written into the modem on save; it then sends its telemetry to this box, which "
+            "keeps the last packet in RAM for the map and forwards it to " +
+            render::esc(tc.halow_upstream) + " as a proxy (nothing is written to flash). "
+            "Height is published by the RNS discovery paths only — the modem's telemetry "
+            "packet carries latitude/longitude.</p>\n"
+            "        <div class=\"row-form tel-halow-extra\" id=\"tel-halow-extra\">\n"
+            "          <label class=\"check\" style=\"margin:0\"><input type=\"checkbox\" "
+            "name=\"halow_ext\" " + checked(tc.halow_ext) + "> Extended telemetry</label>\n"
+            "          <label class=\"check\" style=\"margin:0\"><input type=\"checkbox\" "
+            "name=\"halow_dir_en\" id=\"tel-dir-en\" " + checked(tc.halow_dir_en) +
+            "> Antenna direction</label>\n"
+            "          <label style=\"margin:0\">Degrees\n"
+            "            <input type=\"number\" name=\"halow_direction\" id=\"tel-dir\" value=\"" +
+            render::esc(tc.halow_direction.empty() ? "0" : tc.halow_direction) +
+            "\" min=\"0\" max=\"359\"></label>\n"
+            "        </div>\n"
+            "      </div>\n"
+            "      <div class=\"tel-path\">\n"
+            "        <label class=\"check\"><input type=\"checkbox\" name=\"discover_halow\" " +
+            checked(tc.discover_halow) +
+            "> Reticulum discovery — HaLow interface</label>\n"
+            "        <p class=\"muted tel-note\">rnsd announces the RNode-Halow TCP interface "
+            "(frequency and bandwidth included), so the box also appears on the discovery map "
+            "through the modem.</p>\n"
+            "      </div>";
+    } else {
+        keep += hidden("halow_mqtt", tc.halow_mqtt);
+        keep += hidden("discover_halow", tc.discover_halow);
+        keep += hidden("halow_ext", tc.halow_ext);
+        keep += hidden("halow_dir_en", tc.halow_dir_en);
+        keep += "<input type=\"hidden\" name=\"halow_direction\" value=\"" +
+                render::esc(tc.halow_direction.empty() ? "0" : tc.halow_direction) + "\">";
+    }
+    set("__TEL_LORA_BLOCK__", lora_block);
+    set("__TEL_HALOW_BLOCK__", halow_block);
+    set("__TEL_KEEP__", keep);
     res.body = render::layout(req, res, "Map", "map", h);
+}
+
+void map_telemetry(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, false)) return;
+    store::TelemetryConfig c;
+    c.latitude = util::trim(req.f("latitude"));
+    c.longitude = util::trim(req.f("longitude"));
+    c.height = util::trim(req.f("height"));
+    c.name = util::trim(req.f("name"));
+    c.announce_interval = util::trim(req.f("announce_interval"));
+    if (c.announce_interval.empty()) c.announce_interval = "360";
+    c.reachable_on = util::trim(req.f("reachable_on"));
+    c.discover_lora = req.f("discover_lora") == "on" ? "yes" : "no";
+    c.discover_tcp = req.f("discover_tcp") == "on" ? "yes" : "no";
+    c.discover_halow = req.f("discover_halow") == "on" ? "yes" : "no";
+    c.halow_mqtt = req.f("halow_mqtt") == "on" ? "yes" : "no";
+    c.halow_ext = req.f("halow_ext") == "on" ? "yes" : "no";
+    c.halow_dir_en = req.f("halow_dir_en") == "on" ? "yes" : "no";
+    c.halow_direction = util::trim(req.f("halow_direction"));
+    if (c.halow_direction.empty()) c.halow_direction = "0";
+
+    std::string err;
+    if (!store::write_telemetry(c, err)) {
+        render::redirect_flash(res, ret_redirect_map(), "error", "Telemetry: " + err + ".");
+        return;
+    }
+    store::SlipConfig sl = store::read_slip();
+    store::RnodeConfig rc = store::read_rnode();
+    std::string warn;
+    if (c.discover_lora == "yes" && rc.transport == "off")
+        warn += " No RNode LoRa interface is configured, so that path stays idle.";
+    if (c.discover_halow == "yes" && sl.enabled != "yes")
+        warn += " The HaLow link is off, so its discovery path stays idle.";
+    if (c.halow_mqtt == "yes" && sl.enabled != "yes")
+        warn += " The HaLow link is off; enable it on the Reticulum tab to start telemetry.";
+
+    web::run_init("S80telemetry", "reload");
+    web::run_init("S81rnode", "reload");
+    web::run_init("S82rnsd");
+
+    std::string modem_msg;
+    if (c.halow_mqtt == "yes" && sl.enabled == "yes") {
+        std::string local = modem::local_ip_towards(sl);
+        long period = strtol(c.announce_interval.c_str(), nullptr, 10) * 60;
+        if (period < 60) period = 60;
+        std::string json =
+            "{\"en\":true,\"host\":\"" + local + "\",\"port\":1883,\"prd\":" +
+            std::to_string(period) + ",\"lat\":" + c.latitude + ",\"lon\":" + c.longitude +
+            ",\"ext\":" + std::string(c.halow_ext == "yes" ? "true" : "false") +
+            ",\"dir_en\":" + std::string(c.halow_dir_en == "yes" ? "true" : "false") +
+            ",\"dir\":" + c.halow_direction +
+            ",\"usr\":\"rnode-halow\",\"pwd\":\"rnode-halow\","
+            "\"top\":\"rnode-halow/telemetry\"";
+        if (!c.name.empty()) json += ",\"name\":\"" + c.name + "\"";
+        // Harmless if the firmware ignores it; keeps the full location in the
+        // modem request for a future telemetry-packet revision.
+        if (!c.height.empty()) json += ",\"height\":" + c.height;
+        json += "}";
+        std::string resp;
+        if (modem::post(sl.peer_ip, "telemetry_cfg", json, resp))
+            warn += " The modem now sends telemetry to " + local + ":1883.";
+        else
+            warn += " The modem did not accept the telemetry config (is it powered and reachable?).";
+        web::run_init("S83telemetry", "restart");
+    } else {
+        // Best effort: stop the modem publishing even if the proxy is off.
+        if (sl.enabled == "yes") {
+            std::string resp;
+            modem::post(sl.peer_ip, "telemetry_cfg", "{\"en\":false}", resp);
+        }
+        web::run_init("S83telemetry", "stop");
+    }
+
+    if (warn.empty())
+        render::redirect_flash(res, ret_redirect_map(), "success", "Location and publish paths saved.");
+    else
+        render::redirect_flash(res, ret_redirect_map(), "warn", "Saved." + warn);
 }
 
 #ifdef _WIN32
@@ -405,6 +693,91 @@ void append_node(std::string& o, const Node& n) {
          ",\"port\":" + number_json(n.has_port, (double)n.port) + "}";
 }
 
+// Two non-RNS sources share the map:
+//   - this box, when the Map tab enabled a discovery path (so the marker the
+//     box publishes elsewhere is visible locally too);
+//   - the HaLow modem's own telemetry snapshot, held in RAM by
+//     rnsbox-telemetry (a proxy — nothing is written to flash). The modem's coordinates are the ones the Map tab
+//     pushed into its telemetry config.
+void append_telemetry_nodes(std::vector<Node>& out) {
+    store::TelemetryConfig tc = store::read_telemetry();
+    if (store::telemetry_any_path(tc)) {
+        double lat = 0, lon = 0;
+        char *e1 = nullptr, *e2 = nullptr;
+        if (!tc.latitude.empty() && !tc.longitude.empty()) {
+            lat = std::strtod(tc.latitude.c_str(), &e1);
+            lon = std::strtod(tc.longitude.c_str(), &e2);
+            if (e1 && !*e1 && e2 && !*e2 && lat >= -90 && lat <= 90 &&
+                lon >= -180 && lon <= 180 && !(lat == 0 && lon == 0)) {
+                Node n;
+                n.id = "local:box";
+                n.name = tc.name.empty() ? sysinfo::hostname() : tc.name;
+                n.type = "This box";
+                n.impl = "RNSBox";
+                n.has_lat = n.has_lon = true;
+                n.lat = lat; n.lon = lon;
+                if (!tc.height.empty()) {
+                    char *e = nullptr;
+                    double h = std::strtod(tc.height.c_str(), &e);
+                    if (e && !*e) { n.has_height = true; n.height = h; }
+                }
+                n.last_heard = (double)::time(nullptr);
+                n.discovered = n.last_heard;
+                if (!tc.reachable_on.empty()) {
+                    n.reachable_on.str = true;
+                    n.reachable_on.s = tc.reachable_on;
+                }
+                out.push_back(n);
+            }
+        }
+    }
+
+    std::string hj = util::read_file(HALOW_STATE, 4096);
+    if (hj.empty()) return;
+    double recv = 0, lat = 0, lon = 0, freq = 0, bw = 0;
+    if (!tel_jnum(hj, "received", recv) || recv <= 0) return;
+    size_t hp = hj.find("\"has_loc\"");
+    bool has = false;
+    if (hp != std::string::npos) {
+        hp = hj.find(':', hp);
+        if (hp != std::string::npos) {
+            hp++;
+            while (hp < hj.size() && (hj[hp] == ' ' || hj[hp] == '\t')) hp++;
+            has = hj.compare(hp, 4, "true") == 0;
+        }
+    }
+    if (!has) return;
+    if (!tel_jnum(hj, "lat", lat) || !tel_jnum(hj, "lon", lon)) return;
+    if (lat < -90 || lat > 90 || lon < -180 || lon > 180 || (lat == 0 && lon == 0)) return;
+
+    Node n;
+    std::string lxmf = tel_jstr(hj, "lxmf");
+    std::string src = tel_jstr(hj, "source");
+    n.id = lxmf.empty() ? ("halow:" + src) : ("halow:" + lxmf);
+    n.name = tel_jstr(hj, "name");
+    if (n.name.empty()) n.name = "HaLow modem";
+    n.type = "HaLow modem";
+    n.impl = "RNode";
+    n.version = tel_jstr(hj, "fw");
+    n.has_lat = n.has_lon = true;
+    n.lat = lat; n.lon = lon;
+    n.last_heard = recv;
+    n.discovered = recv;
+    if (tel_jnum(hj, "freq_hz", freq) && freq > 0) { n.has_freq = true; n.frequency = freq; }
+    if (tel_jnum(hj, "bw_hz", bw) && bw > 0)       { n.has_bw = true; n.bandwidth = bw; }
+    if (!src.empty()) { n.reachable_on.str = true; n.reachable_on.s = src; }
+    out.push_back(n);
+}
+
+std::string file_sig(const char* path) {
+    struct stat st;
+    if (::stat(path, &st) != 0) return "-";
+    char b[64];
+    std::snprintf(b, sizeof(b), "%lld:%lld", (long long)st.st_mtim.tv_sec,
+                  (long long)st.st_size);
+    return b;
+}
+
 // The store changes only when an announce is validated or updated; cache the
 // rendered JSON keyed on every record's (name, mtime, size). A directory walk
 // plus 114 stat() calls is ~2 ms, while decoding plus re-rendering is ~100 ms
@@ -500,12 +873,9 @@ std::string map_nodes_body() {
         }
     }
 
-    if (live.empty() && persist.empty()) {
-        return "{\"nodes\":[],\"total\":0,\"store\":\"" +
-               http::json_escape(store) +
-               "\",\"error\":\"interface discovery has not collected anything yet\"}";
-    }
-
+    // The map also carries the box's own marker and the HaLow modem's
+    // telemetry snapshot, so an empty discovery store is no longer an early
+    // return: both are valid sources on their own.
     std::vector<std::string> names = live;
     for (const std::string& n : persist)
         if (std::find(names.begin(), names.end(), n) == names.end())
@@ -515,7 +885,8 @@ std::string map_nodes_body() {
     std::string signature;
     if (use_cache) {
         signature = store_signature(store, live) + ":" +
-                    store_signature(MAP_PERSIST, persist);
+                    store_signature(MAP_PERSIST, persist) + ":t" +
+                    file_sig(store::TELEMETRY_FILE) + ":h" + file_sig(HALOW_STATE);
         std::string stamp = util::trim(util::read_file(MAP_STAMP, 128));
         std::string cached = util::read_file(MAP_CACHE, 4 * 1024 * 1024);
         if (stamp == signature && !cached.empty() && cached[0] == '{')
@@ -558,9 +929,14 @@ std::string map_nodes_body() {
     std::vector<Node> out;
     for (const Node& n : kept)
         if (n.has_lat && n.has_lon) out.push_back(n);
+    append_telemetry_nodes(out);
     std::stable_sort(out.begin(), out.end(), [](const Node& a, const Node& b) {
         return a.last_heard > b.last_heard;
     });
+
+    if (out.empty() && first_error.empty())
+        first_error = "No nodes with coordinates yet — enables a publish path above, "
+                      "or wait for interface-discovery announces.";
 
     std::string body = "{\"nodes\":[";
     for (size_t i = 0; i < out.size(); ++i) {
