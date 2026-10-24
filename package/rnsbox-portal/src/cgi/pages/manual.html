@@ -3,10 +3,12 @@
   <span class="muted">version <span class="mono">__DOCS_VERSION__</span></span>
   <span class="manual-update">__DOCS_UPDATE__</span>
   <span class="manual-spacer"></span>
-  <form method="post" action="__BASE__/manual/check" class="inline">
+  <form method="post" action="__BASE__/manual/check" class="inline"
+        onsubmit="this.querySelector('button').textContent='Checking…'">
     <button type="submit" class="btn">Check for updates</button>
   </form>
-  <form method="post" action="__BASE__/manual/download" class="inline">
+  <form method="post" action="__BASE__/manual/download" class="inline"
+        onsubmit="this.querySelector('button').textContent='Downloading…'">
     <button type="submit" class="btn-primary">Download</button>
   </form>
 </div>

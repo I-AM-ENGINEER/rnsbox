@@ -179,16 +179,26 @@ def cmd_download():
             except Exception as e:
                 err = str(e)
     try:
-        url = "https://codeload.github.com/%s/tar.gz/refs/heads/master" % REPO
-        tmp = tempfile.mktemp(suffix=".tar.gz")
-        req = urllib.request.Request(url, headers={"User-Agent": "rnsbox-docs"})
-        with urllib.request.urlopen(req, timeout=120) as r, open(tmp, "wb") as f:
-            shutil.copyfileobj(r, f)
-        install_archive(tmp)
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
+        # Fetch the Markdown files one by one: the repository tarball carries
+        # ~50 MB of graphics and takes minutes on this box.
+        names = ["index", "whatis", "gettingstartedfast", "zen", "software",
+                 "using", "understanding", "hardware", "interfaces",
+                 "networks", "distributed", "git", "support", "examples",
+                 "license", "brandolinis", "reference"]
+        base = ("https://raw.githubusercontent.com/%s/master/%s/" % (REPO, SUBDIR))
+        staging = tempfile.mkdtemp(prefix="rnsbox-docs-new-")
+        for n in names:
+            req = urllib.request.Request(base + n + ".md",
+                                         headers={"User-Agent": "rnsbox-docs"})
+            with urllib.request.urlopen(req, timeout=20) as r:
+                data = r.read()
+            open(os.path.join(staging, n + ".md"), "wb").write(data)
+        os.makedirs(DOCS, exist_ok=True)
+        for f in glob.glob(os.path.join(DOCS, "*.md")):
+            os.unlink(f)
+        for f in os.listdir(staging):
+            shutil.move(os.path.join(staging, f), os.path.join(DOCS, f))
+        shutil.rmtree(staging, ignore_errors=True)
         try:
             up = github_head()
         except Exception:
