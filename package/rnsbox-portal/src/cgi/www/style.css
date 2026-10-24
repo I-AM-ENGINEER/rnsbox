@@ -963,3 +963,5 @@ body.term-full .term-wrap {
 .manual-doc { overflow-wrap: break-word; }
 .manual-doc pre { max-width: 100%; }
 .manual-doc table { display: block; max-width: 100%; overflow-x: auto; }
+.manual-doc li, .manual-doc li p { text-align: left; text-indent: 0; hyphens: manual; }
+.manual-doc li p { margin: 0 0 6px; }
