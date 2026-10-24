@@ -309,10 +309,13 @@ static std::string lora_air_rate(const store::RnodeConfig& rc) {
 static std::string rnode_card_html(const std::string& base) {
     store::RnodeConfig rc = store::read_rnode();
     store::RnodeStatus st = store::read_rnode_status();
+    bool live = rnode_live_up(nullptr);
 
     std::string status;
     if (rc.transport != "usb" && rc.transport != "ble")
         return std::string();
+    else if (live)
+        status = "<span class=\"badge ok\">connected</span> <span class=\"mono\">" + E(st.port) + "</span>";
     else if (st.state == "ok" && !st.port.empty())
         status = "<span class=\"badge ok\">ready</span> <span class=\"mono\">" + E(st.port) + "</span>";
     else if (st.state == "waiting" || st.state == "scanning")

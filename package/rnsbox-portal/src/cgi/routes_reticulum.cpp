@@ -1655,6 +1655,28 @@ static void bt_peers_collect() {
     std::vector<BtPeer> found;
     std::map<std::string, PeerStat> stats = bt_peer_stats();
 
+    // The RNode modem has its own interface (RNodeInterface), even when it
+    // is attached over BLE. It is not a client of the BLE transport and must
+    // not show up in the BLE card's connected-device list.
+    std::string rnode_addr;
+    {
+        store::RnodeConfig rc = store::read_rnode();
+        if (rc.transport == "ble" && rc.ble_address.size() == 17)
+            rnode_addr = rc.ble_address;
+        else {
+            store::RnodeStatus st = store::read_rnode_status();
+            if (st.port.rfind("ble://", 0) == 0 && st.port.size() == 23)
+                rnode_addr = st.port.substr(6);
+        }
+        for (char& c : rnode_addr) c = (char)toupper((unsigned char)c);
+    }
+    auto is_rnode = [&](const std::string& addr) {
+        if (rnode_addr.empty() || addr.size() != rnode_addr.size()) return false;
+        for (size_t i = 0; i < addr.size(); ++i)
+            if (toupper((unsigned char)addr[i]) != rnode_addr[i]) return false;
+        return true;
+    };
+
     bool scan_ok = true;
     if (!stats.empty()) {
         // The BLE transport is the authoritative connected list: it already
@@ -1667,6 +1689,7 @@ static void bt_peers_collect() {
                    n.rfind("RNS ", 0) != 0;
         };
         for (const auto& kv : stats) {
+            if (is_rnode(kv.first)) continue;
             BtPeer p;
             p.address = kv.first;
             p.name = kv.second.name.empty() ? kv.first : kv.second.name;
@@ -1709,6 +1732,7 @@ static void bt_peers_collect() {
             if (p.address.size() == 17)
                 for (char& c : p.address) c = (char)toupper((unsigned char)c);
             p.name = sp == std::string::npos ? std::string() : util::trim(rest.substr(sp + 1));
+            if (is_rnode(p.address)) continue;
             p.last_seen = now;
             p.connected = true;
             found.push_back(std::move(p));
@@ -1721,6 +1745,7 @@ static void bt_peers_collect() {
     // when there is no cache at all, show the live RNS peers.
     if (found.empty() && old.empty()) {
         for (const auto& d : bt_rnsstatus_peers()) {
+            if (is_rnode(d.second)) continue;
             BtPeer p;
             p.address = d.second;
             p.name = d.first;
@@ -1753,6 +1778,7 @@ static void bt_peers_collect() {
     // to BT_PEERS_GRACE seconds, so a transient disconnect does not make the
     // row blink. A failed scan keeps the previous state as-is.
     for (auto& p : old) {
+        if (is_rnode(p.address)) continue;
         std::string k = bt_peer_key(p);
         if (idx.count(k)) continue;
         if (!scan_ok) {
@@ -2359,15 +2385,45 @@ bool ble_traffic_stats(std::string& tx, std::string& rx) {
 // BLE natively (port = ble://..., bleak + BlueZ, peers bonded on connect by
 // the bundled BLE Agent).
 
+// The rnstatus snapshot is the only place that knows whether the RNode
+// interface actually came up; S81rnode's status file records the state at
+// config-apply time and goes stale as soon as rnsd reconnects.
+bool rnode_live_up(std::string* name) {
+    std::string data = util::read_file("/run/rnsbox-rnstatus-v2.json", 1024 * 1024);
+    if (data.empty()) return false;
+    json::Value root;
+    std::string err;
+    if (!json::parse(data, root, err) || !root.is_object()) return false;
+    const json::Value* arr = root.find("interfaces");
+    if (!arr || !arr->is_array()) return false;
+    for (const json::Value& v : arr->arr) {
+        const json::Value* t = v.find("type");
+        if (!t || !t->is_string() || t->str != "RNodeInterface") continue;
+        if (name) {
+            const json::Value* n = v.find("name");
+            if (n && n->is_string()) *name = n->str;
+        }
+        const json::Value* s = v.find("status");
+        if (s && s->is_string()) return s->str == "Up" || s->str == "up";
+        if (s && s->is_bool()) return s->b;
+        return false;
+    }
+    return false;
+}
+
 static std::string rnode_fill(std::string h) {
     store::RnodeConfig rc = store::read_rnode();
     store::RnodeStatus st = store::read_rnode_status();
     bool usb = rc.transport == "usb";
     bool ble = rc.transport == "ble";
+    bool live = (usb || ble) && rnode_live_up(nullptr);
 
     std::string status;
     if (rc.transport != "usb" && rc.transport != "ble") {
         status = "<span class=\"badge\">off</span>";
+    } else if (live) {
+        status = "<span class=\"badge ok\">connected</span>" +
+                 (st.port.empty() ? std::string() : " <span class=\"mono\">" + E(st.port) + "</span>");
     } else if (st.state == "ok" && !st.port.empty()) {
         status = "<span class=\"badge ok\">ready</span> <span class=\"mono\">" + E(st.port) + "</span>";
     } else if (st.state == "waiting") {
@@ -2452,11 +2508,11 @@ static std::string rnode_fill(std::string h) {
         } else {
             std::string b = store::bt_peer_bond(rc.ble_address);
             if (b == "bonded")
-                bond = "<span class=\"badge ok\">bonded</span> <span class=\"muted\">BlueZ holds the link keys</span>";
+                bond = "<span class=\"badge ok\">bonded</span>";
             else if (b == "paired")
-                bond = "<span class=\"badge warn\">paired, not bonded</span> <span class=\"muted\">reconnect the peer or Pair again</span>";
+                bond = "<span class=\"badge warn\">paired</span>";
             else
-                bond = "<span class=\"badge err\">not paired</span> <span class=\"muted\">use Pair in the scan list above</span>";
+                bond = "<span class=\"badge err\">not paired</span>";
         }
     }
     h = R(std::move(h), "__RNODE_BOND__", bond);
@@ -2545,6 +2601,12 @@ static bool rnode_scan_fresh(std::string& out) {
 void reticulum_rnode_status(const Request& req, Response& res) {
     if (!web::require_auth(req, res, true)) return;
     store::RnodeStatus st = store::read_rnode_status();
+    // rnsd reconnects on its own after a pairing; report that instead of the
+    // stale "scanning" left behind by S81rnode at apply time.
+    if ((st.transport == "usb" || st.transport == "ble") && rnode_live_up(nullptr)) {
+        st.state = "ok";
+        st.message.clear();
+    }
     std::string o = std::string("{\"transport\":\"") + http::json_escape(st.transport) +
         "\",\"port\":\"" + http::json_escape(st.port) +
         "\",\"state\":\"" + http::json_escape(st.state) +

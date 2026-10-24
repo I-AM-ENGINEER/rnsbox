@@ -65,6 +65,9 @@ bool rnstatus_prewarm();
 // RNode modem over USB serial or BLE
 void reticulum_rnode(const http::Request&, http::Response&);        // POST PRG (save + apply)
 void reticulum_rnode_status(const http::Request&, http::Response&); // GET  JSON (S81rnode state)
+// True when the RNode interface is up in the rnstatus snapshot (rnsd has
+// actually attached the modem, not just written the config).
+bool rnode_live_up(std::string* name = nullptr);
 void reticulum_rnode_scan(const http::Request&, http::Response&);   // GET  JSON (BLE discovery, rnode.py)
 void reticulum_rnode_pair(const http::Request&, http::Response&);   // POST JSON (bluetoothctl pair)
 

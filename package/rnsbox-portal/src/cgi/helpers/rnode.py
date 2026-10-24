@@ -258,8 +258,15 @@ def pair(address: str, code: str = "") -> dict:
                     "message": "The RNode is asking for a pairing code. Enter the code shown on its display and press Pair again."}
 
     if re.search(r"pairing successful|already paired|alreadyexists", text, re.I):
-        return {"ok": True,
-                "message": "Paired %s — now Save & apply (restarts rnsd)" % address}
+        # Pairing leaves the LE link open. A connected device stops
+        # advertising, so rnsd's scanner cannot find it and the interface
+        # retries forever. Drop the link; rnsd connects (and bonds) anew.
+        try:
+            subprocess.run(["bluetoothctl", "disconnect", address],
+                           capture_output=True, text=True, timeout=10)
+        except Exception:
+            pass
+        return {"ok": True, "message": "Paired %s" % address}
     return {"ok": False, "message": "pairing failed (%s)" % _last_line(text)}
 
 

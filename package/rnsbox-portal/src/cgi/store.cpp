@@ -1244,7 +1244,7 @@ std::string bt_peer_bond(const std::string& address) {
     if (addr.size() != 17) return "";
     DIR* d = opendir("/var/lib/bluetooth");
     if (!d) return "";
-    bool found = false, paired = false, bonded = false;
+    bool found = false, paired = false, bonded = false, ltk = false;
     struct dirent* e;
     while ((e = readdir(d)) != nullptr) {
         if (e->d_name[0] == '.') continue;
@@ -1259,12 +1259,17 @@ std::string bt_peer_bond(const std::string& address) {
             i = (nl == std::string::npos) ? data.size() : nl + 1;
             if (ln == "Paired: yes") paired = true;
             else if (ln == "Bonded: yes") bonded = true;
+            // BlueZ's key store does not persist Paired/Bonded flags; the
+            // keys themselves are the durable evidence of a bond.
+            else if (ln == "[LongTermKey]" || ln == "[PeripheralLongTermKey]" ||
+                     ln == "[SlaveLongTermKey]" || ln == "[LinkKey]")
+                ltk = true;
         }
-        if (bonded) break;
+        if (bonded || ltk) break;
     }
     closedir(d);
     if (!found) return "none";
-    if (bonded) return "bonded";
+    if (bonded || ltk) return "bonded";
     if (paired) return "paired";
     return "none";
 }

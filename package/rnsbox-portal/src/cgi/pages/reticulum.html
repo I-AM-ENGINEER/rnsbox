@@ -44,7 +44,6 @@
     <div class="row-form" style="margin-top:10px">
       <label class="check" style="margin:0"><input type="checkbox" name="auto_install"
         id="auto_install" __AUTO_INSTALL_CHECKED__> install the downloaded update automatically</label>
-      <span class="muted">off by default — rolls back if rnsd does not come up</span>
     </div>
 
     <div class="row-form" style="margin-top:10px">
@@ -184,11 +183,6 @@
       <input type="hidden" name="ble_address" id="rnode-ble-address" value="__RNODE_BLE_ADDRESS__">
       <input type="hidden" name="ble_name" id="rnode-ble-name" value="__RNODE_BLE_NAME__">
       <p class="muted" style="margin:6px 0 0" id="rnode-selected-note"></p>
-      <p class="muted" style="margin:6px 0 0">A device is chosen only from the scan above — no manual address entry.
-      <strong>RNS attaches to bonded devices</strong> — pairing selects the peer and applies the interface
-      (rnsd restarts), so there is no second save. An empty selection attaches to any advertising <code>RNode *</code>.
-      For display-less RNodes that need a pairing code, use the <a href="/flasher/" target="_blank" rel="noopener">built-in RNode flasher</a>
-      (WebSocket mode: host <code>10.42.0.1</code>).</p>
       __RNODE_BLE_STACK_NOTE__
     </div>
 
@@ -217,10 +211,7 @@
         <strong id="lora-rate">—</strong>
         <span class="muted">· sensitivity</span> <strong id="lora-sens">—</strong>
         <span class="muted">· SNR limit</span> <strong id="lora-snr">—</strong>
-        <span id="lora-margin-box" style="display:none"> <span class="muted">· link margin</span> <strong id="lora-margin">—</strong></span>
       </div>
-      <label class="lora-rssi">Measured RSSI (dBm, optional)
-        <input type="number" id="lora-rssi" step="0.5" min="-160" max="0" placeholder="-120"></label>
       <a class="muted" href="https://unsigned.io/understanding-lora-parameters/" target="_blank" rel="noopener">LoRa parameters explained</a>
       <p class="muted lora-note">This is the theoretical air bitrate. Useful throughput is much lower:
       Reticulum framing, acknowledgements, retries and half-duplex turnaround all take their share.</p>
@@ -271,9 +262,9 @@ function rnodeTransportChanged(){
 }
 document.addEventListener('DOMContentLoaded', rnodeTransportChanged);
 
-// LoRa link estimate. Semtech's formulas only: air rate from BW/SF/CR, the
-// chip's sensitivity at 125 kHz shifted by 10*log10(BW/125k), and an optional
-// margin against a measured RSSI. No antenna gain and no noise figure.
+// LoRa link estimate. Semtech's formulas only: air rate from BW/SF/CR and the
+// chip's sensitivity at 125 kHz shifted by 10*log10(BW/125k). No antenna gain
+// and no noise figure.
 var LORA_SENS = {5: -118, 6: -121, 7: -123, 8: -126, 9: -129, 10: -132, 11: -134.5, 12: -137};
 var LORA_SNR  = {5: -2.5, 6: -5, 7: -7.5, 8: -10, 9: -12.5, 10: -15, 11: -17.5, 12: -20};
 
@@ -287,10 +278,8 @@ function loraCalc(){
   if (!rate) return;
   var bw = loraField('bandwidth'), sf = loraField('spreadingfactor'), cr = loraField('codingrate');
   var sensEl = document.getElementById('lora-sens'), snrEl = document.getElementById('lora-snr');
-  var marginBox = document.getElementById('lora-margin-box'), marginEl = document.getElementById('lora-margin');
   if (!(bw > 0) || !(sf >= 5 && sf <= 12) || !(cr >= 5 && cr <= 8)) {
     rate.textContent = sensEl.textContent = snrEl.textContent = '—';
-    if (marginBox) marginBox.style.display = 'none';
     return;
   }
   var bps = (bw / Math.pow(2, sf)) * sf * 4 / cr;
@@ -298,14 +287,6 @@ function loraCalc(){
   rate.textContent = bps >= 1000 ? (bps / 1000).toFixed(2) + ' kbps' : Math.round(bps) + ' bps';
   sensEl.textContent = sens.toFixed(1) + ' dBm';
   snrEl.textContent = LORA_SNR[sf] + ' dB';
-  var rssiEl = document.getElementById('lora-rssi');
-  var rssi = rssiEl ? parseFloat(rssiEl.value) : NaN;
-  if (marginBox && marginEl && rssiEl && rssiEl.value !== '' && !isNaN(rssi)) {
-    marginEl.textContent = (rssi - sens).toFixed(1) + ' dB';
-    marginBox.style.display = '';
-  } else if (marginBox) {
-    marginBox.style.display = 'none';
-  }
 }
 
 document.addEventListener('DOMContentLoaded', function(){
@@ -313,8 +294,6 @@ document.addEventListener('DOMContentLoaded', function(){
     var el = document.querySelector('#rnode-form [name="' + n + '"]');
     if (el) el.addEventListener('input', loraCalc);
   });
-  var rssiEl = document.getElementById('lora-rssi');
-  if (rssiEl) rssiEl.addEventListener('input', loraCalc);
   loraCalc();
 });
 
@@ -338,7 +317,7 @@ function rnodeStatusRefresh(){
     }
     var b;
     if (d.transport !== 'usb' && d.transport !== 'ble') b = '<span class="badge">off</span>';
-    else if (d.state === 'ok' && d.port) b = '<span class="badge ok">ready</span> <span class="mono">' + escH(d.port) + '</span>';
+    else if (d.state === 'ok' && d.port) b = '<span class="badge ok">connected</span> <span class="mono">' + escH(d.port) + '</span>';
     else if (d.state === 'waiting') b = '<span class="badge warn">waiting for device</span>';
     else if (d.state === 'scanning') b = '<span class="badge warn">waiting for device</span>';
     else if (d.state === 'invalid' || d.state === 'error') b = '<span class="badge err">' + escH(d.state) + '</span> ' + escH(d.message);
