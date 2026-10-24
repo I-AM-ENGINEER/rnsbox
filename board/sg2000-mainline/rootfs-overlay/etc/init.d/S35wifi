@@ -207,6 +207,26 @@ wait_sta_connected() {
 #   security = wpa2 (default) | wpa3 | wpa2+wpa3 | open
 #   WPA3/SAE needs wpa_supplicant built with CONFIG_SAE (the image selects
 #   BR2_PACKAGE_WPA_SUPPLICANT_WPA3).
+# sae_ok — does this wpa_supplicant have CONFIG_SAE? A WPA2/WPA3 network is
+# emitted as WPA-PSK+SAE; when the parser rejects SAE it drops the whole
+# network block and the STA never starts. Probe once and fall back to WPA2-PSK
+# (a WPA2/WPA3 transition AP accepts it) if SAE is not compiled in.
+SAE_OK=
+sae_ok() {
+	[ "$SAE_OK" = 1 ] && return 0
+	[ "$SAE_OK" = 0 ] && return 1
+	command -v wpa_supplicant >/dev/null 2>&1 || { SAE_OK=0; return 1; }
+	_t=/tmp/wpa-sae-probe.conf
+	printf '%s\n' 'network={' '    ssid="probe"' '    sae_password="12345678"' '    key_mgmt=SAE' '}' > "$_t"
+	_o=$(wpa_supplicant -C /tmp -c "$_t" -i lo -D nl80211 2>&1)
+	rm -f "$_t"
+	case "$_o" in
+		*"invalid key_mgmt 'SAE'"*) SAE_OK=0; return 1 ;;
+	esac
+	SAE_OK=1
+	return 0
+}
+
 # emit_sta_network <ssid> <psk> <hidden> <band> <security> <priority>
 emit_sta_network() {
 	_ssid="$1"; _psk="$2"; _hidden="$3"; _band="$4"; _sec="$5"; _prio="$6"
@@ -219,15 +239,26 @@ emit_sta_network() {
 			echo "    key_mgmt=NONE"
 			;;
 		wpa3)
-			echo "    key_mgmt=SAE"
-			echo "    sae_password=\"$_psk\""
-			echo "    ieee80211w=2"
+			if sae_ok; then
+				echo "    key_mgmt=SAE"
+				echo "    sae_password=\"$_psk\""
+				echo "    ieee80211w=2"
+			else
+				log "STA '$_ssid': WPA3 needs SAE; this wpa_supplicant lacks it, using WPA2-PSK"
+				echo "    key_mgmt=WPA-PSK"
+				echo "    psk=\"$_psk\""
+			fi
 			;;
 		wpa2+wpa3)
-			echo "    key_mgmt=WPA-PSK SAE"
-			echo "    psk=\"$_psk\""
-			echo "    sae_password=\"$_psk\""
-			echo "    ieee80211w=1"
+			if sae_ok; then
+				echo "    key_mgmt=WPA-PSK SAE"
+				echo "    psk=\"$_psk\""
+				echo "    sae_password=\"$_psk\""
+				echo "    ieee80211w=1"
+			else
+				echo "    key_mgmt=WPA-PSK"
+				echo "    psk=\"$_psk\""
+			fi
 			;;
 		*)
 			echo "    key_mgmt=WPA-PSK"
