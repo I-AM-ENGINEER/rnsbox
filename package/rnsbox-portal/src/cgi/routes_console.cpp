@@ -12,7 +12,9 @@
 #include "console.h"
 #include "render.h"
 #include "web.h"
+#include "term/token.h"
 #include <cerrno>
+#include <cstdio>
 #include <cstdlib>
 #include <string>
 #include <unistd.h>
@@ -206,6 +208,42 @@ void nomadnet_input(const http::Request& req, http::Response& res) {
 }
 void nomadnet_resize(const http::Request& req, http::Response& res) {
     term_resize(req, res, console::SESSION_NOMADNET);
+}
+
+// GET /<api>/ws-token — mint a short-lived token for the broker's WebSocket.
+// The token is bound to the session name; the broker never sees the portal
+// cookie.  No token file / no port means the fast path is unavailable and the
+// page falls back to the legacy HTTP stream.
+static void term_ws_token(const http::Request& req, http::Response& res,
+                          const std::string& session) {
+    if (!web::require_auth(req, res, true)) return;
+
+    int port = 0;
+    FILE* f = fopen(console::port_path().c_str(), "r");
+    if (f) {
+        if (fscanf(f, "%d", &port) != 1) port = 0;
+        fclose(f);
+    }
+    std::string token = (port > 0)
+        ? term::make_token(console::secret_path(), session, 120)
+        : std::string();
+    if (port <= 0 || token.empty()) {
+        res.status = "503 Service Unavailable";
+        res.content_type = "application/json";
+        res.body = "{\"error\":\"fast terminal unavailable\"}";
+        return;
+    }
+    res.content_type = "application/json";
+    res.body = "{\"port\":" + std::to_string(port) +
+               ",\"session\":\"" + session + "\",\"token\":\"" + token + "\"}";
+}
+
+void console_ws_token(const http::Request& req, http::Response& res) {
+    term_ws_token(req, res, console::SESSION_SHELL);
+}
+
+void nomadnet_ws_token(const http::Request& req, http::Response& res) {
+    term_ws_token(req, res, console::SESSION_NOMADNET);
 }
 
 }  // namespace routes

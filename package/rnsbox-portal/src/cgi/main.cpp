@@ -282,10 +282,22 @@ int main(int argc, char** argv) {
     // fail with EPIPE instead of killing the process.
     signal(SIGPIPE, SIG_IGN);
 
-    // `rnsbox-portal console-broker [-f]` — PTY session owner (S11console).
+    // `rnsbox-portal console-broker [-f] [--ws-port N] [--ws-bind ADDR]`
+    // — PTY session owner (S11console).
     if (argc >= 2 && strcmp(argv[1], "console-broker") == 0) {
-        bool fg = argc >= 3 && (!strcmp(argv[2], "-f") || !strcmp(argv[2], "--foreground"));
-        return console::broker_main(fg);
+        bool fg = false;
+        int ws_port = -1;
+        const char* ws_bind = nullptr;
+        for (int i = 2; i < argc; ++i) {
+            if (!strcmp(argv[i], "-f") || !strcmp(argv[i], "--foreground")) {
+                fg = true;
+            } else if (!strcmp(argv[i], "--ws-port") && i + 1 < argc) {
+                ws_port = atoi(argv[++i]);
+            } else if (!strcmp(argv[i], "--ws-bind") && i + 1 < argc) {
+                ws_bind = argv[++i];
+            }
+        }
+        return console::broker_main(fg, ws_port, ws_bind);
     }
     // CLI mode: `rnsbox-portal nftgen --wan eth0 --lan br-lan` (boot path).
     if (argc >= 2 && strcmp(argv[1], "nftgen") == 0)

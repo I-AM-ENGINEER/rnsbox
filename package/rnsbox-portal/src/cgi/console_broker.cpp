@@ -1,16 +1,19 @@
 // console_broker.cpp — PTY broker + local client for the terminal tabs.
 //
 // One long-lived process owns each terminal session so the CGI tier can stay
-// stateless. The browser streams raw VT output over plain HTTP (uhttpd relays
-// CGI stdout as chunked transfer) and posts raw key bytes back; the broker
-// broadcasts a session's PTY output to every attached stream and applies
-// input/resize commands from the authenticated CGI routes. Only the root-owned
-// Unix socket is exposed; there is no network listener and no second port.
+// stateless. Two transports share those sessions:
 //
-// Sessions are named in the handshake ("shell" / "nomadnet"), so one broker
-// serves both tabs. The shell is started at boot (as before); NomadNet is
-// started lazily on its first attach, because its TUI costs RAM that a box
-// nobody is watching the tab on should not spend.
+//   * legacy: the CGI bridges a raw VT stream over chunked HTTP and POSTs key
+//     bytes back (one CGI process per keystroke);
+//   * fast:   the broker itself speaks WebSocket on a token-authenticated TCP
+//     port, keeps a server-side VT model, and sends one compact snapshot
+//     followed by coalesced cell diffs at a bounded frame rate.
+//
+// The fast path is what makes NomadNet usable on the small boards. A slow
+// client never queues a backlog of full-screen redraws: every frame is a diff
+// from the last screen the client was sent, so it converges on the latest
+// state instead of replaying history. The legacy path remains as a fallback
+// for browsers that cannot open ws:// or images where the port is blocked.
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
@@ -35,9 +38,20 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <cctype>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
+
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+
+#include "term/screen.h"
+#include "term/token.h"
+#include "term/websocket.h"
 
 namespace console {
 
@@ -47,9 +61,37 @@ const char PID_PATH[]  = "/run/rnsbox-console.pid";
 const char SESSION_SHELL[]    = "shell";
 const char SESSION_NOMADNET[] = "nomadnet";
 
+// Runtime paths.  Production uses /run; the test harness points
+// RNSBOX_TERM_RUN_DIR at a writable temporary directory.
+std::string run_dir() {
+    const char* d = getenv("RNSBOX_TERM_RUN_DIR");
+    return (d && *d) ? std::string(d) : std::string("/run");
+}
+std::string secret_path() { return run_dir() + "/rnsbox-term.secret"; }
+std::string port_path()   { return run_dir() + "/rnsbox-term.port"; }
+
 namespace {
 
 const char NOMADNET_EXE[] = "/usr/bin/nomadnet";
+
+std::string sock_path() { return run_dir() + "/rnsbox-console.sock"; }
+std::string pid_path()  { return run_dir() + "/rnsbox-console.pid"; }
+
+long long now_ms() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return static_cast<long long>(ts.tv_sec) * 1000 + ts.tv_nsec / 1000000;
+}
+
+bool dbg() {
+    static int v = -1;
+    if (v < 0) v = getenv("RNSBOX_TERM_DEBUG") ? 1 : 0;
+    return v == 1;
+}
+
+constexpr int WS_PORT_DEFAULT   = 7681;
+constexpr int FRAME_MS_DEFAULT  = 12;          // coalesce TUI redraws into ~80 fps
+constexpr size_t WS_OUT_MAX     = 256 * 1024;  // one client's queued frames
 
 constexpr size_t RING_MAX       = 256 * 1024;   // replay window for a new/reconnected tab
 constexpr size_t CLIENT_OUT_MAX = 1024 * 1024;  // a stalled browser is dropped at this point
@@ -85,7 +127,7 @@ bool write_all(int fd, const void* data, size_t len) {
 }
 
 int read_pid() {
-    FILE* f = fopen(PID_PATH, "r");
+    FILE* f = fopen(pid_path().c_str(), "r");
     if (!f) return -1;
     long v = -1;
     if (fscanf(f, "%ld", &v) != 1) v = -1;
@@ -96,16 +138,16 @@ int read_pid() {
 bool already_running() {
     int pid = read_pid();
     if (pid > 0 && ::kill(pid, 0) == 0) return true;
-    ::unlink(PID_PATH);
+    ::unlink(pid_path().c_str());
     return false;
 }
 
 void write_pid() {
-    FILE* f = fopen(PID_PATH, "w");
+    FILE* f = fopen(pid_path().c_str(), "w");
     if (!f) return;
     fprintf(f, "%ld\n", static_cast<long>(getpid()));
     fclose(f);
-    chmod(PID_PATH, 0644);
+    chmod(pid_path().c_str(), 0644);
 }
 
 void daemonize() {
@@ -116,7 +158,7 @@ void daemonize() {
     pid = fork();
     if (pid < 0) _exit(1);
     if (pid > 0) _exit(0);
-    (void)chdir("/");
+    (void)!chdir("/");
     int fd = open("/dev/null", O_RDWR);
     if (fd >= 0) {
         dup2(fd, 0); dup2(fd, 1); dup2(fd, 2);
@@ -134,26 +176,44 @@ struct Session {
     time_t      idle_since = 0;   // NomadNet: no attached stream since this time
     int         cols = 80;
     int         rows = 24;
-    std::string ring;      // replay window
+    std::string ring;      // replay window (legacy transport)
     std::string to_pty;    // queued keystrokes/paste
     size_t      pty_off = 0;
     std::string error;     // why the last spawn failed (empty when running)
+
+    // Fast path.  grid sessions (NomadNet) keep a server-side screen model and
+    // send diffs; raw sessions (shell) forward coalesced VT so xterm.js keeps
+    // its scrollback.
+    bool grid = false;
+    std::unique_ptr<term::ScreenModel> screen;
+    long long   flush_at = 0;
+    bool        dirty = false;
 };
 
 struct Client {
     int fd = -1;
     enum State { HANDSHAKE, ATTACHED, INPUT } state = HANDSHAKE;
     std::string session;  // set by the handshake
-    std::string hs;       // handshake bytes
-    std::string in;       // input payload
-    size_t need = 0;      // expected input bytes
-    std::string out;      // pending output (attach stream)
-    size_t off = 0;       // bytes of out already sent
+    std::string hs;       // legacy handshake bytes
+    std::string in;       // legacy input payload
+    size_t need = 0;      // legacy expected input bytes
+    std::string out;      // legacy pending output
+    size_t off = 0;       // legacy bytes already sent
     bool dead = false;
+
+    bool ws = false;
+    term::WsConn wsc;
+    std::string ws_raw;   // pending raw VT for a WS shell client
+    bool need_snapshot = true;
+    term::Snap base;      // screen state the client has been sent
+    uint64_t last_mode_epoch = 0;
+    bool close_after_flush = false;
 };
 
 // ---- broker state ----
 int                    g_listen = -1;
+int                    g_ws_listen = -1;
+int                    g_frame_ms = FRAME_MS_DEFAULT;
 std::map<std::string, Session> g_sessions;
 std::vector<Client>    g_clients;
 
@@ -163,8 +223,20 @@ Session* find_session(const std::string& name) {
 }
 
 void set_winsize(Session& s, int cols, int rows) {
-    s.cols = clamp_int(cols, 2, 400, 80);
-    s.rows = clamp_int(rows, 2, 200, 24);
+    int nc = clamp_int(cols, 2, 400, 80);
+    int nr = clamp_int(rows, 2, 200, 24);
+    bool changed = (nc != s.cols || nr != s.rows);
+    s.cols = nc;
+    s.rows = nr;
+    if (s.screen && changed) {
+        s.screen->resize(s.cols, s.rows);
+        s.dirty = true;
+        s.flush_at = now_ms() + g_frame_ms;
+        for (Client& c : g_clients) {
+            if (c.ws && c.state == Client::ATTACHED && c.session == s.name)
+                c.need_snapshot = true;
+        }
+    }
     if (s.master < 0) return;
     struct winsize ws;
     memset(&ws, 0, sizeof ws);
@@ -237,7 +309,7 @@ bool spawn_pty(Session& s, const std::string& exe,
             (void)initgroups(user.c_str(), gid);
             if (setgid(gid) != 0 || setuid(uid) != 0) _exit(127);
         }
-        if (chdir(home.c_str()) != 0) (void)chdir("/");
+        if (chdir(home.c_str()) != 0) (void)!chdir("/");
         setenv("HOME", home.c_str(), 1);
         setenv("USER", user.c_str(), 1);
         setenv("LOGNAME", user.c_str(), 1);
@@ -270,11 +342,21 @@ bool spawn_pty(Session& s, const std::string& exe,
     return true;
 }
 
+void ensure_screen(Session& s) {
+    if (!s.screen) s.screen.reset(new term::ScreenModel(s.cols, s.rows));
+    else s.screen->resize(s.cols, s.rows);
+    s.grid = true;
+}
+
 bool spawn_session(Session& s) {
     if (s.name == SESSION_NOMADNET) {
-        if (access(NOMADNET_EXE, X_OK) != 0) {
+        const char* env_exe = getenv("RNSBOX_TERM_NOMADNET_EXE");
+        std::string exe = (env_exe && *env_exe) ? std::string(env_exe) : std::string(NOMADNET_EXE);
+        s.grid = true;
+        ensure_screen(s);
+        if (access(exe.c_str(), X_OK) != 0) {
             s.error = std::string("NomadNet is not installed on this system (") +
-                      NOMADNET_EXE + " missing).";
+                      exe + " missing).";
             return false;
         }
         // The TUI reads the same config rnsd/nomadnet use, or creates its own
@@ -282,13 +364,19 @@ bool spawn_session(Session& s) {
         // that is up, exactly like running `nomadnet` over SSH.
         std::vector<std::string> args;
         args.push_back("nomadnet");
-        if (!spawn_pty(s, NOMADNET_EXE, args)) {
+        if (!spawn_pty(s, exe, args)) {
             s.error = "Could not start NomadNet (PTY setup failed).";
             return false;
         }
+        s.screen->reset();
+        s.dirty = true;
+        s.flush_at = now_ms() + g_frame_ms;
+        for (Client& c : g_clients)
+            if (c.ws && c.session == s.name) c.need_snapshot = true;
         return true;
     }
 
+    s.grid = false;
     std::string shell = account_shell();
     std::vector<std::string> args;
     args.push_back(shell);
@@ -312,29 +400,87 @@ bool client_queue(Client& c, const char* p, size_t n) {
     return true;
 }
 
+// ws_queue — one binary frame: [type][payload].  Types are defined by term.js:
+//   1 diff, 2 snapshot, 3 raw VT bytes.
+bool ws_queue(Client& c, uint8_t type, const char* p, size_t n) {
+    if (!c.wsc.open()) return false;
+    if (c.wsc.out.size() - c.wsc.out_off + n + 16 > WS_OUT_MAX) return false;
+    std::string payload;
+    payload.reserve(n + 1);
+    payload.push_back(static_cast<char>(type));
+    payload.append(p, n);
+    return c.wsc.send_binary(payload.data(), payload.size());
+}
+
+bool out_empty(const Client& c) {
+    return c.ws ? (c.wsc.out.size() == c.wsc.out_off) : (c.out.size() == c.off);
+}
+
 bool client_flush(Client& c) {
-    while (c.off < c.out.size()) {
-        ssize_t n = ::send(c.fd, c.out.data() + c.off, c.out.size() - c.off, MSG_NOSIGNAL);
-        if (n > 0) { c.off += static_cast<size_t>(n); continue; }
+    std::string& o = c.ws ? c.wsc.out : c.out;
+    size_t& off = c.ws ? c.wsc.out_off : c.off;
+    while (off < o.size()) {
+        ssize_t n = ::send(c.fd, o.data() + off, o.size() - off, MSG_NOSIGNAL);
+        if (n > 0) { off += static_cast<size_t>(n); continue; }
         if (n < 0 && errno == EINTR) continue;
         if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return true;
         return false;
     }
-    if (c.off == c.out.size()) { c.out.clear(); c.off = 0; }
-    else if (c.off > 65536) { c.out.erase(0, c.off); c.off = 0; }
+    if (off == o.size()) {
+        o.clear();
+        off = 0;
+        if (c.ws) {
+            // A frame just drained. If the screen moved on while it was in
+            // flight, schedule the next flush one interval later, not now:
+            // this is where the frame-rate cap and the coalescing of a burst
+            // actually happen.
+            Session* s = find_session(c.session);
+            if (s) {
+                bool more = !c.ws_raw.empty();
+                if (s->screen)
+                    more = c.need_snapshot || s->screen->snapshot() != c.base;
+                if (more) {
+                    long long next = now_ms() + g_frame_ms;
+                    if (!s->flush_at || s->flush_at < next) s->flush_at = next;
+                }
+            }
+        }
+    } else if (off > 65536) {
+        o.erase(0, off);
+        off = 0;
+    }
     return true;
 }
 
 void broadcast(Session& s, const char* p, size_t n) {
+    bool ws_pending = false;
     for (Client& c : g_clients) {
         if (c.state != Client::ATTACHED || c.dead || c.session != s.name) continue;
+        if (c.ws) {
+            // Grid sessions rebuild the screen; raw sessions forward the bytes.
+            if (!s.grid) {
+                c.ws_raw.append(p, n);
+                if (c.ws_raw.size() > WS_OUT_MAX)
+                    c.ws_raw.erase(0, c.ws_raw.size() - WS_OUT_MAX);
+                ws_pending = true;
+            }
+            continue;
+        }
         if (!client_queue(c, p, n)) c.dead = true;
     }
+    if (ws_pending && !s.flush_at) s.flush_at = now_ms() + g_frame_ms;
 }
 
 bool any_attached(const Session& s) {
     for (const Client& c : g_clients)
         if (c.state == Client::ATTACHED && !c.dead && c.session == s.name) return true;
+    return false;
+}
+
+bool any_ws_attached(const Session& s) {
+    for (const Client& c : g_clients)
+        if (c.ws && c.state == Client::ATTACHED && !c.dead && c.session == s.name)
+            return true;
     return false;
 }
 
@@ -359,6 +505,27 @@ void finish_input(Session& s, Client& c) {
     c.dead = true;
 }
 
+// feed_screen — apply PTY output to the session's VT model and answer any
+// terminal queries (DSR/DA) on the PTY side.  The model's replies matter now
+// that xterm.js is no longer parsing the app's output directly.
+void feed_screen(Session& s, const char* p, size_t n) {
+    if (!s.grid || !s.screen) return;
+    s.screen->feed(p, n);
+    std::string replies = s.screen->take_replies();
+    if (!replies.empty()) {
+        if (s.master >= 0 && s.to_pty.size() - s.pty_off + replies.size() <= PTY_IN_MAX)
+            s.to_pty.append(replies);
+        flush_pty(s);
+    }
+    s.dirty = true;
+    if (dbg() && s.screen) {
+        std::string r = s.screen->row_text(2);
+        if (r.find("key:") != std::string::npos)
+            fprintf(stderr, "screen row3 [%s]\n", r.c_str());
+    }
+    if (any_ws_attached(s) && !s.flush_at) s.flush_at = now_ms() + g_frame_ms;
+}
+
 // master_dead — the PTY reached EOF (the session process exited). The shell
 // is restarted immediately, as it always was: the Console tab is the operator's
 // way in and must not stay dead after a stray `exit`. NomadNet is not
@@ -379,6 +546,7 @@ void master_dead(Session& s) {
             "\r\n[NomadNet exited - press Reconnect to start it again]\r\n";
         ring_append(s, msg, sizeof msg - 1);
         broadcast(s, msg, sizeof msg - 1);
+        feed_screen(s, msg, sizeof msg - 1);
         s.respawn_at = 0;
         return;
     }
@@ -389,6 +557,200 @@ void master_dead(Session& s) {
     // not spin the event loop; normal `exit` is far more than two seconds in.
     if (time(nullptr) - s.spawned < 2) s.respawn_at = time(nullptr) + 2;
     else { spawn_session(s); s.respawn_at = 0; }
+}
+
+// flush_session — emit at most one frame per session per deadline.
+//
+// Grid sessions: every attached WS client is brought from the screen it was
+// last sent to the current screen, as one diff (or one snapshot when a diff
+// cannot express the change).  Raw sessions: the bytes accumulated since the
+// last frame are sent as one binary message.  A client whose queue is full is
+// dropped; the reconnect gets a fresh snapshot instead of a growing backlog.
+void flush_session(Session& s) {
+    s.flush_at = 0;
+    s.dirty = false;
+
+    if (!s.grid) {
+        for (Client& c : g_clients) {
+            if (!c.ws || c.state != Client::ATTACHED || c.dead || c.session != s.name)
+                continue;
+            if (c.wsc.out.size() > c.wsc.out_off) continue;  // one frame in flight
+            if (c.ws_raw.empty()) continue;
+            if (!ws_queue(c, 3, c.ws_raw.data(), c.ws_raw.size())) c.dead = true;
+            c.ws_raw.clear();
+        }
+        return;
+    }
+    if (!s.screen) return;
+
+    term::Snap cur = s.screen->snapshot();
+    uint64_t epoch = s.screen->mode_epoch();
+    std::string modes;
+    bool modes_ready = false;
+
+    for (Client& c : g_clients) {
+        if (!c.ws || c.state != Client::ATTACHED || c.dead || c.session != s.name)
+            continue;
+        // Never queue a second frame for a client that has not drained the
+        // previous one: the next diff is computed from c.base after it drains,
+        // so intermediate screens are skipped instead of replayed.
+        if (c.wsc.out.size() > c.wsc.out_off) continue;
+        if (!modes_ready) {
+            modes = term::ScreenModel::modes_json(cur.modes, cur.cur);
+            modes_ready = true;
+        }
+        bool snap = false;
+        if (c.need_snapshot) {
+            std::string a = term::ScreenModel::snapshot_ansi(cur);
+            if (!ws_queue(c, 2, a.data(), a.size())) { c.dead = true; continue; }
+            c.base = cur;
+            c.need_snapshot = false;
+            snap = true;
+        } else if (cur != c.base) {
+            bool need = false;
+            std::string d = term::ScreenModel::diff_ansi(c.base, cur, &need);
+            if (need) {
+                std::string a = term::ScreenModel::snapshot_ansi(cur);
+                if (!ws_queue(c, 2, a.data(), a.size())) { c.dead = true; continue; }
+            } else if (!d.empty()) {
+                if (dbg())
+                    fprintf(stderr, "ws diff %zu bytes key=%d\n", d.size(),
+                            d.find("key:") != std::string::npos ? 1 : 0);
+                if (!ws_queue(c, 1, d.data(), d.size())) { c.dead = true; continue; }
+            }
+            c.base = cur;
+        }
+        if (snap || epoch != c.last_mode_epoch) {
+            c.wsc.send_text(modes.data(), modes.size());
+            c.last_mode_epoch = epoch;
+        }
+    }
+}
+
+std::string hostname_of(const std::string& s) {
+    size_t p = s.find("://");
+    std::string h = (p == std::string::npos) ? s : s.substr(p + 3);
+    size_t slash = h.find('/');
+    if (slash != std::string::npos) h = h.substr(0, slash);
+    if (!h.empty() && h[0] == '[') {
+        size_t rb = h.find(']');
+        if (rb != std::string::npos) h = h.substr(1, rb - 1);
+    } else {
+        size_t colon = h.rfind(':');
+        if (colon != std::string::npos) h = h.substr(0, colon);
+    }
+    for (char& ch : h) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    return h;
+}
+
+bool origin_ok(const std::string& origin, const std::string& host) {
+    if (origin.empty()) return true;   // non-browser clients may omit it
+    return hostname_of(origin) == hostname_of(host);
+}
+
+void process_ws_messages(Client& c) {
+    if (!c.wsc.open()) return;
+    Session* s = find_session(c.session);
+    if (!s) { c.dead = true; return; }
+    for (const term::WsConn::Msg& m : c.wsc.messages) {
+        if (m.binary) {
+            if (m.data.empty()) continue;
+            uint8_t t = static_cast<uint8_t>(m.data[0]);
+            const char* p = m.data.data() + 1;
+            size_t n = m.data.size() - 1;
+            if (t == 1 || t == 2) {
+                if (dbg())
+                    fprintf(stderr, "ws input t=%u n=%zu master=%d queued=%zu\n",
+                            t, n, s->master, s->to_pty.size() - s->pty_off);
+                if (s->master >= 0 && s->to_pty.size() - s->pty_off + n <= PTY_IN_MAX)
+                    s->to_pty.append(p, n);
+                flush_pty(*s);
+            }
+        } else if (m.data.size() > 1 && m.data[0] == 'R') {
+            int cols = 0, rows = 0;
+            if (sscanf(m.data.c_str() + 1, "%d %d", &cols, &rows) == 2)
+                set_winsize(*s, cols, rows);
+        }
+    }
+    c.wsc.messages.clear();
+    if (c.wsc.closing()) c.close_after_flush = true;
+    if (c.wsc.state == term::WsConn::State::FAILED) c.dead = true;
+}
+
+void handle_ws_handshake(Client& c) {
+    term::WsConn& w = c.wsc;
+    if (!w.ready()) return;
+
+    std::string session = term::query_param(w.query, "session");
+    std::string token = term::query_param(w.query, "token");
+    int cols = atoi(term::query_param(w.query, "cols").c_str());
+    int rows = atoi(term::query_param(w.query, "rows").c_str());
+
+    Session* s = find_session(session);
+    if (!s) {
+        w.deny(404, "unknown session");
+        c.close_after_flush = true;
+        return;
+    }
+    if (!term::check_token(secret_path(), session, token)) {
+        w.deny(401, "bad or expired token");
+        c.close_after_flush = true;
+        return;
+    }
+    if (!origin_ok(w.origin, w.host)) {
+        w.deny(403, "origin mismatch");
+        c.close_after_flush = true;
+        return;
+    }
+
+    w.accept();
+    c.session = session;
+    c.state = Client::ATTACHED;
+    c.need_snapshot = true;
+    c.last_mode_epoch = 0;
+    s->idle_since = 0;
+
+    set_winsize(*s, cols, rows);
+    if (s->master < 0) {
+        s->error.clear();
+        spawn_session(*s);
+    }
+    if (dbg())
+        fprintf(stderr, "ws attach session=%s master=%d grid=%d cols=%d rows=%d\n",
+                session.c_str(), s->master, s->grid ? 1 : 0, s->cols, s->rows);
+    if (s->master < 0) {
+        std::string msg = "\r\n" +
+            (s->error.empty() ? std::string("Session unavailable.") : s->error) +
+            "\r\n";
+        if (s->grid && s->screen) {
+            s->screen->feed(msg.data(), msg.size());
+            s->dirty = true;
+        } else if (!ws_queue(c, 3, msg.data(), msg.size())) {
+            c.dead = true;
+        }
+    } else if (!s->grid) {
+        // Type 4 means "reset the terminal, then these raw bytes are the
+        // replay ring".  A reconnect must not duplicate the shell output.
+        if (!ws_queue(c, 4, s->ring.data(), s->ring.size())) c.dead = true;
+    }
+    if (!s->flush_at) s->flush_at = now_ms() + g_frame_ms;
+}
+
+void accept_ws_clients() {
+    for (;;) {
+        int fd = accept4(g_ws_listen, nullptr, nullptr, SOCK_NONBLOCK | SOCK_CLOEXEC);
+        if (fd < 0) {
+            if (errno == EINTR) { if (g_stop) break; continue; }
+            break;
+        }
+        int one = 1;
+        setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+        Client c;
+        c.fd = fd;
+        c.ws = true;
+        c.state = Client::HANDSHAKE;
+        g_clients.push_back(c);
+    }
 }
 
 void accept_clients() {
@@ -476,6 +838,20 @@ void read_client(Client& c) {
     for (;;) {
         ssize_t n = ::recv(c.fd, buf, sizeof buf, 0);
         if (n > 0) {
+            if (c.ws) {
+                if (!c.wsc.feed(buf, static_cast<size_t>(n))) {
+                    if (c.wsc.denied()) c.close_after_flush = true;
+                    else c.dead = true;
+                    return;
+                }
+                if (c.wsc.ready()) {
+                    handle_ws_handshake(c);
+                    if (c.dead || c.close_after_flush) return;
+                }
+                process_ws_messages(c);
+                if (c.dead || c.close_after_flush) return;
+                continue;
+            }
             if (c.state == Client::HANDSHAKE) {
                 c.hs.append(buf, static_cast<size_t>(n));
                 handle_handshake(c);
@@ -488,7 +864,7 @@ void read_client(Client& c) {
                 else c.dead = true;
                 if (c.dead) return;
             }
-            // ATTACHED sockets only carry output; ignore any stray bytes.
+            // ATTACHED legacy sockets only carry output; ignore stray bytes.
         } else if (n == 0) {
             c.dead = true;
             return;
@@ -513,13 +889,15 @@ void cleanup() {
         }
     }
     if (g_listen >= 0) close(g_listen);
-    unlink(SOCK_PATH);
-    unlink(PID_PATH);
+    if (g_ws_listen >= 0) close(g_ws_listen);
+    unlink(sock_path().c_str());
+    unlink(pid_path().c_str());
+    unlink(port_path().c_str());
 }
 
 }  // namespace
 
-int broker_main(bool foreground) {
+int broker_main(bool foreground, int ws_port, const char* ws_bind) {
     signal(SIGPIPE, SIG_IGN);
     signal(SIGCHLD, SIG_IGN);   // children are auto-reaped; PTY EOF is the signal
 
@@ -529,10 +907,30 @@ int broker_main(bool foreground) {
     sigaction(SIGTERM, &sa, nullptr);
     sigaction(SIGINT, &sa, nullptr);
 
+    // WebSocket configuration: CLI wins over the environment, which wins over
+    // the built-in default.  ws_port == 0 disables the fast path entirely.
+    int ws_port_cfg = ws_port;
+    if (ws_port_cfg < 0) {
+        const char* e = getenv("RNSBOX_TERM_WS_PORT");
+        ws_port_cfg = (e && *e) ? atoi(e) : WS_PORT_DEFAULT;
+    }
+    std::string bind_addr = (ws_bind && *ws_bind) ? std::string(ws_bind) : std::string();
+    if (bind_addr.empty()) {
+        const char* e = getenv("RNSBOX_TERM_WS_BIND");
+        bind_addr = (e && *e) ? std::string(e) : std::string("0.0.0.0");
+    }
+    const char* eframe = getenv("RNSBOX_TERM_FRAME_MS");
+    if (eframe && *eframe) {
+        int v = atoi(eframe);
+        if (v >= 1 && v <= 200) g_frame_ms = v;
+    }
+
     if (already_running()) return 0;
     if (!foreground) daemonize();
 
-    unlink(SOCK_PATH);
+    (void)term::ensure_secret(secret_path());
+
+    unlink(sock_path().c_str());
     // The listener itself must be non-blocking: accept4()'s SOCK_NONBLOCK
     // applies to the accepted socket, not to the accept() call. A blocking
     // listener makes accept_clients() park in the kernel after the last
@@ -543,14 +941,44 @@ int broker_main(bool foreground) {
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof addr);
     addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, SOCK_PATH, sizeof addr.sun_path - 1);
+    strncpy(addr.sun_path, sock_path().c_str(), sizeof addr.sun_path - 1);
     if (bind(g_listen, reinterpret_cast<struct sockaddr*>(&addr), sizeof addr) != 0) {
         close(g_listen);
         return 1;
     }
-    chmod(SOCK_PATH, 0600);
+    chmod(sock_path().c_str(), 0600);
     if (listen(g_listen, 16) != 0) { cleanup(); return 1; }
     write_pid();
+
+    // Fast-path listener.  A failure here is not fatal: the legacy HTTP path
+    // keeps working and the CGI simply stops offering the WS transport.
+    if (ws_port_cfg > 0) {
+        g_ws_listen = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+        if (g_ws_listen >= 0) {
+            int one = 1;
+            setsockopt(g_ws_listen, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+            struct sockaddr_in a;
+            memset(&a, 0, sizeof a);
+            a.sin_family = AF_INET;
+            a.sin_port = htons(static_cast<uint16_t>(ws_port_cfg));
+            if (bind_addr.empty() || bind_addr == "0.0.0.0" || bind_addr == "*" ||
+                inet_pton(AF_INET, bind_addr.c_str(), &a.sin_addr) != 1)
+                a.sin_addr.s_addr = htonl(INADDR_ANY);
+            if (::bind(g_ws_listen, reinterpret_cast<struct sockaddr*>(&a), sizeof a) != 0 ||
+                ::listen(g_ws_listen, 16) != 0) {
+                close(g_ws_listen);
+                g_ws_listen = -1;
+            } else {
+                FILE* pf = fopen(port_path().c_str(), "w");
+                if (pf) {
+                    fprintf(pf, "%d\n", ws_port_cfg);
+                    fclose(pf);
+                    chmod(port_path().c_str(), 0644);
+                }
+            }
+        }
+    }
+    if (g_ws_listen < 0) unlink(port_path().c_str());
 
     Session& shell_ref = g_sessions[SESSION_SHELL];
     shell_ref.name = SESSION_SHELL;
@@ -579,10 +1007,17 @@ int broker_main(bool foreground) {
 
         std::vector<struct pollfd> pfd;
         std::vector<std::string> session_refs;
-        pfd.reserve(g_sessions.size() + g_clients.size() + 1);
+        pfd.reserve(g_sessions.size() + g_clients.size() + 2);
         struct pollfd p;
         p.fd = g_listen; p.events = POLLIN; p.revents = 0;
         pfd.push_back(p);
+        size_t idx_ws = static_cast<size_t>(-1);
+        if (g_ws_listen >= 0) {
+            idx_ws = pfd.size();
+            p.fd = g_ws_listen; p.events = POLLIN; p.revents = 0;
+            pfd.push_back(p);
+        }
+        size_t sess_base = pfd.size();
         for (auto& kv : g_sessions) {
             Session& s = kv.second;
             if (s.master < 0) continue;
@@ -592,16 +1027,19 @@ int broker_main(bool foreground) {
             session_refs.push_back(kv.first);
             pfd.push_back(p);
         }
-        size_t base = pfd.size();
+        size_t cli_base = pfd.size();
         size_t nclients = g_clients.size();
         for (const Client& c : g_clients) {
             p.fd = c.fd;
             p.events = POLLIN;
-            if (c.state == Client::ATTACHED && c.out.size() > c.off) p.events |= POLLOUT;
+            bool pending = c.ws ? (c.wsc.out.size() > c.wsc.out_off)
+                                : (c.out.size() > c.off);
+            if (pending) p.events |= POLLOUT;
             p.revents = 0;
             pfd.push_back(p);
         }
 
+        long long t_ms = now_ms();
         int timeout = 1000;
         for (const auto& kv : g_sessions) {
             const Session& s = kv.second;
@@ -610,6 +1048,14 @@ int broker_main(bool foreground) {
             if (d < 1) d = 1;
             if (d * 1000 < timeout) timeout = static_cast<int>(d * 1000);
         }
+        for (const auto& kv : g_sessions) {
+            const Session& s = kv.second;
+            if (!s.flush_at) continue;
+            long long d = s.flush_at - t_ms;
+            if (d < 0) d = 0;
+            if (d < timeout) timeout = static_cast<int>(d);
+        }
+
         int rc = poll(pfd.data(), pfd.size(), timeout);
         if (rc < 0) {
             if (errno == EINTR) continue;
@@ -617,16 +1063,17 @@ int broker_main(bool foreground) {
         }
 
         if (rc > 0) {
-            // Clients start after the listener and the live sessions.
-            // Snapshot the counts: accept_clients()/spawn_session() may append
-            // to g_clients / start a PTY but the pfd array has no entries for
-            // those fds yet.
+            // Clients start after the listeners and the live sessions.
+            // Snapshot the counts: accept_*()/spawn_session() may append to
+            // g_clients / start a PTY but the pfd array has no entries yet.
             if (pfd[0].revents & POLLIN) accept_clients();
+            if (idx_ws != static_cast<size_t>(-1) && (pfd[idx_ws].revents & POLLIN))
+                accept_ws_clients();
 
             for (size_t i = 0; i < session_refs.size(); ++i) {
                 Session* s = find_session(session_refs[i]);
                 if (!s || s->master < 0) continue;
-                short re = pfd[1 + i].revents;
+                short re = pfd[sess_base + i].revents;
                 if (re & (POLLIN | POLLHUP | POLLERR)) {
                     for (;;) {
                         char buf[8192];
@@ -634,6 +1081,7 @@ int broker_main(bool foreground) {
                         if (n > 0) {
                             ring_append(*s, buf, static_cast<size_t>(n));
                             broadcast(*s, buf, static_cast<size_t>(n));
+                            feed_screen(*s, buf, static_cast<size_t>(n));
                             continue;
                         }
                         if (n < 0 && errno == EINTR) continue;
@@ -647,22 +1095,30 @@ int broker_main(bool foreground) {
 
             for (size_t i = 0; i < nclients; ++i) {
                 Client& c = g_clients[i];
-                short re = pfd[base + i].revents;
+                short re = pfd[cli_base + i].revents;
                 // Read first: an input client may send its bytes and close in
-                // the same poll cycle, which reports POLLIN|POLLHUP. Dropping
-                // on HUP before reading would lose every keystroke.
+                // the same poll cycle, which reports POLLIN|POLLHUP.
                 if (re & POLLIN) read_client(c);
                 if (!c.dead && (re & (POLLERR | POLLHUP | POLLNVAL))) c.dead = true;
                 if (!c.dead && (re & POLLOUT) && !client_flush(c)) c.dead = true;
+                if (!c.dead && c.close_after_flush && out_empty(c)) c.dead = true;
             }
+        }
 
-            for (size_t i = 0; i < g_clients.size();) {
-                if (g_clients[i].dead) {
-                    if (g_clients[i].fd >= 0) close(g_clients[i].fd);
-                    g_clients.erase(g_clients.begin() + static_cast<long>(i));
-                } else {
-                    ++i;
-                }
+        // Frame deadlines are independent of socket readiness: a quiet session
+        // still needs its coalesced frame flushed on time.
+        long long t2 = now_ms();
+        for (auto& kv : g_sessions) {
+            Session& s = kv.second;
+            if (s.flush_at && s.flush_at <= t2) flush_session(s);
+        }
+
+        for (size_t i = 0; i < g_clients.size();) {
+            if (g_clients[i].dead) {
+                if (g_clients[i].fd >= 0) close(g_clients[i].fd);
+                g_clients.erase(g_clients.begin() + static_cast<long>(i));
+            } else {
+                ++i;
             }
         }
 
@@ -689,7 +1145,19 @@ int broker_main(bool foreground) {
                 Session& s = kv.second;
                 if (!any_attached(s)) continue;
                 ring_append(s, &nul, 1);
-                broadcast(s, &nul, 1);
+                for (Client& c : g_clients) {
+                    if (!c.ws && c.state == Client::ATTACHED && !c.dead &&
+                        c.session == s.name)
+                        client_queue(c, &nul, 1);
+                }
+            }
+            // WebSocket liveness is visible to the page: protocol pings keep
+            // the TCP path honest, and the 'H' text resets the page watchdog.
+            for (Client& c : g_clients) {
+                if (c.ws && c.state == Client::ATTACHED && !c.dead) {
+                    c.wsc.send_ping();
+                    c.wsc.send_text("H", 1);
+                }
             }
         }
     }
@@ -704,7 +1172,7 @@ int connect_session() {
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof addr);
     addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, SOCK_PATH, sizeof addr.sun_path - 1);
+    strncpy(addr.sun_path, sock_path().c_str(), sizeof addr.sun_path - 1);
     if (connect(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof addr) != 0) {
         close(fd);
         return -1;

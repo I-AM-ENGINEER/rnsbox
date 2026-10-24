@@ -458,11 +458,13 @@ void handle(const http::Request& req, http::Response& res) {
     else if (p == "/console/stream")             routes::console_stream(req, res);
     else if (p == "/console/input")              routes::console_input(req, res);
     else if (p == "/console/resize")             routes::console_resize(req, res);
+    else if (p == "/console/ws-token")           routes::console_ws_token(req, res);
     else if (p == "/nomadnet")                   routes::nomadnet_page(req, res);
     else if (p == "/nomadnet/full")              routes::nomadnet_full_page(req, res);
     else if (p == "/nomadnet/stream")            routes::nomadnet_stream(req, res);
     else if (p == "/nomadnet/input")             routes::nomadnet_input(req, res);
     else if (p == "/nomadnet/resize")            routes::nomadnet_resize(req, res);
+    else if (p == "/nomadnet/ws-token")          routes::nomadnet_ws_token(req, res);
     else if (p == "/manual")                     routes::manual_page(req, res);
     else if (p == "/manual/check")               routes::manual_check(req, res);
     else if (p == "/manual/download")            routes::manual_download(req, res);
