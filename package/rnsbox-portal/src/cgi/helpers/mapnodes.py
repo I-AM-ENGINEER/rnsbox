@@ -18,6 +18,10 @@ import RNS
 from RNS.vendor import umsgpack
 
 CANDIDATES = [
+    # rnsd runs with --config /etc/reticulum: RNS puts storage/ next to the
+    # config dir, so this is the real location on the box (0700 root, which
+    # is fine — the portal CGI runs as root).
+    "/etc/reticulum/storage/discovery/interfaces",
     "/root/.reticulum/storage/discovery/interfaces",
     "/var/lib/reticulum/discovery/interfaces",
     "/home/admin/.reticulum/storage/discovery/interfaces",
