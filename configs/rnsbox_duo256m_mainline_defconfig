@@ -91,7 +91,7 @@ BR2_ROOTFS_DEVICE_TABLE="system/device_table_dev.txt system/device_table.txt"
 BR2_TARGET_GENERIC_ROOT_PASSWD="admin"
 # Shared SoC-independent RNSBox overlay first, SG2002-specific bits last
 # (the later overlay wins: tuned fstab + zram/fstrim policy).
-BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_RNSBOX_PATH)/board/sg2000-mainline/rootfs-overlay $(BR2_EXTERNAL_RNSBOX_PATH)/board/sg2002-duo256m-mainline/rootfs-overlay"
+BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_RNSBOX_PATH)/board/sg2000-mainline/rootfs-overlay"
 BR2_ROOTFS_POST_BUILD_SCRIPT="$(BR2_EXTERNAL_RNSBOX_PATH)/board/common/slim-target.sh"
 BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_RNSBOX_PATH)/board/sg2002-duo256m-mainline/post-image.sh"
 BR2_LINUX_KERNEL_CUSTOM_GIT=y
