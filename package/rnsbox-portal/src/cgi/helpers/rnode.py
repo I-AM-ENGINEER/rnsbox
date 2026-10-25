@@ -25,7 +25,7 @@ import subprocess
 import sys
 
 UART_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
-SCAN_TIMEOUT = 6.0     # s; a cheap CoW class CPU wants a few discovery cycles
+SCAN_TIMEOUT = 15.0    # s; the RNode advertises slowly, phones scan longer
 PAIR_TIMEOUT = 35      # s; bluetoothctl pair waits out the pairing procedure
 
 
@@ -94,10 +94,14 @@ def scan() -> dict:
         return {"error": "BLE scan failed: %s" % err, "devices": []}
     found = []
     for addr, name in devs.items():
-        if not (name.lower().startswith("rnode") or _bt_has_nus(addr)):
+        if name.lower().startswith("rnode"):
+            found.append({"name": name, "address": addr, "bonded": False})
             continue
-        found.append({"name": name or "(unnamed)", "address": addr,
-                      "bonded": _bt_bonded(addr)})
+        # NUS fallback only for unnamed adverts: `bluetoothctl info` on an
+        # address BlueZ does not cache can block for seconds, and the named
+        # RNode is the normal case anyway.
+        if not name and _bt_has_nus(addr):
+            found.append({"name": "(unnamed)", "address": addr, "bonded": False})
     found.sort(key=lambda x: (x["name"].lower(), x["address"]))
     return {"devices": found, "error": ""}
 
@@ -114,6 +118,63 @@ def scan_any() -> dict:
     found.sort(key=lambda x: (x["name"] == "(unnamed)", x["name"].lower(),
                               x["address"]))
     return {"devices": found, "error": ""}
+
+
+def scan_watch(path: str) -> None:
+    """Progressive scan for the portal: write found RNodes as they appear.
+
+    bluetoothctl prints [NEW] lines while discovery runs, so the page can
+    render the first RNode immediately instead of waiting for the whole
+    window. The file is replaced atomically on every change and ends with
+    {"done": true}.
+    """
+    found = {}
+
+    def flush(done, error=""):
+        rows = [{"name": found[a], "address": a, "bonded": False}
+                for a in sorted(found)]
+        tmp = path + ".tmp.%d" % os.getpid()
+        try:
+            with open(tmp, "w") as f:
+                json.dump({"devices": rows, "done": done, "error": error}, f)
+            os.replace(tmp, path)
+        except OSError:
+            pass
+
+    flush(False)
+    env = dict(os.environ)
+    env["NO_COLOR"] = "1"
+    env["TERM"] = "dumb"
+    try:
+        p = subprocess.Popen(
+            ["bluetoothctl", "--timeout", str(int(SCAN_TIMEOUT)), "scan", "on"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            bufsize=1, env=env)
+    except Exception as exc:  # noqa: BLE001
+        flush(True, "BLE scan failed: %s" % exc)
+        return
+    try:
+        for line in p.stdout:
+            line = re.sub(r"\x1b\[[0-9;]*m", "", line)
+            m = re.search(r"Device\s+([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5})(?:\s+(.*))?$",
+                          line)
+            if not m:
+                continue
+            addr, name = m.group(1).upper(), (m.group(2) or "").strip()
+            if name.startswith(("RSSI:", "TxPower:", "ManufacturerData",
+                                "ServiceData", "UUIDs:", "Class:")):
+                continue
+            if not name.lower().startswith("rnode"):
+                continue
+            if found.get(addr) != name:
+                found[addr] = name
+                flush(False)
+    finally:
+        try:
+            p.wait(timeout=5)
+        except Exception:
+            p.kill()
+    flush(True)
 
 
 def _bt_pair_session(address: str, code: str, wait_s: int):
@@ -505,6 +566,8 @@ if __name__ == "__main__":
         print(json.dumps(scan()))
     elif cmd == "scan-any":
         print(json.dumps(scan_any()))
+    elif cmd == "scan-watch" and len(sys.argv) > 2:
+        scan_watch(sys.argv[2])
     elif cmd == "pair" and len(sys.argv) > 2:
         print(json.dumps(pair(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else "")))
     elif cmd == "serial":

@@ -322,6 +322,13 @@ int main(int argc, char** argv) {
         routes::map_nodes_cli();
         return 0;
     }
+    // Detached progressive BLE scan used by the RNode card: reads
+    // bluetoothctl through a PTY and streams [NEW] devices into the state file.
+    if (argc >= 3 && strcmp(argv[1], "rnode-scan-watch") == 0) {
+        routes::rnode_scan_watch_cli(argv[2]);
+        return 0;
+    }
+
     // `rnsbox-portal bt-peers-refresh` (rnsbox-mon / the peers endpoint):
     // update the connected-device cache in the background.
     if (argc >= 2 && strcmp(argv[1], "bt-peers-refresh") == 0)

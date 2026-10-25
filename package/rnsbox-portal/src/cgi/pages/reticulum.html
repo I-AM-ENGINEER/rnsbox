@@ -322,13 +322,22 @@ function rnodeScan(btn){
   var msg = document.getElementById('rnode-scan-msg');
   var list = document.getElementById('rnode-scan-list');
   btn.disabled = true;
-  msg.textContent = ' scanning (up to ~40 s)…';
+  msg.textContent = ' scanning…';
   msg.style.color = 'var(--muted)';
-  fetch('__BASE__/reticulum/rnode/scan').then(function(r){
-    if (r.status === 401) throw new Error('session expired — please log in again');
-    return r.json();
-  }).then(function(d){
-    btn.disabled = false; msg.textContent = '';
+  var last = '', polls = 0;
+  function render(ds){
+    var sig = ds.map(function(x){return x.address;}).join(',');
+    if (sig === last) return;
+    last = sig;
+    if (!ds.length) { list.innerHTML = ''; return; }
+    list.innerHTML = '<table class="data"><tr><th>Name</th><th>Address</th><th></th></tr>' +
+      ds.map(function(x){
+        return '<tr id="rnode-row-' + escH(x.address).replace(/:/g,'') + '"><td>' + escH(x.name || '?') + '</td><td class="mono">' + escH(x.address) + '</td>' +
+          '<td><button type="button" class="btn" onclick="rnodePair(\'' + escH(x.address) + '\',\'' + escH(x.name || '') + '\', this)">Pair</button></td></tr>';
+      }).join('') + '</table>';
+  }
+  function finish(d){
+    btn.disabled = false;
     if (d.error && (!d.devices || !d.devices.length)) {
       msg.textContent = ' ' + d.error; msg.style.color = 'var(--err)'; return;
     }
@@ -336,13 +345,33 @@ function rnodeScan(btn){
       msg.textContent = ' no RNode advertisements found (is the board on and in range?)';
       msg.style.color = 'var(--muted)'; return;
     }
-    list.innerHTML = '<table class="data"><tr><th>Name</th><th>Address</th><th></th></tr>' +
-      d.devices.map(function(x){
-        return '<tr id="rnode-row-' + escH(x.address).replace(/:/g,'') + '"><td>' + escH(x.name || '?') + '</td><td class="mono">' + escH(x.address) + '</td>' +
-          '<td><button type="button" class="btn" onclick="rnodePair(\'' + escH(x.address) + '\',\'' + escH(x.name || '') + '\', this)">Pair</button></td></tr>';
-      }).join('') + '</table>';
+    msg.textContent = '';
+  }
+  function poll(){
+    fetch('__BASE__/reticulum/rnode/scan', {cache:'no-store'}).then(function(r){
+      if (r.status === 401) throw new Error('session expired — please log in again');
+      return r.json();
+    }).then(function(d){
+      render(d.devices || []);
+      if (d.done === true || polls++ > 40) { finish(d); return; }
+      setTimeout(poll, 1000);
+    }).catch(function(e){
+      btn.disabled = false;
+      msg.textContent = ' ' + (e.message || 'scan failed');
+      msg.style.color = 'var(--err)';
+    });
+  }
+  // Start the detached scan and poll its state: the first RNode appears as
+  // soon as bluetoothctl hears it, not when the 15 s window closes.
+  fetch('__BASE__/reticulum/rnode/scan?start=1', {cache:'no-store'}).then(function(r){
+    if (r.status === 401) throw new Error('session expired — please log in again');
+    return r.json();
+  }).then(function(d){
+    if (d && d.error) { finish(d); return; }
+    poll();
   }).catch(function(e){
-    btn.disabled = false; msg.textContent = ' ' + (e.message || 'scan failed');
+    btn.disabled = false;
+    msg.textContent = ' ' + (e.message || 'scan failed');
     msg.style.color = 'var(--err)';
   });
 }

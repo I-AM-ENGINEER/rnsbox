@@ -12,6 +12,9 @@
 #include "util.h"
 #ifndef _WIN32
 #include "rnstatusd_client.h"
+#include <pty.h>
+#include <strings.h>
+#include <sys/wait.h>
 #endif
 #include <cctype>
 #include <cstdint>
@@ -2817,21 +2820,37 @@ void reticulum_rnode(const Request& req, Response& res) {
             "(JustWorks, fully automatic — no manual pairing needed).");
 }
 
-// Short-TTL cache for rnode.py scan (BLE discovery costs ~6 s of CPU+radio
-// on the target); same pattern as the halow modem cache.
+// Progressive BLE scan: the helper streams bluetoothctl's [NEW] lines into
+// RNODE_SCAN_CACHE, so the page shows the first RNode as soon as it is heard.
+// `?start=1` forks the helper and returns at once; the page polls the state.
 constexpr const char* RNODE_SCAN_CACHE = "/run/rnsbox-rnode-scan.json";
 constexpr const char* RNODE_SCAN_LOCK  = "/run/rnsbox-rnode-scan.lock";
-constexpr int RNODE_SCAN_TTL = 60;   // seconds; a scan itself takes ~20 s
 
-static bool rnode_scan_fresh(std::string& out) {
-    struct stat st;
-    if (::stat(RNODE_SCAN_CACHE, &st) != 0) return false;
-    time_t now = ::time(nullptr);
-    if (st.st_mtime > now || now - st.st_mtime >= RNODE_SCAN_TTL) return false;
-    out = util::read_file(RNODE_SCAN_CACHE, 256 * 1024);
-    std::string t = util::trim(out);
-    return !t.empty() && t[0] == '{';
+#ifndef _WIN32
+static bool rnode_scan_start() {
+    int lfd = ::open(RNODE_SCAN_LOCK, O_RDWR | O_CREAT, 0600);
+    if (lfd < 0) return false;
+    if (::flock(lfd, LOCK_EX | LOCK_NB) != 0) { ::close(lfd); return false; }
+    util::write_file_atomic(RNODE_SCAN_CACHE,
+        "{\"devices\":[],\"done\":false,\"error\":\"\"}", 0600);
+    pid_t pid = ::fork();
+    if (pid < 0) { ::close(lfd); return false; }
+    if (pid == 0) {
+        ::setsid();
+        (void)::chdir("/");
+        int nul = ::open("/dev/null", O_RDWR);
+        if (nul >= 0) {
+            ::dup2(nul, 0); ::dup2(nul, 1); ::dup2(nul, 2);
+            if (nul > 2) ::close(nul);
+        }
+        ::execl("/usr/sbin/rnsbox-portal", "rnsbox-portal",
+                "rnode-scan-watch", RNODE_SCAN_CACHE, (char*)nullptr);
+        _exit(1);
+    }
+    ::close(lfd);
+    return true;
 }
+#endif
 
 // GET /reticulum/rnode/status — cheap: reads S81rnode's status file and /dev,
 // no python. The page polls this so a modem plugged in after load shows up.
@@ -2862,48 +2881,110 @@ void reticulum_rnode_status(const Request& req, Response& res) {
     res.body = o;
 }
 
-// GET /reticulum/rnode/scan — BLE discovery via the rnode.py helper (needs
-// the BLE stack; fails soft with a JSON error the page can render).
+#ifndef _WIN32
+static void rnode_scan_write(const std::string& path,
+                             const std::vector<std::pair<std::string, std::string>>& devs,
+                             bool done, const std::string& err) {
+    std::string o = "{\"devices\":[";
+    for (size_t i = 0; i < devs.size(); ++i) {
+        if (i) o += ",";
+        o += "{\"name\":\"" + http::json_escape(devs[i].second) + "\""
+             ",\"address\":\"" + http::json_escape(devs[i].first) + "\""
+             ",\"bonded\":false}";
+    }
+    o += "],\"done\":"; o += done ? "true" : "false";
+    o += ",\"error\":\"" + http::json_escape(err) + "\"}";
+    util::write_file_atomic(path, o, 0644);
+}
+
+// `rnsbox-portal rnode-scan-watch <path>` — detached child of the scan
+// endpoint. bluetoothctl gets a PTY so it line-buffers and every [NEW] RNode
+// reaches the page immediately; no Python startup in the path.
+void rnode_scan_watch_cli(const std::string& path) {
+    std::vector<std::pair<std::string, std::string>> devs;
+    rnode_scan_write(path, devs, false, "");
+    int mfd = -1, sfd = -1;
+    if (::openpty(&mfd, &sfd, nullptr, nullptr, nullptr) != 0) {
+        rnode_scan_write(path, devs, true, "openpty failed");
+        return;
+    }
+    pid_t pid = ::fork();
+    if (pid == 0) {
+        ::setsid();
+        ::dup2(sfd, 1); ::dup2(sfd, 2);
+        ::close(mfd); ::close(sfd);
+        ::execl("/usr/bin/bluetoothctl", "bluetoothctl", "--timeout", "15",
+                "scan", "on", (char*)nullptr);
+        _exit(1);
+    }
+    ::close(sfd);
+    FILE* f = ::fdopen(mfd, "r");
+    if (f) {
+        char line[1024];
+        while (::fgets(line, sizeof line, f)) {
+            std::string raw(line), clean;
+            clean.reserve(raw.size());
+            for (size_t i = 0; i < raw.size(); ++i) {
+                if ((unsigned char)raw[i] == 0x1b && i + 1 < raw.size() && raw[i + 1] == '[') {
+                    i += 2;
+                    while (i < raw.size() && !(raw[i] >= '@' && raw[i] <= '~')) ++i;
+                } else {
+                    clean += raw[i];
+                }
+            }
+            size_t p = clean.find("Device ");
+            if (p == std::string::npos) continue;
+            p += 7;
+            size_t e = clean.find_first_of(" \t\r\n", p);
+            std::string mac = clean.substr(p, e == std::string::npos ? std::string::npos : e - p);
+            if (mac.size() != 17) continue;
+            std::string name;
+            if (e != std::string::npos) name = util::trim(clean.substr(e + 1));
+            if (name.size() < 5 || ::strncasecmp(name.c_str(), "RNode", 5) != 0) continue;
+            bool found = false;
+            for (auto& d : devs) {
+                if (d.first == mac) { d.second = name; found = true; break; }
+            }
+            if (!found) {
+                if (devs.size() >= 16) continue;
+                devs.push_back({mac, name});
+            }
+            rnode_scan_write(path, devs, false, "");
+        }
+        ::fclose(f);
+    }
+    int status = 0;
+    ::waitpid(pid, &status, 0);
+    rnode_scan_write(path, devs, true, "");
+}
+#endif
+
+// GET /reticulum/rnode/scan[?start=1] — start a progressive BLE discovery
+// or return its current state ({"devices":[...],"done":bool,"error":""}).
 void reticulum_rnode_scan(const Request& req, Response& res) {
     if (!web::require_auth(req, res, true)) return;
     res.content_type = "application/json";
-    std::string cached;
-    if (rnode_scan_fresh(cached)) { res.body = cached; return; }
-
-    int lfd = ::open(RNODE_SCAN_LOCK, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
-    // Never queue scans: one BLE discovery is ~11 s, and a second click
-    // waiting on a blocking flock keeps a CGI alive until the browser gives
-    // up. Serve the last snapshot (stale is fine) or ask to retry.
-    if (lfd >= 0 && ::flock(lfd, LOCK_EX | LOCK_NB) != 0) {
-        std::string stale = util::read_file(RNODE_SCAN_CACHE, 256 * 1024);
-        std::string t = util::trim(stale);
-        if (!t.empty() && t[0] == '{') {
-            res.body = stale;
-        } else {
-            res.body = "{\"error\":\"scan already in progress — try again in a few seconds\",\"devices\":[]}";
+    if (req.query.find("start=1") != std::string::npos) {
+        if (!store::rnode_ble_stack_present()) {
+            res.body = "{\"started\":false,\"done\":true,"
+                       "\"error\":\"no BLE stack in this image\",\"devices\":[]}";
+            return;
         }
-        ::close(lfd);
+#ifndef _WIN32
+        bool started = rnode_scan_start();
+        res.body = std::string("{\"started\":") + (started ? "true" : "false") +
+                   ",\"running\":true,\"devices\":[]}";
+#else
+        res.body = "{\"started\":false,\"error\":\"not supported on this build\",\"devices\":[]}";
+#endif
         return;
     }
-    struct LockGuard { int fd; ~LockGuard() { if (fd >= 0) ::close(fd); } } guard{lfd};
-    if (rnode_scan_fresh(cached)) { res.body = cached; return; }
-
-    if (!store::rnode_ble_stack_present()) {
-        res.body = "{\"error\":\"no BLE stack in this image (bluez/dbus + bleak needed)\",\"devices\":[]}";
+    std::string state = util::trim(util::read_file(RNODE_SCAN_CACHE, 256 * 1024));
+    if (!state.empty() && state[0] == '{') {
+        res.body = state;
         return;
     }
-    // Python + bleak import alone is ~12 s on the C906 and the discovery
-    // window is 6 s, so 20 s killed healthy scans. 60 s leaves room for a
-    // loaded single core without holding the lock indefinitely.
-    util::RunResult rr = util::run({"/usr/bin/python3", "/usr/lib/rnsbox/rnode.py", "scan"}, "", 60);
-    std::string out = util::trim(rr.out);
-    if (rr.exit_code == 0 && !out.empty() && out[0] == '{') {
-        util::write_file_atomic(RNODE_SCAN_CACHE, rr.out, 0600);
-        res.body = rr.out;
-        return;
-    }
-    std::string why = out.empty() ? std::string("timed out") : out.substr(0, out.find('\n'));
-    res.body = "{\"error\":\"scan failed: " + http::json_escape(why) + "\",\"devices\":[]}";
+    res.body = "{\"devices\":[],\"done\":true,\"error\":\"\"}";
 }
 
 // POST /reticulum/rnode/pair — manual bluetoothctl pair (+ trust) as a
