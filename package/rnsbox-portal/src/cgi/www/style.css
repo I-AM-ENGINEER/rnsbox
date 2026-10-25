@@ -195,8 +195,7 @@ table.kv td {
   color: var(--text);
   text-align: right;
   overflow-wrap: anywhere;
-  font-family: var(--mono);
-  font-size: 12.5px;
+  font: inherit;
 }
 table.kv td code, table.kv td .mono, table.kv td .val {
   font-family: inherit;

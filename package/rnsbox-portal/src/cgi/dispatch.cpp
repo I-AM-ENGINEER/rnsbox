@@ -66,6 +66,7 @@ static const char* const POST_ONLY[] = {
     "/reticulum/bluetooth/pair",
     "/reticulum/rnode",
     "/reticulum/rnode/pair",
+    "/reticulum/rnode/forget",
     "/map/telemetry",
     "/flasher/action",
     "/flasher/fetch",
@@ -452,6 +453,7 @@ void handle(const http::Request& req, http::Response& res) {
     else if (p == "/reticulum/rnode/status")     routes::reticulum_rnode_status(req, res);
     else if (p == "/reticulum/rnode/scan")       routes::reticulum_rnode_scan(req, res);
     else if (p == "/reticulum/rnode/pair")       routes::reticulum_rnode_pair(req, res);
+    else if (p == "/reticulum/rnode/forget")     routes::reticulum_rnode_forget(req, res);
     // TODO(owners-decision): the Updates tab is hidden from the nav
     // (pages/base.html) as raw/unfinished, but the routes stay live so a
     // direct link still works. Decide its fate (finish vs. remove) — do
