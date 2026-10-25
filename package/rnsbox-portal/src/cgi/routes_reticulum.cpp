@@ -2775,6 +2775,14 @@ static std::string rnode_fill(std::string h) {
     }
     h = R(std::move(h), "__RNODE_BOND__", bond);
 
+    // A stale or half-finished pair cannot be replaced from the UI: BlueZ
+    // keeps the old device/bond, so provide an explicit forget action.
+    std::string forget;
+    if (ble && !rc.ble_address.empty())
+        forget = " <button type=\"button\" class=\"btn\" onclick=\"rnodeForget()\""
+                 " title=\"Remove the BlueZ device and its link keys so the RNode can be paired again\">Forget node</button>";
+    h = R(std::move(h), "__RNODE_FORGET_BTN__", forget);
+
     std::string stack;
     if (!store::rnode_ble_stack_present())
         stack = "<p class=\"muted\" style=\"margin:6px 0 0\">This image has no BLE stack (bluez/dbus + bleak) — "
@@ -2985,6 +2993,37 @@ void reticulum_rnode_scan(const Request& req, Response& res) {
         return;
     }
     res.body = "{\"devices\":[],\"done\":true,\"error\":\"\"}";
+}
+
+// POST /reticulum/rnode/forget — remove the BlueZ device (and therefore the
+// bond) so a failed/half-finished pair can be retried from the scan list.
+void reticulum_rnode_forget(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, true)) return;
+    res.content_type = "application/json";
+    std::string addr = util::trim(req.f("address"));
+    if (addr.size() != 17) {
+        res.body = "{\"ok\":false,\"message\":\"Bad address.\"}";
+        return;
+    }
+    for (size_t i = 0; i < addr.size(); ++i) {
+        char c = addr[i];
+        if (i % 3 == 2) {
+            if (c != ':') { res.body = "{\"ok\":false,\"message\":\"Bad address.\"}"; return; }
+        } else if (!isxdigit((unsigned char)c)) {
+            res.body = "{\"ok\":false,\"message\":\"Bad address.\"}";
+            return;
+        }
+    }
+    (void)util::run({"/usr/bin/bluetoothctl", "disconnect", addr}, "", 10);
+    util::RunResult rr = util::run({"/usr/bin/bluetoothctl", "remove", addr}, "", 10);
+    std::string out = util::trim(rr.out);
+    bool ok = (rr.exit_code == 0);
+    if (!ok && out.find("not available") != std::string::npos) ok = true;
+    res.body = std::string("{\"ok\":") + (ok ? "true" : "false") +
+               ",\"message\":\"" +
+               http::json_escape(ok ? std::string("Bluetooth bond removed — scan and pair again.")
+                                    : (out.empty() ? std::string("bluetoothctl failed") : out)) +
+               "\"}";
 }
 
 // POST /reticulum/rnode/pair — manual bluetoothctl pair (+ trust) as a

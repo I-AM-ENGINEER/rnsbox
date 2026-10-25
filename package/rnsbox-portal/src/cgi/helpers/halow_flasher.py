@@ -405,7 +405,7 @@ def slip_device():
     if cfg.get("enabled", "no").lower() not in ("yes", "1", "true", "on"):
         return None
     peer = cfg.get("peer_ip") or "192.168.7.2"
-    st = http_json(peer, "/api/get_stat", timeout=5.0)
+    st = http_json(peer, "/api/get_stat", timeout=10.0)
     dev = (st or {}).get("device") or {}
     # No answer (or an answer without an identity): the modem is not there,
     # and a phantom MAC-less row would then be scheduled as "version

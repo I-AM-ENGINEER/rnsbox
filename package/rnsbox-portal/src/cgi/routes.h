@@ -80,6 +80,7 @@ bool rnode_live_up(std::string* name = nullptr);
 void reticulum_rnode_scan(const http::Request&, http::Response&);   // GET JSON (BLE discovery)
 void rnode_scan_watch_cli(const std::string& path);                 // detached progressive scan
 void reticulum_rnode_pair(const http::Request&, http::Response&);   // POST JSON (bluetoothctl pair)
+void reticulum_rnode_forget(const http::Request&, http::Response&); // POST JSON (remove BlueZ bond)
 
 
 // updates tab (A/B whole-OS updater)
