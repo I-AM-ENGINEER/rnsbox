@@ -328,6 +328,10 @@ int main(int argc, char** argv) {
         routes::rnode_scan_watch_cli(argv[2]);
         return 0;
     }
+    // `rnsbox-portal rnode-watch` (rnsbox-mon, once a minute): drop a stale
+    // BlueZ connection that keeps a bonded BLE RNode from advertising.
+    if (argc >= 2 && strcmp(argv[1], "rnode-watch") == 0)
+        return routes::rnode_watch() ? 0 : 1;
 
     // `rnsbox-portal bt-peers-refresh` (rnsbox-mon / the peers endpoint):
     // update the connected-device cache in the background.

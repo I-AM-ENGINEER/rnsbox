@@ -78,6 +78,9 @@ void reticulum_rnode_status(const http::Request&, http::Response&); // GET  JSON
 // True when the RNode interface is up in the rnstatus snapshot (rnsd has
 // actually attached the modem, not just written the config).
 bool rnode_live_up(std::string* name = nullptr);
+// rnsbox-mon: drop a stale BlueZ connection that keeps a bonded RNode from
+// advertising, so RNodeInterface's scan-only discovery can find it again.
+bool rnode_watch();
 void reticulum_rnode_scan(const http::Request&, http::Response&);   // GET JSON (BLE discovery)
 void rnode_scan_watch_cli(const std::string& path);                 // detached progressive scan
 void reticulum_rnode_pair(const http::Request&, http::Response&);   // POST JSON (bluetoothctl pair)

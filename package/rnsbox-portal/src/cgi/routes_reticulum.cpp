@@ -22,6 +22,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <syslog.h>
 #include <utime.h>
 #include <map>
 #include <string>
@@ -2710,6 +2711,93 @@ bool rnode_live_up(std::string* name) {
         return false;
     }
     return false;
+}
+
+// rnode_watch — recover an RNode-over-BLE session that can never connect.
+//
+// BlueZ can keep a half-open connection to a bonded peer: bluetoothctl says
+// "Connected: yes" while no client owns the link. The RNode firmware then
+// believes it is connected and stops advertising, so RNodeInterface — whose
+// discovery is scan-only — never sees it: rnsd repeats "Opening BLE
+// connection..." forever and the card stays on WAITING FOR DEVICE. Dropping
+// the stale link makes the peripheral advertise again and rnsd's own retry
+// loop reconnects within seconds.
+//
+// Guard rails: only for a configured BLE peer, only while rnsd reports the
+// RNode interface Down in a fresh status cache, only after it has been Down
+// for a full check interval (never abort a connect that is in progress), and
+// at most once every five minutes.
+static const char* RNODE_DOWN_MARK = "/run/rnsbox-rnode-down-since";
+static const char* RNODE_WATCH_COOLDOWN = "/run/rnsbox-rnode-watch-cd";
+constexpr long RNODE_DOWN_GRACE_S = 90;
+constexpr long RNODE_WATCH_COOLDOWN_S = 300;
+
+bool rnode_watch() {
+    store::RnodeConfig rc = store::read_rnode();
+    if (rc.transport != "ble" || rc.ble_address.empty()) return false;
+
+    struct stat st;
+    // rnsbox-mon refreshes this; a stale snapshot must not drive a
+    // disconnect (it may still say Down after the interface came back).
+    if (::stat(RNSTATUS_CACHE, &st) != 0 ||
+        ::time(nullptr) - (long)st.st_mtime > 180)
+        return false;
+    time_t cache_mtime = (time_t)st.st_mtime;
+
+    std::string data = util::read_file(RNSTATUS_CACHE, 1024 * 1024);
+    json::Value root;
+    std::string err;
+    if (data.empty() || !json::parse(data, root, err) || !root.is_object())
+        return false;
+    const json::Value* arr = root.find("interfaces");
+    if (!arr || !arr->is_array()) return false;
+
+    bool present = false, up = false;
+    for (const json::Value& v : arr->arr) {
+        const json::Value* t = v.find("type");
+        if (!t || !t->is_string() || t->str != "RNodeInterface") continue;
+        present = true;
+        const json::Value* s = v.find("status");
+        up = s && s->is_string() && (s->str == "Up" || s->str == "up");
+        break;
+    }
+    if (!present) return false;   // rnsd not up / not reporting yet
+    if (up) {
+        ::unlink(RNODE_DOWN_MARK);
+        ::unlink(RNODE_WATCH_COOLDOWN);
+        return false;
+    }
+
+    time_t now = ::time(nullptr);
+    if (::stat(RNODE_WATCH_COOLDOWN, &st) == 0 &&
+        now - (long)st.st_mtime < RNODE_WATCH_COOLDOWN_S)
+        return false;
+    if (::stat(RNODE_DOWN_MARK, &st) != 0) {
+        util::write_file_atomic(RNODE_DOWN_MARK, "1", 0600);
+        return false;
+    }
+    // The marker must predate the snapshot we are acting on: rnsd may have
+    // reconnected between two snapshots, and cutting the link it just
+    // established would only start the cycle over.
+    if ((long)st.st_mtime >= (long)cache_mtime) return false;
+    if (now - (long)st.st_mtime < RNODE_DOWN_GRACE_S) return false;
+
+    // BlueZ is the only place that knows whether the peer still holds a
+    // connection. bluetoothctl is a small D-Bus client; 8 s is plenty even
+    // on a busy adapter.
+    util::RunResult info =
+        util::run({"/usr/bin/bluetoothctl", "info", rc.ble_address}, "", 8);
+    if (info.exit_code != 0 ||
+        info.out.find("Connected: yes") == std::string::npos)
+        return false;
+
+    syslog(LOG_NOTICE, "rnode-watch: dropping stale BLE link for %s",
+           rc.ble_address.c_str());
+    util::RunResult d =
+        util::run({"/usr/bin/bluetoothctl", "disconnect", rc.ble_address}, "", 10);
+    util::write_file_atomic(RNODE_WATCH_COOLDOWN, "1", 0600);
+    ::unlink(RNODE_DOWN_MARK);
+    return d.exit_code == 0;
 }
 
 static std::string rnode_fill(std::string h) {
