@@ -222,7 +222,7 @@ struct RnodeConfig {
     std::string name = "RNode LoRa";      // [[section]] name in the rns config
     std::string frequency = "868825000";  // Hz (137000000..3000000000); EU868 default
     std::string bandwidth = "125000";     // Hz (7800..1625000)
-    std::string txpower = "7";            // dBm (0..37)
+    std::string txpower = "17";           // dBm (0..37)
     std::string spreadingfactor = "7";    // 5..12
     std::string codingrate = "7";         // 5..8
     std::string flow_control = "no";      // yes|no
