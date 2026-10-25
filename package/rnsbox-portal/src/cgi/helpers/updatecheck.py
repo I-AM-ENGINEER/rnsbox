@@ -32,6 +32,52 @@ import urllib.request
 
 PKG = "rns"                       # rnsd is provided by the Reticulum 'rns' pkg
 STATE_DIR = "/var/lib/rnsbox"
+
+# The stock wheel does not contain rnsbox's rnsh stdin-EOF fix (see the
+# image's 0002-rnsh patch). install_downloaded re-applies it unless
+# rns_patch_rnsh=no.
+RNODE_OLD = """    def close_stdin(self):
+        with contextlib.suppress(Exception):
+            os.close(self._child_stdin)
+        # Encourage prompt shutdown if child lingers after stdin close
+        def _ensure_terminate():
+            if self.running:
+                self.terminate(kill_delay=0.2)
+        if not self._loop.is_closed():
+            self._loop.call_later(0.05, _ensure_terminate)
+"""
+RNODE_NEW = """    def close_stdin(self):
+        if self._stdin_is_pipe:
+            with contextlib.suppress(Exception):
+                os.close(self._child_stdin)
+            return
+        with contextlib.suppress(Exception):
+            os.write(self._child_stdin, CTRL_D)
+"""
+
+
+def _apply_rnsh_patch(site):
+    """Re-apply the rnsh stdin-EOF fix to the freshly installed wheel."""
+    import os
+    p = os.path.join(site, "RNS", "Utilities", "rnsh", "process.py")
+    try:
+        with open(p) as f:
+            s = f.read()
+    except OSError:
+        return "missing"
+    if RNODE_NEW in s:
+        return "already"
+    if RNODE_OLD not in s:
+        return "no-match"
+    try:
+        tmp = p + ".rnsbox-new"
+        with open(tmp, "w") as f:
+            f.write(s.replace(RNODE_OLD, RNODE_NEW, 1))
+        os.replace(tmp, p)
+        return "applied"
+    except OSError:
+        return "write-failed"
+
 # The state JSON is rewritten on every cron check — keep it off the SD card
 # (/run is tmpfs). Only the rollback tar, written once per applied update,
 # lives on disk: a rollback must survive a reboot.
@@ -818,7 +864,7 @@ def install_downloaded(pkg=PKG):
     import tarfile
     t0 = time.monotonic()              # APPLY_BUDGET clock (immune to date -s / NTP)
     res = {"ok": False, "from": installed_version(pkg), "to": None,
-           "error": "", "rolled_back": False}
+           "error": "", "rolled_back": False, "rnsh_patch": "skipped"}
     site = None
     touched = False
     try:
@@ -863,6 +909,8 @@ def install_downloaded(pkg=PKG):
             shutil.rmtree(p) if os.path.isdir(p) else os.remove(p)
         _install_wheel(path, site)
         _ver_cache.pop(pkg, None)          # re-read the package after extraction
+        if _conf_bool("rns_patch_rnsh", True):
+            res["rnsh_patch"] = _apply_rnsh_patch(site)
         old_pid = _rnsd_pid() or None
         _restart_rnsd()
         if not _rnsd_up(RNSD_UP_TIMEOUT, old_pid):
@@ -949,8 +997,12 @@ def cron(pkg=PKG):
     if _conf_bool("update_install", False):
         res = install_downloaded(pkg)
         if res.get("ok"):
-            print("update-install: rns %s installed, rnsd restarted"
-                  % res.get("to"))
+            rp = res.get("rnsh_patch") or "skipped"
+            note = {"applied": " (rnsh fix re-applied)",
+                    "no-match": " (rnsh fix NOT applied: upstream code changed)",
+                    "missing": " (rnsh fix NOT applied: module missing)"}.get(rp, "")
+            print("update-install: rns %s installed, rnsd restarted%s"
+                  % (res.get("to"), note))
         elif res.get("rolled_back"):
             print("update-install: failed (%s), rolled back to %s"
                   % (res.get("error"), res.get("from")))

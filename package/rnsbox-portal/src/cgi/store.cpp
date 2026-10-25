@@ -331,8 +331,13 @@ bool read_update_install() {
     return cron_truthy(util::conf_get(CRON_FILE, "update_install"));
 }
 
+bool read_patch_rnsh() {
+    std::string v = util::conf_get(CRON_FILE, "rns_patch_rnsh");
+    return v.empty() ? true : cron_truthy(v);   // default yes
+}
+
 bool write_cron_settings(int days, const std::string& time, bool update_check,
-                         bool update_install, std::string& err) {
+                         bool update_install, bool patch_rnsh, std::string& err) {
     if (days < 0 || days > 7) { err = "days must be 0..7"; return false; }
     if (!hhmm_valid(time)) { err = "time must be HH:MM"; return false; }
     if (!update_check) update_install = false;   // install needs the daily check
@@ -342,24 +347,27 @@ bool write_cron_settings(int days, const std::string& time, bool update_check,
         "#   rnsd_restart_time (HH:MM, default 04:00).\n"
         "# update_check: yes (default) / no — daily check for a newer rnsd and\n"
         "#   download its wheel. update_install: no (default) / yes — install the\n"
-        "#   downloaded wheel automatically, rolling back if rnsd does not start.\n";
+        "#   downloaded wheel automatically, rolling back if rnsd does not start.\n"
+        "# rns_patch_rnsh: yes (default) / no — after an in-place rns update,\n"
+        "#   re-apply the rnsh stdin-EOF fix that the stock wheel does not have.\n";
     o += "rnsd_restart_days=" + std::to_string(days) + "\n";
     o += "rnsd_restart_time=" + time + "\n";
     o += std::string("update_check=") + (update_check ? "yes" : "no") + "\n";
     o += std::string("update_install=") + (update_install ? "yes" : "no") + "\n";
+    o += std::string("rns_patch_rnsh=") + (patch_rnsh ? "yes" : "no") + "\n";
     if (!util::write_file_atomic(CRON_FILE, o, 0644)) { err = "write failed"; return false; }
     return true;
 }
 
 bool write_rnsd_restart_days(int days, const std::string& time, std::string& err) {
     return write_cron_settings(days, time, read_update_check(),
-                               read_update_install(), err);
+                               read_update_install(), read_patch_rnsh(), err);
 }
 
 bool write_update_check(bool enabled, std::string& err) {
     // symmetric to write_rnsd_restart_days: preserve the schedule/install flag
     return write_cron_settings(read_rnsd_restart_days(), read_rnsd_restart_time(),
-                               enabled, read_update_install(), err);
+                               enabled, read_update_install(), read_patch_rnsh(), err);
 }
 
 // ---- reticulum config (raw text) ----
