@@ -150,6 +150,16 @@ fi
 [ -e "$T/etc/init.d/S60routing" ] && ok "S60routing present" || bad "S60routing missing"
 [ -e "$T/usr/sbin/dnsmasq" ] && ok "dnsmasq present" || warn "dnsmasq not installed"
 [ -e "$T/etc/init.d/S80dnsmasq" ] || warn "no S80dnsmasq init script"
+# Time over Reticulum: without the module the portal's Settings -> Time
+# section would offer a client that cannot run; without the init script the
+# configured fallback never starts.
+if ls -d "$T"/usr/lib/python3.*/site-packages/rns_time >/dev/null 2>&1; then
+    ok "python rns_time module present"
+else
+    bad "python rns_time module missing (BR2_PACKAGE_PYTHON_RNS_TIME)"
+fi
+[ -x "$T/etc/init.d/S88rnstime" ] && ok "S88rnstime present" || bad "S88rnstime missing"
+[ -e "$T/etc/rnsbox/rnstime.conf" ] && ok "rnstime.conf present" || bad "rnstime.conf missing"
 
 # ---- bootability ----------------------------------------------------------
 # busybox init execve()s rcS directly. An overlay copied from a DrvFs

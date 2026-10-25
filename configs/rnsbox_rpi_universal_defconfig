@@ -65,6 +65,9 @@ BR2_PACKAGE_PYTHON3=y
 BR2_PACKAGE_PYTHON3_BZIP2=y
 BR2_PACKAGE_PYTHON_PSUTIL=y
 BR2_PACKAGE_PYTHON_NOMADNET=y
+# Time over Reticulum: S88rnstime sets the clock from a mesh rns-time server
+# when ordinary NTP is unreachable (and can serve time to the mesh too).
+BR2_PACKAGE_PYTHON_RNS_TIME=y
 BR2_PACKAGE_RNSBOX_PORTAL=y
 
 # Board delta for rnsbox_rpi_universal_defconfig.

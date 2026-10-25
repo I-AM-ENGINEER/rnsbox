@@ -96,6 +96,18 @@ fi
 if [ -f "$COMMON_DIR/S83mon" ] && [ -d "$T/etc/init.d" ]; then
 	install -m 0755 "$COMMON_DIR/S83mon" "$T/etc/init.d/S83mon"
 fi
+# Time over Reticulum: S88rnstime runs the rns-time client loop (falls back
+# to a mesh time server when ordinary NTP is unreachable) and, with
+# serve=yes, the minimal rns-time server. The default config is installed
+# only when absent so an operator's file is never overwritten.
+if [ -f "$COMMON_DIR/S88rnstime" ] && [ -d "$T/etc/init.d" ]; then
+	install -m 0755 "$COMMON_DIR/S88rnstime" "$T/etc/init.d/S88rnstime"
+fi
+if [ -f "$COMMON_DIR/rnstime.conf" ]; then
+	mkdir -p "$T/etc/rnsbox"
+	[ -f "$T/etc/rnsbox/rnstime.conf" ] || \
+		install -m 0644 "$COMMON_DIR/rnstime.conf" "$T/etc/rnsbox/rnstime.conf"
+fi
 # Drop the former ttyd service, the screen snapshot helper and the screen
 # binary: the console is now a PTY broker streamed to xterm.js on :80.
 rm -f "$T/etc/init.d/S87ttyd" "$T/usr/bin/ttyd" "$T/etc/rnsbox/console.conf" \

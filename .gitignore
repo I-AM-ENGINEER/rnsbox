@@ -14,3 +14,6 @@ __pycache__/
 
 # Windows native build output (win/build-win.sh)
 package/rnsbox-portal/src/win/build/
+
+# local hardware bring-up scratch: probes, screenshots, board keys
+tools/

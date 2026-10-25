@@ -1,0 +1,255 @@
+#!/bin/sh
+# S88rnstime - time over Reticulum (rns-time).
+#
+# Runs after S82rnsd so the rnsd shared instance exists. Two independent
+# jobs, both driven by /etc/rnsbox/rnstime.conf (the portal edits it):
+#
+#   client (always, when enabled): step the box clock from one or more
+#     rns-time servers on the mesh. -apply is skipped while ordinary NTP
+#     has already synced the clock (/run/clock-source = ntp), so this is a
+#     fallback for mesh-only / offline boxes. On success the client itself
+#     records source=rns in /run/clock-source (+ /run/clock-synced) and
+#     writes the RTC; it shares S45ntpsync's /run/ntpsync.step.lock.
+#
+#   server (serve=yes): also answer rns-time requests for the rest of the
+#     mesh, sourcing time from the configured upstream NTP servers. The
+#     server never sets the local clock; it adds its measured upstream
+#     offset to the timestamps it serves. It uses the same rnsd shared
+#     instance and writes its destination hash to /run/rnstime.destination.
+#
+# The loop re-reads the config every interval, so a portal save takes effect
+# even without a restart (the portal restarts it anyway).
+#
+# Usage: S88rnstime {start|stop|restart|sync|status}
+
+CONF=/etc/rnsbox/rnstime.conf
+LOG=/var/log/rns-time.log
+LOG_MAX=65536
+PIDFILE=/var/run/rnstime.pid
+SRV_PIDFILE=/var/run/rnstime-server.pid
+SOURCE_FILE=/run/clock-source
+SYNCED_FILE=/run/clock-synced
+STEP_LOCK=/run/ntpsync.step.lock
+PYTHON=/usr/bin/python3
+RNS_CONF=/etc/reticulum
+
+log() {
+	printf '%s: %s\n' "$(date -u '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG"
+}
+
+roll_log() {
+	sz=$(wc -c 2>/dev/null <"$LOG")
+	[ "${sz:-0}" -gt "$LOG_MAX" ] 2>/dev/null && mv -f "$LOG" "$LOG.old"
+}
+
+conf_get() {
+	sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$CONF" 2>/dev/null \
+		| head -n 1 | sed 's/[[:space:]]*$//'
+}
+
+enabled() {
+	case "$(conf_get enabled)" in
+		yes|true|1|on) return 0 ;;
+	esac
+	return 1
+}
+
+want_server() {
+	case "$(conf_get serve)" in
+		yes|true|1|on) return 0 ;;
+	esac
+	return 1
+}
+
+servers() {
+	conf_get servers | tr ',;' '  '
+}
+
+interval() {
+	i=$(conf_get interval)
+	case "$i" in
+		''|*[!0-9]*) i=300 ;;
+	esac
+	[ "$i" -ge 60 ] 2>/dev/null || i=300
+	[ "$i" -le 86400 ] 2>/dev/null || i=300
+	printf '%s' "$i"
+}
+
+threshold() {
+	t=$(conf_get step_threshold)
+	case "$t" in
+		''|*[!0-9.]*) t=0.5 ;;
+	esac
+	printf '%s' "$t"
+}
+
+pid_alive() {
+	p=$(cat "$1" 2>/dev/null)
+	[ -n "$p" ] && kill -0 "$p" 2>/dev/null
+}
+
+rtc_arg() {
+	[ -e /dev/rtc0 ] && printf '%s' "--rtc /dev/rtc0"
+}
+
+client_run() {
+	# $1.. are destination hashes
+	# shellcheck disable=SC2086 # one word per flag / hash
+	"$PYTHON" -m rns_time.client "$@" \
+		--config "$RNS_CONF" --shared \
+		--rounds 5 --timeout 30 \
+		--json --quiet \
+		--apply --min-offset "$(threshold)" --respect-source \
+		--source-file "$SOURCE_FILE" --synced-file "$SYNCED_FILE" \
+		--lock "$STEP_LOCK" --lock-timeout 30 \
+		$(rtc_arg) >>"$LOG" 2>&1
+}
+
+client_loop() {
+	child=
+	sleeper=
+	trap '[ -n "$child" ] && kill -TERM "$child" 2>/dev/null; [ -n "$sleeper" ] && kill -TERM "$sleeper" 2>/dev/null; exit 0' TERM INT
+	while :; do
+		enabled || exit 0
+		# Ordinary NTP owns the clock; nothing to do until that changes.
+		if [ "$(cat "$SOURCE_FILE" 2>/dev/null)" = ntp ]; then
+			sleep "$(interval)" &
+			sleeper=$!
+			wait "$sleeper"
+			sleeper=
+			continue
+		fi
+		set -- $(servers)
+		if [ "$#" -gt 0 ]; then
+			client_run "$@" &
+			child=$!
+			wait "$child"
+			child=
+		fi
+		sleep "$(interval)" &
+		sleeper=$!
+		wait "$sleeper"
+		sleeper=
+	done
+}
+
+server_run() {
+	upstream=$(conf_get upstream)
+	[ -n "$upstream" ] || upstream=pool.ntp.org
+	"$PYTHON" -m rns_time.server \
+		--config "$RNS_CONF" \
+		--identity /etc/rnsbox/rnstime.identity \
+		--hash-file /run/rnstime.destination \
+		--ntp "$upstream" \
+		--interval "$(interval)" \
+		--announce 1800 >>"$LOG" 2>&1
+}
+
+server_loop() {
+	child=
+	sleeper=
+	trap '[ -n "$child" ] && kill -TERM "$child" 2>/dev/null; [ -n "$sleeper" ] && kill -TERM "$sleeper" 2>/dev/null; exit 0' TERM INT
+	while :; do
+		want_server || exit 0
+		server_run &
+		child=$!
+		wait "$child"
+		child=
+		# rnsd not up yet, or the server lost its shared instance: retry.
+		sleep 10 &
+		sleeper=$!
+		wait "$sleeper"
+		sleeper=
+	done
+}
+
+stop_pidfile() {
+	[ -f "$1" ] || return 0
+	p=$(cat "$1" 2>/dev/null)
+	if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then
+		kill -TERM "$p" 2>/dev/null
+		i=0
+		while kill -0 "$p" 2>/dev/null && [ "$i" -lt 5 ]; do
+			sleep 1
+			i=$((i + 1))
+		done
+		kill -KILL "$p" 2>/dev/null
+	fi
+	rm -f "$1"
+}
+
+start() {
+	if ! enabled; then
+		stop_pidfile "$SRV_PIDFILE"
+		echo "S88rnstime: disabled (enabled=no in $CONF)"
+		return 0
+	fi
+	if pid_alive "$PIDFILE"; then
+		echo "S88rnstime: client already running"
+	else
+		roll_log
+		( client_loop ) </dev/null >>"$LOG" 2>&1 &
+		echo $! > "$PIDFILE"
+		echo "S88rnstime: client started (log $LOG)"
+	fi
+	if want_server; then
+		if pid_alive "$SRV_PIDFILE"; then
+			echo "S88rnstime: server already running"
+		else
+			( server_loop ) </dev/null >>"$LOG" 2>&1 &
+			echo $! > "$SRV_PIDFILE"
+			echo "S88rnstime: server started (log $LOG)"
+		fi
+	else
+		stop_pidfile "$SRV_PIDFILE"
+	fi
+	return 0
+}
+
+stop() {
+	stop_pidfile "$PIDFILE"
+	stop_pidfile "$SRV_PIDFILE"
+	echo "S88rnstime: stopped"
+	return 0
+}
+
+sync() {
+	enabled || { echo "S88rnstime: disabled"; return 3; }
+	set -- $(servers)
+	[ "$#" -gt 0 ] || { echo "S88rnstime: no servers configured"; return 3; }
+	roll_log
+	( client_run "$@" ) </dev/null >>"$LOG" 2>&1 &
+	echo "S88rnstime: one-off sync started (log $LOG)"
+	return 0
+}
+
+status() {
+	if ! enabled; then
+		echo "rns-time: disabled"
+	else
+		echo "rns-time: enabled, servers: $(servers)"
+		if pid_alive "$PIDFILE"; then
+			echo "client: running  (source: $(cat "$SOURCE_FILE" 2>/dev/null || echo none))"
+		else
+			echo "client: stopped"
+		fi
+		if want_server; then
+			if pid_alive "$SRV_PIDFILE"; then
+				echo "server: running, destination $(cat /run/rnstime.destination 2>/dev/null || echo '(no announce yet)')"
+			else
+				echo "server: stopped"
+			fi
+		else
+			echo "server: off (serve=no)"
+		fi
+	fi
+}
+
+case "${1:-start}" in
+	start)   start ;;
+	stop)    stop ;;
+	restart) stop; sleep 1; start ;;
+	sync)    sync ;;
+	status)  status ;;
+	*) echo "Usage: $0 {start|stop|restart|sync|status}" >&2; exit 1 ;;
+esac
