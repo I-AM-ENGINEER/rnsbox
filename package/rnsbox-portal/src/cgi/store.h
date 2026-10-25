@@ -83,6 +83,28 @@ bool write_reticulum_config(const std::string& text, std::string& err);
 std::vector<std::string> read_ntp_servers();
 std::vector<std::string> write_ntp_servers(const std::vector<std::string>& servers); // returns kept
 
+// --- time over Reticulum (rns-time), /etc/rnsbox/rnstime.conf ---
+// The client loop (S88rnstime) steps the clock from one of the listed mesh
+// servers when ordinary NTP is not available; serve=yes also answers
+// rns-time requests for the mesh from the upstream NTP servers. A server is
+// identified by its 16-byte Reticulum destination hash (32 hex chars).
+constexpr const char* RNSTIME_FILE = "/etc/rnsbox/rnstime.conf";
+struct RnsTimeConfig {
+    bool enabled = false;
+    std::string servers;                // comma-separated 32-hex destination hashes
+    int interval = 300;                 // seconds between client attempts (60..86400)
+    std::string step_threshold = "0.5"; // only step when |offset| >= this many s
+    bool serve = false;                 // also run the server
+    std::string upstream = "pool.ntp.org,time.google.com";  // serve=yes sources
+};
+RnsTimeConfig read_rnstime();
+// Validates and writes the file; c.servers must already be clean (use the
+// helper below). Returns false with err set on bad interval/threshold/upstream.
+bool write_rnstime(const RnsTimeConfig& c, std::string& err);
+// Splits raw (commas/whitespace/newlines) and keeps only valid hashes.
+std::vector<std::string> clean_rnstime_servers(const std::string& raw);
+bool valid_rnstime_hash(const std::string& s);
+
 // --- system (OS image) update configuration, /etc/rnsbox/update.conf ---
 // Read/written by the portal Updates tab AND by rnsbox-sysupdate (which owns
 // next_check and appends managed keys). Flat key=value, one file.

@@ -144,6 +144,8 @@ void hostname_set(const http::Request&, http::Response&);          // POST PRG
 void time_browser(const http::Request&, http::Response&);          // POST PRG
 void ntp_set(const http::Request&, http::Response&);               // POST PRG
 void ntp_restart(const http::Request&, http::Response&);           // POST PRG
+void rnstime_set(const http::Request&, http::Response&);           // POST PRG (rns-time config)
+void rnstime_sync(const http::Request&, http::Response&);          // POST PRG (one-off client run)
 void ssh_set(const http::Request&, http::Response&);               // POST PRG
 void usb_mode_set(const http::Request&, http::Response&);          // POST PRG (USB role device|host)
 void settings_uart(const http::Request&, http::Response&);         // POST PRG (UART functions)

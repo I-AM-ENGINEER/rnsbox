@@ -34,6 +34,40 @@
     <button type="submit" class="btn">Restart NTP</button>
   </form>
 
+  <h4>NTP over Reticulum (rns-time)</h4>
+  <p class="muted">When ordinary NTP is unreachable, step the clock from a time
+  server on the Reticulum mesh. The server is authenticated by its destination
+  hash (an encrypted RNS Link to that identity); accuracy is a few milliseconds
+  over TCP/LAN and well under a second over LoRa. A board with an uplink can
+  also <em>serve</em> time to the rest of the mesh.</p>
+  <form method="post" action="__BASE__/settings/rnstime">
+    <label class="check"><input type="checkbox" name="enabled" value="on"__RNSTIME_ENABLED_ATTR__>
+      Enable rns-time (set the clock over the mesh)</label>
+    <label>Server destination hash(es)
+      <textarea name="servers" class="ntp-servers" rows="3" spellcheck="false"
+        placeholder="32 hex characters, one per line">__RNSTIME_SERVERS__</textarea>
+    </label>
+    <div class="time-actions">
+      <label>Retry every <input type="number" name="interval" value="__RNSTIME_INTERVAL__"
+        min="60" max="86400" step="1"> s</label>
+      <label>Step threshold <input type="number" name="step_threshold"
+        value="__RNSTIME_THRESHOLD__" min="0" max="3600" step="0.1"> s</label>
+    </div>
+    <label class="check"><input type="checkbox" name="serve" value="on"__RNSTIME_SERVE_ATTR__>
+      Also serve time to the mesh</label>
+    <label>Upstream NTP servers (only used when serving)
+      <input type="text" name="upstream" value="__RNSTIME_UPSTREAM__" spellcheck="false">
+    </label>
+    <div class="time-actions">
+      <span class="muted">__RNSTIME_STATUS__</span>
+      <button type="submit" class="btn-primary">Save &amp; apply</button>
+    </div>
+  </form>
+  <form method="post" action="__BASE__/settings/rnstime/sync" class="ntp-restart">
+    <button type="submit" class="btn">Sync now</button>
+  </form>
+
+
   <script>
   (function(){
     function p(n){ return String(n).padStart(2,'0'); }

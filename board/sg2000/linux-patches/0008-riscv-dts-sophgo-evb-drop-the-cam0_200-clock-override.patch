@@ -1,0 +1,22 @@
+From: RNSBox <rnsbox@localhost>
+Subject: [PATCH] riscv: dts: sophgo: drop the EVB cam0_200 clock override
+
+The override asked for 96 MHz on clk_cam0_200 but the bypass kept the
+clock on the crystal, so it never took effect. With the bypass cleared
+(previous patch) the divider register already yields a clock fast enough
+for the modem 2 Mbaud; leaving the override in place would reprogram the
+divider and pick a worse rate.
+
+--- a/arch/riscv/boot/dts/sophgo/sg2000-duomodule01-evb.dts
++++ b/arch/riscv/boot/dts/sophgo/sg2000-duomodule01-evb.dts
+@@ -304,9 +304,6 @@
+  * this mux in a state Linux can rely on, so pin parent and rate here.
+  */
+ &clk {
+-	assigned-clocks = <&clk CLK_CAM0_200>;
+-	assigned-clock-parents = <&clk CLK_DISPPLL>;
+-	assigned-clock-rates = <96000000>;
+ };
+ 
+ /*
+

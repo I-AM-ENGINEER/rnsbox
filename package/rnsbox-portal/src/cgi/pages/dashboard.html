@@ -100,7 +100,7 @@ __HALOW_SCRIPT__
     setHTML('d-load', (typeof s.cpu_pct === 'number')
       ? (s.cpu_pct + ' % <span class="muted">5 s avg</span>')
       : '<span class="muted">&mdash;</span>');
-    var cm={ntp:'NTP',rtc:'RTC',browser:'browser'}, cs=cm.hasOwnProperty(d.clock_source)?cm[d.clock_source]:'';
+    var cm={ntp:'NTP',rns:'Reticulum',rtc:'RTC',browser:'browser'}, cs=cm.hasOwnProperty(d.clock_source)?cm[d.clock_source]:'';
     setHTML('d-clock', cs?'<span class="badge ok">'+esc(cs)+'</span>':'<span class="badge warn">none</span>');
     if(m.total_mb){
       var pct=m.used_pct||0;

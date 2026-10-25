@@ -1,0 +1,19 @@
+config BR2_PACKAGE_PYTHON_RNS_TIME
+	bool "python-rns-time"
+	select BR2_PACKAGE_PYTHON_RNS  # runtime
+	help
+	  rns-time — authenticated time over Reticulum.
+
+	  The server asks ordinary NTP servers for the time and serves the
+	  corrected time over Reticulum protocol v1 (app "rnstime", aspect
+	  "time"). It needs no chrony, no GPS and no root: the measured
+	  offset is added to the timestamps it hands out, so a host whose
+	  own clock is wrong still serves correct time. It runs next to
+	  rnsd through the shared instance.
+
+	  The client measures time and --apply is used by
+	  /etc/init.d/S88rnstime to set the box clock from a mesh time
+	  server when ordinary NTP is unreachable. MeshAPI clients can
+	  also use the "now" op.
+
+	  https://github.com/wdunn001/rns-time

@@ -416,6 +416,102 @@ std::vector<std::string> write_ntp_servers(const std::vector<std::string>& serve
     return clean;
 }
 
+// ---- rns-time (time over Reticulum) ----
+bool valid_rnstime_hash(const std::string& s) {
+    if (s.size() != 32) return false;
+    for (char c : s) if (!isxdigit((unsigned char)c)) return false;
+    return true;
+}
+
+std::vector<std::string> clean_rnstime_servers(const std::string& raw) {
+    std::vector<std::string> out;
+    size_t i = 0;
+    while (i < raw.size()) {
+        while (i < raw.size() && (isspace((unsigned char)raw[i]) ||
+                                  raw[i] == ',' || raw[i] == ';')) ++i;
+        size_t j = i;
+        while (j < raw.size() && !(isspace((unsigned char)raw[j]) ||
+                                   raw[j] == ',' || raw[j] == ';')) ++j;
+        if (j > i) {
+            std::string h = raw.substr(i, j - i);
+            if (valid_rnstime_hash(h) &&
+                std::find(out.begin(), out.end(), h) == out.end())
+                out.push_back(h);
+        }
+        i = j;
+    }
+    return out;
+}
+
+RnsTimeConfig read_rnstime() {
+    RnsTimeConfig c;
+    std::string en = util::conf_get(RNSTIME_FILE, "enabled");
+    c.enabled = (en == "yes" || en == "true" || en == "1" || en == "on");
+    c.servers = util::conf_get(RNSTIME_FILE, "servers");
+    std::string iv = util::conf_get(RNSTIME_FILE, "interval");
+    int n = 0;
+    if (to_int(iv, n) && n >= 60 && n <= 86400) c.interval = n;
+    std::string th = util::conf_get(RNSTIME_FILE, "step_threshold");
+    if (!th.empty()) c.step_threshold = th;
+    std::string sv = util::conf_get(RNSTIME_FILE, "serve");
+    c.serve = (sv == "yes" || sv == "true" || sv == "1" || sv == "on");
+    std::string up = util::conf_get(RNSTIME_FILE, "upstream");
+    if (!up.empty()) c.upstream = up;
+    return c;
+}
+
+bool write_rnstime(const RnsTimeConfig& c, std::string& err) {
+    if (c.interval < 60 || c.interval > 86400) {
+        err = "interval must be between 60 and 86400 seconds";
+        return false;
+    }
+    char* end = nullptr;
+    double threshold = strtod(c.step_threshold.c_str(), &end);
+    if (c.step_threshold.empty() || !end || *end != '\0' ||
+        threshold < 0.0 || threshold > 3600.0) {
+        err = "step threshold must be a number between 0 and 3600 seconds";
+        return false;
+    }
+    // Every upstream host must be a plain name/address; an empty list is
+    // allowed (the init script then falls back to pool.ntp.org).
+    {
+        size_t i = 0;
+        const std::string& s = c.upstream;
+        while (i < s.size()) {
+            while (i < s.size() && (isspace((unsigned char)s[i]) || s[i] == ',' || s[i] == ';')) ++i;
+            size_t j = i;
+            while (j < s.size() && !(isspace((unsigned char)s[j]) || s[j] == ',' || s[j] == ';')) ++j;
+            if (j > i) {
+                std::string h = s.substr(i, j - i);
+                if (!valid_ntp_server(h)) {
+                    err = "invalid upstream NTP server: " + h;
+                    return false;
+                }
+            }
+            i = j;
+        }
+    }
+
+    std::vector<std::string> servers = clean_rnstime_servers(c.servers);
+    std::string joined;
+    for (size_t i = 0; i < servers.size(); ++i) {
+        if (i) joined += ",";
+        joined += servers[i];
+    }
+    std::string o;
+    o += std::string("enabled=") + (c.enabled ? "yes" : "no") + "\n";
+    o += "servers=" + joined + "\n";
+    o += "interval=" + std::to_string(c.interval) + "\n";
+    o += "step_threshold=" + c.step_threshold + "\n";
+    o += std::string("serve=") + (c.serve ? "yes" : "no") + "\n";
+    o += "upstream=" + c.upstream + "\n";
+    if (!util::write_file_atomic(RNSTIME_FILE, o, 0644)) {
+        err = "write failed";
+        return false;
+    }
+    return true;
+}
+
 // ---- SLIP ----
 static bool valid_tty(const std::string& s) {
     if (s == "/dev/ttyS0" || s == "/dev/console") return false;   // don't hijack the console

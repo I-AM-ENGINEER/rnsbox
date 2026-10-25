@@ -2881,15 +2881,21 @@ void reticulum_halow_ota_chunk(const Request& req, Response& res) {
 
 // Detach the flasher worker; it writes /run/rnsbox-halow-ota.json itself.
 static bool ota_worker_spawn() {
-    pid_t pid = fork();
+#ifdef _WIN32
+    // The Windows development portal has no /usr/sbin/rnsbox-portal child;
+    // the flasher runs only on the router image.
+    return false;
+#else
+    pid_t pid = ::fork();
     if (pid == 0) {
-        setsid();
-        int nul = open("/dev/null", O_RDWR);
-        if (nul >= 0) { dup2(nul, 0); dup2(nul, 1); dup2(nul, 2); if (nul > 2) close(nul); }
-        execl("/usr/sbin/rnsbox-portal", "rnsbox-portal", "halow-ota", OTA_UPLOAD, (char *)nullptr);
+        ::setsid();
+        int nul = ::open("/dev/null", O_RDWR);
+        if (nul >= 0) { ::dup2(nul, 0); ::dup2(nul, 1); ::dup2(nul, 2); if (nul > 2) ::close(nul); }
+        ::execl("/usr/sbin/rnsbox-portal", "rnsbox-portal", "halow-ota", OTA_UPLOAD, (char *)nullptr);
         _exit(127);
     }
     return pid >= 0;
+#endif
 }
 
 void reticulum_halow_ota_start(const Request& req, Response& res) {

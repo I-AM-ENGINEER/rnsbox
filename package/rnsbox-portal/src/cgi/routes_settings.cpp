@@ -34,11 +34,47 @@ static std::string settings_redirect() { return web::base() + "/settings"; }
 static std::string clock_source_html(const std::string& src) {
     if (src == "ntp")
         return "<span class=\"badge ok\">NTP</span> <span class=\"muted\">stepped from a time server</span>";
+    if (src == "rns")
+        return "<span class=\"badge ok\">Reticulum</span> <span class=\"muted\">stepped by rns-time over the mesh</span>";
     if (src == "rtc")
         return "<span class=\"badge ok\">RTC</span> <span class=\"muted\">read from the hardware clock at boot</span>";
     if (src == "browser")
         return "<span class=\"badge ok\">browser</span> <span class=\"muted\">set from a browser on this page</span>";
-    return "<span class=\"badge warn\">none</span> <span class=\"muted\">no NTP, RTC or browser time yet</span>";
+    return "<span class=\"badge warn\">none</span> <span class=\"muted\">no NTP, Reticulum time, RTC or browser time yet</span>";
+}
+
+// Network time (ordinary NTP or rns-time over the mesh) outranks the browser.
+static bool clock_net_synced(const std::string& src) {
+    return src == "ntp" || src == "rns";
+}
+
+// A pidfile with a live pid (used by the rns-time status line). /proc keeps
+// this free of POSIX kill() so the Windows portal build shares the file.
+static bool pidfile_running(const char* path) {
+    std::string s = util::trim(util::read_file(path, 64));
+    if (s.empty()) return false;
+    char* end = nullptr;
+    long pid = strtol(s.c_str(), &end, 10);
+    if (!end || *end != '\0' || pid <= 0) return false;
+    return ::access(("/proc/" + std::to_string(pid)).c_str(), F_OK) == 0;
+}
+
+static std::string rnstime_status_html(const store::RnsTimeConfig& c) {
+    if (!c.enabled) return "<span class=\"badge warn\">disabled</span>";
+    std::string s = pidfile_running("/var/run/rnstime.pid")
+        ? "<span class=\"badge ok\">client running</span>"
+        : "<span class=\"badge err\">client stopped</span>";
+    if (c.serve) {
+        s += pidfile_running("/var/run/rnstime-server.pid")
+            ? " <span class=\"badge ok\">server running</span>"
+            : " <span class=\"badge err\">server stopped</span>";
+        std::string dest = util::trim(util::read_file("/run/rnstime.destination", 64));
+        if (!dest.empty())
+            s += " <span class=\"muted\">destination " + E(dest) + "</span>";
+    } else {
+        s += " <span class=\"muted\">serving off</span>";
+    }
+    return s;
 }
 
 static std::string rtc_html(const sysinfo::Rtc& rtc) {
@@ -401,6 +437,10 @@ void settings_page(const Request& req, Response& res) {
     std::string ntp_joined;
     for (size_t i = 0; i < ntp.size(); ++i) { if (i) ntp_joined += "\n"; ntp_joined += ntp[i]; }
 
+    store::RnsTimeConfig rt = store::read_rnstime();
+    std::string rt_servers = rt.servers;
+    for (char& c : rt_servers) if (c == ',') c = '\n';
+
     time_t now = ::time(nullptr);
     char ts[40]; struct tm tmv; gmtime_r(&now, &tmv);
     strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", &tmv);
@@ -421,13 +461,23 @@ void settings_page(const Request& req, Response& res) {
                  : "<span class=\"badge warn\">not synced</span>");
     h = R(std::move(h), "__CLOCK_SOURCE__", clock_source_html(src));
     h = R(std::move(h), "__RTC_STATUS__", rtc_html(rtc));
-    // NTP outranks a browser (see time_browser), so the button is moot once it
-    // has synced; the POST handler enforces it regardless.
-    h = R(std::move(h), "__BROWSER_BTN_ATTR__", src == "ntp" ? " disabled" : "");
-    h = R(std::move(h), "__BROWSER_NOTE__", src == "ntp"
-          ? "<span class=\"muted\">Not needed: NTP has synced the clock, and it takes precedence.</span>"
+    // Network time (NTP or rns-time) outranks a browser (see time_browser),
+    // so the button is moot once either has synced; the POST handler enforces
+    // it regardless.
+    h = R(std::move(h), "__BROWSER_BTN_ATTR__", clock_net_synced(src) ? " disabled" : "");
+    h = R(std::move(h), "__BROWSER_NOTE__", clock_net_synced(src)
+          ? "<span class=\"muted\">Not needed: " +
+            std::string(src == "rns" ? "Reticulum time (rns-time)" : "NTP") +
+            " has synced the clock, and it takes precedence.</span>"
           : "");
     h = R(std::move(h), "__NTP_SERVERS__", E(ntp_joined));
+    h = R(std::move(h), "__RNSTIME_ENABLED_ATTR__", rt.enabled ? " checked" : "");
+    h = R(std::move(h), "__RNSTIME_SERVE_ATTR__", rt.serve ? " checked" : "");
+    h = R(std::move(h), "__RNSTIME_SERVERS__", E(rt_servers));
+    h = R(std::move(h), "__RNSTIME_UPSTREAM__", E(rt.upstream));
+    h = R(std::move(h), "__RNSTIME_INTERVAL__", std::to_string(rt.interval));
+    h = R(std::move(h), "__RNSTIME_THRESHOLD__", E(rt.step_threshold));
+    h = R(std::move(h), "__RNSTIME_STATUS__", rnstime_status_html(rt));
     h = R(std::move(h), "__HOSTNAME__", E(host));
     h = R(std::move(h), "__WAN__", E(wan));
     // USB role card (empty unless the board is OTG-capable — see usb_state()).
@@ -602,6 +652,99 @@ void ntp_restart(const Request& req, Response& res) {
     render::redirect_flash(res, settings_redirect(), "success", msg);
 }
 
+void rnstime_set(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, false)) return;
+    store::RnsTimeConfig c = store::read_rnstime();
+
+    std::string raw = req.f("servers");
+    for (unsigned char ch : raw) {
+        if ((ch < 0x20 && ch != '\r' && ch != '\n' && ch != '\t') || ch == 0x7f) {
+            render::redirect_flash(res, settings_redirect(), "error",
+                "Server destination hashes must not contain control characters; nothing was saved.");
+            return;
+        }
+    }
+    size_t tokens = 0;
+    for (size_t i = 0; i < raw.size();) {
+        while (i < raw.size() && (isspace((unsigned char)raw[i]) ||
+                                  raw[i] == ',' || raw[i] == ';')) ++i;
+        size_t j = i;
+        while (j < raw.size() && !(isspace((unsigned char)raw[j]) ||
+                                   raw[j] == ',' || raw[j] == ';')) ++j;
+        if (j > i) ++tokens;
+        i = j;
+    }
+    std::vector<std::string> kept = store::clean_rnstime_servers(raw);
+    std::string joined;
+    for (size_t i = 0; i < kept.size(); ++i) { if (i) joined += ","; joined += kept[i]; }
+
+    c.enabled = req.f("enabled") == "on";
+    c.serve = req.f("serve") == "on";
+    c.servers = joined;
+    c.upstream = util::trim(req.f("upstream"));
+
+    std::string iv = util::trim(req.f("interval"));
+    if (!iv.empty()) {
+        bool digits = true;
+        for (char ch : iv) if (!isdigit((unsigned char)ch)) digits = false;
+        long n = digits ? atol(iv.c_str()) : 0;
+        if (!digits || n < 60 || n > 86400) {
+            render::redirect_flash(res, settings_redirect(), "error",
+                "Interval must be a whole number of seconds between 60 and 86400; nothing was saved.");
+            return;
+        }
+        c.interval = (int)n;
+    }
+    std::string th = util::trim(req.f("step_threshold"));
+    if (!th.empty()) c.step_threshold = th;
+
+    std::string err;
+    if (!store::write_rnstime(c, err)) {
+        render::redirect_flash(res, settings_redirect(), "error",
+            "rns-time not saved: " + err + ".");
+        return;
+    }
+
+    // Restart always: it also starts the optional server and picks up a new
+    // server list. Disabling stops both loops.
+    web::run_init("S88rnstime", c.enabled ? "restart" : "stop");
+
+    std::string msg = "Saved " + std::to_string(kept.size()) + " rns-time server" +
+                      (kept.size() == 1 ? "" : "s") + ".";
+    if (tokens > kept.size()) {
+        size_t dropped = tokens - kept.size();
+        msg += " " + std::to_string(dropped) + " invalid entr" +
+               (dropped == 1 ? "y" : "ies") + " ignored (a destination hash is 32 hex characters).";
+    }
+    msg += c.enabled ? " rns-time restarted." : " rns-time stopped.";
+    render::redirect_flash(res, settings_redirect(), "success", msg);
+}
+
+void rnstime_sync(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, false)) return;
+    store::RnsTimeConfig c = store::read_rnstime();
+    if (!c.enabled) {
+        render::redirect_flash(res, settings_redirect(), "error",
+            "rns-time is disabled; enable it first.");
+        return;
+    }
+    if (store::clean_rnstime_servers(c.servers).empty()) {
+        render::redirect_flash(res, settings_redirect(), "error",
+            "Add at least one rns-time server destination hash first.");
+        return;
+    }
+    int rc = util::run({"/etc/init.d/S88rnstime", "sync"}, "", 10).exit_code;
+    if (rc != 0) {
+        render::redirect_flash(res, settings_redirect(), "error",
+            "Could not start the sync (exit " + std::to_string(rc) +
+            "); see /var/log/rns-time.log.");
+        return;
+    }
+    render::redirect_flash(res, settings_redirect(), "success",
+        "Sync started in the background: reload in a few seconds to see the clock source "
+        "(log: /var/log/rns-time.log).");
+}
+
 void time_browser(const Request& req, Response& res) {
     if (!web::require_auth(req, res, false)) return;
     // Old: epoch = int(float(request.form.get("epoch",""))); empty/non-numeric =>
@@ -635,13 +778,17 @@ void time_browser(const Request& req, Response& res) {
         return;
     }
     struct LockGuard { int fd; ~LockGuard() { if (fd >= 0) ::close(fd); } } guard{lfd};   // close = unlock
-    // /run/clock-source precedence is ntp > browser > rtc: once NTP has stepped
-    // the clock, a browser time (at best off by the page's age) would only fight
-    // the running ntpd — and would be written into the RTC as well. Tested
-    // under the lock, so a one-shot that has just finished is seen.
-    if (sysinfo::clock_source() == "ntp") {
+    // /run/clock-source precedence is ntp/rns > browser > rtc: once network
+    // time (ordinary NTP or rns-time over the mesh) has stepped the clock, a
+    // browser time (at best off by the page's age) would only fight it — and
+    // would be written into the RTC as well. Tested under the lock, so a
+    // one-shot that has just finished is seen.
+    std::string src_now = sysinfo::clock_source();
+    if (clock_net_synced(src_now)) {
         render::redirect_flash(res, settings_redirect(), "error",
-            "The clock is already synced by NTP, which takes precedence; browser time not applied.");
+            src_now == "rns"
+                ? "The clock is already synced by Reticulum time (rns-time), which takes precedence; browser time not applied."
+                : "The clock is already synced by NTP, which takes precedence; browser time not applied.");
         return;
     }
     time_t e = (time_t)epoch;
@@ -653,10 +800,10 @@ void time_browser(const Request& req, Response& res) {
     }
     // Trusted wall clock from here on. clock-synced is only the derived marker
     // (exists iff clock-source does), so the source goes first. Re-read anyway
-    // (the one-shot records ntp under the same lock, so it shouldn't have
-    // landed since the test above): ntp stays the source.
+    // (a one-shot records ntp/rns under the same lock, so it shouldn't have
+    // landed since the test above): network time stays the source.
     // rnsd/lxmd/nomadnet need nothing from us: they run with or without a clock.
-    if (sysinfo::clock_source() != "ntp")
+    if (!clock_net_synced(sysinfo::clock_source()))
         util::write_file_atomic("/run/clock-source", "browser\n", 0644);
     util::write_file_atomic("/run/clock-synced", "", 0644);
 

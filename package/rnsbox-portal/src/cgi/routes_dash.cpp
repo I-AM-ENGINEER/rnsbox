@@ -85,6 +85,7 @@ static std::string fmt_uptime(long s) {
 // labels as the /dashboard/data patch() below.
 static std::string clock_badge(const std::string& src) {
     if (src == "ntp")     return "<span class=\"badge ok\">NTP</span>";
+    if (src == "rns")     return "<span class=\"badge ok\">Reticulum</span>";
     if (src == "rtc")     return "<span class=\"badge ok\">RTC</span>";
     if (src == "browser") return "<span class=\"badge ok\">browser</span>";
     return "<span class=\"badge warn\">none</span>";

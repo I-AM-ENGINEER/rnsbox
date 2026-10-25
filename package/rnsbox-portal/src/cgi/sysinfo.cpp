@@ -523,7 +523,7 @@ bool tcp_reachable(const std::string& host, int port, int timeout_ms) {
 
 std::string clock_source() {
     std::string s = util::trim(util::read_file("/run/clock-source", 64));
-    if (s == "rtc" || s == "ntp" || s == "browser") return s;
+    if (s == "rtc" || s == "ntp" || s == "rns" || s == "browser") return s;
     // Some images' NTP stepper records only the derived marker: the shipped
     // duo-01 S45ntpsync touches /run/clock-synced on a successful step and
     // never writes /run/clock-source, so the portal kept saying "not synced"

@@ -74,6 +74,8 @@ static const char* const POST_ONLY[] = {
     "/settings/time/browser",
     "/settings/ntp",
     "/settings/ntp/restart",
+    "/settings/rnstime",
+    "/settings/rnstime/sync",
     "/settings/ssh",
     "/settings/usb",
     "/settings/uart",
@@ -501,6 +503,8 @@ void handle(const http::Request& req, http::Response& res) {
     else if (p == "/settings/time/browser")      routes::time_browser(req, res);
     else if (p == "/settings/ntp")               routes::ntp_set(req, res);
     else if (p == "/settings/ntp/restart")       routes::ntp_restart(req, res);
+    else if (p == "/settings/rnstime")           routes::rnstime_set(req, res);
+    else if (p == "/settings/rnstime/sync")      routes::rnstime_sync(req, res);
     else if (p == "/settings/ssh")               routes::ssh_set(req, res);
     else if (p == "/settings/usb")               routes::usb_mode_set(req, res);
     else if (p == "/settings/uart")              routes::settings_uart(req, res);
