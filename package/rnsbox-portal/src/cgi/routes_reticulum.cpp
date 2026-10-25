@@ -669,13 +669,15 @@ void reticulum_page(const Request& req, Response& res) {
                     ? "The UART is attached but sl0 has no address."
                     : "The UART is not attached &mdash; is the modem wired?";
         }
-        std::string addr = halow_link_up
-            ? (halow_ip ? E(halow_peer) + ":" + std::to_string(halow_port)
-                        : E(sl.peer_ip))
-            : "<span class=\"muted\">&mdash;</span>";
+        // The card is filled by the async probe; before that answer it must
+        // say PENDING, not a stale UP/DOWN or a blank cell.
+        std::string pending = "<span class=\"badge\">PENDING</span>";
+        std::string addr = halow_ip
+            ? E(halow_peer) + ":" + std::to_string(halow_port)
+            : E(halow_peer);
         halow =
             "<table class=\"kv\" id=\"halow-kv\">\n"
-            "    <tr><th>Status</th><td id=\"halow-status\">" + link + "</td></tr>\n"
+            "    <tr><th>Status</th><td id=\"halow-status\">" + pending + "</td></tr>\n"
             "    <tr><th>Address</th><td id=\"halow-addr\">" + addr + "</td></tr>\n"
             "    <tr><th>Radio</th><td id=\"halow-radio\"><span class=\"muted\">&mdash;</span></td></tr>\n"
             "    <tr><th>Airtime</th><td id=\"halow-air\"><span class=\"muted\">&mdash;</span></td></tr>\n"
@@ -844,11 +846,10 @@ void reticulum_status(const Request& req, Response& res) {
     res.body = o;
 }
 
-// Short-TTL cache for the halow.py result. One helper run costs ~1.5 s of CPU
-// on the C906 (python start + 3 HTTP-over-SLIP calls), and the dashboard's
-// auto-refresh (5 s option) plus a Reticulum tab would otherwise each spawn one
-// per tick. Requests inside the TTL reuse the last good JSON; a flock makes
-// concurrent misses single-flight (the waiter then finds the fresh cache).
+// Short-TTL cache for the live modem JSON. A query is three HTTP round-trips
+// over the SLIP link, and the dashboard plus a Reticulum tab would otherwise
+// each repeat them per poll. Requests inside the TTL reuse the last good JSON;
+// a flock makes concurrent misses single-flight (the waiter finds the cache).
 constexpr const char* HALOW_CACHE = "/run/rnsbox-halow.json";
 constexpr const char* HALOW_LOCK  = "/run/rnsbox-halow.lock";
 constexpr int HALOW_TTL = 10;   // seconds
@@ -867,10 +868,159 @@ static bool halow_cache_fresh(std::string& out) {
 
 static void halow_cache_drop() { ::unlink(HALOW_CACHE); }
 
+
+// ---- HaLow status without a helper process -----------------------------
+// This used to shell out to python3 + urllib.request. On the C906 an
+// interpreter start plus that import chain costs several seconds of CPU;
+// with the dashboard polling, the box stayed pegged. The modem speaks plain
+// HTTP/1.0 JSON, so query it in-process with modem::get and build the reply
+// here. Same shape as the old halow.py output, which the pages already parse.
+
+static std::string jnum_or_str(const json::Value* v) {
+    if (!v || v->is_null()) return "null";
+    if (v->is_number()) {
+        char b[64];
+        std::snprintf(b, sizeof b, "%.10g", v->as_number());
+        return b;
+    }
+    if (v->is_bool()) return v->as_bool() ? "true" : "false";
+    if (v->is_string()) return "\"" + http::json_escape(v->as_string()) + "\"";
+    return "null";
+}
+
+static const json::Value* first_val(const json::Value* a, const json::Value* b = nullptr,
+                                    const json::Value* c = nullptr) {
+    if (a && !a->is_null()) return a;
+    if (b && !b->is_null()) return b;
+    if (c && !c->is_null()) return c;
+    return nullptr;
+}
+
+static const json::Value* field(const json::Value* obj, const char* name) {
+    return (obj && obj->is_object()) ? obj->find(name) : nullptr;
+}
+
+static bool modem_json(const std::string& peer, const char* endpoint, json::Value& out) {
+    std::string raw;
+    if (!modem::get(peer, endpoint, raw, 3)) return false;
+    size_t p = raw.find("\r\n\r\n");
+    std::string body = (p == std::string::npos) ? raw : raw.substr(p + 4);
+    std::string err;
+    return json::parse(body, out, err) && out.is_object();
+}
+
+static std::string halow_status_json() {
+    store::SlipConfig sl = store::read_slip();
+    bool enabled = truthy(sl.enabled);
+    std::string peer = util::trim(sl.peer_ip);
+    if (peer.empty()) peer = "192.168.7.2";
+    std::string mode = util::trim(sl.mode);
+    if (mode != "ip") mode = "slip";
+    bool net = (mode == "ip");
+    bool sl0 = sysinfo::slip_status().up;
+
+    std::string o;
+    o.reserve(2048);
+    o += "{\"enabled\":";
+    o += enabled ? "true" : "false";
+    o += ",\"peer\":\"" + http::json_escape(peer) + "\"";
+    o += ",\"mode\":\"" + http::json_escape(mode) + "\"";
+    o += ",\"local\":\"" + http::json_escape(util::trim(sl.local_ip)) + "\"";
+    o += ",\"sl0_up\":";
+    o += sl0 ? "true" : "false";
+
+    bool query = enabled && (net || sl0);
+    json::Value stat, allc, near;
+    bool have_stat = query && modem_json(peer, "get_stat", stat);
+    bool have_all  = query && modem_json(peer, "get_all", allc);
+    if (!have_stat && !have_all) {
+        o += ",\"reachable\":false,\"neighbours\":[]}";
+        return o;
+    }
+    if (query) (void)modem_json(peer, "get_nearby_modems", near);
+
+    const json::Value* H = field(&allc, "halow");
+    const json::Value* R = field(&stat, "radio");
+    const json::Value* D = field(&stat, "device");
+    const json::Value* T = field(&allc, "tcp");
+
+    o += ",\"reachable\":true";
+    const json::Value* port = field(T, "port");
+    if (port && port->is_number())
+        o += ",\"tcp_port\":" + std::to_string(port->as_int(4242));
+    const json::Value* conn = field(T, "connected");
+    if (conn && conn->is_string()) {
+        std::string c = conn->as_string();
+        o += ",\"connected\":\"" + http::json_escape(c) + "\"";
+        o += ",\"rnsd_up\":";
+        o += (c.empty() || c == "no connection") ? "false" : "true";
+    } else {
+        o += ",\"rnsd_up\":false";
+    }
+
+    o += ",\"radio\":{";
+    o += "\"freq\":" + jnum_or_str(first_val(field(H, "central_freq"),
+                                               field(R, "central_freq"),
+                                               field(R, "freq")));
+    o += ",\"bw\":" + jnum_or_str(first_val(field(H, "bandwidth"),
+                                            field(R, "bandwidth"),
+                                            field(R, "bw")));
+    o += ",\"mcs\":" + jnum_or_str(first_val(field(H, "mcs_index"),
+                                             field(R, "mcs_index"),
+                                             field(R, "mcs")));
+    o += ",\"power\":" + jnum_or_str(first_val(field(H, "power_dbm"),
+                                               field(R, "power_dbm"),
+                                               field(R, "power")));
+    o += "}";
+
+    o += ",\"device\":{";
+    o += "\"temp\":" + jnum_or_str(field(D, "chip_temp"));
+    o += ",\"fw\":" + jnum_or_str(field(D, "ver"));
+    o += ",\"uptime\":" + jnum_or_str(field(D, "uptime"));
+    o += ",\"hostname\":" + jnum_or_str(field(D, "hostname"));
+    o += "}";
+
+    o += ",\"stats\":{";
+    o += "\"airtime\":" + jnum_or_str(field(R, "airtime"));
+    o += ",\"ch_util\":" + jnum_or_str(field(R, "ch_util"));
+    o += ",\"noise\":" + jnum_or_str(first_val(field(R, "bg_pwr_dbm"), field(R, "noise")));
+    o += ",\"rx_speed\":" + jnum_or_str(field(R, "rx_speed"));
+    o += ",\"tx_speed\":" + jnum_or_str(field(R, "tx_speed"));
+    o += ",\"rx_bytes\":" + jnum_or_str(field(R, "rx_bytes"));
+    o += ",\"tx_bytes\":" + jnum_or_str(field(R, "tx_bytes"));
+    o += "}";
+
+    o += ",\"neighbours\":[";
+    const json::Value* d = field(&near, "d");
+    if (d && d->is_array()) {
+        bool first = true;
+        for (const json::Value& n : d->arr) {
+            if (!n.is_object()) continue;
+            if (!first) o += ",";
+            first = false;
+            o += "{\"mac\":" + jnum_or_str(field(&n, "mac"));
+            o += ",\"rssi\":" + jnum_or_str(field(&n, "rx_rssi"));
+            o += ",\"snr\":" + jnum_or_str(field(&n, "rx_snr"));
+            o += ",\"rx_mcs\":" + jnum_or_str(field(&n, "rx_mcs"));
+            o += ",\"tx_mcs\":" + jnum_or_str(field(&n, "tx_mcs"));
+            o += ",\"tx_acked\":" + jnum_or_str(field(&n, "tx_acked"));
+            o += ",\"tx_frames\":" + jnum_or_str(field(&n, "tx_frames"));
+            o += ",\"tx_loss\":" + jnum_or_str(field(&n, "tx_loss_pct"));
+            o += ",\"age\":" + jnum_or_str(field(&n, "rx_last_age"));
+            o += "}";
+        }
+    }
+    o += "]}";
+    return o;
+}
+
 // Best-effort live-modem endpoint (JSON for the dashboard + Reticulum cards).
 void reticulum_halow(const Request& req, Response& res) {
     if (!web::require_auth(req, res, true)) return;
     res.content_type = "application/json";
+    // The answer is live-ish and the JS polls it; a browser cache (or a
+    // back/forward restore) must never resurrect an old UP/DOWN state.
+    res.headers.push_back("Cache-Control: no-store");
     std::string cached;
     if (halow_cache_fresh(cached)) { res.body = cached; return; }
 
@@ -885,23 +1035,9 @@ void reticulum_halow(const Request& req, Response& res) {
     // Live modem status is HTTP-over-SLIP + JSON — delegated to the python helper
     // (fails soft). It only spawns on this async fetch, never on a page paint,
     // and only when the page renders the card (SLIP enabled).
-    util::RunResult rr = util::run({"/usr/bin/python3", "/usr/lib/rnsbox/halow.py"}, "", 10);
-    std::string out = util::trim(rr.out);
-    if (rr.exit_code == 0 && !out.empty() && out[0] == '{') {
-        util::write_file_atomic(HALOW_CACHE, rr.out, 0600);   // best-effort
-        res.body = rr.out;
-        return;
-    }
-    // helper missing/failed — minimal best-effort shape so the JS still renders.
-    store::SlipConfig sl = store::read_slip();
-    bool enabled = truthy(sl.enabled);
-    bool sl0_up = sysinfo::slip_status().up;
-    std::string peer = sl.peer_ip.empty() ? "192.168.7.2" : sl.peer_ip;
-    res.body = std::string("{\"enabled\":") + (enabled ? "true" : "false") +
-        ",\"peer\":\"" + http::json_escape(peer) + "\"" +
-        ",\"local\":\"" + http::json_escape(sl.local_ip) + "\"" +
-        ",\"sl0_up\":" + (sl0_up ? "true" : "false") +
-        ",\"reachable\":false,\"neighbours\":[]}";
+    std::string out = halow_status_json();
+    util::write_file_atomic(HALOW_CACHE, out, 0600);   // best-effort
+    res.body = out;
 }
 
 // ===================== PRG POST handlers =====================
@@ -1974,7 +2110,7 @@ constexpr int RNSTATUS_TTL = 5;   // serve a cached snapshot up to 5 s old
 // Without the resident helper every refresh is a full Python start. On a
 // low-RAM board that must not happen every poll: the CLI path is floored at
 // this age, and the page says how old the table is meanwhile.
-constexpr int RNSTATUS_CLI_TTL = 120;
+constexpr int RNSTATUS_CLI_TTL = 600;
 // A failed/aborted refresh must not spawn a new helper on every poll.
 constexpr int RNSTATUS_RETRY = 10;
 // A mesh node can run a lot of interfaces (every discovered AutoInterface

@@ -23,11 +23,8 @@ import queue
 import socket
 import struct
 import sys
-import tarfile
 import threading
 import time
-import urllib.request
-import zlib
 
 ETH_P_OTA = 0x4847
 BROADCAST = "ff:ff:ff:ff:ff:ff"
@@ -317,13 +314,36 @@ def scan_iface(iface, packet_cnt=10, sniff=0.6):
 
 
 def http_json(ip, path, timeout=2.5):
+    # Raw socket instead of urllib.request: the latter's import chain is
+    # several seconds of CPU on this box, and a scan runs it just to read one
+    # small JSON object.
+    sock = None
     try:
-        req = urllib.request.Request("http://%s%s" % (ip, path),
-                                     headers={"Accept-Encoding": "identity"})
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read().decode("utf-8", "replace"))
+        sock = socket.create_connection((ip, 80), timeout=timeout)
+        req = ("GET %s HTTP/1.0\r\nHost: %s\r\n"
+               "Accept-Encoding: identity\r\nConnection: close\r\n\r\n"
+               % (path, ip))
+        sock.sendall(req.encode("ascii"))
+        chunks = []
+        while True:
+            b = sock.recv(65536)
+            if not b:
+                break
+            chunks.append(b)
+        raw = b"".join(chunks)
+        head, _, body = raw.partition(b"\r\n\r\n")
+        status = head.split(b"\r\n", 1)[0]
+        if b" 200 " not in status + b" ":
+            return None
+        return json.loads(body.decode("utf-8", "replace"))
     except Exception:
         return None
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
 
 
 def enrich_devices(raw):
@@ -387,6 +407,11 @@ def slip_device():
     peer = cfg.get("peer_ip") or "192.168.7.2"
     st = http_json(peer, "/api/get_stat", timeout=2.0)
     dev = (st or {}).get("device") or {}
+    # No answer (or an answer without an identity): the modem is not there,
+    # and a phantom MAC-less row would then be scheduled as "version
+    # unknown". Report the link as down instead.
+    if not dev.get("mac"):
+        return None
     d = {
         "mac": str(dev.get("mac", "") or "").lower(),
         "iface": "slip",
@@ -579,6 +604,7 @@ def tftp_put(ip, remote, data, port=69, timeout=1.0, retries=3):
 # -------------------------------------------------------------- firmware ----
 def load_firmware(path):
     """Return (fw_bytes, [ (name, bytes) filesystem entries ])."""
+    import tarfile
     if tarfile.is_tarfile(path):
         files = []
         fw = None
@@ -687,6 +713,7 @@ def _target_version(path, fw, hint=""):
 
 
 def cmd_flash(iface, mac, path, version_hint=""):
+    import zlib
     started = time.time()
     try:
         fd = os.open(LOCK, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -710,7 +737,7 @@ def cmd_flash(iface, mac, path, version_hint=""):
         block = max(512, min(1400, mtu - 22)) & ~3
         log("interface %s, MTU %d, block %d B" % (iface, mtu, block))
         log("image: %s, %s, crc32 %08x" %
-            (label, _size(len(fw)), zlib.crc32(fw) & 0xFFFFFFFF))
+            (label, _size(len(fw)), (zlib.crc32(fw) & 0xFFFFFFFF)))
         if files:
             log("filesystem: %d file(s), %s" %
                 (len(files), _size(sum(len(d) for _, d in files))))

@@ -19,6 +19,7 @@
 #include <cctype>
 #include <cerrno>
 #include <cstdlib>
+#include <ctime>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -45,6 +46,8 @@ constexpr const char* FW_LOCK   = "/run/rnsbox-halow-flasher.lock";
 constexpr const char* PREFLASH  = "/usr/share/rnsbox-portal/preflash.bin";
 constexpr const char* BUNDLED   = "/usr/share/rnsbox-portal/halow-firmware/halow-fw.tar";
 constexpr const char* OTA_STATE = "/run/rnsbox-halow-ota.json";
+constexpr const char* FW_SCAN_CACHE = "/run/rnsbox-halow-scan.json";
+constexpr int SCAN_TTL = 60;   // seconds; a scan costs a python start on this CPU
 
 bool iface_ok(const std::string& s) {
     if (s.empty() || s.size() > 16) return false;
@@ -101,7 +104,20 @@ void flasher_page(const Request& req, Response& res) {
 void flasher_scan(const Request& req, Response& res) {
     if (!web::require_auth(req, res, true)) return;
     res.content_type = "application/json";
-    res.body = run_helper({"scan"}, 15);
+    // Debounce: a scan sends raw HGIC probes and an HTTP round-trip over the
+    // 2 Mbaud SLIP link. An open page (or a stale page with auto-refresh)
+    // must not be able to run one every few seconds.
+    struct stat st;
+    time_t now = ::time(nullptr);
+    if (::stat(FW_SCAN_CACHE, &st) == 0 && st.st_mtime <= now &&
+        now - st.st_mtime < SCAN_TTL) {
+        std::string cached = util::trim(util::read_file(FW_SCAN_CACHE, 256 * 1024));
+        if (!cached.empty() && cached[0] == '{') { res.body = cached; return; }
+    }
+    std::string body = run_helper({"scan"}, 15);
+    if (body.find("\"devices\"") != std::string::npos)
+        util::write_file_atomic(FW_SCAN_CACHE, body, 0644);
+    res.body = body;
 }
 
 void flasher_status(const Request& req, Response& res) {

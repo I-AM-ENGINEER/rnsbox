@@ -272,8 +272,6 @@ std::string echobot_cards(const std::string& base) {
         badge = "<span class=\"badge\">disabled</span>";
     else
         badge = "<span class=\"badge warn\">stopped</span>";
-    if (running && !detail.empty())
-        badge += " <span class=\"muted\">" + E(detail) + "</span>";
     if (!running && !status.empty() && status != "running" && status != "stopped")
         badge += " <span class=\"muted\">(last state: " + E(status) + (detail.empty() ? "" : ": " + detail) + ")</span>";
 
@@ -324,7 +322,6 @@ std::string echobot_dashboard_card(const std::string& base) {
 
     std::string state = util::read_file(ECHOBOT_STATE, 65536);
     bool running = echobot_running();
-    std::string detail = json_str(state, "detail");
     std::string dest   = json_str(state, "dest_hash");
     std::string dname  = json_str(state, "display_name");
     long last_announce = json_num(state, "last_announce");
@@ -335,8 +332,6 @@ std::string echobot_dashboard_card(const std::string& base) {
     std::string badge = running
         ? "<span class=\"badge ok\">running</span>"
         : "<span class=\"badge warn\">stopped</span>";
-    if (running && !detail.empty())
-        badge += " <span class=\"muted\">" + E(detail) + "</span>";
 
     std::string addr = dest.empty()
         ? "<span class=\"muted\">not created yet</span>"

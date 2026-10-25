@@ -206,11 +206,11 @@ __HALOW_SCRIPT__
   function refreshData(){
     return fetch('__BASE__/dashboard/data').then(function(r){return r.json();}).then(function(d){ if(d && !d.error) patch(d); }).catch(function(){});
   }
-  // Live dashboard: a fixed 1 s refresh, always on (the JSON is cheap —
-  // procfs + pidfile reads, no subprocess). The HaLow card keeps its own
-  // slower cadence: its endpoint caches for 10 s and a python helper backs
-  // it, so it must not ride the 1 s tick.
+  // 1 s is fine: /dashboard/data is a compiled endpoint reading procfs and
+  // pidfiles, and the heavy HaLow path is in-process now. Only poll while the
+  // tab is visible; a hidden tab must not keep spawning CGI processes.
   function tick(){
+    if (document.hidden) return;
     refreshData();
   }
   tick();
@@ -219,6 +219,8 @@ __HALOW_SCRIPT__
     loadWifi();
     setInterval(loadWifi, 5000);
   }
-  if(window.__loadHalow){ setInterval(window.__loadHalow, 5000); }
+  // The modem probe crosses the 2 Mbaud serial link; polling it every few
+  // seconds starves the rest of the box. 30s is plenty for a status card.
+  if(window.__loadHalow){ setInterval(function(){ if(!document.hidden) window.__loadHalow(); }, 30000); }
 })();
 </script>

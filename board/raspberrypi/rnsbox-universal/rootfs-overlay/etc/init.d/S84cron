@@ -86,11 +86,12 @@ gen_crontab() {
 			# daily at 05:00: check for a newer rnsd and download its wheel (offline-safe)
 			echo "0 5 * * * /usr/sbin/rnsbox-update-check >> $LOG 2>&1"
 		fi
-		# Hourly at :23: scheduled HaLow firmware updates. The wrapper exits
-		# before spawning Python when auto-update is off; when on, it only
-		# downloads/flashes at the pre-computed scheduled moment.
+		# Every two hours at :23: scheduled HaLow firmware updates. This is
+		# also the only automatic modem discovery: the raw probe plus an HTTP
+		# round-trip over the 2 Mbaud SLIP link is too heavy to run often.
+		# With auto-update off the wrapper returns before doing either.
 		if [ -x /usr/sbin/rnsbox-halow-update ]; then
-			echo "23 * * * * /usr/sbin/rnsbox-halow-update >> $LOG 2>&1"
+			echo "23 */2 * * * /usr/sbin/rnsbox-halow-update >> $LOG 2>&1"
 		fi
 		# A/B system-update tick: rnsbox-sysupdate reconciles a pending slot
 		# flip, then honours the 7-14 day jittered schedule (next_check in

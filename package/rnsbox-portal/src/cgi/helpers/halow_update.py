@@ -36,6 +36,11 @@ PORTAL = "/usr/sbin/rnsbox-portal"
 SOAK = 3 * 86400
 JITTER = 7 * 86400
 RETRY = 6 * 3600
+# Discovery is expensive (raw HGIC probes plus an HTTP round-trip over the
+# 2 Mbaud SLIP link), so even with auto-updates on it runs at most every two
+# hours. The web UI's "Scan now" is a manual action on top of that.
+SCAN_TTL = 2 * 3600
+LATEST_TTL = 3600
 
 
 def now():
@@ -71,6 +76,26 @@ def read_state():
     if not isinstance(st.get("devices"), dict):
         return {}
     return st
+
+
+def prune_stale_rows(st):
+    """Drop rows written before the modem's MAC was known.
+
+    Older versions keyed such a device by IP; once the version was read the
+    same modem also appeared under its MAC and the list showed it twice.
+    """
+    devices = st.get("devices")
+    if not isinstance(devices, dict):
+        return False
+    known = {e.get("ip"): k for k, e in devices.items()
+             if e.get("mac") and e.get("ip")}
+    changed = False
+    for k in list(devices):
+        e = devices[k]
+        if not e.get("mac") and (e.get("ip") or "") in known:
+            del devices[k]
+            changed = True
+    return changed
 
 
 def write_state(st):
@@ -150,8 +175,14 @@ def discover():
         ip = (d.get("ip") or "").strip()
         if not ip:
             continue
+        mac = (d.get("mac") or "").lower()
+        # Without a MAC there is no stable device identity: the old code
+        # keyed it by IP, then a later scan found the MAC and the same modem
+        # appeared twice in the schedule.
+        if not mac:
+            continue
         devs.append({
-            "mac": (d.get("mac") or "").lower(),
+            "mac": mac,
             "iface": d.get("iface") or "",
             "ip": ip,
             "transport": d.get("transport") or "raw",
@@ -166,6 +197,24 @@ def plan(st, devs, latest):
     keyed = st.setdefault("devices", {})
     seen = set()
     new_ver = ver(latest["tag"])
+
+    # An early scan may have stored a modem before its MAC was readable, keyed
+    # by IP. Once the MAC is known, move that schedule to the MAC key instead
+    # of leaving two rows for the same device in the auto-update table.
+    for key in list(keyed):
+        e = keyed.get(key) or {}
+        if e.get("mac"):
+            continue
+        for d in devs:
+            if d["mac"] and d["ip"] and d["ip"] == (e.get("ip") or ""):
+                merged = dict(e)
+                merged.update(keyed.get(d["mac"]) or {})
+                merged.update({"mac": d["mac"], "ip": d["ip"],
+                               "iface": d.get("iface") or e.get("iface", "")})
+                keyed[d["mac"]] = merged
+                del keyed[key]
+                break
+
     for d in devs:
         key = d["mac"] or d["ip"]
         seen.add(key)
@@ -202,9 +251,16 @@ def plan(st, devs, latest):
                 e = s
         keyed[key] = e
 
-    for key, e in keyed.items():
-        if key not in seen:
-            e["online"] = False
+    ip_seen = {d["ip"] for d in devs if d["ip"]}
+    for key in list(keyed):
+        e = keyed[key]
+        if key in seen:
+            continue
+        # Drop a MAC-less leftover that the same device now covers by IP.
+        if not e.get("mac") and (e.get("ip") or "") in ip_seen:
+            del keyed[key]
+            continue
+        e["online"] = False
 
     st["latest"] = latest["tag"]
     st["checked"] = now()
@@ -216,21 +272,53 @@ def latest_stable():
     return rels[0][1] if rels else None
 
 
+def remember_latest(st, rel):
+    st["latest_rel"] = {k: rel.get(k) for k in
+                        ("tag", "published", "asset", "url")}
+    st["latest_checked"] = now()
+
+
+def cached_latest(st):
+    rel = st.get("latest_rel")
+    if not isinstance(rel, dict) or not rel.get("tag"):
+        return None
+    if now() - int(st.get("latest_checked") or 0) > LATEST_TTL:
+        return None
+    return rel
+
+
 def cmd_status():
     conf = read_conf()
     st = read_state()
-    latest, error = None, ""
-    try:
-        latest = latest_stable()
-    except Exception as exc:  # noqa: BLE001
-        error = str(exc)
-
-    if latest:
-        devs, derr = discover()
-        if derr and not devs:
-            error = derr
-        plan(st, devs, latest)
+    if prune_stale_rows(st):
         write_state(st)
+    auto = auto_on(conf)
+    latest, error = cached_latest(st), ""
+    if latest is None:
+        try:
+            latest = latest_stable()
+            if latest:
+                remember_latest(st, latest)
+        except Exception as exc:  # noqa: BLE001
+            error = str(exc)
+            # A stale tag is better than an empty table while GitHub is down.
+            rel = st.get("latest_rel")
+            latest = rel if isinstance(rel, dict) and rel.get("tag") else None
+
+    # Discovery is the expensive part (raw HGIC probes + an HTTP round-trip
+    # over the 2 Mbaud SLIP link). The UI must not trigger it on every paint:
+    # only the scheduled updater may, and at most once per SCAN_TTL.
+    if latest and auto:
+        last = int(st.get("last_scan") or 0)
+        if not st.get("devices") or now() - last >= SCAN_TTL:
+            devs, derr = discover()
+            if derr and not devs:
+                error = error or derr
+            plan(st, devs, latest)
+            st["last_scan"] = now()
+            write_state(st)
+    elif latest:
+        st["latest"] = latest["tag"]
 
     out = {
         "auto": auto_on(conf),
@@ -265,6 +353,8 @@ def cmd_tick():
         return 0
 
     st = read_state()
+    if prune_stale_rows(st):
+        write_state(st)
     try:
         latest = latest_stable()
     except Exception as exc:  # noqa: BLE001
@@ -273,9 +363,11 @@ def cmd_tick():
         return 1
     if not latest:
         return 0
+    remember_latest(st, latest)
 
     devs, _ = discover()
     plan(st, devs, latest)
+    st["last_scan"] = now()
     write_state(st)
     if not devs:
         return 0

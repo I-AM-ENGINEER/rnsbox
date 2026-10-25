@@ -125,8 +125,9 @@
     # scan for peers that only advertise (Columba/Sideband on Android).
     enable_central = yes
     enabled = yes
-    # Balanced scanning (every 5 s).
-    power_mode = balanced
+    # Saver: a 0.5 s scan every 30-60 s. Balanced scanning kept the
+    # AIC8800 SDIO busy and the box pegged; the slower cadence is plenty.
+    power_mode = saver
     min_rssi = -95
     advertise_interval_ms = 100
     # Keep it short: BLE advertisements have a 31-byte budget.
