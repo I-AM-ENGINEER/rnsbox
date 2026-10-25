@@ -235,9 +235,12 @@
       Reticulum framing, acknowledgements, retries and half-duplex turnaround all take their share.</p>
     </div>
 
-    <div class="form-actions" style="margin-top:10px">
+    <!-- Pairing applies the selected peer (the Pair handler submits this
+         form); this row appears only after a radio/transport field changes. -->
+    <div class="form-actions" style="margin-top:10px" id="rnode-save-row" hidden>
       <span class="muted">saving restarts rnsd</span>
-      <button type="submit" class="btn-primary">Save &amp; apply</button>
+      <button type="submit" class="btn-primary"
+        title="Pairing already applies the peer; save here only after changing the radio parameters or transport">Save &amp; apply</button>
     </div>
   </form>
 </section>
@@ -421,6 +424,19 @@ function rnodePair(addr, name, btn){
     if (msg) { msg.textContent = ' ' + (e.message || 'pairing failed'); msg.style.color = 'var(--err)'; }
   });
 }
+
+(function(){
+  var f = document.getElementById('rnode-form');
+  var row = document.getElementById('rnode-save-row');
+  if (!f || !row) return;
+  function dirty(ev){
+    var t = ev.target;
+    if (!t || t.type === 'hidden' || t.id === 'btn-rnode-scan') return;
+    row.hidden = false;
+  }
+  f.addEventListener('input', dirty);
+  f.addEventListener('change', dirty);
+})();
 
 document.addEventListener('DOMContentLoaded', rnodeStatusRefresh);
 setInterval(rnodeStatusRefresh, 15000);
