@@ -1,24 +1,40 @@
 From: RNSBox <rnsbox@localhost>
-Subject: [PATCH] riscv: dts: sophgo: clock the EVB SLIP UARTs at 96 MHz
+Subject: [PATCH] riscv: dts: sophgo: program the SLIP UART clock at probe time
 
-Set the camera PLL to 96 MHz; UART1/UART2 take it as their baud clock
-(previous patch), which makes the modem 2 Mbaud exact.
+Assigning a PLL rate on the clock-controller node runs in of_clk_init(),
+before the timers are up; the PLL lock poll never returns and the EVB
+stops right after "legacy bootconsole [sbi0] enabled". This happened
+with both the disppll and the cam0pll assignment.
 
-The PLL gets mipimpll as its reference and therefore runs in fractional
-mode (fpll_set_parent clears the bypass enable). clk_cam0_200 is
-deliberately left alone: it stays at the bootloader rate (25 MHz crystal)
-for the console, and disppll is not touched at all (it also feeds
-AXI/CPU, so changing it hangs userspace).
+Move the assignment to the uart2 consumer node. of_clk_set_defaults()
+then runs at probe time, after the clock framework and the timers are
+ready, and the 8250 reads the resulting 96 MHz when it probes.
+
+UART1/UART2 take cam0pll as their baud clock (previous patch). 96 MHz
+makes the modem 2 Mbaud exact; clk_cam0_200 stays on the crystal for the
+console and disppll (AXI/CPU) is not touched at all.
 
 --- a/arch/riscv/boot/dts/sophgo/sg2000-duomodule01-evb.dts
 +++ b/arch/riscv/boot/dts/sophgo/sg2000-duomodule01-evb.dts
-@@ -304,8 +304,8 @@
+@@ -304,9 +304,6 @@
   * this mux in a state Linux can rely on, so pin parent and rate here.
   */
  &clk {
 -	assigned-clocks = <&clk CLK_CAM0_200>;
 -	assigned-clock-parents = <&clk CLK_DISPPLL>;
+-	assigned-clock-rates = <96000000>;
+ };
+ 
+ /*
+@@ -325,6 +322,11 @@
+  * and the UART card in Settings shows it. UART1 is muxed by S31slip; the
+  * other pads need a board-specific fmux setup before use. */
+ &uart2 {
++	/* Programmed at probe: of_clk_init runs before the timers, and the
++	 * PLL lock poll never returns there. */
 +	assigned-clocks = <&clk CLK_CAM0PLL>;
 +	assigned-clock-parents = <&clk CLK_MIPIMPLL>;
- 	assigned-clock-rates = <96000000>;
- };
++	assigned-clock-rates = <96000000>;
+ 	pinctrl-names = "default";
+ 	pinctrl-0 = <&uart2_cfg>;
+ 	status = "okay";
