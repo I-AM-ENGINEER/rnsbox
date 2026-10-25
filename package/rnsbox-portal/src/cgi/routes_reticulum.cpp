@@ -750,8 +750,8 @@ void reticulum_page(const Request& req, Response& res) {
             "        </select></label>\n"
             "      <label style=\"margin:0\">Central mode\n"
             "        <select name=\"enable_central\" title=\"Central mode makes the box scan for other Reticulum BLE peers and connect to them. Phones connect TO the box (peripheral) without it; leaving it off avoids radio contention with the phone's own connection attempts.\">\n"
-            "          <option value=\"no\" __BT_EC_NO__>No — peripheral only (recommended)</option>\n"
-            "          <option value=\"yes\" __BT_EC_YES__>Yes — also connect to advertising peers</option>\n"
+            "          <option value=\"no\" __BT_EC_NO__>No — peripheral only</option>\n"
+            "          <option value=\"yes\" __BT_EC_YES__>Yes — also connect to advertising peers (default)</option>\n"
             "        </select></label>\n"
             "    </div>\n"
             "    <div class=\"form-actions\" style=\"margin-top:10px\">\n"
@@ -2128,6 +2128,7 @@ constexpr int RNSTATUS_TTL = 5;   // serve a cached snapshot up to 5 s old
 // low-RAM board that must not happen every poll: the CLI path is floored at
 // this age, and the page says how old the table is meanwhile.
 constexpr int RNSTATUS_CLI_TTL = 60;
+constexpr const char* RNSTATUS_FORCE_MARK = "/run/rnsbox-rnstatus-force";
 // A failed/aborted refresh must not spawn a new helper on every poll.
 constexpr int RNSTATUS_RETRY = 10;
 // A mesh node can run a lot of interfaces (every discovered AutoInterface
@@ -2448,7 +2449,7 @@ static void touch_file(const char* path) {
 // under a second; the CLI is only a fallback and must not run on every poll
 // (that is what saturated the single core when a page stayed open). Returns
 // false only when nothing was written, so the caller can back off.
-static bool rnstatus_refresh_job() {
+static bool rnstatus_refresh_job(bool force = false) {
     std::string body, detail;
 #ifndef _WIN32
     std::string raw;
@@ -2460,7 +2461,7 @@ static bool rnstatus_refresh_job() {
     touch_file(RNSTATUS_ATTEMPT);
 #endif
     long age = rnstatus_age();
-    if (age >= 0 && age < RNSTATUS_CLI_TTL) return true;  // keep the stale one
+    if (!force && age >= 0 && age < RNSTATUS_CLI_TTL) return true;  // keep the stale one
     if (rnstatus_from_cli(body, detail)) {
         ::unlink(RNSTATUS_ATTEMPT);
         return true;
@@ -2549,15 +2550,43 @@ void reticulum_rnstatus(const Request& req, Response& res) {
     if (!web::require_auth(req, res, true)) return;
     res.content_type = "application/json";
     std::string cached;
+    // Manual refresh: bypass the TTL and wait for a real query. Throttled
+    // server-side to one per 5 s so a held-down button cannot run the CLI.
+    if (req.query.find("force=1") != std::string::npos) {
+        struct stat mst;
+        time_t now = ::time(NULL);
+        if (::stat(RNSTATUS_FORCE_MARK, &mst) == 0 && mst.st_mtime <= now &&
+            now - mst.st_mtime < 5) {
+            cached = util::read_file(RNSTATUS_CACHE, RNSTATUS_MAX);
+            std::string t = util::trim(cached);
+            if (!t.empty() && t[0] == '{') { res.body = with_age_s(t); return; }
+        }
+        util::write_file_atomic(RNSTATUS_FORCE_MARK, "1", 0600);
+        ::unlink(RNSTATUS_ATTEMPT);
+        // Do not run Python in the HTTP request: mark the snapshot due and
+        // let the next 5 s poll start the detached refresher.
+        cached = util::read_file(RNSTATUS_CACHE, RNSTATUS_MAX);
+        std::string fresh = util::trim(cached);
+        if (!fresh.empty() && fresh[0] == '{') { res.body = with_age_s(fresh); return; }
+        res.body = "{\"error\":\"no status snapshot yet\"}";
+        return;
+    }
     if (rnstatus_fresh(cached)) { res.body = with_age_s(cached); return; }
 
+    bool forced = false;
+    {
+        struct stat fm;
+        time_t now = ::time(NULL);
+        forced = ::stat(RNSTATUS_FORCE_MARK, &fm) == 0 && fm.st_mtime <= now &&
+                 now - fm.st_mtime < 10;
+    }
     long age = rnstatus_age();
     if (age >= 0) {
         std::string stale = util::read_file(RNSTATUS_CACHE, RNSTATUS_MAX);
         std::string t = util::trim(stale);
         if (!t.empty() && t[0] == '{') {
             long attempt = rnstatus_attempt_age();
-            if (age >= RNSTATUS_TTL && (attempt < 0 || attempt >= RNSTATUS_RETRY)) {
+            if ((age >= RNSTATUS_TTL || forced) && (attempt < 0 || attempt >= RNSTATUS_RETRY || forced)) {
 #ifdef _WIN32
                 // No detached child here: rnstatus is a local Python process
                 // and a cold start is ~1 s, so refresh inline and serve fresh.
@@ -2579,8 +2608,8 @@ void reticulum_rnstatus(const Request& req, Response& res) {
                     }
                     int lfd = ::open(RNSTATUS_LOCK, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
                     if (lfd >= 0 && ::flock(lfd, LOCK_EX | LOCK_NB) == 0) {
-                        if (rnstatus_age() >= RNSTATUS_TTL)
-                            rnstatus_refresh_job();
+                        if (rnstatus_age() >= RNSTATUS_TTL || forced)
+                            rnstatus_refresh_job(forced);
                         ::close(lfd);
                     }
                     _exit(0);
@@ -2761,17 +2790,21 @@ static std::string rnode_fill(std::string h) {
 
     // Saved peer + BlueZ bond state: the card tells you which modem it will
     // attach to before rnsd ever opens it, and whether the link keys exist.
-    std::string peer;
-    if (ble)
+    // Address and modem name are separate fields: the old row concatenated
+    // them into one cell ("C5:... RNode BD54") and was hard to read.
+    std::string peer, peer_name = "<span class=\"muted\">&mdash;</span>";
+    if (ble) {
         peer = rc.ble_address.empty()
             ? "<span class=\"muted\">any advertising RNode</span>"
-            : "<span class=\"mono\">" + E(rc.ble_address) + "</span>" +
-              (rc.ble_name.empty() ? "" : " <span class=\"muted\">" + E(rc.ble_name) + "</span>");
-    else if (usb)
+            : "<span class=\"mono\">" + E(rc.ble_address) + "</span>";
+        if (!rc.ble_name.empty()) peer_name = E(rc.ble_name);
+    } else if (usb) {
         peer = "<span class=\"mono\">" + E(rc.device) + "</span>";
-    else
+    } else {
         peer = "<span class=\"muted\">none</span>";
+    }
     h = R(std::move(h), "__RNODE_PEER__", peer);
+    h = R(std::move(h), "__RNODE_PEER_NAME__", peer_name);
 
     std::string bond = "<span class=\"muted\">n/a over USB</span>";
     if (ble) {
@@ -2876,6 +2909,44 @@ static bool rnode_scan_start() {
 
 // GET /reticulum/rnode/status — cheap: reads S81rnode's status file and /dev,
 // no python. The page polls this so a modem plugged in after load shows up.
+static std::string rnode_live_stats_json(void) {
+    std::string data = util::read_file("/run/rnsbox-rnstatus-v2.json", 1024 * 1024);
+    json::Value root;
+    std::string err;
+    if (data.empty() || !json::parse(data, root, err) || !root.is_object())
+        return "\"live\":{\"up\":false}";
+    const json::Value* arr = root.find("interfaces");
+    if (!arr || !arr->is_array()) return "\"live\":{\"up\":false}";
+    for (const json::Value& v : arr->arr) {
+        const json::Value* typ = v.find("type");
+        if (!typ || !typ->is_string() || typ->str != "RNodeInterface") continue;
+        auto text = [&](const char* k) -> std::string {
+            const json::Value* x = v.find(k);
+            return (x && x->is_string()) ? x->str : std::string();
+        };
+        std::string o = "\"live\":{";
+        const json::Value* st = v.find("status");
+        o += "\"up\":";
+        o += (st && st->is_string() && (st->str == "Up" || st->str == "up")) ? "true" : "false";
+        const char* sk[] = {"rate", "mode", "mtu", "tx", "tx_rate", "rx", "rx_rate"};
+        for (const char* k : sk)
+            o += std::string(",\"") + k + "\":\"" + http::json_escape(text(k)) + "\"";
+        const char* nk[] = {"airtime", "airtime_short", "channel_load",
+                            "channel_load_short", "noise_floor"};
+        for (const char* k : nk) {
+            const json::Value* x = v.find(k);
+            if (x && x->is_number()) {
+                char b[64];
+                std::snprintf(b, sizeof b, "%.10g", x->num);
+                o += std::string(",\"") + k + "\":" + b;
+            }
+        }
+        o += "}";
+        return o;
+    }
+    return "\"live\":{\"up\":false}";
+}
+
 void reticulum_rnode_status(const Request& req, Response& res) {
     if (!web::require_auth(req, res, true)) return;
     store::RnodeStatus st = store::read_rnode_status();
@@ -2898,7 +2969,9 @@ void reticulum_rnode_status(const Request& req, Response& res) {
         first = false;
         o += "\"" + http::json_escape(d) + "\"";
     }
-    o += "]}";
+    o += "]";
+    o += "," + rnode_live_stats_json();
+    o += "}";
     res.content_type = "application/json";
     res.body = o;
 }

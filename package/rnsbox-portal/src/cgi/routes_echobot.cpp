@@ -353,9 +353,35 @@ std::string echobot_dashboard_card(const std::string& base) {
            "      <tr><th>Messages echoed</th><td>" + std::to_string(echo_ok) +
            " ok / " + std::to_string(echo_fail) + " failed</td></tr>\n"
            "    </table>\n"
-           "    <p class=\"cardfoot\"><a class=\"btn\" href=\"" + base +
-           "/reticulum#echobot\">Manage &rarr;</a></p>\n"
-           "  </section>";
+           "    <div class=\"cardfoot\" style=\"display:flex;align-items:center;gap:10px;flex-wrap:wrap\">\n"
+           "      <a class=\"btn\" href=\"" + base + "/reticulum#echobot\">Manage &rarr;</a>\n"
+           "      <button type=\"button\" class=\"btn\" onclick=\"ebDashAnnounce(this)\">Announce now</button>\n"
+           "      <span id=\"eb-dash-msg\" class=\"msg\"></span>\n"
+           "    </div>\n"
+           "  </section>\n"
+           "  <script>\n"
+           "  (function(){\n"
+           "    var B = \"" + base + "\";\n"
+           "    window.ebDashAnnounce = function(btn){\n"
+           "      var msg = document.getElementById('eb-dash-msg');\n"
+           "      if (btn.disabled) return; btn.disabled = true;\n"
+           "      var start = Date.now();\n"
+           "      if (msg) { msg.textContent = ' announcing…'; msg.style.color = 'var(--muted)'; }\n"
+           "      fetch(B + '/echobot/announce?json=1', {method:'POST', credentials:'same-origin'})\n"
+           "        .then(function(r){\n"
+           "          if (r.status === 401) throw new Error('session expired — please log in again');\n"
+           "          return r.json();\n"
+           "        }).then(function(d){\n"
+           "          if (msg) { msg.textContent = ' ' + (d.message || (d.ok ? 'announce sent' : 'failed'));\n"
+           "                     msg.style.color = d.ok ? 'var(--ok)' : 'var(--err)'; }\n"
+           "          setTimeout(function(){ btn.disabled = false; }, Math.max(0, 5000 - (Date.now() - start)));\n"
+           "        }).catch(function(e){\n"
+           "          btn.disabled = false;\n"
+           "          if (msg) { msg.textContent = ' ' + (e.message || 'announce failed'); msg.style.color = 'var(--err)'; }\n"
+           "        });\n"
+           "    };\n"
+           "  })();\n"
+           "  </script>";
 }
 
 // Old bookmark route: the echo bot is a card on the Reticulum tab now.

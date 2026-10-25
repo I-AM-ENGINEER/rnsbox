@@ -165,7 +165,7 @@ std::string layout(const http::Request& req, http::Response& res,
     // every publish path off). The RNode tools live on the Reticulum tab, so
     // there is no separate RNode entry.
     nav_map = "<a href=\"" + esc(web::base()) + "/map\" class=\"" +
-              std::string((active && std::string(active) == "map") ? "active" : "") + "\">Map</a>";
+              std::string((active && std::string(active) == "map") ? "active" : "") + "\">Discovery</a>";
     nav_flasher = "<a href=\"" + esc(web::base()) + "/flasher\" class=\"" +
                   std::string((active && std::string(active) == "flasher") ? "active" : "") +
                   "\">HaLow flasher</a>";

@@ -113,16 +113,11 @@
   # restart rnsd to apply.
   [[BLE Interface]]
     type = BLEInterface
-    # Share at most 1% of the link with forwarded announces (RNS
-    # default is 2%); the BLE peer inherits this cap.
+    # Forwarded announces get at most 1% of the link (RNS default: 2%).
     announce_cap = 1
-    # The box is a peripheral-only access point: phones connect to it.
-    # Central scanning kept connecting to random advertising peers and stalled
-    # rnsd's shared instance; advertise-only is stable.
-    enable_central = no
-    # Peripheral only: the GATT server/advertising stays on; central
-    # scanning was the part that kept connecting to random peers and stalled
-    # rnsd's shared instance on the AIC8800.
+    # Both roles: advertise the GATT server and also connect to peers
+    # that only advertise (Columba/Sideband on Android). Default.
+    enable_central = yes
     enabled = yes
     # Advertised name — keep it short, BLE ads have a 31-byte budget.
     # Leave unset to advertise the service UUID only (the peer learns the
