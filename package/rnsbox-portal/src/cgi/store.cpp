@@ -678,6 +678,9 @@ bool add_halow_interface(const std::string& name_in, const std::string& host, in
     lines.push_back("  enabled = yes");
     lines.push_back("  target_host = " + host);
     lines.push_back("  target_port = " + std::to_string(port));
+    // The modem's radio bridge is ~500 kbit/s; Reticulum sizes announce
+    // caps and link timeouts from the interface bitrate.
+    lines.push_back("  bitrate = 500000");
     std::string o;
     for (const auto& l : lines) o += l + "\n";
     if (!util::write_file_atomic(RETICULUM_CONFIG, o, 0600)) { msg = "write failed"; return false; }  // see write_reticulum_config

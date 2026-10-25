@@ -2127,7 +2127,7 @@ constexpr int RNSTATUS_TTL = 5;   // serve a cached snapshot up to 5 s old
 // Without the resident helper every refresh is a full Python start. On a
 // low-RAM board that must not happen every poll: the CLI path is floored at
 // this age, and the page says how old the table is meanwhile.
-constexpr int RNSTATUS_CLI_TTL = 600;
+constexpr int RNSTATUS_CLI_TTL = 60;
 // A failed/aborted refresh must not spawn a new helper on every poll.
 constexpr int RNSTATUS_RETRY = 10;
 // A mesh node can run a lot of interfaces (every discovered AutoInterface
