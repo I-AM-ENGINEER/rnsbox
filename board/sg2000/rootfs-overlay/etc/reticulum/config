@@ -125,10 +125,10 @@
     # scanning kept connecting to random advertising peers and stalled rnsd's
     # shared instance on the AIC8800; advertise-only is stable.
     enable_central = no
-    # Disabled by default: the AIC8800 GATT server blocked rnsd's shared
-    # instance (rnstatus/NomadNet timeouts). RNode BLE pairing goes through
-    # BlueZ via the portal and does not need this transport.
-    enabled = no
+    # Peripheral only: the GATT server/advertising stays on; central
+    # scanning was the part that kept connecting to random peers and stalled
+    # rnsd's shared instance on the AIC8800.
+    enabled = yes
     # Saver: a 0.5 s scan every 30-60 s. Balanced scanning kept the
     # AIC8800 SDIO busy and the box pegged; the slower cadence is plenty.
     power_mode = saver

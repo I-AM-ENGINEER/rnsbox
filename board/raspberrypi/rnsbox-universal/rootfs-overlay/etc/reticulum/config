@@ -120,10 +120,10 @@
     # Central scanning kept connecting to random advertising peers and stalled
     # rnsd's shared instance; advertise-only is stable.
     enable_central = no
-    # Disabled by default: the AIC8800 GATT server blocked rnsd's shared
-    # instance (rnstatus/NomadNet timeouts). RNode BLE pairing goes through
-    # BlueZ via the portal and does not need this transport.
-    enabled = no
+    # Peripheral only: the GATT server/advertising stays on; central
+    # scanning was the part that kept connecting to random peers and stalled
+    # rnsd's shared instance on the AIC8800.
+    enabled = yes
     # Advertised name — keep it short, BLE ads have a 31-byte budget.
     # Leave unset to advertise the service UUID only (the peer learns the
     # node name from the Reticulum announce anyway).

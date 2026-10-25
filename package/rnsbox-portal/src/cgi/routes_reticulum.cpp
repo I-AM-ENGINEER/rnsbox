@@ -2925,6 +2925,30 @@ static void rnode_scan_write(const std::string& path,
 void rnode_scan_watch_cli(const std::string& path) {
     std::vector<std::pair<std::string, std::string>> devs;
     rnode_scan_write(path, devs, false, "");
+    // BlueZ already knows devices from earlier scans and does not re-emit a
+    // "[NEW] Device ... Name" line for them; seed from the cached list so a
+    // known RNode shows up immediately instead of "no advertisements".
+    FILE* cf = ::popen("/usr/bin/bluetoothctl devices", "r");
+    if (cf) {
+        char line[512];
+        while (::fgets(line, sizeof line, cf)) {
+            size_t p = std::string(line).find("Device ");
+            if (p == std::string::npos) continue;
+            p += 7;
+            size_t e = std::string(line).find_first_of(" \t\r\n", p);
+            std::string mac = std::string(line).substr(
+                p, e == std::string::npos ? std::string::npos : e - p);
+            if (mac.size() != 17) continue;
+            std::string name = e == std::string::npos ? std::string()
+                                                      : util::trim(std::string(line).substr(e + 1));
+            if (name.size() < 5 || ::strncasecmp(name.c_str(), "RNode", 5) != 0) continue;
+            bool dup = false;
+            for (auto& d : devs) if (d.first == mac) { dup = true; break; }
+            if (!dup && devs.size() < 16) devs.push_back({mac, name});
+        }
+        ::pclose(cf);
+        if (!devs.empty()) rnode_scan_write(path, devs, false, "");
+    }
     int mfd = -1, sfd = -1;
     if (::openpty(&mfd, &sfd, nullptr, nullptr, nullptr) != 0) {
         rnode_scan_write(path, devs, true, "openpty failed");

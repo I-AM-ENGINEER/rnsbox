@@ -113,7 +113,7 @@ def main():
 
     started = time.time()
     try:
-        signal.alarm(90)   # a cold import plus a wedged shared instance
+        signal.alarm(120)  # a cold import plus a slow shared instance (C906)
         import RNS
         reticulum = RNS.Reticulum(require_shared_instance=True, loglevel=3)
     except Exception as e:
