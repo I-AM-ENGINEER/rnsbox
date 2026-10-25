@@ -29,6 +29,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -247,8 +248,10 @@ struct Session {
     time_t      spawned = 0;
     time_t      respawn_at = 0;
     time_t      idle_since = 0;   // NomadNet: no attached stream since this time
-    time_t      nomad_stop_at = 0;// NomadNet: waiting for the daemon to exit
+    time_t      nomad_stop_at = 0;// NomadNet: waiting for the daemon to stop
     bool        suspended = false;// NomadNet TUI stopped while detached
+    bool        got_output = false;  // PTY produced its first bytes since spawn
+    time_t      progress_at = 0;     // next liveness dot while the UI starts
     int         cols = 80;
     int         rows = 24;
     std::string ring;      // replay window (legacy transport)
@@ -333,9 +336,12 @@ std::string account_shell() {
 
 // spawn_pty — allocate a PTY in `s`, fork, drop to `admin`, exec `exe` with
 // `args`. The broker itself stays root (it owns the root-only socket); the
-// terminal process is unprivileged.
+// terminal process is unprivileged. `nice_adj` is a scheduling boost: the
+// NomadNet TUI imports a full Python UI on the single core that rnsd already
+// keeps busy, and at nice 0 that import takes close to a minute.
 bool spawn_pty(Session& s, const std::string& exe,
-               const std::vector<std::string>& args, bool as_root = false) {
+               const std::vector<std::string>& args, bool as_root = false,
+               int nice_adj = 0) {
     struct passwd* pw = getpwnam("admin");
     bool have_admin = pw != nullptr;
     bool drop_admin = have_admin && !as_root;
@@ -397,6 +403,9 @@ bool spawn_pty(Session& s, const std::string& exe,
         // cursor movement and filenames work as multibyte text.
         setenv("LANG", "C.UTF-8", 1);
         setenv("LC_ALL", "C.UTF-8", 1);
+        // Interactive UI startup must not be starved by rnsd on this single
+        // core; the broker runs as root, so a negative nice is allowed.
+        if (nice_adj != 0) (void)setpriority(PRIO_PROCESS, 0, nice_adj);
         std::vector<char*> av;
         av.reserve(args.size() + 1);
         for (const std::string& a : args) av.push_back(const_cast<char*>(a.c_str()));
@@ -415,6 +424,8 @@ bool spawn_pty(Session& s, const std::string& exe,
     s.ring.clear();      // a new process starts with a clean replay window
     s.to_pty.clear();
     s.pty_off = 0;
+    s.got_output = false;
+    s.progress_at = s.spawned + 2;
     return true;
 }
 
@@ -436,7 +447,9 @@ bool spawn_session(Session& s) {
         s.grid = true;
         ensure_screen(s);
         static const char starting[] =
-            "\r\n[NomadNet: starting the TUI with the node identity...]\r\n";
+            "\r\n[NomadNet: starting the TUI with the node identity...]\r\n"
+            "[Loading the UI modules - on this single-core board the first\r\n"
+            " start can take up to a minute. Dots below mean it is alive.]\r\n";
         ring_append(s, starting, sizeof(starting) - 1);
         feed_screen(s, starting, sizeof(starting) - 1);
         broadcast(s, starting, sizeof(starting) - 1);
@@ -466,7 +479,7 @@ bool spawn_session(Session& s) {
             return false;
         }
         s.nomad_stop_at = 0;
-        if (!spawn_pty(s, exe, args, true)) {
+        if (!spawn_pty(s, exe, args, true, -10)) {
             ::unlink(nomadnet_flag_path().c_str());
             s.error = "Could not start NomadNet (PTY setup failed).";
             return false;
@@ -633,9 +646,12 @@ void feed_screen(Session& s, const char* p, size_t n) {
 }
 
 // Resume a suspended NomadNet TUI; called when a client attaches.
+// SIGCONT is sent unconditionally: the only cost of a redundant one is nil,
+// and it repairs the case where the process was stopped by something other
+// than the idle timer (then s.suspended is false while the TUI is frozen).
 void resume_nomadnet(Session& s) {
     if (s.name != SESSION_NOMADNET) return;
-    if (s.suspended && s.child > 0) ::kill(-s.child, SIGCONT);
+    if (s.child > 0) ::kill(-s.child, SIGCONT);
     s.suspended = false;
     s.idle_since = 0;
 }
@@ -1199,6 +1215,7 @@ int broker_main(bool foreground, int ws_port, const char* ws_bind) {
                         char buf[8192];
                         ssize_t n = ::read(s->master, buf, sizeof buf);
                         if (n > 0) {
+                            s->got_output = true;
                             ring_append(*s, buf, static_cast<size_t>(n));
                             broadcast(*s, buf, static_cast<size_t>(n));
                             feed_screen(*s, buf, static_cast<size_t>(n));
@@ -1243,6 +1260,22 @@ int broker_main(bool foreground, int ws_port, const char* ws_bind) {
         }
 
         now = time(nullptr);
+
+        // A freshly spawned TUI prints nothing until its Python imports are
+        // done (tens of seconds on this CPU). Emit a dot every two seconds so
+        // the page shows that the session is alive; the child's first byte
+        // ends it.
+        for (auto& kv : g_sessions) {
+            Session& s = kv.second;
+            if (s.name != SESSION_NOMADNET || s.master < 0 || s.got_output) continue;
+            if (s.suspended || now - s.spawned > 120) continue;
+            if (!s.progress_at || now < s.progress_at) continue;
+            const char dot[] = ".";
+            ring_append(s, dot, 1);
+            feed_screen(s, dot, 1);
+            broadcast(s, dot, 1);
+            s.progress_at = now + 2;
+        }
 
         // Keep NomadNet attachable for a grace period after the last stream
         // disconnects: leaving the tab must not restart the TUI on return.
