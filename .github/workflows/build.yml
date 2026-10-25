@@ -29,7 +29,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 350
     strategy:
       fail-fast: false
@@ -43,8 +43,6 @@ jobs:
             imgdir: /mnt/rnsbox/out/orangepi-r1/images
           - board: milkv-duo-cv1800b-rv64
             imgdir: /mnt/rnsbox/out/milkv-duo-cv1800b-rv64/images
-          - board: sg2000-duo-s-arm64
-            imgdir: /mnt/rnsbox/out/sg2000-duo-s-arm64/images
           - board: sg2000-duomodule01-rv64
             imgdir: /mnt/rnsbox/out/sg2000-duomodule01-rv64/images
           - board: sg2002-licheerv-nano-rv64
@@ -57,7 +55,7 @@ jobs:
       BOARD: ${{ matrix.board }}
     steps:
       - name: Free up disk space
-        uses: jlumbroso/free-disk-space@main
+        uses: jlumbroso/free-disk-space@v2.0.0
         with:
           tool-cache: true
           android: true
@@ -81,7 +79,7 @@ jobs:
             python3 python3-dev python3-setuptools \
             libssl-dev flex bison gawk texinfo help2man gettext \
             autoconf automake libtool pkg-config cmake ninja-build \
-            libncurses5-dev device-tree-compiler u-boot-tools \
+            libncurses-dev device-tree-compiler u-boot-tools \
             genext2fs dosfstools mtools parted squashfs-tools jq scons
 
       - name: Checkout rnsbox (the external tree)
@@ -195,7 +193,7 @@ jobs:
     name: release (all boards)
     needs: build
     if: success()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Collect images from all boards
         uses: actions/download-artifact@v4
