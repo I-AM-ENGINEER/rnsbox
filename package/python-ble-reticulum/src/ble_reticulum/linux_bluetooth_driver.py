@@ -325,6 +325,14 @@ class PeerConnection:
     connection_type: str = "unknown"  # "central" or "peripheral"
     connected_at: float = 0.0
     peer_identity: Optional[bytes] = None  # 16-byte identity hash
+    # Resolved BleakGATTCharacteristic objects for the Reticulum service's
+    # RX/TX characteristics. A UUID lookup is ambiguous when the peer's GATT
+    # table exposes the same characteristic UUID more than once (the Columba
+    # backend registers the Reticulum service twice), and bleak then refuses
+    # the string specifier outright — so every central-path GATT op goes
+    # through these objects, falling back to the UUID only when absent.
+    rx_char: Optional[object] = None
+    tx_char: Optional[object] = None
 
 
 # Wall-clock bound for the _adapter_is_powered() D-Bus query. BlueZ property
@@ -1326,11 +1334,18 @@ class LinuxBluetoothDriver(BLEDriverInterface):
 
             self._log(f"[CONNECT-FLOW] Found Reticulum service on {address}, reading identity characteristic", "INFO")
 
-            # Read identity characteristic
+            # Read identity characteristic; resolve the RX/TX characteristic
+            # objects in the same pass. Going through the service's own list
+            # keeps the lookup unambiguous even when the peer's GATT table
+            # registers a characteristic UUID more than once — bleak's
+            # collection-wide UUID lookup would raise on such peers.
             identity_read_start = time.time()
             peer_identity = None
+            rx_char = None
+            tx_char = None
             for char in reticulum_service.characteristics:
-                if char.uuid.lower() == self.identity_char_uuid.lower():
+                uuid = char.uuid.lower()
+                if uuid == self.identity_char_uuid.lower():
                     identity_value = await client.read_gatt_char(char)
                     if len(identity_value) == 16:
                         peer_identity = bytes(identity_value)
@@ -1338,10 +1353,18 @@ class LinuxBluetoothDriver(BLEDriverInterface):
                         self._log(f"[CONNECT-FLOW] Read identity from {address} in {identity_read_duration:.2f}s: {peer_identity.hex()}", "INFO")
                     else:
                         self._log(f"[CONNECT-FLOW] Invalid identity length from {address}: {len(identity_value)} bytes (expected 16)", "WARNING")
-                    break
+                elif uuid == self.rx_char_uuid.lower():
+                    rx_char = char
+                elif uuid == self.tx_char_uuid.lower():
+                    tx_char = char
 
             if not peer_identity:
                 raise RuntimeError(f"Could not read peer identity (identity characteristic not found or invalid)")
+            if rx_char is None or tx_char is None:
+                raise RuntimeError(
+                    f"Reticulum service on {address} is missing its RX/TX characteristics "
+                    f"(rx={'ok' if rx_char else 'missing'}, tx={'ok' if tx_char else 'missing'})"
+                )
 
             # Check for duplicate identity (Android MAC rotation)
             if hasattr(self, 'on_duplicate_identity_detected') and self.on_duplicate_identity_detected:
@@ -1371,17 +1394,22 @@ class LinuxBluetoothDriver(BLEDriverInterface):
                 mtu=mtu,
                 connection_type="central",
                 connected_at=time.time(),
-                peer_identity=peer_identity
+                peer_identity=peer_identity,
+                rx_char=rx_char,
+                tx_char=tx_char,
             )
 
             with self._peers_lock:
                 self._peers[address] = peer_conn
 
-            # Set up notifications
+            # Set up notifications. tx_char is the characteristic object
+            # resolved from the Reticulum service above: a UUID string would
+            # make bleak fail the whole connection on a duplicate-UUID GATT
+            # table instead of just picking our service's characteristic.
             notification_setup_start = time.time()
             self._log(f"[CONNECT-FLOW] Starting notification setup for {address}", "INFO")
             await client.start_notify(
-                self.tx_char_uuid,
+                tx_char if tx_char is not None else self.tx_char_uuid,
                 lambda sender, data: self._handle_notification(address, data)
             )
             notification_setup_duration = time.time() - notification_setup_start
@@ -1398,7 +1426,7 @@ class LinuxBluetoothDriver(BLEDriverInterface):
                 self._log(f"[CONNECT-FLOW] Sending identity handshake to {address} ({len(self._local_identity)} bytes)", "INFO")
                 try:
                     await client.write_gatt_char(
-                        self.rx_char_uuid,
+                        rx_char if rx_char is not None else self.rx_char_uuid,
                         self._local_identity,
                         response=True
                     )
@@ -1597,9 +1625,12 @@ class LinuxBluetoothDriver(BLEDriverInterface):
             peer = self._peers[address]
 
         if peer.connection_type == "central":
-            # We connected to them: use GATT write
+            # We connected to them: use GATT write. The resolved object keeps
+            # the write working on peers whose GATT tables duplicate the
+            # characteristic UUID (a string specifier would raise).
+            rx_spec = peer.rx_char if peer.rx_char is not None else self.rx_char_uuid
             future = asyncio.run_coroutine_threadsafe(
-                peer.client.write_gatt_char(self.rx_char_uuid, data, response=False),
+                peer.client.write_gatt_char(rx_spec, data, response=False),
                 self.loop
             )
             try:
@@ -1632,6 +1663,21 @@ class LinuxBluetoothDriver(BLEDriverInterface):
     # GATT Characteristic Operations
     # ========================================================================
 
+    def _resolve_peer_char(self, peer: PeerConnection, char_uuid: str):
+        """Map a characteristic UUID to the object resolved at connect time.
+
+        Central connections to duplicate-UUID peers only work through the
+        characteristic object; UUID strings are kept as the fallback for
+        characteristic types this driver does not resolve itself.
+        """
+        if peer.connection_type == "central":
+            uuid = char_uuid.lower()
+            if peer.rx_char is not None and peer.rx_char.uuid.lower() == uuid:
+                return peer.rx_char
+            if peer.tx_char is not None and peer.tx_char.uuid.lower() == uuid:
+                return peer.tx_char
+        return char_uuid
+
     def read_characteristic(self, address: str, char_uuid: str) -> bytes:
         """Read a GATT characteristic value."""
         with self._peers_lock:
@@ -1644,7 +1690,7 @@ class LinuxBluetoothDriver(BLEDriverInterface):
             raise RuntimeError("Can only read characteristics in central mode")
 
         future = asyncio.run_coroutine_threadsafe(
-            peer.client.read_gatt_char(char_uuid),
+            peer.client.read_gatt_char(self._resolve_peer_char(peer, char_uuid)),
             self.loop
         )
 
@@ -1667,7 +1713,7 @@ class LinuxBluetoothDriver(BLEDriverInterface):
             raise RuntimeError("Can only write characteristics in central mode")
 
         future = asyncio.run_coroutine_threadsafe(
-            peer.client.write_gatt_char(char_uuid, data, response=True),
+            peer.client.write_gatt_char(self._resolve_peer_char(peer, char_uuid), data, response=True),
             self.loop
         )
 
@@ -1696,7 +1742,7 @@ class LinuxBluetoothDriver(BLEDriverInterface):
                 self._log(f"Error in notification callback: {e}", "ERROR")
 
         future = asyncio.run_coroutine_threadsafe(
-            peer.client.start_notify(char_uuid, notification_handler),
+            peer.client.start_notify(self._resolve_peer_char(peer, char_uuid), notification_handler),
             self.loop
         )
 
