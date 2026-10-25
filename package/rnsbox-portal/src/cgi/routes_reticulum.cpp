@@ -1169,6 +1169,20 @@ void reticulum_slip(const Request& req, Response& res) {    if (!web::require_au
         render::redirect_flash(res, ret_redirect(), "success", "HaLow link disabled.");
 }
 
+// POST /reticulum/rnsh/announce — rnsh announces on startup and then every
+// announce= seconds; restarting the listener is the supported manual trigger.
+void reticulum_rnsh_announce(const Request& req, Response& res) {
+    if (!web::require_auth(req, res, true)) return;
+    res.content_type = "application/json";
+    bool ok = web::run_init("S86rnsh", "restart");
+    res.body = std::string("{\"ok\":") + (ok ? "true" : "false") +
+               ",\"message\":\"" +
+               http::json_escape(ok
+                   ? std::string("Announce sent — the RNS Shell listener restarted and re-announced.")
+                   : std::string("Announce not sent — RNS Shell is not running or not enabled.")) +
+               "\"}";
+}
+
 void reticulum_rnsh_save(const Request& req, Response& res) {
     if (!web::require_auth(req, res, false)) return;
     bool enabled = req.f("enabled") == "on";
@@ -3018,12 +3032,48 @@ void reticulum_rnode_forget(const Request& req, Response& res) {
     util::RunResult rr = util::run({"/usr/bin/bluetoothctl", "remove", addr}, "", 10);
     std::string out = util::trim(rr.out);
     bool ok = (rr.exit_code == 0);
-    if (!ok && out.find("not available") != std::string::npos) ok = true;
+    std::string low = out;
+    for (char& c : low) c = (char)tolower((unsigned char)c);
+    // Forgetting is idempotent: a second click (or a device BlueZ already
+    // dropped) answers DoesNotExist, which is exactly the desired state.
+    bool missing = low.find("doesnotexist") != std::string::npos ||
+                   low.find("does not exist") != std::string::npos ||
+                   low.find("not available") != std::string::npos ||
+                   low.find("not found") != std::string::npos;
+    if (!ok && missing) ok = true;
+    // Forget means the whole device, not just the BlueZ bond: leaving the
+    // address in rnode.conf makes rnsd retry an un-bonded peer forever and
+    // starves NomadNet/rnstatus. Disable the interface and clear the peer;
+    // Scan -> Pair re-adds it.
+    bool saved_cleared = false;
+    if (ok) {
+        store::RnodeConfig rc = store::read_rnode();
+        std::string a = rc.ble_address, b = addr;
+        for (char& c : a) c = (char)toupper((unsigned char)c);
+        for (char& c : b) c = (char)toupper((unsigned char)c);
+        if (!a.empty() && a == b) {
+            rc.transport = "off";
+            rc.ble_address.clear();
+            rc.ble_name.clear();
+            std::string err;
+            if (store::write_rnode(rc, err)) {
+                web::run_init("S81rnode", "reload");
+                web::run_init("S82rnsd");
+                saved_cleared = true;
+            }
+        }
+    }
+    std::string msg;
+    if (!ok)
+        msg = out.empty() ? std::string("bluetoothctl failed") : out;
+    else if (saved_cleared)
+        msg = "Bluetooth bond and saved peer removed — select BLE and scan to pair again.";
+    else if (missing)
+        msg = "Already forgotten — scan and pair again.";
+    else
+        msg = "Bluetooth bond removed — scan and pair again.";
     res.body = std::string("{\"ok\":") + (ok ? "true" : "false") +
-               ",\"message\":\"" +
-               http::json_escape(ok ? std::string("Bluetooth bond removed — scan and pair again.")
-                                    : (out.empty() ? std::string("bluetoothctl failed") : out)) +
-               "\"}";
+               ",\"message\":\"" + http::json_escape(msg) + "\"}";
 }
 
 // POST /reticulum/rnode/pair — manual bluetoothctl pair (+ trust) as a

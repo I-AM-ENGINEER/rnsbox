@@ -411,6 +411,19 @@ function rnodeForget(){
     if (d.ok) {
       var cell = document.getElementById('rnode-bond-cell');
       if (cell) cell.innerHTML = '<span class="badge err">not paired</span>';
+      var peer = document.getElementById('rnode-peer');
+      if (peer) peer.innerHTML = '<span class="muted">none</span>';
+      var live = document.getElementById('rnode-live-status');
+      if (live) live.innerHTML = '<span class="badge">off</span>';
+      var addrInput = document.getElementById('rnode-ble-address');
+      if (addrInput) addrInput.value = '';
+      var nameInput = document.getElementById('rnode-ble-name');
+      if (nameInput) nameInput.value = '';
+      var tr = document.getElementById('rnode-transport');
+      if (tr) {
+        tr.value = 'off';
+        if (typeof rnodeTransportChanged === 'function') rnodeTransportChanged();
+      }
     }
   }).catch(function(e){
     if (msg) { msg.textContent = ' ' + (e.message || 'forget failed'); msg.style.color = 'var(--err)'; }
@@ -496,10 +509,32 @@ setInterval(rnodeStatusRefresh, 15000);
     <textarea name="allowed" rows="4" spellcheck="false" class="mono">__RNSH_ALLOWED__</textarea>
     <div class="form-actions" style="margin-top:10px">
       <span class="muted">saving restarts the RNS Shell service</span>
+      <button type="button" class="btn" onclick="rnshAnnounce(this)">Announce now</button>
+      <span id="rnsh-announce-msg" class="msg"></span>
       <button type="submit" class="btn-primary">Save &amp; apply</button>
     </div>
   </form>
-</section>
+  <script>
+  // rnsh announces at startup and on its own interval; a manual announce
+  // restarts the listener. Keep the answer next to the button (no reload).
+  function rnshAnnounce(btn){
+    var msg = document.getElementById('rnsh-announce-msg');
+    btn.disabled = true;
+    if (msg) { msg.textContent = ' announcing…'; msg.style.color = 'var(--muted)'; }
+    fetch('__BASE__/reticulum/rnsh/announce', {method:'POST', credentials:'same-origin'})
+      .then(function(r){
+        if (r.status === 401) throw new Error('session expired — please log in again');
+        return r.json();
+      }).then(function(d){
+        btn.disabled = false;
+        if (msg) { msg.textContent = ' ' + (d.message || (d.ok ? 'announce sent' : 'failed'));
+                   msg.style.color = d.ok ? 'var(--ok)' : 'var(--err)'; }
+      }).catch(function(e){
+        btn.disabled = false;
+        if (msg) { msg.textContent = ' ' + (e.message || 'announce failed'); msg.style.color = 'var(--err)'; }
+      });
+  }
+  </script>
 
 __ECHOBOT_CARDS__
 

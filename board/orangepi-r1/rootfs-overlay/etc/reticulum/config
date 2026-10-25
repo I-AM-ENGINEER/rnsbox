@@ -124,10 +124,9 @@
     # default is 2%); the BLE peer inherits this cap.
     announce_cap = 1
     # The box is a peripheral-only access point: phones connect to it.
-    # Central scanning made it chase every Reticulum advert (including a
-    # phone's rotating random addresses) and collide with the phone's own
-    # connection attempts.
-    enable_central = yes
+    # Central scanning kept connecting to random advertising peers and stalled
+    # rnsd's shared instance; advertise-only is stable.
+    enable_central = no
     enabled = yes
     # Advertised name — keep it short, BLE ads have a 31-byte budget.
     # Leave unset to advertise the service UUID only (the peer learns the

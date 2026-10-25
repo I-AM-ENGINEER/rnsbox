@@ -458,8 +458,19 @@ void echobot_toggle(const Request& req, Response& res) {
 }
 
 void echobot_announce(const Request& req, Response& res) {
-    if (!web::require_auth(req, res, false)) return;
-    if (!web::run_init("S87echobot", "announce")) {
+    bool json = req.query.find("json=1") != std::string::npos;
+    if (!web::require_auth(req, res, json)) return;
+    bool ok = web::run_init("S87echobot", "announce");
+    if (json) {
+        res.content_type = "application/json";
+        res.body = std::string("{\"ok\":") + (ok ? "true" : "false") +
+                   ",\"message\":\"" +
+                   http::json_escape(ok ? std::string("Announce sent.")
+                                        : std::string("Announce not sent — the bot is not running. Enable it first.")) +
+                   "\"}";
+        return;
+    }
+    if (!ok) {
         render::redirect_flash(res, eb_redirect(), "error",
             "Announce not sent — the bot is not running. Enable it first.");
         return;

@@ -67,6 +67,7 @@ static const char* const POST_ONLY[] = {
     "/reticulum/rnode",
     "/reticulum/rnode/pair",
     "/reticulum/rnode/forget",
+    "/reticulum/rnsh/announce",
     "/map/telemetry",
     "/flasher/action",
     "/flasher/fetch",
@@ -433,6 +434,7 @@ void handle(const http::Request& req, http::Response& res) {
     else if (p == "/reticulum/applyupdate")      routes::reticulum_applyupdate(req, res);
     else if (p == "/reticulum/slip")             routes::reticulum_slip(req, res);
     else if (p == "/reticulum/rnsh")             routes::reticulum_rnsh_save(req, res);
+    else if (p == "/reticulum/rnsh/announce")    routes::reticulum_rnsh_announce(req, res);
     else if (p == "/reticulum/halow/add")        routes::reticulum_halow_add(req, res);
     else if (p == "/reticulum/halow/ota/chunk")   routes::reticulum_halow_ota_chunk(req, res);
     else if (p == "/reticulum/halow/ota/start")   routes::reticulum_halow_ota_start(req, res);

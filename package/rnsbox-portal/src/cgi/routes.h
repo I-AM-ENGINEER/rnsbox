@@ -39,7 +39,8 @@ void reticulum_downloadupdate(const http::Request&, http::Response&); // POST JS
 void reticulum_installupdate(const http::Request&, http::Response&);  // POST JSON (install+rollback)
 void reticulum_applyupdate(const http::Request&, http::Response&); // POST JSON (legacy alias: install)
 void reticulum_slip(const http::Request&, http::Response&);        // POST PRG
-void reticulum_rnsh_save(const http::Request&, http::Response&);   // POST PRG
+void reticulum_rnsh_save(const http::Request&, http::Response&);
+void reticulum_rnsh_announce(const http::Request&, http::Response&); // POST JSON   // POST PRG
 void reticulum_halow_add(const http::Request&, http::Response&);   // POST PRG
 // HaLow firmware update: chunked upload (uhttpd caps a CGI body at 256 KiB),
 // background flasher status, and the modem's own online check/install.
