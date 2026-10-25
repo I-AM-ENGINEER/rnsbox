@@ -485,7 +485,7 @@ setInterval(rnodeStatusRefresh, 15000);
 <section class="card">
   <h3>RNS Shell (rnsh)</h3>
   <p class="muted">A root shell reachable from anywhere on the Reticulum network.
-  Client: <code>pip install rnsh</code>, <code>rnsh -p</code> prints your identity
+  Client: <code>pipx install rnsh</code>, <code>rnsh -p</code> prints your identity
   hash (goes into the allow-list below), then <code>rnsh &lt;destination&gt;</code>
   and disconnect with <code>~.</code> Authentication is by that allow-list only —
   the service refuses to start with an empty one. Off by default.</p>
