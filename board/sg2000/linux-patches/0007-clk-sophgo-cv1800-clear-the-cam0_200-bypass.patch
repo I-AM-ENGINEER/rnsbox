@@ -1,32 +1,51 @@
 From: RNSBox <rnsbox@localhost>
 Subject: [PATCH] clk: sophgo: cv1800: clear the cam0_200 crystal bypass
 
-TRM 8.9.7: clk_byp_0 bit 16 is the clock bypass to xtal for clk_cam0_200,
+TRM 8.9.7: clk_byp_0 bit 16 is the clock bypass to xtal for clk_cam0_200
 and its reset value is 1. The bootloader leaves it set, so every UART
 (clk_uart0..4 derive from clk_cam0_200) runs from the 25 MHz crystal and
 base_baud stays 1,562,500 - the modem 2 Mbaud cannot be set.
 
 div_clk_cam0_200 (TRM 8.9.27) already selects disppll with divider 1,
-so clearing the bypass routes the UARTs to disppll. This only touches a
-mux register; no PLL is reprogrammed.
+so clearing the bypass is enough. This only touches a mux register; no
+PLL is reprogrammed.
+
+The pr_info lines are diagnostic: they show the register before and after
+the clear and the rates the clock framework derives from them.
 
 --- a/drivers/clk/sophgo/clk-cv1800.c
 +++ b/drivers/clk/sophgo/clk-cv1800.c
-@@ -1509,6 +1509,16 @@
+@@ -1509,6 +1509,18 @@
  	if (IS_ERR(reg))
  		return PTR_ERR(reg);
  
 +	/*
 +	 * clk_byp_0 bit 16 forces clk_cam0_200 (the UART baud clock) to the
-+	 * 25 MHz crystal, capping every UART at 1.5625 Mbaud. The bootloader
-+	 * leaves it set even though div_clk_cam0_200 already selects disppll.
-+	 * Clearing it clocks the UARTs from disppll/div (1200 MHz by default),
-+	 * which the modem 2 Mbaud needs. Register access only: no PLL change.
++	 * 25 MHz crystal. The bootloader leaves it set; div_clk_cam0_200
++	 * already selects disppll, so clearing it is enough for 2 Mbaud.
++	 * Register access only: no PLL is reprogrammed.
 +	 */
++	pr_info("rnsbox-clk pre: byp=0x%08x div=0x%08x%c",
++		readl(reg + REG_CLK_BYP_0), readl(reg + REG_DIV_CLK_CAM0_200), 10);
 +	if (readl(reg + REG_CLK_BYP_0) & BIT(16))
 +		writel(readl(reg + REG_CLK_BYP_0) & ~BIT(16), reg + REG_CLK_BYP_0);
++	pr_info("rnsbox-clk post: byp=0x%08x%c", readl(reg + REG_CLK_BYP_0), 10);
 +
  	desc = device_get_match_data(dev);
  	if (!desc) {
  		dev_err(dev, "no match data for platform\n");
+@@ -1525,7 +1537,12 @@
+ 			return ret;
+ 	}
+ 
+-	return cv1800_clk_init_ctrl(dev, reg, ctrl, desc);
++	ret = cv1800_clk_init_ctrl(dev, reg, ctrl, desc);
++	if (!ret)
++		pr_info("rnsbox-clk rates: cam0_200=%lu disppll=%lu%c",
++			clk_hw_get_rate(&clk_cam0_200.mux.common.hw),
++			clk_hw_get_rate(&clk_disppll.common.hw), 10);
++	return ret;
+ }
+ 
+ static const struct of_device_id cv1800_clk_ids[] = {
 
