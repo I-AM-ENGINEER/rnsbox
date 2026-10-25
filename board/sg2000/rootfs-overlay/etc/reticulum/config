@@ -121,9 +121,10 @@
     type = BLEInterface
     # Forwarded announces get at most 1% of the link (RNS default: 2%).
     announce_cap = 1
-    # Both roles: advertise the GATT server (phones connect to us) and
-    # scan for peers that only advertise (Columba/Sideband on Android).
-    enable_central = yes
+    # Peripheral only: advertise the GATT server and accept phones. Central
+    # scanning kept connecting to random advertising peers and stalled rnsd's
+    # shared instance on the AIC8800; advertise-only is stable.
+    enable_central = no
     enabled = yes
     # Saver: a 0.5 s scan every 30-60 s. Balanced scanning kept the
     # AIC8800 SDIO busy and the box pegged; the slower cadence is plenty.
