@@ -3134,7 +3134,15 @@ void reticulum_rnode_pair(const Request& req, Response& res) {
     if (!code.empty()) argv.push_back(code);
     util::RunResult rr = util::run(argv, "", 55);
     std::string out = util::trim(rr.out);
-    if (rr.exit_code == 0 && !out.empty() && out[0] == '{') { res.body = rr.out; return; }
+    if (rr.exit_code == 0 && !out.empty() && out[0] == '{') {
+        // bluetoothctl leaves the peer connected after pair/trust. A connected
+        // peripheral stops advertising, and the RNodeInterface connects with
+        // its own Bleak scanner (it needs the advert), so drop the BlueZ link
+        // and let rnsd attach.
+        (void)util::run({"/usr/bin/bluetoothctl", "disconnect", addr}, "", 10);
+        res.body = rr.out;
+        return;
+    }
     update_json(res, false, false,
                 rr.timed_out ? "Pairing timed out (the modem may still be waiting for a code)."
                              : "Pairing failed (is bluetoothd running? is the RNode in pairing reach?)");
