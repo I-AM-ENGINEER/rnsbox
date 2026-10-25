@@ -1,22 +1,16 @@
-From: RNSBox <rnsbox@example.invalid>
-Subject: [PATCH] rnsh: stop killing a remote command when its stdin ends
+Subject: [PATCH] rnsh: do not kill a command when its stdin ends
 
-The rnsh client reports stdin EOF as soon as its own stdin closes (a
-script, a here-document, </dev/null). The listener closed the child's
-stdin and then SIGTERMed the child 50 ms later. On a loaded single-core
-box the freshly forked child often has not reached exec() yet, so
-`rnsh <destination> -- <command>` died before it ran anything.
+The listener closed the child's stdin and SIGTERMed the child 50 ms later.
+A remote command whose stdin is a closed pipe (a script, cron, </dev/null)
+is killed before it can run on a loaded machine, and on a PTY the shared
+master fd is closed, tearing the terminal down. Treat stdin EOF as EOF:
+close the pipe write end, send ^D on a PTY, and let the process exit on
+its own; link teardown still terminates what is left.
 
-For a PTY session closing the "stdin" fd was also wrong: stdin and stdout
-share one master fd, so the terminal was torn down as well.
-
-Treat stdin EOF as EOF: close the pipe end when stdin is a pipe, send the
-line-discipline ^D on a PTY, and let the process decide when to exit. Link
-teardown still terminates whatever is left.
-
+diff --git a/RNS/Utilities/rnsh/process.py b/RNS/Utilities/rnsh/process.py
 --- a/RNS/Utilities/rnsh/process.py
 +++ b/RNS/Utilities/rnsh/process.py
-@@ -540,14 +540,17 @@
+@@ -540,14 +540,12 @@
          threading.Thread(target=wait, daemon=True).start()
  
      def close_stdin(self):
@@ -24,8 +18,6 @@ teardown still terminates whatever is left.
 +            with contextlib.suppress(Exception):
 +                os.close(self._child_stdin)
 +            return
-+        # A PTY session uses one master fd for stdin and stdout: closing it
-+        # would tear the terminal down. Send the line-discipline EOF byte.
          with contextlib.suppress(Exception):
 -            os.close(self._child_stdin)
 -        # Encourage prompt shutdown if child lingers after stdin close
@@ -35,9 +27,6 @@ teardown still terminates whatever is left.
 -        if not self._loop.is_closed():
 -            self._loop.call_later(0.05, _ensure_terminate)
 +            os.write(self._child_stdin, CTRL_D)
-+        # Do not kill the command here. EOF on stdin is not a reason to stop
-+        # a process that never reads it, and on a loaded box a freshly forked
-+        # child may not have reached exec() yet.
  
      @property
      def started(self) -> bool:
