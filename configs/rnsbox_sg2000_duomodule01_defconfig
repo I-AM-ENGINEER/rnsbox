@@ -64,6 +64,9 @@ BR2_PACKAGE_PYTHON3=y
 BR2_PACKAGE_PYTHON3_BZIP2=y
 BR2_PACKAGE_PYTHON_PSUTIL=y
 BR2_PACKAGE_PYTHON_NOMADNET=y
+# Time over Reticulum: S88rnstime sets the clock from a mesh rns-time server
+# when ordinary NTP is unreachable (and can serve time to the mesh too).
+BR2_PACKAGE_PYTHON_RNS_TIME=y
 BR2_PACKAGE_RNSBOX_PORTAL=y
 
 # Board delta for rnsbox_sg2000_duomodule01_defconfig.
@@ -90,7 +93,7 @@ BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_RNSBOX_PATH)/board/sg2000/post-imag
 BR2_LINUX_KERNEL_CUSTOM_GIT=y
 BR2_LINUX_KERNEL_CUSTOM_REPO_URL="https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git"
 BR2_LINUX_KERNEL_CUSTOM_REPO_VERSION="v7.3-rc7"
-BR2_LINUX_KERNEL_PATCH="$(BR2_EXTERNAL_RNSBOX_PATH)/board/sg2000/linux-patches"
+BR2_LINUX_KERNEL_PATCH="$(BR2_EXTERNAL_RNSBOX_PATH)/board/common/linux-patches $(BR2_EXTERNAL_RNSBOX_PATH)/board/sg2000/linux-patches"
 BR2_LINUX_KERNEL_USE_CUSTOM_CONFIG=y
 BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE="$(BR2_EXTERNAL_RNSBOX_PATH)/board/sophgo/linux-rv64.config"
 BR2_LINUX_KERNEL_DTS_SUPPORT=y

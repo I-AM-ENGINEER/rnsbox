@@ -1,0 +1,48 @@
+From: RNSBox <rnsbox@localhost>
+Subject: [PATCH] riscv: dts: sophgo: licheerv-nano: mux UART1 on the header
+
+UART1 reaches the header through the IIC0 pads (XGPIOA[28]/[29]), where
+UART1_TX/RX is function 1. Until now the pads were left to S31slip
+through /dev/mem, but the shared config disables CONFIG_DEVMEM, so the
+mux never happened and the HaLow modem saw nothing.
+
+Add the pinctrl state so the modem link depends only on the DT. The
+portal needs no board-specific code: it selects /dev/ttyS1 and the baud
+as on every other board.
+
+--- a/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts
++++ b/arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts
+@@ -7,6 +7,7 @@
+ 
+ #include <dt-bindings/gpio/gpio.h>
+ #include <dt-bindings/input/linux-event-codes.h>
++#include <dt-bindings/pinctrl/pinctrl-sg2002.h>
+ #include "sg2002.dtsi"
+ 
+ / {
+@@ -184,6 +185,24 @@
+ 	status = "okay";
+ };
+ 
++/* UART1 is on XGPIOA[28]/[29] (the IIC0 pads, function 1). The slug
++ * between the controller and the header is the only board-specific part;
++ * S31slip and the portal then just use /dev/ttyS1 at the modem baud.
++ */
++&pinctrl {
++	uart1_cfg: uart1-cfg {
++		uart1-pins {
++			pinmux = <PINMUX(PIN_IIC0_SCL, 1)>,
++				 <PINMUX(PIN_IIC0_SDA, 1)>;
++			bias-pull-up;
++			drive-strength-microamp = <10800>;
++			power-source = <3300>;
++		};
++	};
++};
++
+ &uart1 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&uart1_cfg>;
+ 	status = "okay";
+ };
+
