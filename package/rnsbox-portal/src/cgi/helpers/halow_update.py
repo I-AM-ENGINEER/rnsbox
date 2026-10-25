@@ -182,7 +182,15 @@ def plan(st, devs, latest):
             e["scheduled"] = now()
 
         cur = ver(d["installed"])
-        if cur and new_ver and cur >= new_ver:
+        # Never schedule a modem whose version we could not read: an empty
+        # version used to look "older" than any release and queued an
+        # update for a device that may not even answer over the link.
+        if cur is None:
+            e.update({"state": "unknown", "tag": "", "scheduled": 0,
+                      "eligible": 0, "error": "version not reported"})
+            keyed[key] = e
+            continue
+        if new_ver and cur >= new_ver:
             if e.get("state") != "updating":
                 e.update({"state": "current", "tag": latest["tag"],
                           "scheduled": 0, "eligible": 0, "error": ""})

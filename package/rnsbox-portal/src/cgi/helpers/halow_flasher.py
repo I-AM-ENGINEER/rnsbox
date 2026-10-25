@@ -353,7 +353,7 @@ def enrich_devices(raw):
                 break
 
         if d["ip"]:
-            st = http_json(d["ip"], "/api/get_stat")
+            st = http_json(d["ip"], "/api/get_stat", timeout=4.0)
             dev = (st or {}).get("device") or {}
             if dev:
                 d["online"] = True
@@ -385,7 +385,7 @@ def slip_device():
     if cfg.get("enabled", "no").lower() not in ("yes", "1", "true", "on"):
         return None
     peer = cfg.get("peer_ip") or "192.168.7.2"
-    st = http_json(peer, "/api/get_stat", timeout=2.0)
+    st = http_json(peer, "/api/get_stat", timeout=5.0)
     dev = (st or {}).get("device") or {}
     d = {
         "mac": str(dev.get("mac", "") or "").lower(),

@@ -254,6 +254,7 @@
       var when='';
       if(d.state==='current') when='<span class="badge ok">up to date</span>';
       else if(d.state==='updating') when='<span class="badge warn">updating now</span>';
+      else if(d.state==='unknown') when='version unknown — not scheduled';
       else if(d.state==='failed') when='failed — '+(d.error?esc(d.error):'unknown error')+
         (d.scheduled_iso?' · retry '+esc(d.scheduled_iso):'');
       else when='scheduled for <strong>'+esc(d.scheduled_iso||'—')+'</strong>';
