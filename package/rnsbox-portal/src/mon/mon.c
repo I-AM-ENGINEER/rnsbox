@@ -72,12 +72,15 @@
 #define RNSTATUS_RETRY 10
 #define BT_PEERS_INTERVAL 60
 #define BT_PEERS_FAST 15
+#define RNODE_CONF     "/etc/rnsbox/rnode.conf"
+#define RNODE_WATCH_INTERVAL 60
 
 static volatile sig_atomic_t g_stop = 0;
 static int g_log_fd = -1;
 static char g_log_path[256];
 static pid_t g_rn_pid = -1;
 static pid_t g_bt_pid = -1;
+static pid_t g_rw_pid = -1;
 static long g_bt_last = 0;
 
 static void on_signal(int sig) { (void)sig; g_stop = 1; }
@@ -647,6 +650,45 @@ static int start_bt_refresh(void) {
     return 1;
 }
 
+// start_rnode_watch — free a BLE RNode stuck behind a stale BlueZ connection
+// (bluetoothctl says Connected: yes, the peer stops advertising, and rnsd's
+// scan-only discovery never finds it). Only spawned when rnode.conf really
+// points at a BLE peer; the check itself is a short-lived process.
+static int rnode_ble_configured(void) {
+    char tr[16], addr[64];
+    if (!cfg_get(RNODE_CONF, "transport", tr, sizeof(tr))) return 0;
+    if (strcasecmp(tr, "ble") != 0) return 0;
+    if (!cfg_get(RNODE_CONF, "ble_address", addr, sizeof(addr))) return 0;
+    return addr[0] != 0;
+}
+
+static int start_rnode_watch(void) {
+    if (g_rw_pid > 0) {
+        int st = 0;
+        pid_t r = waitpid(g_rw_pid, &st, WNOHANG);
+        if (r == 0) return 0;               // previous check still running
+        g_rw_pid = -1;
+    }
+    if (!rnode_ble_configured()) return 0;
+    pid_t pid = fork();
+    if (pid == 0) {
+        setsid();
+        setpriority(PRIO_PROCESS, 0, 10);
+        (void)chdir("/");
+        int nul = open("/dev/null", O_RDWR);
+        if (nul >= 0) {
+            dup2(nul, 0); dup2(nul, 1); dup2(nul, 2);
+            if (nul > 2) close(nul);
+        }
+        execl("/usr/sbin/rnsbox-portal", "rnsbox-portal", "rnode-watch",
+              (char*)NULL);
+        _exit(127);
+    }
+    if (pid <= 0) return 0;
+    g_rw_pid = pid;
+    return 1;
+}
+
 static void start_refresh(void) {
     if (g_rn_pid > 0) {
         int st = 0;
@@ -700,6 +742,7 @@ int main(int argc, char** argv) {
     long next_log = mono_s() + 1;          // first sample right away
     long next_rn = mono_s() + 5;
     long next_bt = mono_s() + 2;
+    long next_rw = mono_s() + 20;
     long next_cpu = mono_s();              // baseline now, publish after 5 s
     long next_nomad = mono_s() + 5;
 
@@ -784,7 +827,12 @@ int main(int argc, char** argv) {
             // while a page is open. Fresh while open: 60 s. Idle: 10 min.
             int page_open = stat(BT_PEERS_REQ, &st) == 0 &&
                             now_s() - (long)st.st_mtime <= 30;
-            next_rn = now + (warm ? (page_open ? RNSTATUS_FAST : RNSTATUS_INTERVAL)
+            // A configured BLE RNode needs a reasonably fresh snapshot: the
+            // rnode-watch recovery refuses to act on a stale one, and after an
+            // rnsd restart the old "Up" would otherwise hide a dead link.
+            int idle = rnode_ble_configured() ? RNODE_WATCH_INTERVAL
+                                              : RNSTATUS_INTERVAL;
+            next_rn = now + (warm ? (page_open ? RNSTATUS_FAST : idle)
                                   : RNSTATUS_RETRY);
             start_refresh();
         }
@@ -806,6 +854,11 @@ int main(int argc, char** argv) {
             }
         }
 
+        if (now >= next_rw) {
+            next_rw = now + RNODE_WATCH_INTERVAL;
+            start_rnode_watch();
+        }
+
         struct timespec ts = {0, 200 * 1000 * 1000};
         nanosleep(&ts, NULL);
     }
@@ -817,6 +870,10 @@ int main(int argc, char** argv) {
     if (g_bt_pid > 0) {
         kill(g_bt_pid, SIGTERM);
         waitpid(g_bt_pid, NULL, 0);
+    }
+    if (g_rw_pid > 0) {
+        kill(g_rw_pid, SIGTERM);
+        waitpid(g_rw_pid, NULL, 0);
     }
     rmdir(RNSTATUS_LOCK);
     if (g_log_fd >= 0) close(g_log_fd);
