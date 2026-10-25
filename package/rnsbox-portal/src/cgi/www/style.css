@@ -162,15 +162,15 @@ strong { font-weight: 600; }
 }
 .dash-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 0 0 6px; }
 .dash-head h2 { margin: 0; }
-.card > p { max-width: 80ch; }
+.card > p { max-width: none; text-align: justify; hyphens: auto; }
 /* Sub-sections inside the single RNS Shell card (access files, issued
    grants, manual hashes) instead of four separate cards. */
 .rnsh-block { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
 .rnsh-block h4 { margin: 0 0 6px; }
-.rnsh-block > p { margin: 0 0 8px; max-width: 80ch; }
+.rnsh-block > p { margin: 0 0 8px; max-width: none; text-align: justify; hyphens: auto; }
 .lora-calc { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--border);
   display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
-.lora-calc .lora-note { flex-basis: 100%; margin: 0; font-size: 12px; max-width: 90ch; }
+.lora-calc .lora-note { flex-basis: 100%; margin: 0; font-size: 12px; max-width: none; text-align: justify; hyphens: auto; }
 
 .cards {
   display: grid;
@@ -195,6 +195,15 @@ table.kv td {
   color: var(--text);
   text-align: right;
   overflow-wrap: anywhere;
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+table.kv td code, table.kv td .mono, table.kv td .val {
+  font-family: inherit;
+  font-size: inherit;
+  background: none;
+  padding: 0;
+  border-radius: 0;
 }
 table.kv tr + tr th, table.kv tr + tr td { border-top: 1px solid var(--border); }
 
@@ -242,6 +251,7 @@ table.tcp-table .tcp-add-row td { border-top: 2px solid var(--border); }
 /* ---- Badges ---- */
 .badge {
   display: inline-block;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
   padding: 2px 8px;
   font-size: 11.5px;
   font-weight: 600;
