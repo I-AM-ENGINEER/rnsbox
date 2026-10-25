@@ -523,6 +523,7 @@ void reticulum_page(const Request& req, Response& res) {
 
     bool auto_update  = store::read_update_check();   // default on
     bool auto_install = store::read_update_install(); // default off
+    bool patch_rnsh   = store::read_patch_rnsh();     // default on
 
     std::string h = render::page_file("reticulum");
     h = R(std::move(h), "__BASE__", base);
@@ -632,6 +633,7 @@ void reticulum_page(const Request& req, Response& res) {
 
     h = R(std::move(h), "__AUTO_UPDATE_CHECKED__", auto_update ? "checked" : "");
     h = R(std::move(h), "__AUTO_INSTALL_CHECKED__", auto_install ? "checked" : "");
+    h = R(std::move(h), "__PATCH_RNSH_CHECKED__", patch_rnsh ? "checked" : "");
 
     std::string opts = "<option value=\"0\" " + std::string(days == 0 ? "selected" : "") + ">None (default)</option>";
     for (int d = 1; d <= 7; ++d)
@@ -1340,12 +1342,14 @@ void reticulum_maintenance(const Request& req, Response& res) {
 
     bool auto_update = req.f("auto_update") == "on";
     bool auto_install = req.f("auto_install") == "on";
+    bool patch_rnsh = req.f("patch_rnsh") == "on";
     if (!auto_update) auto_install = false;   // install needs the daily check
     int days = atoi(req.f("days").c_str());
     std::string time = util::trim(req.f("time"));
     if (time.empty()) time = store::read_rnsd_restart_time();
     std::string err;
-    if (!store::write_cron_settings(days, time, auto_update, auto_install, err)) {
+    if (!store::write_cron_settings(days, time, auto_update, auto_install,
+                                    patch_rnsh, err)) {
         render::redirect_flash(res, ret_redirect(), "error",
             "Maintenance settings: " + err + ".");
         return;
@@ -1370,7 +1374,8 @@ void reticulum_maintenance(const Request& req, Response& res) {
     render::redirect_flash(res, ret_redirect(), "success",
         "Maintenance settings saved (check/download " +
         std::string(auto_update ? "on" : "off") + ", auto-install " +
-        std::string(auto_install ? "on" : "off") + ", auto-restart, watchdog, memory watchdog " +
+        std::string(auto_install ? "on" : "off") + ", rnsh patch " +
+        std::string(patch_rnsh ? "on" : "off") + ", auto-restart, watchdog, memory watchdog " +
         std::string(mem_enabled ? ("at " + std::to_string(mem_threshold) + "%").c_str() : "off") + ").");
 }
 
@@ -1460,8 +1465,18 @@ void reticulum_installupdate(const Request& req, Response& res) {
     std::string from = json_str(j, "from");
     std::string to = json_str(j, "to");
     std::string uerror = json_str(j, "error");
+    std::string rpatch = json_str(j, "rnsh_patch");
+    std::string note;
+    if (rpatch == "applied")
+        note = " The rnsh stdin-EOF fix was re-applied.";
+    else if (rpatch == "no-match")
+        note = " WARNING: the rnsh stdin-EOF fix no longer matches this rns "
+               "version — the remote shell is unfixed until the image is rebuilt.";
+    else if (rpatch == "missing")
+        note = " WARNING: the rnsh module was not found in the installed package.";
     if (ok)
-        update_json(res, true, true, "rnsd updated " + from + " → " + to + " and restarted.");
+        update_json(res, true, true, "rnsd updated " + from + " → " + to +
+                                   " and restarted." + note);
     else if (rolled)
         update_json(res, false, false,
             "Install failed (" + uerror + ") — rolled back to " + from + ".");

@@ -69,11 +69,13 @@ int  read_rnsd_restart_days();                 // 0..7 (0 = off)
 std::string read_rnsd_restart_time();          // HH:MM (default 04:00)
 bool read_update_check();                      // update_check (default yes)
 bool read_update_install();                    // update_install (default no)
+// Re-apply the rnsh stdin-EOF fix after an in-place rns update (default yes).
+bool read_patch_rnsh();
 bool write_rnsd_restart_days(int days, const std::string& time, std::string& err);
 bool write_update_check(bool enabled, std::string& err);   // cron.conf update_check=yes|no
 // Schedule + update policy in one atomic write (the Maintenance form).
 bool write_cron_settings(int days, const std::string& time, bool update_check,
-                         bool update_install, std::string& err);
+                         bool update_install, bool patch_rnsh, std::string& err);
 
 // --- reticulum config (raw text editor) ---
 std::string read_reticulum_config();
