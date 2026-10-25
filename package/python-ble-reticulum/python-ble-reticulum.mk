@@ -17,6 +17,11 @@ PYTHON_BLE_RETICULUM_VERSION = 0.2.3
 #     stale link) never sends the 16-byte RX handshake; without a real LE
 #     disconnect it keeps the link alive with keepalives and the handshake is
 #     never retried. Dropping the link makes it reconnect and handshake.
+#     Same file: central GATT operations address the RX/TX characteristics by
+#     the objects resolved from the Reticulum service, not by UUID string —
+#     peers whose GATT table registers a characteristic UUID twice (the
+#     Columba backend's Reticulum service appears twice) make bleak's
+#     collection-wide UUID lookup raise and killed every auto-connect.
 #   - src/ble_reticulum/BLEInterface.py: the identity-handshake wait is 10 s
 #     instead of 30 (see the comment at _pending_identity_timeout) so the
 #     kick-and-reconnect cycle above costs a third of the dead-air time.
