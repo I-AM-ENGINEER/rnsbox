@@ -8,7 +8,7 @@ timeouts. Read the optional key and use it when set.
 
 --- a/RNS/Interfaces/TCPInterface.py
 +++ b/RNS/Interfaces/TCPInterface.py
-@@ -130,6 +130,10 @@
+@@ -131,5 +131,9 @@
          self.mode             = RNS.Interfaces.Interface.Interface.MODE_FULL
          self.bitrate          = TCPClientInterface.BITRATE_GUESS
 +        if "bitrate" in c:
