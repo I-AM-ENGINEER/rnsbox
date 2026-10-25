@@ -245,7 +245,7 @@ void map_page(const Request& req, Response& res) {
     set("__TEL_LORA_BLOCK__", lora_block);
     set("__TEL_HALOW_BLOCK__", halow_block);
     set("__TEL_KEEP__", keep);
-    res.body = render::layout(req, res, "Map", "map", h);
+    res.body = render::layout(req, res, "Discovery", "map", h);
 }
 
 void map_telemetry(const Request& req, Response& res) {
