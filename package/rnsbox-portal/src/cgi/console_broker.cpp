@@ -102,13 +102,16 @@ bool nomadnet_daemon_running() {
 // Fire-and-forget: the init script takes seconds and the broker must keep
 // serving the Console/NomadNet WebSockets meanwhile. spawn_session() sets
 // nomad_stop_at and the main loop starts the TUI once the pidfile is gone.
-void kick_nomadnet_stop() {
+// Stop the daemon before the TUI opens the same config dir. This MUST be
+// synchronous: the old fire-and-forget fork returned as soon as the pidfile
+// disappeared, so the broker spawned the TUI while S83nomadnet was still in
+// its group-kill phase, and the new TUI was killed. The init script has a
+// 10 s SIGTERM window plus 1 s for the group, so wait up to 20 s.
+bool stop_nomadnet_blocking() {
     pid_t pid = ::fork();
-    if (pid < 0) return;
+    if (pid < 0) return false;
     if (pid == 0) {
         ::setsid();
-        pid_t inner = ::fork();
-        if (inner != 0) ::_exit(0);
         int nul = ::open("/dev/null", O_RDWR);
         if (nul >= 0) {
             ::dup2(nul, 0); ::dup2(nul, 1); ::dup2(nul, 2);
@@ -117,8 +120,21 @@ void kick_nomadnet_stop() {
         ::execl(NOMADNET_INIT, "S83nomadnet", "stop", (char*)nullptr);
         ::_exit(127);
     }
+    time_t end = ::time(nullptr) + 20;
     int st = 0;
-    (void)::waitpid(pid, &st, 0);   // reap the short-lived intermediate child
+    for (;;) {
+        pid_t r = ::waitpid(pid, &st, WNOHANG);
+        if (r == pid) break;
+        if (r < 0) return false;
+        if (::time(nullptr) >= end) {
+            ::kill(pid, SIGKILL);
+            ::waitpid(pid, &st, 0);
+            return false;
+        }
+        struct timespec ts = {0, 100 * 1000 * 1000};
+        ::nanosleep(&ts, nullptr);
+    }
+    return !nomadnet_daemon_running();
 }
 
 // rnsbox-mon uses this file's mtime to stop the daemon after an idle period;
@@ -444,11 +460,10 @@ bool spawn_session(Session& s) {
                           O_WRONLY | O_CREAT | O_CLOEXEC, 0644);
         if (flag >= 0) ::close(flag);
         touch_nomadnet_req();
-        if (nomadnet_daemon_running()) {
-            kick_nomadnet_stop();
-            s.nomad_stop_at = time(nullptr) + 25;
-            s.error = "Stopping the NomadNet daemon...";
-            return true;   // no PTY yet; the main loop starts it when gone
+        if (nomadnet_daemon_running() && !stop_nomadnet_blocking()) {
+            s.error = "Could not stop the NomadNet daemon (S83nomadnet stop failed).";
+            ::unlink(nomadnet_flag_path().c_str());
+            return false;
         }
         s.nomad_stop_at = 0;
         if (!spawn_pty(s, exe, args, true)) {
@@ -1101,14 +1116,6 @@ int broker_main(bool foreground, int ws_port, const char* ws_bind) {
         time_t now = time(nullptr);
         for (auto& kv : g_sessions) {
             Session& s = kv.second;
-            // The NomadNet TUI waited for the daemon to release the shared
-            // config; start it as soon as the pidfile is gone (or on timeout).
-            if (s.name == SESSION_NOMADNET && s.nomad_stop_at && s.master < 0) {
-                if (!nomadnet_daemon_running() || now >= s.nomad_stop_at) {
-                    s.nomad_stop_at = 0;
-                    spawn_session(s);
-                }
-            }
             if (s.respawn_at && now >= s.respawn_at) {
                 s.respawn_at = 0;
                 if (s.master < 0) {
