@@ -35,7 +35,7 @@ define RNSBOX_PORTAL_BUILD_CMDS
 	$(TARGET_CXX) -std=c++17 -Os -s -fno-exceptions -fno-rtti \
 		-static-libstdc++ -static-libgcc \
 		-ffunction-sections -fdata-sections -Wl,--gc-sections \
-		-o $(@D)/rnsbox-portal $(@D)/cgi/*.cpp $(@D)/cgi/term/*.cpp -lcrypto -lz
+		-o $(@D)/rnsbox-portal $(@D)/cgi/*.cpp $(@D)/cgi/term/*.cpp -lcrypto -lz -lutil
 	# rnsbox-mon replaces three BusyBox shell loops on the low-RAM boards
 	# (memwatch + memlog + rnstatus warm): one ~200 KB process instead of
 	# ~2.2 MB of resident ash.

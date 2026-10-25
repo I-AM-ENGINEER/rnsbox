@@ -68,6 +68,7 @@
 #define MEMWATCH_COOLDOWN 600
 #define MEMWATCH_MIN_UPTIME 120
 #define RNSTATUS_INTERVAL 600
+#define RNSTATUS_FAST 60
 #define RNSTATUS_RETRY 10
 #define BT_PEERS_INTERVAL 60
 #define BT_PEERS_FAST 15
@@ -356,22 +357,57 @@ static int cpu_pct(struct CpuSample cur) {
     return pct;
 }
 
-// Dashboard CPU metric: a dedicated 5 s baseline (the memlog's cpu= column
-// above stays on its own interval), published for the portal as
-// {"pct":N,"ts":T}. Busy excludes idle+iowait, so it answers "how much of the
-// CPU was executing work", not "how many tasks were runnable" (loadavg).
-static struct CpuSample g_prev_cpu5;
-static int g_cpu5_have = 0;
+// Dashboard CPU metric. The kernel on this board does not advance
+// /proc/stat's idle counter (it stays frozen since boot), so the usual
+// (total-idle)/total formula reads 100% forever. Sum the per-process
+// utime+stime deltas instead: that is actual work, and it never lies.
+static long mono_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+static unsigned long long proc_cpu_ticks(void) {
+    unsigned long long sum = 0;
+    DIR* d = opendir("/proc");
+    if (!d) return 0;
+    struct dirent* e;
+    while ((e = readdir(d))) {
+        if (!isdigit((unsigned char)e->d_name[0])) continue;
+        char path[64];
+        snprintf(path, sizeof(path), "/proc/%s/stat", e->d_name);
+        FILE* f = fopen(path, "r");
+        if (!f) continue;
+        char line[512];
+        if (fgets(line, sizeof(line), f)) {
+            char* r = strrchr(line, ')');
+            if (r) {
+                unsigned long long u = 0, s = 0;
+                if (sscanf(r + 2,
+                           "%*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu",
+                           &u, &s) == 2)
+                    sum += u + s;
+            }
+        }
+        fclose(f);
+    }
+    closedir(d);
+    return sum;
+}
+
+static unsigned long long g_prev_proc5;
+static long g_prev_mono5;
 
 static void sample_cpu5(void) {
-    struct CpuSample cur = read_cpu();
-    if (cur.total == 0) return;
-    if (g_cpu5_have && cur.total > g_prev_cpu5.total) {
-        unsigned long long dt = cur.total - g_prev_cpu5.total;
-        unsigned long long di = cur.idle >= g_prev_cpu5.idle
-                                ? cur.idle - g_prev_cpu5.idle : 0;
-        if (di > dt) di = dt;
-        int pct = dt ? (int)((100ULL * (dt - di)) / dt) : 0;
+    unsigned long long cur = proc_cpu_ticks();
+    long now = mono_ms();
+    if (g_prev_proc5 && cur >= g_prev_proc5 && now > g_prev_mono5) {
+        unsigned long long dt = cur - g_prev_proc5;
+        long ticks = sysconf(_SC_CLK_TCK);
+        if (ticks < 1) ticks = 100;
+        unsigned long long elapsed =
+            (unsigned long long)(now - g_prev_mono5) * (unsigned long long)ticks / 1000;
+        int pct = elapsed ? (int)((100ULL * dt) / elapsed) : 0;
         if (pct < 0) pct = 0;
         if (pct > 100) pct = 100;
         char out[96], tmp[64];
@@ -384,8 +420,8 @@ static void sample_cpu5(void) {
             if (rename(tmp, CPU_FILE) != 0) remove(tmp);
         }
     }
-    g_prev_cpu5 = cur;
-    g_cpu5_have = 1;
+    g_prev_proc5 = cur;
+    g_prev_mono5 = now;
 }
 
 struct TopProc { long rss; char name[32]; };
@@ -744,7 +780,12 @@ int main(int argc, char** argv) {
         if (now >= next_rn) {
             struct stat st;
             int warm = stat(RNSTATUS_CACHE, &st) == 0 && st.st_size > 0;
-            next_rn = now + (warm ? RNSTATUS_INTERVAL : RNSTATUS_RETRY);
+            // The portal's rnstatus endpoint touches BT_PEERS_REQ every 5 s
+            // while a page is open. Fresh while open: 60 s. Idle: 10 min.
+            int page_open = stat(BT_PEERS_REQ, &st) == 0 &&
+                            now_s() - (long)st.st_mtime <= 30;
+            next_rn = now + (warm ? (page_open ? RNSTATUS_FAST : RNSTATUS_INTERVAL)
+                                  : RNSTATUS_RETRY);
             start_refresh();
         }
 
