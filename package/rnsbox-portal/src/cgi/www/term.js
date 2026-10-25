@@ -280,6 +280,41 @@
     }, 15);
   }
 
+  // Clipboard: xterm listens for `paste` on its helper textarea, but a
+  // right-click -> Paste can land on the terminal element instead (depending
+  // on the browser and focus state), which left the context menu doing
+  // nothing. Catch the event at the document level and forward the text
+  // ourselves; xterm's own listener is bypassed so nothing is sent twice.
+  function pasteText(text) {
+    if (!text) return;
+    if (fast.modes && fast.modes.paste) text = '\x1b[200~' + text + '\x1b[201~';
+    sendBytes(encoder.encode(text));
+    term.focus();
+  }
+  document.addEventListener('paste', function (ev) {
+    var t = ev.target;
+    if (!t || !t.closest || !t.closest('#term-card')) return;
+    var cd = ev.clipboardData;
+    var text = cd ? cd.getData('text/plain') : '';
+    if (!text) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    pasteText(text);
+  }, true);
+
+  // Keep the browser's paste shortcuts working on every OS. xterm turns
+  // Ctrl+V into ^V (a terminal key), so the conventional terminal paste is
+  // Ctrl+Shift+V / Shift+Insert; stop those before xterm sees them and let
+  // the browser's default paste action (which fires the handler above) run.
+  document.addEventListener('keydown', function (ev) {
+    var t = ev.target;
+    if (!t || !t.closest || !t.closest('#term-card')) return;
+    if ((ev.ctrlKey && ev.shiftKey && (ev.key === 'V' || ev.key === 'v')) ||
+        (ev.shiftKey && ev.key === 'Insert')) {
+      ev.stopPropagation();
+    }
+  }, true);
+
   term.onData(function (data) { sendBytes(encoder.encode(data)); });
   term.onBinary(function (data) {
     var out = new Uint8Array(data.length);

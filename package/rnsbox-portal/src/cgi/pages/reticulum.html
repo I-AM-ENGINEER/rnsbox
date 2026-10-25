@@ -725,7 +725,7 @@ function doUpdate(action, btn, isInstall){
   if(!kv) return;
   function esc(s){ return (''+(s==null?'':s)).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
   function num(v){ if(v==null) return null; var m=(''+v).match(/-?\d+(\.\d+)?/); return m?parseFloat(m[0]):null; }
-  function unit(v,u){ if(v==null||v==='') return '?'; return /^-?\d+(\.\d+)?$/.test(''+v)? v+' '+u : esc(v); }
+  function unit(v,u){ if(v==null||v==='') return null; return /^-?\d+(\.\d+)?$/.test(''+v)? v+' '+u : esc(v); }
   function sig(v,u,g,a){ if(v==null) return '<span class="muted">&mdash;</span>'; var c=v>=g?'sig-g':(v>=a?'sig-a':'sig-r'); return '<span class="'+c+'">'+v+' '+u+'</span>'; }
   function mac(m){ if(!m) return '?'; m=(''+m).replace(/[:\-]/g,''); return (m.match(/../g)||[m]).join(':').toLowerCase(); }
   // The modem's rx_last_age is in SECONDS (its own UI formats it as a duration).
@@ -733,58 +733,96 @@ function doUpdate(action, btn, isInstall){
     if(s<120) return s+' s'; if(s<7200) return Math.round(s/60)+' min'; if(s<172800) return Math.round(s/3600)+' h'; return Math.round(s/86400)+' d'; }
   function cell(id,h){ var e=document.getElementById(id); if(e) e.innerHTML=h; }
   function setNote(t){ if(!note) return; if(t){ note.textContent=t; note.hidden=false; } else { note.hidden=true; note.textContent=''; } }
-  fetch('__BASE__/reticulum/halow').then(function(r){return r.json();}).then(function(d){
-    if(!d.enabled) return;
-    var net = d.mode === 'ip';
-    if(!d.reachable){
-      cell('halow-status', '<span class="badge warn">DOWN</span>');
-      cell('halow-addr', '<span class="muted">&mdash;</span>');
-      setNote(net
-        ? ('No answer at ' + esc(d.peer) + ' — is the modem powered and on the network?')
-        : (d.sl0_up ? 'The modem is not answering over SLIP.' : 'The SLIP link (sl0) is not up.'));
-      return;
-    }
-    var rd=d.radio||{}, st=d.stats||{}, dv=d.device||{}, ns=d.neighbours||[];
-    var port=(d.tcp_port||4242);
-    // mcs_index arrives as "MCS0" on this firmware, but strip any leading
-    // "MCS" and re-add it so a bare index renders identically.
-    var mcs = (rd.mcs==null||rd.mcs==='') ? 'MCS?' : 'MCS'+esc((''+rd.mcs).replace(/^mcs\s*/i,''));
-    var fw = (dv.fw ? esc((''+dv.fw).split(' ')[0]) : '?');   // "2.3.0 (build…)" -> "2.3.0"
-    function pct(v){ var n=num(v); return n==null ? '<span class="muted">&mdash;</span>' : Math.round(n)+' %'; }
-    function dbm(v){ var n=num(v); return n==null ? esc(v||'?') : n+' dBm'; }
-    cell('halow-status', '<span class="badge ok">UP</span>');
-    cell('halow-addr', net ? (esc(d.peer)+':'+esc(port)) : esc(d.peer));
-    setNote('');
-    cell('halow-radio', unit(rd.freq,'MHz')+' · '+unit(rd.bw,'MHz')+' · '+mcs+' · '+unit(rd.power,'dBm'));
-    cell('halow-air', pct(st.airtime));
-    cell('halow-chload', pct(st.ch_util));
-    cell('halow-noise', dbm(st.noise));
-    cell('halow-rxtx', esc(st.rx_bytes||'?')+' / '+esc(st.tx_bytes||'?'));
-    cell('halow-temp', esc(dv.temp||'?'));
-    cell('halow-fw', fw);
-    cell('halow-uptime', esc(dv.uptime||'?'));
-    // Quick-add: the modem is reachable but no interface routes through it yet.
-    if(addForm && !HALOW_IN_CONFIG){
-      var nf=document.getElementById('halow-add-name'), pf=document.getElementById('halow-add-port');
-      if(nf) nf.value=(dv.hostname||'');   // blank -> server queries the modem
-      if(pf) pf.value=port;
-      addForm.hidden=false;
-    }
-    if(ns.length){
-      document.getElementById('halow-ncount').textContent=ns.length;
-      var head='<tr><th>Node</th><th>RSSI</th><th>SNR</th><th>MCS &darr;/&uarr;</th><th>TX acked</th><th>TX loss</th><th>Last</th></tr>';
-      var body=ns.map(function(p){
-        return '<tr><td class="mono">'+esc(mac(p.mac))+'</td>'+
-          '<td>'+sig(num(p.rssi),'dBm',-75,-88)+'</td><td>'+sig(num(p.snr),'dB',10,5)+'</td>'+
-          '<td class="val">'+esc(p.rx_mcs)+' / '+esc(p.tx_mcs)+'</td>'+
-          '<td class="val">'+esc(p.tx_acked)+' / '+esc(p.tx_frames)+'</td>'+
-          '<td>'+esc(p.tx_loss||0)+'%</td>'+
-          '<td class="val dim">'+esc(ago(p.age))+'</td></tr>';
-      }).join('');
-      document.getElementById('halow-ntable').innerHTML=head+body;
-      det.hidden=false;   // reveal the section; it stays collapsed (no `open`)
-    }
-  }).catch(function(){ setNote('Could not read modem status.'); });
+  var halowBusy=false, halowHave=false;
+  function radioText(rd){
+    rd=rd||{};
+    var parts=[];
+    var f=unit(rd.freq,'MHz'); if(f) parts.push(f);
+    var b=unit(rd.bw,'MHz'); if(b) parts.push(b);
+    if(rd.mcs!=null && rd.mcs!=='')
+      parts.push('MCS'+esc((''+rd.mcs).replace(/^mcs\s*/i,'')));
+    var p=unit(rd.power,'dBm'); if(p) parts.push(p);
+    return parts.length ? parts.join(' · ') : '<span class="muted">&mdash;</span>';
+  }
+  function loadHalow(){
+    if(halowBusy) return;
+    halowBusy=true;
+    function done(){ halowBusy=false; }
+    fetch('__BASE__/reticulum/halow',{credentials:'same-origin',cache:'no-store'})
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        if(!d.enabled){
+          cell('halow-status', '<span class="muted">DISABLED</span>');
+          cell('halow-addr', '<span class="muted">&mdash;</span>');
+          setNote('The HaLow link is disabled.');
+          done(); return;
+        }
+        var net = d.mode === 'ip';
+        if(!d.reachable){
+          // A failed probe while the link is up is UNKNOWN, not DOWN: the
+          // modem may simply be busy answering the first request.
+          if(!net && !d.sl0_up){
+            cell('halow-status', '<span class="badge warn">DOWN</span>');
+            cell('halow-addr', '<span class="muted">&mdash;</span>');
+            setNote('The SLIP link (sl0) is not up.');
+          } else {
+            cell('halow-status', '<span class="badge">UNKNOWN</span>');
+            if(!halowHave) cell('halow-addr', '<span class="muted">&mdash;</span>');
+            setNote(net
+              ? ('No answer at ' + esc(d.peer) + ' — is the modem powered and on the network?')
+              : 'No answer from the modem yet — retrying.');
+          }
+          done(); return;
+        }
+        halowHave = true;
+        var rd=d.radio||{}, st=d.stats||{}, dv=d.device||{}, ns=d.neighbours||[];
+        var port=(d.tcp_port||4242);
+        var fw = (dv.fw ? esc((''+dv.fw).split(' ')[0]) : '<span class="muted">&mdash;</span>');   // "2.3.0 (build…)" -> "2.3.0"
+        function pct(v){ var n=num(v); return n==null ? '<span class="muted">&mdash;</span>' : Math.round(n)+' %'; }
+        function dbm(v){ var n=num(v); return n==null ? '<span class="muted">&mdash;</span>' : n+' dBm'; }
+        function val(v){ return (v==null||v==='') ? '<span class="muted">&mdash;</span>' : esc(v); }
+        cell('halow-status', '<span class="badge ok">UP</span>');
+        cell('halow-addr', net ? (esc(d.peer)+':'+esc(port)) : esc(d.peer));
+        setNote('');
+        cell('halow-radio', radioText(rd));
+        cell('halow-air', pct(st.airtime));
+        cell('halow-chload', pct(st.ch_util));
+        cell('halow-noise', dbm(st.noise));
+        cell('halow-rxtx', val(st.rx_bytes)+' / '+val(st.tx_bytes));
+        cell('halow-temp', val(dv.temp));
+        cell('halow-fw', fw);
+        cell('halow-uptime', val(dv.uptime));
+        // Quick-add: the modem is reachable but no interface routes through it yet.
+        if(addForm && !HALOW_IN_CONFIG){
+          var nf=document.getElementById('halow-add-name'), pf=document.getElementById('halow-add-port');
+          if(nf) nf.value=(dv.hostname||'');   // blank -> server queries the modem
+          if(pf) pf.value=port;
+          addForm.hidden=false;
+        }
+        if(ns.length){
+          document.getElementById('halow-ncount').textContent=ns.length;
+          var head='<tr><th>Node</th><th>RSSI</th><th>SNR</th><th>MCS &darr;/&uarr;</th><th>TX acked</th><th>TX loss</th><th>Last</th></tr>';
+          var body=ns.map(function(p){
+            return '<tr><td class="mono">'+esc(mac(p.mac))+'</td>'+
+              '<td>'+sig(num(p.rssi),'dBm',-75,-88)+'</td><td>'+sig(num(p.snr),'dB',10,5)+'</td>'+
+              '<td class="val">'+esc(p.rx_mcs)+' / '+esc(p.tx_mcs)+'</td>'+
+              '<td class="val">'+esc(p.tx_acked)+' / '+esc(p.tx_frames)+'</td>'+
+              '<td>'+esc(p.tx_loss||0)+'%</td>'+
+              '<td class="val dim">'+esc(ago(p.age))+'</td></tr>';
+          }).join('');
+          document.getElementById('halow-ntable').innerHTML=head+body;
+          det.hidden=false;   // reveal the section; it stays collapsed (no `open`)
+        }
+        done();
+      })
+      .catch(function(){
+        cell('halow-status', '<span class="badge">UNKNOWN</span>');
+        setNote('Could not read modem status — retrying.');
+        done();
+      });
+  }
+  loadHalow();
+  setInterval(function(){ if(!document.hidden) loadHalow(); }, 20000);
 })();
 </script>
 <script>

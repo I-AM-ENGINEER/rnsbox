@@ -18,7 +18,6 @@
   <div class="cardhead">
     <h3>Devices</h3>
     <div class="form-actions" style="margin:0">
-      <label class="check" style="margin:0"><input type="checkbox" id="fl-auto-scan" checked> auto-scan</label>
       <button type="button" class="btn" onclick="flScan()">Scan now</button>
     </div>
   </div>
@@ -26,7 +25,7 @@
     RNode modems reachable over SLIP or the LAN are listed with their version and IP.</p>
   <table class="fl-dev" id="fl-devices">
     <thead><tr><th></th><th>MAC</th><th>Link</th><th>Kind</th><th>Version</th><th>Chip</th><th>IP</th></tr></thead>
-    <tbody><tr><td colspan="7" class="muted">Scanning…</td></tr></tbody>
+    <tbody><tr><td colspan="7" class="muted">Not scanned yet — press Scan now.</td></tr></tbody>
   </table>
 </section>
 
@@ -175,12 +174,12 @@
         } else if(s.state==='done'){
           bar(100,'ok'); if(s.log) log(s.log.join('\n'));
           msg('Flash done'+(s.version?' — '+s.version:'')+'.');
-          setBusy(false); flScan();
+          setBusy(false);
         } else if(s.state==='failed'){
           bar(s.pct||0,'crit');
           if(s.log) log(s.log.join('\n'));
           msg('Flash failed: '+(s.error||'unknown error'));
-          setBusy(false); flScan();
+          setBusy(false);
         } else { setBusy(false); }
       }).catch(function(){ setTimeout(function(){ poll(transport); },2500); });
   }
@@ -295,7 +294,9 @@
   Array.from(document.querySelectorAll('input[name="flsrc"]')).forEach(function(r){
     r.addEventListener('change',syncSource);
   });
-  flReleases(); flScan(); flAutoStatus(); syncSource(); syncReboot();
-  setInterval(function(){ if(!busy && document.getElementById('fl-auto-scan').checked) flScan(); }, 5000);
+  // Discovery is manual: a scan sends raw HGIC probes and an HTTP query over
+  // SLIP, which saturates the modem link while it runs. The scheduled updater
+  // runs its own discovery every couple of hours.
+  flReleases(); flAutoStatus(); syncSource(); syncReboot();
 })();
 </script>

@@ -17,12 +17,12 @@
 //     EVENT lines for rnsd PID changes. Config: /etc/rnsbox/memlog.conf.
 //   * CPU metric (every 5 s): publish {"pct":N,"ts":T} to /run/rnsbox-cpu
 //     for the dashboard's "CPU load" (busy excludes idle/iowait).
-//   * rnstatus warm (every 60 s, 10 s while the cache is still empty):
+//   * rnstatus warm (every 600 s, 10 s while the cache is still empty):
 //     run `rnsbox-portal rnstatus-refresh` at nice 10, single-flight via
 //     /run/rnsstatus.lock. The command is a stat() while the cache is warm,
 //     or a query to the resident helper; only its first run at boot pays the
 //     RNS import.
-//   * BLE peers cache (every 30 s idle, every 5 s while a portal page is
+//   * BLE peers cache (every 60 s idle, every 15 s while a portal page is
 //     polling /reticulum/bluetooth/peers): rebuild the connected-device list
 //     with a 60 s grace period, so a transient disconnect does not make the
 //     dashboard row blink.
@@ -67,10 +67,10 @@
 #define MEMWATCH_INTERVAL 30
 #define MEMWATCH_COOLDOWN 600
 #define MEMWATCH_MIN_UPTIME 120
-#define RNSTATUS_INTERVAL 60
+#define RNSTATUS_INTERVAL 600
 #define RNSTATUS_RETRY 10
-#define BT_PEERS_INTERVAL 30
-#define BT_PEERS_FAST 5
+#define BT_PEERS_INTERVAL 60
+#define BT_PEERS_FAST 15
 
 static volatile sig_atomic_t g_stop = 0;
 static int g_log_fd = -1;

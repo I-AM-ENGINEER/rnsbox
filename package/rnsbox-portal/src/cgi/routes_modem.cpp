@@ -70,11 +70,15 @@ bool gunzip(const std::string& in, std::string& out) {
     return true;
 }
 
-// If `body` is gzip, inflate it in place (best-effort; leaves it alone on error).
-void maybe_gunzip(std::string& body) {
-    if (!looks_gzip(body)) return;
+// If `body` is gzip, inflate it in place. Returns false when the stream is
+// truncated/corrupt: serving those bytes as text/html is what put a wall of
+// binary garbage in the browser when the SLIP link was busy.
+bool maybe_gunzip(std::string& body) {
+    if (!looks_gzip(body)) return true;
     std::string dec;
-    if (gunzip(body, dec)) body.swap(dec);
+    if (!gunzip(body, dec)) return false;
+    body.swap(dec);
+    return true;
 }
 
 // ---- request validation: nothing from the client reaches the upstream request
@@ -269,7 +273,13 @@ void modem_ui(const Request& req, Response& res) {
                    "Enable the SLIP link, wire the modem, and confirm sl0 is up, then retry.\n";
         return;
     }
-    maybe_gunzip(body);   // modem serves gzip'd index.html; inflate so we can rewrite it
+    // modem serves gzip'd index.html; inflate so we can rewrite it
+    if (!maybe_gunzip(body)) {
+        res.status = "502 Bad Gateway";
+        res.content_type = "text/plain; charset=utf-8";
+        res.body = "The modem sent a truncated gzip page (the SLIP link may be busy). Retry in a moment.\n";
+        return;
+    }
     std::string low = ct; for (char& c : low) c = (char)tolower((unsigned char)c);
     if (low.find("html") != std::string::npos) {
         // Keep the modem's own fetch('/api/..') calls under the portal.
@@ -328,7 +338,13 @@ void modem_api(const Request& req, Response& res) {
         res.body = "{\"error\":\"modem unreachable over SLIP\",\"rc\":-502}";
         return;
     }
-    maybe_gunzip(out);   // decode any gzip'd API response too
+    // decode any gzip'd API response too
+    if (!maybe_gunzip(out)) {
+        res.status = "502 Bad Gateway";
+        res.content_type = "application/json";
+        res.body = "{\"error\":\"modem returned an invalid gzip response\",\"rc\":-502}";
+        return;
+    }
     res.status = std::to_string(status) + " " + reason;
     // API answers are data, never a page: an HTML-typed reply would render in
     // the portal's origin, so downgrade it to text/plain (fetch().json() in

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """rnode.py — BLE discovery / pairing for RNode modems, printed as JSON.
 
-Standalone helper (no rnsbox package; bleak only when it does BLE work). The
+Standalone helper (no rnsbox package). Scanning uses bluetoothctl, not bleak. The
 C++ portal shells out to it for the /reticulum/rnode/scan and /pair endpoints.
 It never raises: a missing BLE stack or a shy modem yields {"error": ...} /
 {"ok": false, ...} instead.
@@ -19,6 +19,8 @@ bonding keeps failing; it is not part of the normal attach path.
     rnode.py pair <addr> — bluetoothctl pair + trust <addr>, best-effort
 """
 import json
+import os
+import re
 import subprocess
 import sys
 
@@ -27,103 +29,91 @@ SCAN_TIMEOUT = 6.0     # s; a cheap CoW class CPU wants a few discovery cycles
 PAIR_TIMEOUT = 35      # s; bluetoothctl pair waits out the pairing procedure
 
 
-def _bleak():
+def _bt_scan(timeout):
+    """Scan through bluetoothctl (BlueZ's own C client).
+
+    Bleak is a large Python/D-Bus import and its discover() can sit for tens
+    of seconds on this CPU; the helper is called from a web request, so keep
+    it to one short-lived CLI process. Returns {address: name} or (None, err).
+    """
+    env = dict(os.environ)
+    env["NO_COLOR"] = "1"
+    env["TERM"] = "dumb"
     try:
-        import bleak  # noqa: F401
-        return bleak
-    except Exception:
-        return None
+        p = subprocess.run(
+            ["bluetoothctl", "--timeout", str(max(2, int(timeout))), "scan", "on"],
+            capture_output=True, text=True, timeout=max(2, int(timeout)) + 10,
+            env=env)
+    except Exception as exc:  # noqa: BLE001 - no adapter / bluetoothd down
+        return None, str(exc)
+    text = re.sub(r"\x1b\[[0-9;]*m", "",
+                  (p.stdout or "") + "\n" + (p.stderr or ""))
+    devs = {}
+    for line in text.splitlines():
+        m = re.search(r"Device\s+([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5})(?:\s+(.*))?$",
+                      line)
+        if not m:
+            continue
+        addr, name = m.group(1).upper(), (m.group(2) or "").strip()
+        # [CHG] lines carry "RSSI: ..." / "TxPower: ..." after the address —
+        # those are properties, not the advertised name.
+        if name.startswith(("RSSI:", "TxPower:", "ManufacturerData",
+                            "ServiceData", "UUIDs:", "Class:")):
+            continue
+        if name.replace("-", ":").upper() == addr:
+            name = ""
+        if name or addr not in devs:
+            devs[addr] = name
+    return devs, ""
 
 
-def _bonded(device) -> bool:
-    """BlueZ backend: device.details is a dict with dbus props under 'props';
-    RNS's own device_filter() trusts exactly this key."""
+def _bt_has_nus(addr):
+    """True when BlueZ reports the Nordic UART service for this device:
+    the same fallback the old bleak path used for unnamed RNode adverts."""
     try:
-        props = getattr(device, "details", None)
-        if isinstance(props, dict):
-            return props.get("props", {}).get("Bonded") is True
+        out = subprocess.run(["bluetoothctl", "info", addr],
+                             capture_output=True, text=True, timeout=6).stdout.lower()
+        return UART_SERVICE_UUID in out or "nordic uart" in out
     except Exception:
-        pass
-    return False
+        return False
+
+
+def _bt_bonded(addr):
+    try:
+        out = subprocess.run(["bluetoothctl", "info", addr],
+                             capture_output=True, text=True, timeout=5).stdout
+        return "Paired: yes" in out
+    except Exception:
+        return False
 
 
 def scan() -> dict:
-    bleak = _bleak()
-    if bleak is None:
-        return {"error": "bleak is not installed (no BLE stack in this image)", "devices": []}
-    import asyncio
-
-    async def _scan():
-        found = []
-
-        def keep(device, adv):
-            uuids = [u.lower() for u in (adv.service_uuids or [])]
-            if UART_SERVICE_UUID not in uuids:
-                return False
-            name = device.name or adv.local_name or ""
-            # RNode firmware names its adverts "RNode ..." (RNS's own default
-            # matcher requires that prefix); keep others out of the list.
-            return name.startswith("RNode")
-
-        devices = await bleak.BleakScanner.discover(timeout=SCAN_TIMEOUT)
-        for d in devices:
-            # discovery() already applied no filter; match here so unknown
-            # firmware variants advertising NUS still show with their names.
-            name = d.name or ""
-            uuids = set()
-            try:
-                for du in (d.metadata or {}).get("uuids", []):
-                    uuids.add(str(du).lower())
-            except Exception:
-                pass
-            if not (name.startswith("RNode") or UART_SERVICE_UUID in uuids):
-                continue
-            found.append({"name": name or "(unnamed)", "address": d.address,
-                          "bonded": _bonded(d)})
-        # de-dupe by address (a device can appear once per adv payload)
-        uniq = {}
-        for f in found:
-            uniq.setdefault(f["address"], f)
-        return sorted(uniq.values(), key=lambda x: x["name"])
-
-    try:
-        devices = asyncio.run(_scan())
-    except Exception as e:  # noqa: BLE001 - BlueZ down, no adapter, dbus error
-        return {"error": "BLE scan failed: %s" % e, "devices": []}
-    return {"devices": devices, "error": ""}
+    """Advertising RNodes (name starts with "RNode", the prefix RNS uses)."""
+    devs, err = _bt_scan(SCAN_TIMEOUT)
+    if devs is None:
+        return {"error": "BLE scan failed: %s" % err, "devices": []}
+    found = []
+    for addr, name in devs.items():
+        if not (name.lower().startswith("rnode") or _bt_has_nus(addr)):
+            continue
+        found.append({"name": name or "(unnamed)", "address": addr,
+                      "bonded": _bt_bonded(addr)})
+    found.sort(key=lambda x: (x["name"].lower(), x["address"]))
+    return {"devices": found, "error": ""}
 
 
 def scan_any() -> dict:
-    """Every advertising BLE device in range, no name/UUID filter — the
-    generic Bluetooth (BLE transport) card's discovery. The RNS BLE
-    transport itself keeps its own scan inside rnsd; this list is what the
-    operator can see and pair from the portal (a phone, a T-Echo, a dongle
-    — anything BlueZ hears)."""
-    bleak = _bleak()
-    if bleak is None:
-        return {"error": "bleak is not installed (no BLE stack in this image)", "devices": []}
-    import asyncio
-
-    async def _scan():
-        found = []
-        devices = await bleak.BleakScanner.discover(timeout=SCAN_TIMEOUT)
-        for d in devices:
-            name = d.name or "(unnamed)"
-            found.append({"name": name, "address": d.address,
-                          "bonded": _bonded(d)})
-        # de-dupe by address (a device can appear once per adv payload)
-        uniq = {}
-        for f in found:
-            uniq.setdefault(f["address"], f)
-        return sorted(uniq.values(), key=lambda x: (x["name"] == "(unnamed)",
-                                                    x["name"].lower(),
-                                                    x["address"]))
-
-    try:
-        devices = asyncio.run(_scan())
-    except Exception as e:  # noqa: BLE001 - BlueZ down, no adapter, dbus error
-        return {"error": "BLE scan failed: %s" % e, "devices": []}
-    return {"devices": devices, "error": ""}
+    """Every advertising BLE device in range, no name filter."""
+    devs, err = _bt_scan(SCAN_TIMEOUT)
+    if devs is None:
+        return {"error": "BLE scan failed: %s" % err, "devices": []}
+    # No per-device `info` calls here: the generic list can hold dozens of
+    # phones and beacons, and bonded state is not what that card is for.
+    found = [{"name": name or "(unnamed)", "address": addr, "bonded": False}
+             for addr, name in list(devs.items())[:40]]
+    found.sort(key=lambda x: (x["name"] == "(unnamed)", x["name"].lower(),
+                              x["address"]))
+    return {"devices": found, "error": ""}
 
 
 def _bt_pair_session(address: str, code: str, wait_s: int):

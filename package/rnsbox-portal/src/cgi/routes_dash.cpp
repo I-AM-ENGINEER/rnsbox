@@ -128,7 +128,7 @@ static std::string halow_card_html(const std::string& base) {
     // a literal /modem/ hits uhttpd's docroot (404), not this CGI.
     std::string s = R"HTML(<section class="card" id="halow-card">
     <h3>HaLow modem</h3>
-    <div id="halow-body"><p class="muted">Loading modem status…</p></div>
+    <div id="halow-body"><table class="kv"><tr><th>Status</th><td><span class="badge">PENDING</span></td></tr></table></div>
     <p class="cardfoot"><a class="btn" href="__BASE__/modem" target="_blank" rel="noopener">Open modem web UI →</a></p>
   </section>)HTML";
     return web::replace_all(std::move(s), "__BASE__", base);
@@ -140,43 +140,78 @@ static std::string halow_script_html(const std::string& base) {
   // before innerHTML; numbers only via num()/unit(), which admit digits only.
   function esc(s){ return (''+(s==null?'':s)).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
   function num(v){ if(v==null) return null; var m=(''+v).match(/-?\d+(\.\d+)?/); return m?parseFloat(m[0]):null; }
-  function unit(v,u){ if(v==null||v==='') return '?'; return /^-?\d+(\.\d+)?$/.test(''+v)? v+' '+u : esc(v); }
-  function sig(v,u,g,a){ if(v==null) return '<span class="muted">&mdash;</span>'; var c=v>=g?'sig-g':(v>=a?'sig-a':'sig-r'); return '<span class="'+c+'">'+v+' '+u+'</span>'; }
-  function noise(v){ var n=num(v); if(n==null) return '<span class="muted">&mdash;</span>'; var c=n<=-80?'sig-g':(n<=-70?'sig-a':'sig-r'); return '<span class="'+c+'">'+n+' dBm</span>'; }
+  function unit(v,u){ if(v==null||v==='') return null; return (''+v).match(/^-?\d+(\.\d+)?$/)? v+' '+u : esc(v); }
+  function dbm(v){ var n=num(v); return n==null ? '<span class="muted">&mdash;</span>' : n+' dBm'; }
+  function pct(v){ var n=num(v); return n==null ? '<span class="muted">&mdash;</span>' : Math.round(n)+' %'; }
+  function val(v){ return (v==null||v==='') ? '<span class="muted">&mdash;</span>' : esc(v); }
+  function radioText(rd){
+    rd=rd||{};
+    var parts=[];
+    var f=unit(rd.freq,'MHz'); if(f) parts.push(f);
+    var b=unit(rd.bw,'MHz'); if(b) parts.push(b);
+    if(rd.mcs!=null && rd.mcs!=='')
+      parts.push('MCS'+esc((''+rd.mcs).replace(/^mcs\s*/i,'')));
+    var p=unit(rd.power,'dBm'); if(p) parts.push(p);
+    return parts.length ? parts.join(' \u00b7 ') : '<span class="muted">&mdash;</span>';
+  }
+  function kv(rows){
+    return '<table class="kv">'+rows.map(function(x){return '<tr><th>'+x[0]+'</th><td>'+x[1]+'</td></tr>';}).join('')+'</table>';
+  }
+  var busy=false;
   function load(){
     var card=document.getElementById('halow-card'), body=document.getElementById('halow-body');
-    if(!card || !body) return;
-    return fetch('__BASE__/reticulum/halow').then(function(r){return r.json();}).then(function(d){
-      if(d.error){ body.innerHTML='<p class="muted">Login expired — reload the page.</p>'; return; }   // 401 JSON
-      if(!d.enabled){ card.hidden=true; return; }
-      if(!d.reachable){
+    if(!card || !body || busy) return;
+    busy=true;
+    function done(){ busy=false; }
+    return fetch('__BASE__/reticulum/halow',{credentials:'same-origin',cache:'no-store'})
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        if(d.error){
+          body.innerHTML=kv([['Status','<span class="badge">UNKNOWN</span>']])+
+            '<p class="muted" style="margin:6px 0 0">Login expired \u2014 reload the page.</p>';
+          done(); return;
+        }
+        if(!d.enabled){
+          body.innerHTML=kv([['Status','<span class="muted">DISABLED</span>']]);
+          done(); return;
+        }
         var ip = d.mode === 'ip';
-        body.innerHTML='<table class="kv"><tr><th>Status</th><td><span class="badge warn">DOWN</span></td></tr></table>'+
-          '<p class="muted" style="margin:6px 0 0">'+
-          (ip ? ('The modem at '+esc(d.peer)+' is not answering.')
-              : (d.sl0_up?'The modem is not answering over SLIP.':'The SLIP link (sl0) is not up.'))+
-          '</p>';
-        return;
-      }
-      var rd=d.radio||{}, st=d.stats||{}, dv=d.device||{};
-      var mcs = (rd.mcs==null||rd.mcs==='') ? 'MCS?' : 'MCS'+esc((''+rd.mcs).replace(/^mcs\s*/i,''));
-      var fw = (dv.fw ? esc((''+dv.fw).split(' ')[0]) : '?');
-      function pct(v){ var n=num(v); return n==null ? '<span class="muted">&mdash;</span>' : n.toFixed(2)+' %'; }
-      function dbm(v){ var n=num(v); return n==null ? esc(v||'?') : n+' dBm'; }
-      var rows=[
-        ['Status','<span class="badge ok">UP</span>'],
-        ['Address','<span class="val">'+(d.mode==='ip'?(esc(d.peer)+':'+esc(d.tcp_port||4242)):(esc(d.local)+' &rarr; '+esc(d.peer)))+'</span>'],
-        ['Radio','<span class="val">'+unit(rd.freq,'MHz')+' · '+unit(rd.bw,'MHz')+' · '+mcs+' · '+unit(rd.power,'dBm')+'</span>'],
-        ['Airtime',pct(st.airtime)],
-        ['Channel load',pct(st.ch_util)],
-        ['Noise floor',dbm(st.noise)],
-        ['RX / TX','<span class="val">'+esc(st.rx_bytes||'?')+' / '+esc(st.tx_bytes||'?')+'</span>'],
-        ['Temperature','<span class="val">'+esc(dv.temp||'?')+'</span>'],
-        ['Firmware','<span class="val">'+fw+'</span>'],
-        ['Uptime','<span class="val">'+esc(dv.uptime||'?')+'</span>'],
-      ];
-      body.innerHTML='<table class="kv">'+rows.map(function(x){return '<tr><th>'+x[0]+'</th><td>'+x[1]+'</td></tr>';}).join('')+'</table>';
-    }).catch(function(){ body.innerHTML='<p class="muted">Could not read modem status.</p>'; });
+        if(!d.reachable){
+          // The link can be up while one probe is lost: that is UNKNOWN, not
+          // DOWN. DOWN is reserved for an interface that is actually down.
+          var down = !ip && !d.sl0_up;
+          body.innerHTML=kv([['Status', down ? '<span class="badge warn">DOWN</span>'
+                                              : '<span class="badge">UNKNOWN</span>']])+
+            '<p class="muted" style="margin:6px 0 0">'+
+            (down ? 'The SLIP link (sl0) is not up.'
+                  : (ip ? ('No answer at '+esc(d.peer)+' \u2014 is the modem powered and on the network?')
+                        : 'No answer from the modem yet \u2014 retrying.'))+
+            '</p>';
+          done(); return;
+        }
+        var rd=d.radio||{}, st=d.stats||{}, dv=d.device||{};
+        var port=(d.tcp_port||4242);
+        var fw = dv.fw ? esc((''+dv.fw).split(' ')[0]) : '<span class="muted">&mdash;</span>';
+        var rows=[
+          ['Status','<span class="badge ok">UP</span>'],
+          ['Address','<span class="val">'+(ip?(esc(d.peer)+':'+esc(port)):esc(d.peer))+'</span>'],
+          ['Radio','<span class="val">'+radioText(rd)+'</span>'],
+          ['Airtime',pct(st.airtime)],
+          ['Channel load',pct(st.ch_util)],
+          ['Noise floor',dbm(st.noise)],
+          ['RX / TX',val(st.rx_bytes)+' / '+val(st.tx_bytes)],
+          ['Temperature',val(dv.temp)],
+          ['Firmware','<span class="val">'+fw+'</span>'],
+          ['Uptime',val(dv.uptime)],
+        ];
+        body.innerHTML=kv(rows);
+        done();
+      })
+      .catch(function(){
+        body.innerHTML=kv([['Status','<span class="badge">UNKNOWN</span>']])+
+          '<p class="muted" style="margin:6px 0 0">Could not read modem status \u2014 retrying.</p>';
+        done();
+      });
   }
   window.__loadHalow = load;
   load();
