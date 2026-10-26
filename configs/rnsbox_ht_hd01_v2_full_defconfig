@@ -92,7 +92,7 @@ BR2_SOFT_FLOAT=y
 BR2_TARGET_GENERIC_ISSUE="RNSBox - Reticulum router (HT-HD01-V2)"
 BR2_TARGET_GENERIC_HOSTNAME="rnsbox"
 BR2_ROOTFS_USERS_TABLES="$(BR2_EXTERNAL_RNSBOX_PATH)/board/ht-hd01-v2/users.txt"
-BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_RNSBOX_PATH)/board/ht-hd01-v2/rootfs-overlay $(BR2_EXTERNAL_RNSBOX_PATH)/board/ht-hd01-v2/full-overlay"
+BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_RNSBOX_PATH)/board/common/rootfs-overlay $(BR2_EXTERNAL_RNSBOX_PATH)/board/ht-hd01-v2/rootfs-overlay $(BR2_EXTERNAL_RNSBOX_PATH)/board/ht-hd01-v2/full-overlay"
 BR2_ROOTFS_POST_BUILD_SCRIPT="$(BR2_EXTERNAL_RNSBOX_PATH)/board/common/slim-target.sh"
 BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_RNSBOX_PATH)/board/ht-hd01-v2/post-image.sh"
 

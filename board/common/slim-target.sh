@@ -75,13 +75,6 @@ fi
 if [ -f "$COMMON_DIR/S34wifimac" ] && [ -d "$T/etc/init.d" ]; then
 	install -m 0755 "$COMMON_DIR/S34wifimac" "$T/etc/init.d/S34wifimac"
 fi
-# RNode LoRa interface (USB or BLE): the portal's RNode card writes
-# /etc/rnsbox/rnode.conf and calls `S81rnode reload` to regenerate the
-# managed [[RNode ...]] section of /etc/reticulum/config. Universal: works on
-# every board (USB), and on boards with a BLE stack (RNode firmware over NUS).
-if [ -f "$COMMON_DIR/S81rnode" ] && [ -d "$T/etc/init.d" ]; then
-	install -m 0755 "$COMMON_DIR/S81rnode" "$T/etc/init.d/S81rnode"
-fi
 # Map telemetry: S80telemetry writes the TCP-server discovery block from
 # /etc/rnsbox/telemetry.conf; S83telemetry runs the HaLow MQTT proxy daemon
 # (only when the Map tab enabled that path).
@@ -96,18 +89,10 @@ fi
 if [ -f "$COMMON_DIR/S83mon" ] && [ -d "$T/etc/init.d" ]; then
 	install -m 0755 "$COMMON_DIR/S83mon" "$T/etc/init.d/S83mon"
 fi
-# Time over Reticulum: S88rnstime runs the rns-time client loop (falls back
-# to a mesh time server when ordinary NTP is unreachable) and, with
-# serve=yes, the minimal rns-time server. The default config is installed
-# only when absent so an operator's file is never overwritten.
-if [ -f "$COMMON_DIR/S88rnstime" ] && [ -d "$T/etc/init.d" ]; then
-	install -m 0755 "$COMMON_DIR/S88rnstime" "$T/etc/init.d/S88rnstime"
-fi
-if [ -f "$COMMON_DIR/rnstime.conf" ]; then
-	mkdir -p "$T/etc/rnsbox"
-	[ -f "$T/etc/rnsbox/rnstime.conf" ] || \
-		install -m 0644 "$COMMON_DIR/rnstime.conf" "$T/etc/rnsbox/rnstime.conf"
-fi
+# S81rnode, S88rnstime, rnode.conf and rnstime.conf moved to
+# board/common/rootfs-overlay: the overlay is BR2_ROOTFS_OVERLAY-listed ahead
+# of every board overlay, so those files reach every image (including the
+# PC flow, which runs no slim-target) without an install block here.
 # Drop the former ttyd service, the screen snapshot helper and the screen
 # binary: the console is now a PTY broker streamed to xterm.js on :80.
 rm -f "$T/etc/init.d/S87ttyd" "$T/usr/bin/ttyd" "$T/etc/rnsbox/console.conf" \

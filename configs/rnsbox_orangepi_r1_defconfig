@@ -97,7 +97,7 @@ BR2_TARGET_GENERIC_ROOT_PASSWD="admin"
 BR2_ROOTFS_USERS_TABLES="$(BR2_EXTERNAL_RNSBOX_PATH)/board/orangepi-r1/users.txt"
 BR2_ROOTFS_POST_BUILD_SCRIPT="$(BR2_EXTERNAL_RNSBOX_PATH)/board/orangepi-r1/post-build.sh $(BR2_EXTERNAL_RNSBOX_PATH)/board/common/slim-target.sh"
 BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_RNSBOX_PATH)/board/orangepi-r1/post-image.sh"
-BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_RNSBOX_PATH)/board/orangepi-r1/rootfs-overlay"
+BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_RNSBOX_PATH)/board/common/rootfs-overlay $(BR2_EXTERNAL_RNSBOX_PATH)/board/orangepi-r1/rootfs-overlay"
 BR2_PACKAGE_BUSYBOX_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_RNSBOX_PATH)/board/orangepi-r1/busybox.fragment"
 
 # ---- kernel + U-Boot (upstream orangepi_r1 pair) ----
