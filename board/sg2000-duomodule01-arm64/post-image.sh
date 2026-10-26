@@ -58,3 +58,10 @@ rm -rf "${GENIMAGE_TMP}"
         --inputpath "${BINARIES_DIR}"  \
         --outputpath "${BINARIES_DIR}" \
         --config "${BOARD_DIR}/genimage.cfg"
+
+# Tag the image the way every board does (build.sh and the workflow look
+# for rnsbox-$BOARD.img). RNSBOX_BOARD is exported by build.sh.
+NEW="${BINARIES_DIR}/sdcard.img"
+TAGGED="${BINARIES_DIR}/rnsbox-${RNSBOX_BOARD:-sg2000-duomodule01-arm64}.img"
+cp -f "$NEW" "$TAGGED"
+echo "=================== IMAGE OK $(date) ==================="
