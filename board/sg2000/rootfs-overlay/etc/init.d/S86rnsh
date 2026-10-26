@@ -7,26 +7,41 @@
 # prints on the client). With no allowed_id lines the service refuses to
 # start — an unauthenticated root shell over the public Reticulum transport
 # is not a thing this box ships with. The destination's identity is
-# /etc/rnsbox/rnsh_identity, so the hash survives reboots; start() writes
-# it to /run/rnsh-dest for the portal.
+# /etc/rnsbox/rnsh_identity, so the hash survives reboots.
 #
-# Runs AFTER S82rnsd and attaches to its shared instance (--rnsconfig
-# /etc/reticulum): no second transport stack. When rnsd's shared instance
-# is not accepting clients yet, start defers via $DEPS_MARK and
-# S46wanwatch starts it as soon as it is (same contract as S85lxmd).
-# Announces every `announce=` seconds so the destination propagates across
-# the transport network.
+# Startup is split so a restart never blocks. A one-shot `rnsh -l -p` (print
+# the destination hash) pays a full Reticulum import plus rnsd's known-
+# destination table load — 45 s and more on the small SoCs, longer than the
+# portal's 25 s service timeout, which then SIGKILLs the restart halfway and
+# leaves the shell down. So instead:
+#   - the derived hash is CACHED in /etc/rnsbox/rnsh_dest; every restart
+#     copies it to /run/rnsh-dest in milliseconds and never re-probes;
+#   - the listener and the probe run with the minimal config dir
+#     /etc/rnsbox/rnsh.d: they attach to rnsd's shared instance (the socket
+#     name defaults to @rns/default regardless of config dir) without
+#     loading rnsd's destination table — several MB of RAM and ~20 s of
+#     startup on a transport node — and own no interfaces of their own;
+#   - the rare first enable (no identity yet) probes and then launches in a
+#     detached background chain, so the caller returns immediately.
+#
+# Runs AFTER S82rnsd and attaches to its shared instance: no second
+# transport stack. When rnsd's shared instance is not accepting clients
+# yet, start defers via $DEPS_MARK and S46wanwatch starts it as soon as it
+# is (same contract as S85lxmd). Announces every `announce=` seconds so the
+# destination propagates across the transport network.
 
 NAME=rnsh
 DAEMON=/usr/bin/rnsh
 CONF=/etc/rnsbox/rnsh.conf
 IDENTITY=/etc/rnsbox/rnsh_identity
-RNS_CONFIGDIR=/etc/reticulum
+DEST_CACHE=/etc/rnsbox/rnsh_dest
+RNS_CONFIGDIR=/etc/rnsbox/rnsh.d
 DESTFILE=/run/rnsh-dest
 PIDFILE=/var/run/$NAME.pid
 LOGPIPE=/var/run/$NAME.logpipe
 LOGGER_PIDFILE=/var/run/$NAME.logger.pid
 LOCKFILE=/run/rnsh.lock
+PROBE_LOCK=/run/rnsh-probe.lock
 DEPS_MARK=/run/wanwatch-deps-pending
 STOP_WAIT=5
 
@@ -90,7 +105,7 @@ is_rnsh() {
 	{ read -r _c <"/proc/$1/comm"; } 2>/dev/null
 	case "$_c" in
 		rnsh)   return 0 ;;
-		python*) tr '\0' '\n' <"/proc/$1/cmdline" 2>/dev/null | head -n 2 \
+		python*) { tr '\0' '\n' <"/proc/$1/cmdline"; } 2>/dev/null | head -n 2 \
 		           | grep -qE '(^|/)rnsh$' ;;
 		*)      return 1 ;;
 	esac
@@ -107,7 +122,7 @@ is_our_logger() {
 	_c=
 	{ read -r _c <"/proc/$1/comm"; } 2>/dev/null
 	[ "$_c" = logger ] || return 1
-	tr '\0' '\n' <"/proc/$1/cmdline" 2>/dev/null | grep -q "^$NAME\[[0-9]*\]\$"
+	{ tr '\0' '\n' <"/proc/$1/cmdline"; } 2>/dev/null | grep -q "^$NAME\[[0-9]*\]\$"
 }
 
 stop_rnsh() {
@@ -116,6 +131,9 @@ stop_rnsh() {
 	if ! is_rnsh "$p"; then
 		[ -n "$lp" ] && kill "$lp" 2>/dev/null
 		rm -f "$LOGGER_PIDFILE"
+		# The portal shows /run/rnsh-dest as the destination; a stale hash
+		# next to a stopped service is worse than none.
+		rm -f "$DESTFILE"
 		return 1
 	fi
 	kill "$p" 2>/dev/null
@@ -132,7 +150,84 @@ stop_rnsh() {
 	done
 	[ -n "$lp" ] && is_our_logger "$lp" && kill "$lp" 2>/dev/null
 	rm -f "$LOGGER_PIDFILE"
+	rm -f "$DESTFILE"
 	return 0
+}
+
+# rnsd is a python console script: its comm is "python3", so a plain
+# `pidof rnsd` never matches (the pre-C++ Flask portal carried a
+# /proc-cmdline scan for the same reason). Trust the S82rnsd pidfile,
+# fall back to pidof.
+rnsd_alive() {
+	[ -s /var/run/rnsd.pid ] && kill -0 "$(cat /var/run/rnsd.pid 2>/dev/null)" 2>/dev/null
+}
+
+# The minimal config dir for the listener and the probe: attaching to the
+# shared instance without inheriting rnsd's storage or interfaces. The
+# transport identity is symlinked from rnsd's storage anyway — RNS
+# authenticates the shared-instance RPC with a key derived from it
+# (Link.receive → is_blackholed → get_rpc_client runs on EVERY inbound
+# packet), so a private identity in here would break every incoming session
+# with "digest sent was rejected".
+ensure_rns_dir() {
+	mkdir -p "$RNS_CONFIGDIR/storage"
+	printf '[reticulum]\n  share_instance = Yes\n[logging]\n  loglevel = 3\n' \
+		> "$RNS_CONFIGDIR/config"
+	if [ -f /etc/reticulum/storage/transport_identity ]; then
+		rm -f "$RNS_CONFIGDIR/storage/transport_identity"
+		ln -s /etc/reticulum/storage/transport_identity \
+			"$RNS_CONFIGDIR/storage/transport_identity"
+	fi
+}
+
+launch_listener() {
+	rm -f "$DESTFILE"
+	[ -s "$DEST_CACHE" ] && cp "$DEST_CACHE" "$DESTFILE"
+
+	SETSID=
+	command -v setsid >/dev/null 2>&1 && SETSID=setsid
+	rm -f "$LOGPIPE" "$LOGGER_PIDFILE"
+	set -- --rnsconfig "$RNS_CONFIGDIR" -i "$IDENTITY" -l -b "$announce"
+	for h in $ALLOWED; do
+		set -- "$@" -a "$h"
+	done
+	set -- "$@" -- /bin/sh
+	if command -v logger >/dev/null 2>&1 && mkfifo -m 600 "$LOGPIPE" 2>/dev/null; then
+		( umask 077; export PYTHONUNBUFFERED=1; exec $SETSID "$DAEMON" "$@" ) \
+			</dev/null >"$LOGPIPE" 2>&1 &
+		PID=$!
+		$SETSID logger -t "$NAME[$PID]" -p daemon.notice 9>&- <"$LOGPIPE" >/dev/null 2>&1 &
+		echo $! > "$LOGGER_PIDFILE"
+	else
+		( umask 077; export PYTHONUNBUFFERED=1; exec $SETSID "$DAEMON" "$@" ) \
+			</dev/null >/dev/null 2>&1 &
+		PID=$!
+	fi
+	echo "$PID" > "$PIDFILE"
+	sleep 1
+	is_rnsh "$PID" && echo "OK (pid $PID)" || { echo "failed"; return 1; }
+}
+
+# First enable (no identity yet, or an install from before the hash cache):
+# create the identity and the cache detached — the probe costs a full RNS
+# import — then launch the listener. Concurrent chains are fenced by
+# $PROBE_LOCK.
+first_start_chain() {
+	(
+		if command -v flock >/dev/null 2>&1; then
+			flock -n 9 || exit 1
+		fi
+		ensure_rns_dir
+		dest=$(rnsh --rnsconfig "$RNS_CONFIGDIR" -i "$IDENTITY" -l -p 2>/dev/null \
+			| sed -n 's/^Listening on : <\([0-9a-fA-F]\{16,\}\)>.*/\1/p')
+		[ -n "$dest" ] || exit 1
+		umask 077
+		echo "$dest" > "$DEST_CACHE"
+		# Someone may have started the listener meanwhile.
+		if p=$(pidfile_pid "$PIDFILE") && is_rnsh "$p"; then exit 0; fi
+		stop_rnsh
+		launch_listener
+	) 9>"$PROBE_LOCK" >/dev/null 2>&1 &
 }
 
 start() {
@@ -157,7 +252,7 @@ start() {
 		return 1
 	fi
 
-	if [ -z "$(pidof rnsd)" ]; then
+	if ! rnsd_alive && ! pidof rnsd >/dev/null 2>&1; then
 		echo "S86rnsh: refusing to start - rnsd (S82rnsd) is not running"
 		return 1
 	fi
@@ -169,42 +264,16 @@ start() {
 	fi
 
 	printf "Starting %s: " "$NAME"
-	rm -f "$DESTFILE"
+	ensure_rns_dir
 
-	# The destination hash must survive reboots, so the identity lives on
-	# the rootfs (/etc/rnsbox/), not in rnsd's tmpfs storage. rnsh creates
-	# it if missing; -l -p prints the pair and exits.
-	[ -s "$IDENTITY" ] || { umask 077; rnsh --rnsconfig "$RNS_CONFIGDIR" -i "$IDENTITY" -l -p >/dev/null 2>&1; }
-	dest=$(rnsh --rnsconfig "$RNS_CONFIGDIR" -i "$IDENTITY" -l -p 2>/dev/null \
-		| sed -n 's/^Listening on : <\([0-9a-fA-F]\{16,\}\)>.*/\1/p')
-	if [ -n "$dest" ]; then
-		echo "$dest" > "$DESTFILE"
-	else
-		logger -t S86rnsh -p daemon.warning "could not read the destination hash" 2>/dev/null
+	if [ -s "$IDENTITY" ] && [ -s "$DEST_CACHE" ]; then
+		launch_listener
+		return
 	fi
 
-	SETSID=
-	command -v setsid >/dev/null 2>&1 && SETSID=setsid
-	rm -f "$LOGPIPE" "$LOGGER_PIDFILE"
-	set -- --rnsconfig "$RNS_CONFIGDIR" -i "$IDENTITY" -l -b "$announce"
-	for h in $ALLOWED; do
-		set -- "$@" -a "$h"
-	done
-	set -- "$@" -- /bin/sh
-	if command -v logger >/dev/null 2>&1 && mkfifo -m 600 "$LOGPIPE" 2>/dev/null; then
-		( umask 077; export PYTHONUNBUFFERED=1; exec $SETSID "$DAEMON" "$@" ) \
-			</dev/null >"$LOGPIPE" 2>&1 &
-		PID=$!
-		$SETSID logger -t "$NAME[$PID]" -p daemon.notice 9>&- <"$LOGPIPE" >/dev/null 2>&1 &
-		echo $! > "$LOGGER_PIDFILE"
-	else
-		( umask 077; export PYTHONUNBUFFERED=1; exec $SETSID "$DAEMON" "$@" ) \
-			</dev/null >/dev/null 2>&1 &
-		PID=$!
-	fi
-	echo "$PID" > "$PIDFILE"
-	sleep 1
-	is_rnsh "$PID" && echo "OK (pid $PID)" || { echo "failed"; return 1; }
+	first_start_chain
+	echo "deferred (creating the destination; the shell is up in about a minute)"
+	return 0
 }
 
 case "$1" in

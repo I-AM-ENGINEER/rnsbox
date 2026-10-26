@@ -53,6 +53,8 @@ import time
 CONF_PATH = "/etc/rnsbox/echobot.conf"
 STATE_DIR = "/var/lib/rnsbox-echobot"
 IDENTITY_PATH = os.path.join(STATE_DIR, "identity.pem")
+# Where the portal can read the bot's public key for the LXMF QR code.
+PUBKEY_PATH = "/www/echobot_pubkey.txt"
 STATE_PATH = os.path.join(STATE_DIR, "state.json")
 # Per-peer counters are RAM-only: a couple hundred KB at most, written to
 # tmpfs (never the SD card) and simply gone after a restart.
@@ -407,6 +409,20 @@ def main():
         os.chmod(tmp, 0o600)
         os.replace(tmp, IDENTITY_PATH)
         log("new identity created at " + IDENTITY_PATH)
+
+    # Publish the public key for the LXMF QR code: LXMF clients (Columba
+    # first) scan "lxma://<address>:<public_key>" and cannot build a contact
+    # from the bare address. The key is public by design (it travels in every
+    # announce), so a world-readable copy in the docroot is safe.
+    try:
+        tmp = PUBKEY_PATH + ".tmp"
+        with open(tmp, "w", encoding="ascii") as f:
+            f.write(identity.get_public_key().hex() + "\n")
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, PUBKEY_PATH)
+        log("published the public key for the LXMF QR code")
+    except Exception as e:
+        log("could not publish the public key: " + repr(e))
 
     # The announced name is exactly the configured name — no auto-appended
     # suffix (the LXMF address already tells bots apart).

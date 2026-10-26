@@ -424,6 +424,10 @@ class LinuxBluetoothDriver(BLEDriverInterface):
         self._connecting_peers: set = set()  # addresses with connection attempts in progress
         self._connecting_lock = threading.Lock()
 
+        # Addresses whose GATT table was already dumped to the log this
+        # session (see the [CONNECT-FLOW] dump in _connect_async)
+        self._gatt_dumped: set = set()
+
         # Local identity (for peripheral mode)
         self._local_identity: Optional[bytes] = None
 
@@ -1322,12 +1326,36 @@ class LinuxBluetoothDriver(BLEDriverInterface):
             service_discovery_duration = time.time() - service_discovery_start
             self._log(f"[CONNECT-FLOW] Service discovery completed for {address} in {service_discovery_duration:.2f}s, found {len(services)} services", "INFO")
 
+            # One-line dump of the peer's GATT table (services with their
+            # characteristic handles), once per address per session. Duplicated
+            # service/characteristic UUIDs on a peer decide which instance the
+            # object-based resolution below lands on, so the table needs to be
+            # visible in the log when that path misbehaves.
+            if address not in self._gatt_dumped:
+                self._gatt_dumped.add(address)
+                try:
+                    table = "; ".join(
+                        f"{svc.uuid}[{'/'.join(f'{c.uuid}=h{c.handle}' for c in svc.characteristics)}]"
+                        for svc in services
+                    )
+                    self._log(f"[CONNECT-FLOW] GATT table of {address}: {table}", "INFO")
+                except Exception as e:
+                    self._log(f"[CONNECT-FLOW] Could not dump GATT table of {address}: {e}", "DEBUG")
+
             # Find Reticulum service
             reticulum_service = None
+            reticulum_services_found = 0
             for svc in services:
                 if svc.uuid.lower() == self.service_uuid.lower():
-                    reticulum_service = svc
-                    break
+                    reticulum_services_found += 1
+                    if reticulum_service is None:
+                        reticulum_service = svc
+            if reticulum_services_found > 1:
+                self._log(
+                    f"[CONNECT-FLOW] {address} exposes the Reticulum service "
+                    f"{reticulum_services_found} times; using the first instance",
+                    "WARNING"
+                )
 
             if not reticulum_service:
                 raise RuntimeError(f"Reticulum service {self.service_uuid} not found (available services: {[s.uuid for s in services[:3]]}...)")

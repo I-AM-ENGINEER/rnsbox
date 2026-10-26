@@ -330,10 +330,10 @@ class BLEInterface(Interface):
 
         # BLE configuration
         self.service_uuid = c.get("service_uuid", BLEInterface.SERVICE_UUID)
-        # Device name for BLE advertising (optional, configurable via config file)
-        # Default is None (no device name) to save advertisement packet space (31-byte limit).
-        # Discovery is based on service UUID only. Identity is obtained from the Identity
-        # characteristic after connection. If set, keep it short (max 8 chars recommended).
+        # Device name for BLE advertising (optional, configurable via config file).
+        # RNSBox delta: unset defaults to the box hostname (rnsbox-XXXXXX), the
+        # same base the portal prefills its "Advertised name" field with, so the
+        # node is identifiable on air without an explicit setting.
         self.device_name = c.get("device_name", None)
         # RNSBox delta: LE advertisement interval in ms (20..10000, 0 = BlueZ
         # default). Default 100 ms — a scanning phone finds this box within a
@@ -390,14 +390,18 @@ class BLEInterface(Interface):
         else:
             self.rnode_ble = bool(rnode_val) and self.enable_peripheral
 
-        # RNS's RNode BLE scanner auto-selects devices whose name starts with
-        # "RNode " (and requires the NUS UUID in the advertisement).  Keep the
-        # operator's name, just give it the prefix the clients look for.
-        if self.rnode_ble:
-            if not self.device_name:
-                self.device_name = "RNode RNSBox"
-            elif not self.device_name.startswith("RNode "):
-                self.device_name = "RNode " + self.device_name
+        # RNS's RNode BLE scanner (and the rnodeconf/Sideband clients) select
+        # attachable devices by the Nordic UART Service UUID in the
+        # advertisement and by bond, not by the "RNode " name prefix (the
+        # prefix only matters for a name-only ble:// target, which the box
+        # never writes). RNSBox delta: no name munging — the advertised name
+        # is exactly the configured device_name, defaulting to the hostname.
+        if not self.device_name:
+            try:
+                import socket
+                self.device_name = socket.gethostname() or "rnsbox"
+            except Exception:
+                self.device_name = "rnsbox"
 
         # Local announce forwarding workaround
         # WORKAROUND: Reticulum Transport.py doesn't forward locally-originated announces (hops=0)

@@ -85,5 +85,108 @@
     <a class="foot-donate" href="__BASE__/donate">Donate</a>
   </div>
 </footer>
+<div class="modal" id="lxmf-qr-modal" hidden>
+  <div class="modal-backdrop" onclick="closeLxmfQr()"></div>
+  <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="lxmf-qr-title">
+    <h3 id="lxmf-qr-title">LXMF address</h3>
+    <div id="lxmf-qr-img" class="lxmf-qr-img"></div>
+    <code class="lxmf-qr-addr mono" id="lxmf-qr-addr"></code>
+    <p class="muted">Scan with Columba (or another LXMF client) to add this bot and send it a message.</p>
+    <div class="form-actions">
+      <button type="button" class="btn" onclick="closeLxmfQr()">Close</button>
+    </div>
+  </div>
+</div>
+<script src="/js/qr.min.js?v=__CSSV__"></script>
+<script>
+// LXMF address QR modal. Anywhere a bot address is shown it renders as
+// <a class="lxmf-qr" data-addr="<hex>"> — clicking opens the QR. Columba
+// (the common LXMF client on Android/iOS) only accepts
+// "lxma://<address>:<public_key>", so the echobot daemon publishes its
+// public key to /echobot_pubkey.txt at startup and we prefetch it. Until it
+// is there, fall back to the bare lxmf:// URI. The QR is drawn locally
+// (vendored qrcode-generator); no request leaves the box.
+(function(){
+  var m = document.getElementById('lxmf-qr-modal');
+  if (!m || typeof qrcode === 'undefined') return;
+  window.closeLxmfQr = function(){ m.hidden = true; };
+  var pubkey = '';
+  fetch('/echobot_pubkey.txt', {cache: 'no-store'}).then(function(r){
+    return r.ok ? r.text() : '';
+  }).then(function(t){
+    pubkey = (t || '').trim().replace(/[^0-9a-f]/gi, '').toLowerCase();
+  }).catch(function(){});
+  document.addEventListener('click', function(ev){
+    var t = ev.target, a = null, addr = '';
+    if (t && t.closest) {
+      a = t.closest('.lxmf-qr');
+      if (a) addr = a.getAttribute('data-addr') || '';
+      else if (t.tagName === 'CODE') {
+        // Older portal binaries emit a bare <code> inside the "LXMF address"
+        // row; the current markup wraps it in a.lxmf-qr.
+        var row = t.closest('tr');
+        if (row && /LXMF address/i.test(row.textContent || '')) addr = t.textContent || '';
+      }
+    }
+    addr = (addr || '').replace(/[^0-9a-f]/gi, '').toLowerCase();
+    if (!addr || addr.length < 32 || addr.length > 64) return;
+    ev.preventDefault();
+    var img = document.getElementById('lxmf-qr-img');
+    var txt = document.getElementById('lxmf-qr-addr');
+    // The text under the code is the full address a client accepts — the same
+    // string the QR carries, so it can be copied and pasted as-is.
+    var payload = pubkey.length === 128 ? 'lxma://' + addr + ':' + pubkey
+                                       : 'lxmf://' + addr;
+    try {
+      var qr = qrcode(0, 'M');           // type 0 = smallest fitting version
+      qr.addData(payload, 'Byte');
+      qr.make();
+      img.innerHTML = qr.createSvgTag({ cellSize: 5, margin: 0, scalable: true });
+    } catch (e) { img.innerHTML = ''; }
+    txt.textContent = payload;
+    m.hidden = false;
+  });
+  document.addEventListener('keydown', function(ev){ if (ev.key === 'Escape') m.hidden = true; });
+})();
+
+// Click-to-copy for bare hashes that are meant to be pasted somewhere else —
+// today the RNS Shell destination (`rnsh <hash>` on the client). The portal is
+// served over plain HTTP on the LAN, where navigator.clipboard is not
+// available (not a secure context), hence the execCommand fallback.
+(function(){
+  var cell = document.getElementById('rnsh-dest-cell');
+  if (!cell) return;
+  var found = (cell.textContent || '').match(/[0-9a-f]{32,64}/i);
+  if (!found) return;
+  var hash = found[0];
+  cell.classList.add('copyable');
+  cell.title = 'Click to copy';
+  function flash(){
+    var old = cell.getAttribute('title');
+    cell.classList.add('copied');
+    cell.setAttribute('title', 'Copied');
+    setTimeout(function(){ cell.classList.remove('copied'); cell.setAttribute('title', old); }, 1400);
+  }
+  function fallbackCopy(text){
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); } catch (e) {}
+    document.body.removeChild(ta);
+  }
+  cell.addEventListener('click', function(){
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(hash).then(flash, function(){ fallbackCopy(hash); flash(); });
+    } else {
+      fallbackCopy(hash);
+      flash();
+    }
+  });
+})();
+</script>
 </body>
 </html>

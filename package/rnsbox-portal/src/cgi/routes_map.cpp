@@ -207,13 +207,12 @@ void map_page(const Request& req, Response& res) {
             "<div class=\"tel-path\">\n"
             "        <label class=\"check\"><input type=\"checkbox\" name=\"halow_mqtt\" "
             "id=\"tel-halow-mqtt\" " + checked(tc.halow_mqtt) +
-            "> HaLow modem — Reticulum interface + MQTT telemetry</label>\n"
+            "> HaLow MQTT Discovery</label>\n"
             "        <p class=\"muted tel-note\">Coordinates, name and antenna direction are "
-            "written into the modem on save; it then sends its telemetry to this box, which "
-            "keeps the last packet in RAM for the map and forwards it to " +
-            render::esc(tc.halow_upstream) + " as a proxy (nothing is written to flash). "
-            "Height is published by the RNS discovery paths only — the modem's telemetry "
-            "packet carries latitude/longitude.</p>\n"
+            "written into the modem on save; this box then forwards its telemetry to " +
+            render::esc(tc.halow_upstream) + ", so the node appears on the map at "
+            "<a href=\"https://rnode-halow.ru\" target=\"_blank\" "
+            "rel=\"noopener\">rnode-halow.ru</a>.</p>\n"
             "        <div class=\"row-form tel-halow-extra\" id=\"tel-halow-extra\">\n"
             "          <label class=\"check\" style=\"margin:0\"><input type=\"checkbox\" "
             "name=\"halow_ext\" " + checked(tc.halow_ext) + "> Extended telemetry</label>\n"
@@ -229,10 +228,11 @@ void map_page(const Request& req, Response& res) {
             "      <div class=\"tel-path\">\n"
             "        <label class=\"check\"><input type=\"checkbox\" name=\"discover_halow\" " +
             checked(tc.discover_halow) +
-            "> Reticulum discovery — HaLow interface</label>\n"
+            "> HaLow Reticulum discovery</label>\n"
             "        <p class=\"muted tel-note\">rnsd announces the RNode-Halow TCP interface "
             "(frequency and bandwidth included), so the box also appears on the discovery map "
-            "through the modem.</p>\n"
+            "through the modem. Height is published by the RNS discovery paths only — the "
+            "modem's telemetry packet carries latitude/longitude.</p>\n"
             "      </div>";
     } else {
         keep += hidden("halow_mqtt", tc.halow_mqtt);

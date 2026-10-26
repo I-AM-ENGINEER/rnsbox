@@ -275,9 +275,12 @@ std::string echobot_cards(const std::string& base) {
     if (!running && !status.empty() && status != "running" && status != "stopped")
         badge += " <span class=\"muted\">(last state: " + E(status) + (detail.empty() ? "" : ": " + detail) + ")</span>";
 
+    // The address doubles as a QR trigger: base.html owns the modal and the
+    // vendored QR drawer, so one markup serves every page showing the bot.
     std::string addr = dest.empty()
         ? "<span class=\"muted\">not created yet — the bot makes it on first start</span>"
-        : "<code>" + E(dest) + "</code>";
+        : "<a href=\"#\" class=\"lxmf-qr\" data-addr=\"" + E(dest) +
+          "\" title=\"Show the QR code\"><code>" + E(dest) + "</code></a>";
 
     // The announced name is exactly the configured name — no auto suffix.
     std::string name = dname.empty() ? E(c.name) : E(dname);
@@ -335,7 +338,8 @@ std::string echobot_dashboard_card(const std::string& base) {
 
     std::string addr = dest.empty()
         ? "<span class=\"muted\">not created yet</span>"
-        : "<code>" + E(dest) + "</code>";
+        : "<a href=\"#\" class=\"lxmf-qr\" data-addr=\"" + E(dest) +
+          "\" title=\"Show the QR code\"><code>" + E(dest) + "</code></a>";
     std::string name = dname.empty() ? c.name : dname;
     if (name.empty() || echobot_legacy_name(name)) name = echobot_default_name();
 

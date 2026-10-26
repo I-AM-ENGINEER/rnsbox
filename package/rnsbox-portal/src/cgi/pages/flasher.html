@@ -66,7 +66,7 @@
   <p class="muted" style="margin-top:0">Stable releases only. Each modem is scheduled separately at
     <strong>published + 3 days + a random 0–7 days</strong> and updated one at a time; the image is
     downloaded at that moment, never before.</p>
-  <div id="fl-auto-status">checking…</div>
+  <div id="fl-auto-status"></div>
 </section>
 
 <script>
@@ -252,11 +252,17 @@
       .catch(function(e){ msg('Failed: '+e); });
   };
 
+  var autoOn=false;
   function autoRender(s){
     var box=document.getElementById('fl-auto-status');
     if(!box) return;
+    autoOn=!!s.auto;
     var on=document.getElementById('fl-auto-upd');
-    if(on) on.checked=!!s.auto;
+    if(on) on.checked=autoOn;
+    // While auto-updates are off the box stays empty: no "checking…", no
+    // "No HaLow modem found" — discovery never runs in that mode, so any
+    // text here would just describe our own disabled state.
+    if(!autoOn){ box.innerHTML=''; return; }
     var head='<div style="margin-bottom:6px">Latest stable <strong>'+esc(s.latest||'—')+'</strong>'+
       (s.error?' · GitHub: '+esc(s.error):'')+'</div>';
     var ds=s.devices||[];
@@ -289,14 +295,17 @@
 
   window.flAutoStatus = function(){
     var box=document.getElementById('fl-auto-status');
-    if(box) box.textContent='checking…';
+    if(box && autoOn) box.textContent='checking…';
     fetch(BASE+'/flasher/autoupdate',{credentials:'same-origin',cache:'no-store'})
       .then(function(r){ return r.json(); }).then(autoRender)
-      .catch(function(){ if(box) box.textContent='status failed'; });
+      .catch(function(){ if(box && autoOn) box.textContent='status failed'; });
   };
 
   window.flAutoToggle = function(){
     var on=document.getElementById('fl-auto-upd').checked;
+    var box=document.getElementById('fl-auto-status');
+    autoOn=on;
+    if(box && !on) box.innerHTML='';
     fetch(BASE+'/flasher/autoupdate',{method:'POST',credentials:'same-origin',
       headers:{'Content-Type':'application/x-www-form-urlencoded'},
       body:'enabled='+(on?'on':'off')})
