@@ -60,8 +60,29 @@
       // Keep the neutral greys (panel backgrounds) dark; lift only hues that
       // are too dark to read as text on the dark terminal.
       var lo = Math.min(r, g, b), hi = Math.max(r, g, b);
-      if (hi - lo < 24) return r;
-      return Math.round(r + (255 - r) * 0.45);
+      if (hi - lo < 24) return [r, g, b];
+      // Colour, not grey. Scale the whole triple up so the strongest channel
+      // reaches ~65% — this keeps the hue while making it visible — then
+      // enforce a luminance floor: saturated blues carry almost no perceived
+      // brightness (0,0,135 has L~10), so the channel-scaled colour alone is
+      // still a near-invisible navy on the near-black background. Blending
+      // toward white until the luminance reaches the floor keeps the hue
+      // recognisable yet readable.
+      var s = hi > 0 ? 166 / hi : 1;
+      var out = [
+        Math.min(255, Math.round(r * s)),
+        Math.min(255, Math.round(g * s)),
+        Math.min(255, Math.round(b * s))
+      ];
+      var L = 0.2126 * out[0] + 0.7152 * out[1] + 0.0722 * out[2];
+      var floor = 96;
+      if (L < floor) {
+        var t = (floor - L) / (255 - L);
+        out[0] = Math.round(out[0] + (255 - out[0]) * t);
+        out[1] = Math.round(out[1] + (255 - out[1]) * t);
+        out[2] = Math.round(out[2] + (255 - out[2]) * t);
+      }
+      return out;
     }
     for (var r = 0; r < 6; r++)
       for (var g = 0; g < 6; g++)
@@ -69,10 +90,8 @@
           if (mode === 'light') {
             out.push('#' + hx(light(cube[r])) + hx(light(cube[g])) + hx(light(cube[b])));
           } else {
-            var rr = dark(cube[r], cube[g], cube[b]);
-            var gg = dark(cube[g], cube[r], cube[b]);
-            var bb = dark(cube[b], cube[r], cube[g]);
-            out.push('#' + hx(rr) + hx(gg) + hx(bb));
+            var c = dark(cube[r], cube[g], cube[b]);
+            out.push('#' + hx(c[0]) + hx(c[1]) + hx(c[2]));
           }
         }
     for (var i = 0; i < 24; i++) {
