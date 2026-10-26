@@ -1494,6 +1494,14 @@ bool rnode_ble_stack_present() {
            ::access("/var/run/dbus/system_bus_socket", F_OK) == 0;
 }
 
+bool aic8800_radio_present() {
+    // The AIC8800D80 combo radio ships on the Sophgo boards only; its driver
+    // modules and firmware land at fixed paths, so their presence marks the
+    // board. Used to gate the BLE-vs-RNode-BLE exclusion in the portal.
+    return ::access("/root/aic8800_fdrv.ko", F_OK) == 0 ||
+           ::access("/usr/lib/firmware/aic8800_sdio", F_OK) == 0;
+}
+
 // ---- SSH server gate ----
 SshConfig read_ssh() {
     SshConfig c;

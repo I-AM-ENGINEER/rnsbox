@@ -232,12 +232,13 @@ bool write_rnode(const RnodeConfig& c, std::string& err);
 
 // --- Map telemetry / location publishing -------------------------------------
 // /etc/rnsbox/telemetry.conf is the single source of truth for the Map tab.
-// The same coordinates feed three independent publish paths (all off by
+// The same coordinates feed four independent publish paths (all off by
 // default, any combination allowed):
-//   discover_lora — rnsd interface discovery on the managed [[RNode]] stanza
-//   discover_tcp  — rnsd interface discovery on the shipped [[TCP Server]]
-//   halow_mqtt    — the HaLow modem's own MQTT telemetry, received over SLIP,
-//                   stored on flash and forwarded to the upstream server
+//   discover_lora  — rnsd interface discovery on the managed [[RNode]] stanza
+//   discover_tcp   — rnsd interface discovery on the shipped [[TCP Server]]
+//   discover_halow — rnsd interface discovery on the RNode-Halow TCP client
+//   halow_mqtt     — the HaLow modem's MQTT telemetry, kept in RAM for the
+//                    map and forwarded to the upstream server (rnode-halow.ru)
 // S80telemetry/S81rnode read this file; the portal's Map tab owns it.
 constexpr const char* TELEMETRY_FILE = "/etc/rnsbox/telemetry.conf";
 struct TelemetryConfig {
@@ -279,6 +280,11 @@ std::string bt_peer_bond(const std::string& address);
 // True when the BLE stack RNS needs for port = ble:// is in the image
 // (bleak + bluetoothd). Cheap globs/binary checks, no python startup.
 bool rnode_ble_stack_present();
+
+// True when the box carries the AIC8800D80 combo radio (Sophgo boards).
+// Its BT firmware keeps a single LE link, so the BLE transport (phone
+// clients) and the RNode BLE interface cannot be up at the same time.
+bool aic8800_radio_present();
 
 }  // namespace store
 #endif

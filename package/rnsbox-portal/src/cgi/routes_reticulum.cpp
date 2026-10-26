@@ -761,12 +761,18 @@ void reticulum_page(const Request& req, Response& res) {
             "      <button type=\"submit\" class=\"btn-primary\">Save &amp; apply</button>\n"
             "    </div>\n"
             "  </form>\n"
+            "  __BT_AIC_NOTE__\n"
             "  <h4 style=\"margin-top:16px\">Connected devices</h4>\n"
             "  <table class=\"data\"><thead><tr><th>Name</th><th>Address</th>"
             "<th>RSSI</th><th>RX</th><th>TX</th><th>Connected</th></tr></thead>\n"
             "  <tbody id=\"bt-peers\"><tr><td colspan=\"6\" class=\"muted\">none</td></tr></tbody></table>\n";
     }
     h = R(std::move(h), "__BT_FORM_BLOCK__", bt_form);
+    h = R(std::move(h), "__BT_AIC_NOTE__", store::aic8800_radio_present()
+        ? "<p class=\"muted\" style=\"margin:8px 0 0\">AIC8800D80 radio: the Bluetooth firmware keeps a single "
+          "LE link, so BLE phone clients and the RNode BLE link cannot run at the same time — enabling this "
+          "transport turns the RNode BLE interface off (and vice versa). RNode over USB is not affected.</p>"
+        : "");
     h = R(std::move(h), "__BT_CARD_STYLE__",
           bt_installed() ? "" : " style=\"display:none\"");
     h = R(std::move(h), "__BT_STACK_STATUS__", bt_status_html(bt, bt_on));
@@ -1506,6 +1512,26 @@ void reticulum_bluetooth(const Request& req, Response& res) {
         render::redirect_flash(res, ret_redirect(), "error", "Bluetooth: " + err + ".");
         return;
     }
+    // The AIC8800D80 firmware keeps a single LE link: with the BLE transport
+    // up (phone clients) the RNode BLE interface can never connect, and the
+    // first link wins. Turning the losing side off here keeps the portal from
+    // promising a combination the radio cannot deliver.
+    std::string rnode_off;
+    if (c.enabled == "yes" && store::aic8800_radio_present()) {
+        store::RnodeConfig rc = store::read_rnode();
+        if (rc.transport == "ble") {
+            rc.transport = "off";
+            std::string rerr;
+            if (store::write_rnode(rc, rerr)) {
+                web::run_init("S81rnode", "reload");
+                rnode_off = " The RNode BLE interface was turned off: the AIC8800D80 radio keeps a "
+                            "single LE link, so BLE phone clients and the RNode link cannot run at the "
+                            "same time. RNode over USB is not affected.";
+            } else {
+                rnode_off = " (warning: could not turn the RNode BLE interface off — " + rerr + ")";
+            }
+        }
+    }
     // The interface exists only while rnsd parses its config, so a toggle
     // (or a renamed advertisement) needs the restart — said so up front.
     web::run_init("S82rnsd");
@@ -1514,7 +1540,8 @@ void reticulum_bluetooth(const Request& req, Response& res) {
             "BLE transport enabled" +
             (c.device_name.empty() ? std::string("") : " as “" + c.device_name + "”") +
             " and rnsd restarted to apply (active links reconnect on their own). "
-            "Without an adapter it runs as a logged no-op and picks a USB dongle up within 30 s of it appearing.");
+            "Without an adapter it runs as a logged no-op and picks a USB dongle up within 30 s of it appearing." +
+            rnode_off);
     else
         render::redirect_flash(res, ret_redirect(), "success",
             "BLE transport disabled and rnsd restarted to apply. The Bluetooth stack stays up "
@@ -2937,6 +2964,10 @@ static std::string rnode_fill(std::string h) {
     if (!store::rnode_ble_stack_present())
         stack = "<p class=\"muted\" style=\"margin:6px 0 0\">This image has no BLE stack (bluez/dbus + bleak) — "
                 "saving the BLE transport keeps the interface disabled until the stack is installed.</p>";
+    if (store::aic8800_radio_present())
+        stack += "<p class=\"muted\" style=\"margin:6px 0 0\">AIC8800D80 radio: the Bluetooth firmware keeps a "
+                 "single LE link, so BLE phone clients and the RNode link cannot run at the same time — "
+                 "saving BLE here turns the BLE transport off (and vice versa). RNode over USB is not affected.</p>";
     h = R(std::move(h), "__RNODE_BLE_STACK_NOTE__", stack);
     return h;
 }
@@ -2960,6 +2991,22 @@ void reticulum_rnode(const Request& req, Response& res) {
         render::redirect_flash(res, ret_redirect(), "error", "RNode: " + err + ".");
         return;
     }
+    // The other half of the AIC8800D80 single-LE-link exclusion: taking the
+    // RNode over BLE means the BLE transport (phone clients) must come down,
+    // otherwise whichever link came first would starve the other forever.
+    std::string ble_off;
+    if (c.transport == "ble" && store::aic8800_radio_present()) {
+        store::BleConfig bl = store::read_ble();
+        if (truthy(bl.enabled)) {
+            bl.enabled = "no";
+            if (store::write_ble(bl, err))
+                ble_off = " The BLE transport was turned off: the AIC8800D80 radio keeps a single "
+                          "LE link, so BLE phone clients and the RNode link cannot run at the same "
+                          "time. RNode over USB is not affected.";
+            else
+                ble_off = " (warning: could not turn the BLE transport off — " + err + ")";
+        }
+    }
     // Regenerate the [[RNode ...]] section, then bounce rnsd so it opens the
     // (new) port. Both synchronous; S81rnode is fast, the restart is bounded
     // by S82rnsd's own 25 s lock wait.
@@ -2975,7 +3022,7 @@ void reticulum_rnode(const Request& req, Response& res) {
     else
         render::redirect_flash(res, ret_redirect(), "success",
             "RNode over BLE saved" + apply + ". rnsd connects and bonds the peer automatically "
-            "(JustWorks, fully automatic — no manual pairing needed).");
+            "(JustWorks, fully automatic — no manual pairing needed)." + ble_off);
 }
 
 // Progressive BLE scan: the helper streams bluetoothctl's [NEW] lines into
