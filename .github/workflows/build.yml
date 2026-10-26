@@ -55,8 +55,9 @@ jobs:
         run: |
           set -eu
           ALL="rpi-universal pc-x86_64 orangepi-r1 milkv-duo-cv1800b-rv64 \
-              sg2000-duomodule01-rv64 sg2002-licheerv-nano-rv64 \
-              sg2002-duo256m-rv64 sg2000-duo-s-rv64"
+              sg2000-duomodule01-rv64 sg2000-duomodule01-arm64 \
+              sg2002-licheerv-nano-rv64 sg2002-duo256m-rv64 \
+              sg2000-duo-s-rv64 sg2000-duo-s-arm64"
           COMMON="package board/common scripts build.sh .github/workflows/build.yml configs/base.config"
 
           if [ "$GITHUB_EVENT_NAME" != "push" ]; then
@@ -85,9 +86,11 @@ jobs:
             local pats_opi="board/orangepi-r1 configs/boards/orangepi_r1.config configs/rnsbox_orangepi_r1_defconfig"
             local pats_duo="board/milkv-duo board/sophgo configs/boards/milkv_duo_cv1800b.config configs/rnsbox_milkv_duo_cv1800b_defconfig"
             local pats_mod="board/sg2000 board/sophgo configs/boards/sg2000_duomodule01.config configs/rnsbox_sg2000_duomodule01_defconfig"
+            local pats_mod_arm64="board/sg2000 board/sg2000-duomodule01-arm64 board/sophgo configs/boards/sg2000_duomodule01_arm64.config configs/rnsbox_sg2000_duomodule01_arm64_defconfig"
             local pats_lichiee="board/sg2000 board/sg2002 board/sophgo configs/boards/licheerv_nano.config configs/rnsbox_licheerv_nano_defconfig"
             local pats_256m="board/sg2000 board/sg2002-duo256m board/sophgo configs/boards/duo256m.config configs/rnsbox_duo256m_defconfig"
             local pats_duos="board/sg2000 board/sg2000-duo-s board/sophgo configs/boards/duo_s.config configs/rnsbox_duo_s_defconfig"
+            local pats_duos_arm64="board/sg2000 board/sg2000-duo-s-arm64 board/sophgo configs/boards/duo_s_arm64.config configs/rnsbox_duo_s_arm64_defconfig"
             local out=""
             local f
             while IFS= read -r f; do
@@ -97,9 +100,11 @@ jobs:
               hit "$f" "$pats_opi"     && out="$out orangepi-r1"
               hit "$f" "$pats_duo"     && out="$out milkv-duo-cv1800b-rv64"
               hit "$f" "$pats_mod"     && out="$out sg2000-duomodule01-rv64"
+              hit "$f" "$pats_mod_arm64" && out="$out sg2000-duomodule01-arm64"
               hit "$f" "$pats_lichiee" && out="$out sg2002-licheerv-nano-rv64"
               hit "$f" "$pats_256m"    && out="$out sg2002-duo256m-rv64"
               hit "$f" "$pats_duos"    && out="$out sg2000-duo-s-rv64"
+              hit "$f" "$pats_duos_arm64" && out="$out sg2000-duo-s-arm64"
             done
             echo "$out"
           }
