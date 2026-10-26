@@ -271,11 +271,14 @@ static int cmd_mgr_queue(struct rwnx_cmd_mgr *cmd_mgr, struct rwnx_cmd *cmd)
 			cmd_dump(cmd);
 			spin_lock_bh(&cmd_mgr->lock);
 			cmd_mgr->state = RWNX_CMD_MGR_STATE_CRASHED;
+			list_del(&cmd->list);
+			cmd_mgr->queue_sz--;
 			if (!(cmd->flags & RWNX_CMD_FLAG_DONE)) {
 				cmd->result = -ETIMEDOUT;
 				cmd_complete(cmd_mgr, cmd);
 			}
 			spin_unlock_bh(&cmd_mgr->lock);
+			return -ETIMEDOUT;
 		} else {
 			spin_lock_bh(&cmd_mgr->lock);
 			list_del(&cmd->list);

@@ -223,6 +223,12 @@ static int btsdio_send_frame(struct hci_dev *hdev, struct sk_buff *skb)
 		return -EILSEQ;
 	}
 
+	if (skb_queue_len(&data->txq) > 512) {
+		hdev->stat.err_tx++;
+		kfree_skb(skb);
+		return 0;
+	}
+
 	skb_queue_tail(&data->txq, skb);
 
 	schedule_work(&data->work);
