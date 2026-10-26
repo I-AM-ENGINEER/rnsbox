@@ -190,6 +190,10 @@ if [ "${BUILD_STYLE:-external}" = external ]; then
     # configs/boards/*.config. A stale copy silently builds the wrong
     # userspace, so fail before the expensive clone/build.
     "$HERE/scripts/gen-defconfigs.sh" --check
+    # Same fail-early idea for the overlays: a byte-identical file copied
+    # into two board overlays (instead of board/common/rootfs-overlay)
+    # starts drifting the moment one copy is edited.
+    "$HERE/scripts/check-overlap.sh"
 
     SHORT=$(echo "$UPSTREAM_COMMIT" | cut -c1-8)
     UPSTREAM_BASE="${UPSTREAM_BASE:-$HOME/rnsbox-work/upstream}"

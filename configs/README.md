@@ -73,6 +73,12 @@ remains in the generated defconfig.
 - Don't repeat a base line in a delta unless it is an intentional override.
 - Don't put board-varying settings in the base (root password, users table,
   post-build scripts, overlay, image size, WiFi/BT).
+- Don't drop `board/common/rootfs-overlay` from a board's
+  `BR2_ROOTFS_OVERLAY`: it is the shared layer that every image lists FIRST,
+  ahead of the board's own overlay, so shared files have one home and a
+  board's same-named copy still overrides them (Buildroot applies overlays
+  left to right, later wins). `scripts/check-overlap.sh` keeps board overlays
+  free of copies that belong there.
 - Don't use `make savedefconfig` to edit a board config: it minimizes a full
   `.config` and knows nothing about the base/delta split. Edit the delta (or
   the base) and regenerate.

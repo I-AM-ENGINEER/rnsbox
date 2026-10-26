@@ -280,14 +280,19 @@ options.
 
 ```
 build.sh          one-command builder: ./build.sh <board|all>
-board/<board>/    per-board files: DTS/fragments, boot config, rootfs
-                  overlay (init scripts, /etc), post-image assembly
+board/common/     shared rootfs overlay + patches; every defconfig lists
+                  board/common/rootfs-overlay FIRST in BR2_ROOTFS_OVERLAY,
+                  so a file there reaches every image and a same-named
+                  board copy still wins (Buildroot's later-wins rule)
+board/<board>/    per-board files: DTS/fragments, boot config, the board's
+                  rootfs overlay (only genuine board differences), post-image
+                  assembly
 configs/          base.config + boards/<board>.config (source of truth);
                   rnsbox_<board>_defconfig is generated from them
 package/          shared packages: rnsbox-portal, python-rns, python-lxmf,
                   python-nomadnet, python-rns-time, python-ble-reticulum …
                   — one copy for every board
-scripts/          gen-defconfigs.sh, run/test-pc-vm.sh,
+scripts/          gen-defconfigs.sh, check-overlap.sh, run/test-pc-vm.sh,
                   install-rns-time-server.sh
 .github/          CI: matrix-build every board on GitHub Actions + Releases
 LICENSE           MIT (the RNSBox delta)
@@ -300,7 +305,11 @@ differences in configs and data files, not in code forks) + one entry in the
 `build.sh` board map and one line in the CI matrix. Then run
 `scripts/gen-defconfigs.sh` to produce `configs/rnsbox_<board>_defconfig`.
 Shared selections live in `configs/base.config`; a new shared package goes to
-`package/<name>/` once and is available to every board.
+`package/<name>/` once and is available to every board. Anything the new board
+shares verbatim with the others goes to `board/common/rootfs-overlay`, never
+copied between board overlays — `scripts/check-overlap.sh` (run by `build.sh`
+and CI) fails on such duplicates, with an explicit allowlist for files that
+only a subset of boards should carry.
 
 ## Default credentials
 
