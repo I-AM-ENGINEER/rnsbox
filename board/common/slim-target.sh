@@ -41,17 +41,13 @@ if [ -d "$T/www" ]; then
 	printf '%s\n' "${RNSBOX_BUILD_VER:-unknown}" > "$T/www/version.txt"
 fi
 
-# Stable per-device hostname (rnsbox-XXXXXX from the best stable MAC, or a
-# persisted random ID when every radio hands out a random address). Shared by
-# every board that runs this post-build script.
+# The universal init scripts (S10hostname, S10consoleuser, S11console,
+# S34wifimac, S51pycompile, S80telemetry, S81rnode, S83mon, S83telemetry,
+# S88rnstime, S99diag) ship from board/common/rootfs-overlay, which every
+# defconfig lists ahead of its own overlay - no install blocks here. Only
+# pieces that must react to TARGET_DIR contents (or land at two paths, like
+# zshrc) are still installed from this script.
 COMMON_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
-if [ -f "$COMMON_DIR/S10hostname" ] && [ -d "$T/etc/init.d" ]; then
-	install -m 0755 "$COMMON_DIR/S10hostname" "$T/etc/init.d/S10hostname"
-fi
-# TTY console login user (admin password mirrors the portal admin password).
-if [ -f "$COMMON_DIR/S10consoleuser" ] && [ -d "$T/etc/init.d" ]; then
-	install -m 0755 "$COMMON_DIR/S10consoleuser" "$T/etc/init.d/S10consoleuser"
-fi
 # Privilege escalation for the operator account. SSH and the browser Console
 # log in as admin while root is locked, so sudo is the only path to root.
 # Overwrite the sudo package's default /etc/sudoers with the appliance policy;
@@ -60,39 +56,6 @@ if [ -x "$T/usr/bin/sudo" ] || [ -x "$T/bin/sudo" ]; then
 	install -D -m 0440 "$COMMON_DIR/sudoers" "$T/etc/sudoers"
 	install -D -m 0440 "$COMMON_DIR/sudoers.d/010-admin" "$T/etc/sudoers.d/010-admin"
 fi
-# PTY broker behind the Console tab (xterm.js over the portal's HTTP port).
-if [ -f "$COMMON_DIR/S11console" ] && [ -d "$T/etc/init.d" ]; then
-	install -m 0755 "$COMMON_DIR/S11console" "$T/etc/init.d/S11console"
-fi
-# Recovery + health report on the boot FAT: reset-admin resets the portal/unix
-# admin password, rnsbox-diag.txt records why the portal or SSH is unusable.
-if [ -f "$COMMON_DIR/S99diag" ] && [ -d "$T/etc/init.d" ]; then
-	install -m 0755 "$COMMON_DIR/S99diag" "$T/etc/init.d/S99diag"
-fi
-# Stable WiFi MAC on AIC8800 boards: the vendor firmware randomises it at
-# every boot. S34 derives it from the persistent box ID; S35wifi applies it
-# to wlan0 before up. The script itself exits on boards with a fused MAC.
-if [ -f "$COMMON_DIR/S34wifimac" ] && [ -d "$T/etc/init.d" ]; then
-	install -m 0755 "$COMMON_DIR/S34wifimac" "$T/etc/init.d/S34wifimac"
-fi
-# Map telemetry: S80telemetry writes the TCP-server discovery block from
-# /etc/rnsbox/telemetry.conf; S83telemetry runs the HaLow MQTT proxy daemon
-# (only when the Map tab enabled that path).
-if [ -f "$COMMON_DIR/S80telemetry" ] && [ -d "$T/etc/init.d" ]; then
-	install -m 0755 "$COMMON_DIR/S80telemetry" "$T/etc/init.d/S80telemetry"
-fi
-if [ -f "$COMMON_DIR/S83telemetry" ] && [ -d "$T/etc/init.d" ]; then
-	install -m 0755 "$COMMON_DIR/S83telemetry" "$T/etc/init.d/S83telemetry"
-fi
-# Periodic monitor: rnstatus warm-up, memory watchdog and the Bluetooth
-# peers/traffic cache (30 s idle, 5 s while the portal page is open).
-if [ -f "$COMMON_DIR/S83mon" ] && [ -d "$T/etc/init.d" ]; then
-	install -m 0755 "$COMMON_DIR/S83mon" "$T/etc/init.d/S83mon"
-fi
-# S81rnode, S88rnstime, rnode.conf and rnstime.conf moved to
-# board/common/rootfs-overlay: the overlay is BR2_ROOTFS_OVERLAY-listed ahead
-# of every board overlay, so those files reach every image (including the
-# PC flow, which runs no slim-target) without an install block here.
 # Drop the former ttyd service, the screen snapshot helper and the screen
 # binary: the console is now a PTY broker streamed to xterm.js on :80.
 rm -f "$T/etc/init.d/S87ttyd" "$T/usr/bin/ttyd" "$T/etc/rnsbox/console.conf" \
