@@ -28,6 +28,14 @@ BR2_PACKAGE_HOST_GENIMAGE=y
 BR2_LINUX_KERNEL=y
 BR2_LINUX_KERNEL_NEEDS_HOST_OPENSSL=y
 
+# --- compiler cache: CI rebuilds are dominated by the kernel and python
+# recompiles; ccache turns every unchanged object into a cache hit. The
+# cache lands in ~/.buildroot-ccache (or $BR2_CCACHE_DIR when the
+# environment sets it — the CI workflow points it at a cached /mnt path).
+# Bounded so eight board caches fit the GitHub 10 GB cache quota.
+BR2_CCACHE=y
+BR2_CCACHE_INITIAL_SETUP="--max-size=1200M"
+
 # --- base userspace and filesystem tools ---
 BR2_PACKAGE_BUSYBOX_SHOW_OTHERS=y
 BR2_PACKAGE_KMOD=y
