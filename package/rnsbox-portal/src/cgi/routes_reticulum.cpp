@@ -936,14 +936,14 @@ static std::string halow_status_json() {
     o += sl0 ? "true" : "false";
 
     bool query = enabled && (net || sl0);
-    json::Value stat, allc, near;
+    json::Value stat, allc, nearby;
     bool have_stat = query && modem_json(peer, "get_stat", stat);
     bool have_all  = query && modem_json(peer, "get_all", allc);
     if (!have_stat && !have_all) {
         o += ",\"reachable\":false,\"neighbours\":[]}";
         return o;
     }
-    if (query) (void)modem_json(peer, "get_nearby_modems", near);
+    if (query) (void)modem_json(peer, "get_nearby_modems", nearby);
 
     const json::Value* H = field(&allc, "halow");
     const json::Value* R = field(&stat, "radio");
@@ -997,7 +997,7 @@ static std::string halow_status_json() {
     o += "}";
 
     o += ",\"neighbours\":[";
-    const json::Value* d = field(&near, "d");
+    const json::Value* d = field(&nearby, "d");
     if (d && d->is_array()) {
         bool first = true;
         for (const json::Value& n : d->arr) {

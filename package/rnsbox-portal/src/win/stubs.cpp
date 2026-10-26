@@ -12,6 +12,8 @@
 #include "routes.h"
 #include "web.h"
 #include "wifi.h"
+#include "modem.h"
+#include "sysinfo.h"
 
 namespace {
 
@@ -32,6 +34,24 @@ Status status() { return Status{}; }
 bool has_sta_networks() { return false; }
 
 }  // namespace wifi
+
+namespace modem {
+
+// The HaLow modem proxy talks SLIP/serial, which this build has none of.
+bool post(const std::string&, const std::string&, const std::string&,
+          std::string&, int) { return false; }
+bool get(const std::string&, const std::string&, std::string&, int) {
+    return false;
+}
+std::string local_ip_towards(const store::SlipConfig&) { return {}; }
+
+}  // namespace modem
+
+namespace sysinfo {
+
+bool tcp_reachable(const std::string&, int, int) { return false; }
+
+}  // namespace sysinfo
 
 namespace routes {
 
@@ -61,6 +81,12 @@ void nomadnet_ws_token(const http::Request&, http::Response& res) { unavailable(
 
 void modem_ui(const http::Request&, http::Response& res)          { unavailable(res, "The HaLow modem page"); }
 void modem_api(const http::Request&, http::Response& res)         { unavailable(res, "The HaLow modem API"); }
+void flasher_page(const http::Request&, http::Response& res)      { unavailable(res, "The RNode flasher"); }
+void flasher_scan(const http::Request&, http::Response& res)      { unavailable(res, "The RNode flasher"); }
+void flasher_status(const http::Request&, http::Response& res)    { unavailable(res, "The RNode flasher"); }
+void flasher_action(const http::Request&, http::Response& res)    { unavailable(res, "The RNode flasher"); }
+void flasher_fetch(const http::Request&, http::Response& res)     { unavailable(res, "The RNode flasher"); }
+void flasher_autoupdate(const http::Request&, http::Response& res){ unavailable(res, "The RNode flasher"); }
 
 }  // namespace routes
 #endif  // _WIN32
