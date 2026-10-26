@@ -27,7 +27,7 @@ cp -f "${FIP_SRC}" "${BINARIES_DIR}/fip.bin"
 
 # FIT payload: the uncompressed arm64 Image + the DTB Buildroot installed
 # next to it (BR2_LINUX_KERNEL_INTREE_DTS_NAME).
-DTB="${BINARIES_DIR}/sg2000-duomodule01-evb.dtb"
+DTB="${BINARIES_DIR}/sg2000-milkv-duo-module-01-evb.dtb"
 [ -f "${DTB}" ] || { echo "FATAL: ${DTB} missing" >&2; exit 1; }
 cp -f "${BOARD_DIR}/boot.its" "${BINARIES_DIR}/boot.its"
 ( cd "${BINARIES_DIR}" && "${MKIMAGE}" -f boot.its boot.sd )

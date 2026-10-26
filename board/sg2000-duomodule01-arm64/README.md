@@ -8,7 +8,7 @@ Boot chain: the vendor ARM64 `fip.bin` from the SG2000 vendor BSP (Sipeed
 LicheeRV-Nano-Build tree, board `sg2000_duo01evb_arm64_sd` — the Duo Module
 01 EVB; sha256 in `fip.bin.sha256`). The blob is the same one the Duo S
 ARM64 variant ships; `fsbl`/u-boot are identical across the two EVBs here,
-only our FIT differs (`sg2000-duomodule01-evb.dtb`). The FIT's u-boot config
+only our FIT differs (`sg2000-milkv-duo-module-01-evb.dtb`). The FIT's u-boot config
 name stays `config-sg2000_duo01evb_arm64_sd`: the vendor blob looks for its
 board-dir name, not ours.
 

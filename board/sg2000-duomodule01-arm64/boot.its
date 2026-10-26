@@ -31,8 +31,8 @@
 		};
 
 		fdt-sg2000_duo01evb_arm64_sd {
-			description = "sg2000-duomodule01-evb device tree";
-			data = /incbin/("./sg2000-duomodule01-evb.dtb");
+			description = "sg2000-milkv-duo-module-01-evb device tree";
+			data = /incbin/("./sg2000-milkv-duo-module-01-evb.dtb");
 			type = "flat_dt";
 			arch = "arm64";
 			compression = "none";

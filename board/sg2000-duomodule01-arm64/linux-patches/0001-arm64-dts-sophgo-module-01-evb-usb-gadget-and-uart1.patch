@@ -1,0 +1,35 @@
+From: rnsbox <rnsbox@localhost>
+Subject: [PATCH] arm64: dts: sophgo: module-01-evb: USB gadget mode and uart1
+
+The RNSBox portal exposes a CDC-NCM management interface on the board's
+single USB-C port, so the DWC2 controller must run in peripheral mode
+(the SoC dtsi defaults it to host). UART1 is the HaLow SLIP line
+(S31slip muxes XGPIOA[28]/[29] at boot); the SoC dtsi leaves it
+disabled, so no /dev/ttyS1 appears without this.
+
+Unlike the Duo S port there is no disppll/cam0_200 reclock here: the
+UART stays at its 1,562,500 ceiling and slip.conf ships 1.5 Mbaud (same
+reasoning as the Duo S arm64 patch).
+
+---
+diff --git a/arch/arm64/boot/dts/sophgo/sg2000-milkv-duo-module-01-evb.dts b/arch/arm64/boot/dts/sophgo/sg2000-milkv-duo-module-01-evb.dts
+index 9fa77ba..b5d43ab 100644
+--- a/arch/arm64/boot/dts/sophgo/sg2000-milkv-duo-module-01-evb.dts
++++ b/arch/arm64/boot/dts/sophgo/sg2000-milkv-duo-module-01-evb.dts
+@@ -72,5 +72,14 @@
+ 	disable-wp;
+ 	pinctrl-0 = <&sdhci0_cfg>;
+ 	pinctrl-names = "default";
+ 	status = "okay";
+ };
++
++&usb {
++	dr_mode = "peripheral";
++	status = "okay";
++};
++
++&uart1 {
++	status = "okay";
++};
+-- 
+2.43.0
