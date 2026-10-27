@@ -28,7 +28,15 @@ start() {
 	echo "$size" > /sys/block/zram0/disksize 2>/dev/null || return 0
 	mkswap /dev/zram0 >/dev/null 2>&1 || return 0
 	swapon -p 100 /dev/zram0 2>/dev/null && \
-		echo "zram: $((size / 1048576)) MiB swap (RAM ${total_kb} kB)"
+		# Aggressive zram policy: the swap device is compressed RAM, so moving
+	# cold anonymous pages aside is far cheaper than the alternative — the
+	# memory watchdog restarting rnsd (or an OOM kill) while zram sits empty.
+	# swappiness close to the 200 ceiling makes the kernel prefer swapping
+	# anon pages over dropping file cache; page-cluster 0 keeps zram I/O at
+	# one page per request, which this CPU handles better than 8-page runs.
+	echo 180 > /proc/sys/vm/swappiness 2>/dev/null
+	echo 0   > /proc/sys/vm/page-cluster 2>/dev/null
+	echo "zram: $((size / 1048576)) MiB swap (RAM ${total_kb} kB)"
 }
 
 stop() {

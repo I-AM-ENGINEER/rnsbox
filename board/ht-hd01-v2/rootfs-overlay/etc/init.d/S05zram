@@ -62,7 +62,7 @@ start() {
 	# CPU). Raising the free-memory watermark makes kswapd push cold pages into
 	# zram *proactively*, so the watchdog does not have to restart rnsd first:
 	# keep ~30% of RAM free (plus a wider low/high margin) and swap the rest.
-	echo 100 > /proc/sys/vm/swappiness 2>/dev/null
+	echo 180 > /proc/sys/vm/swappiness 2>/dev/null
 	echo 0   > /proc/sys/vm/page-cluster 2>/dev/null
 	# No raised watermarks: forcing kswapd to keep a large free pool starved
 	# the box (0 MB free, constant reclaim) and did not help. zram fills only
