@@ -93,6 +93,8 @@ std::string generate(const std::vector<std::string>& wans, const std::vector<std
     // an open port (a WiFi-client neighbour could otherwise hit a service
     // bound only to 127.0.0.1).
     add("\t\tiifname @wan_ifaces ip daddr 127.0.0.0/8 drop");
+    add("\t\t# SSH from anywhere: the operator manages the box over the WAN too");
+    add("\t\tiifname @wan_ifaces tcp dport 22 accept");
     if (!openports.empty()) {
         std::map<std::string, std::set<int>> pp;   // proto -> sorted unique ports
         for (const auto& op : openports) pp[op.proto].insert(op.port);
