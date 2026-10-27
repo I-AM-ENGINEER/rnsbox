@@ -17,3 +17,5 @@ package/rnsbox-portal/src/win/build/
 
 # local hardware bring-up scratch: probes, screenshots, board keys
 tools/
+.joblog.zip
+*.joblog*
