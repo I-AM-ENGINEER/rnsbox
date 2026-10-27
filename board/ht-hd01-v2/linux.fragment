@@ -142,3 +142,6 @@ CONFIG_VLAN_8021Q=y
 # Morse LED support uses the LED class.
 CONFIG_NEW_LEDS=y
 CONFIG_LEDS_CLASS=y
+
+# conntrack marks: the WAN NAT ruleset tags NATed flows (ctflush on WAN switch)
+CONFIG_NF_CONNTRACK_MARK=y

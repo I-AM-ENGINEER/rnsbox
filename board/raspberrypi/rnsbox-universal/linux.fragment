@@ -77,3 +77,6 @@ CONFIG_ZRAM_BACKEND_LZ4=y
 CONFIG_ZRAM_DEF_COMP_LZ4=y
 CONFIG_LZ4_COMPRESS=y
 CONFIG_LZ4_DECOMPRESS=y
+
+# conntrack marks: the WAN NAT ruleset tags NATed flows (ctflush on WAN switch)
+CONFIG_NF_CONNTRACK_MARK=y

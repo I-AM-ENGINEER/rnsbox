@@ -128,20 +128,31 @@ regen_nftables() {
 	# same-filesystem rename, and a full (size-capped) /tmp can't empty it.
 	TMP=$(mktemp "$NFT_FILE.XXXXXX") || return 1
 	: > "$NFT_ERR"
-	# Full ruleset first (ip6 table included when the kernel has IPv6); if nft
-	# rejects it, retry IPv4-only so an unsupported ip6 table can't cost us
-	# the whole router firewall.
-	for v6 in "" --no-ipv6; do
-		# Line 1 = $TOPO_TAG (a comment to nft; see nft_file_fits). The brace
-		# group's status is nftgen's, so its failure is still caught.
-		if ! { echo "$TOPO_TAG"; $NFTGEN --wan "$(echo $WAN_IFACES | tr ' ' ',')" --lan "$LAN_IFACES" $v6; } > "$TMP" 2>>"$NFT_ERR" \
+	# Full ruleset first (ip6 table included when the kernel has IPv6); if
+	# nft rejects it, retry IPv4-only so an unsupported ip6 table can't cost
+	# us the whole router firewall, then once more without the conntrack
+	# marks: kernels built without CONFIG_NF_CONNTRACK_MARK reject
+	# "ct mark set" wholesale (the arm64 images), which silently pushed the
+	# box onto the LAN-only fallback; without the ct tag rnsbox-portal
+	# ctflush flushes the whole conntrack table on a WAN switch instead of
+	# only the NATed flows.
+	for spec in "full|" "--no-ipv6|" "--no-ipv6|nomark"; do
+		spec_arg=${spec%%|*}
+		spec_ctm=${spec##*|}
+		# Line 1 = $TOPO_TAG (a comment to nft; see nft_file_fits). The
+		# brace group's status is nftgen's, so its failure is still caught.
+		if ! { echo "$TOPO_TAG"; RNSBOX_NFTGEN_NO_CTMARK=${spec_ctm:+1} $NFTGEN --wan "$(echo $WAN_IFACES | tr ' ' ',')" --lan "$LAN_IFACES" ${spec_arg#full}; } > "$TMP" 2>>"$NFT_ERR" \
 		   || ! nft_output_ok "$TMP"; then
 			note "nftgen failed or wrote an incomplete ruleset (see $NFT_ERR); keeping previous $NFT_FILE"
 			rm -f "$TMP"
 			return 1
 		fi
 		if nft -c -f "$TMP" >>"$NFT_ERR" 2>&1; then
-			[ -n "$v6" ] && note "ruleset with ip6 table failed nft -c; installed IPv4-only (see $NFT_ERR)"
+			case $spec in
+				"full|") ;;
+				"--no-ipv6|") note "ruleset with ip6 table failed nft -c; installed IPv4-only (see $NFT_ERR)" ;;
+				*) note "ct-mark rules failed nft -c (kernel without CONFIG_NF_CONNTRACK_MARK?); installed IPv4-only without ct marks (see $NFT_ERR)" ;;
+			esac
 			chmod 0644 "$TMP"
 			# sync before the rename, so a power cut can't leave a
 			# zero-length $NFT_FILE (ext4 delalloc).

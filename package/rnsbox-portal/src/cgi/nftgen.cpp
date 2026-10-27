@@ -152,9 +152,18 @@ std::string generate(const std::vector<std::string>& wans, const std::vector<std
     if (nat) {
         // The ct mark tags the flow as NATed to this uplink, so `rnsbox-portal
         // ctflush` can drop just these when WAN=auto moves to the other one.
+        // RNSBOX_NFTGEN_NO_CTMARK=1 (S60routing's last retry) drops the tag:
+        // kernels built without CONFIG_NF_CONNTRACK_MARK reject "ct mark set"
+        // wholesale (the arm64 images), and without this escape the whole
+        // generated ruleset would fail nft -c and the box would live on the
+        // LAN-only emergency fallback — no WAN SSH, no port forwards.
+        const char* no_ctm = ::getenv("RNSBOX_NFTGEN_NO_CTMARK");
         char mark[16];
         snprintf(mark, sizeof mark, "0x%08x", conntrack::WAN_NAT_MARK);
-        add(std::string("\t\toifname @wan_ifaces ct mark set ct mark or ") + mark + " masquerade");
+        if (no_ctm && no_ctm[0] == '1')
+            add("\t\toifname @wan_ifaces masquerade");
+        else
+            add(std::string("\t\toifname @wan_ifaces ct mark set ct mark or ") + mark + " masquerade");
     } else {
         add("\t\t# nat=no: LAN -> WAN routed without source NAT");
     }

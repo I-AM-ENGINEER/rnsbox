@@ -1,0 +1,3 @@
+
+# conntrack marks: the WAN NAT ruleset tags NATed flows (ctflush on WAN switch)
+CONFIG_NF_CONNTRACK_MARK=y

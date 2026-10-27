@@ -93,3 +93,6 @@ CONFIG_NLS_ISO8859_1=y
 CONFIG_TMPFS=y
 CONFIG_TMPFS_POSIX_ACL=y
 CONFIG_IPV6=y
+
+# conntrack marks: the WAN NAT ruleset tags NATed flows (ctflush on WAN switch)
+CONFIG_NF_CONNTRACK_MARK=y
