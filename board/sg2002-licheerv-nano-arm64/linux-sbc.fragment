@@ -164,7 +164,11 @@ CONFIG_WLAN_VENDOR_REALTEK=y
 # --- SBC essentials from the base config (explicit for clarity) ---
 CONFIG_PINCTRL_SUNXI=y
 CONFIG_PINCTRL_ROCKCHIP=y
+# SG2002 pinctrl: the board DTS overrides the pinctrl/clk compatibles to
+# the SG2002 ones (same die as SG2000; upstream sg2002.dtsi does the same),
+# so both pinctrl drivers must be in the image for the mux states to apply.
 CONFIG_PINCTRL_SOPHGO_SG2000=y
+CONFIG_PINCTRL_SOPHGO_SG2002=y
 CONFIG_MMC_SUNXI=y
 CONFIG_MMC_DW_ROCKCHIP=y
 CONFIG_MMC_SDHCI_OF_ARASAN=y
