@@ -660,6 +660,42 @@ void ScreenModel::csi_dispatch(uint8_t f) {
     inter_.clear();
 }
 
+// A truecolor SGR (38;2/48;2) is quantised to the 256-colour palette
+// before it enters the model. The browser terminal maps palette indices
+// through its theme (term.js lifts too-dark cube entries so TUI text
+// stays readable on the dark page), but raw RGB passes through xterm.js
+// verbatim and no theme ever applies — NomadNet's urwid paints its top
+// bar in a near-black navy (#000030) that is invisible on the dark
+// terminal. Chromatic colours map to the colour cube only so the hue
+// survives (a neutral grey match would erase it); neutral colours may
+// also use the grey ramp.
+static uint32_t quantize_256(uint32_t r, uint32_t g, uint32_t b) {
+    static const uint32_t lv[6] = {0, 95, 135, 175, 215, 255};
+    r &= 0xFF; g &= 0xFF; b &= 0xFF;
+    uint32_t lo = r < g ? (r < b ? r : b) : (g < b ? g : b);
+    uint32_t hi = r > g ? (r > b ? r : b) : (g > b ? g : b);
+    bool chromatic = hi - lo >= 24;   // same threshold as term.js's dark()
+    int best = -1;
+    unsigned long best_d = ~0ul;
+    for (int idx = 16; idx < 256; idx++) {
+        uint32_t cr, cg, cb;
+        if (idx < 232) {
+            cr = lv[(idx - 16) / 36];
+            cg = lv[((idx - 16) / 6) % 6];
+            cb = lv[(idx - 16) % 6];
+        } else {
+            cr = cg = cb = static_cast<uint32_t>(8 + (idx - 232) * 10);
+            if (chromatic) continue;   // keep the hue: greys are out
+        }
+        long dr = static_cast<long>(r) - cr;
+        long dg = static_cast<long>(g) - cg;
+        long db = static_cast<long>(b) - cb;
+        unsigned long d = static_cast<unsigned long>(dr * dr + dg * dg + db * db);
+        if (d < best_d) { best_d = d; best = idx; }
+    }
+    return COLOR_INDEXED | static_cast<uint32_t>(best < 0 ? 231 : best);
+}
+
 void ScreenModel::apply_sgr() {
     if (params_.empty()) {
         pen_fg_ = COLOR_DEFAULT;
@@ -708,10 +744,9 @@ void ScreenModel::apply_sgr() {
                 size_t rem = params_.size() - i;   // includes the leading 2
                 size_t base = (rem >= 5) ? i + 2 : i + 1;
                 if (base + 2 < params_.size()) {
-                    *dst = COLOR_RGB |
-                           (static_cast<uint32_t>(params_[base] & 0xFF) << 16) |
-                           (static_cast<uint32_t>(params_[base + 1] & 0xFF) << 8) |
-                           static_cast<uint32_t>(params_[base + 2] & 0xFF);
+                    *dst = quantize_256(static_cast<uint32_t>(params_[base]),
+                                        static_cast<uint32_t>(params_[base + 1]),
+                                        static_cast<uint32_t>(params_[base + 2]));
                     i = base + 3;
                 } else {
                     i = params_.size();

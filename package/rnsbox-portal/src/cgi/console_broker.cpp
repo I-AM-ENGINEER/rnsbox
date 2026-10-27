@@ -107,7 +107,9 @@ bool nomadnet_daemon_running() {
 // synchronous: the old fire-and-forget fork returned as soon as the pidfile
 // disappeared, so the broker spawned the TUI while S83nomadnet was still in
 // its group-kill phase, and the new TUI was killed. The init script has a
-// 10 s SIGTERM window plus 1 s for the group, so wait up to 20 s.
+// 10 s SIGTERM window plus 1 s for the group, and it can wait another 15 s
+// on its own lock when a queued restart holds it, so wait well past that
+// sum before giving up; anything still alive afterwards is killed directly.
 bool stop_nomadnet_blocking() {
     pid_t pid = ::fork();
     if (pid < 0) return false;
@@ -121,7 +123,7 @@ bool stop_nomadnet_blocking() {
         ::execl(NOMADNET_INIT, "S83nomadnet", "stop", (char*)nullptr);
         ::_exit(127);
     }
-    time_t end = ::time(nullptr) + 20;
+    time_t end = ::time(nullptr) + 35;
     int st = 0;
     for (;;) {
         pid_t r = ::waitpid(pid, &st, WNOHANG);
@@ -130,10 +132,28 @@ bool stop_nomadnet_blocking() {
         if (::time(nullptr) >= end) {
             ::kill(pid, SIGKILL);
             ::waitpid(pid, &st, 0);
-            return false;
+            break;
         }
         struct timespec ts = {0, 100 * 1000 * 1000};
         ::nanosleep(&ts, nullptr);
+    }
+    if (nomadnet_daemon_running()) {
+        // The daemon outlived the script (slow LXMF persist on the SD card
+        // on the small boards, or the script itself was killed above before
+        // finishing). The daemon leads its own session, so end that whole
+        // group the way the script's SIGKILL phase would have.
+        FILE* f = ::fopen(NOMADNET_PIDFILE, "r");
+        long dp = 0;
+        int n = f ? ::fscanf(f, "%ld", &dp) : 0;
+        if (f) ::fclose(f);
+        if (n == 1 && dp > 1) {
+            ::kill(static_cast<pid_t>(-dp), SIGKILL);
+            ::kill(static_cast<pid_t>(dp), SIGKILL);
+            for (int i = 0; i < 50 && nomadnet_daemon_running(); i++) {
+                struct timespec ts = {0, 100 * 1000 * 1000};
+                ::nanosleep(&ts, nullptr);
+            }
+        }
     }
     return !nomadnet_daemon_running();
 }
