@@ -1,0 +1,207 @@
+# RNSBox ARM64 SBC trim: keep only SG200x plus the platforms and drivers a
+# generic Allwinner / Rockchip SBC can plausibly need.  Applied on top of
+# linux.config (the arm64 defconfig superset); Buildroot merges this fragment
+# and runs olddefconfig.
+
+# --- platform support: Sophgo SG200x + Allwinner sunxi + Rockchip only ---
+# CONFIG_ARCH_ACTIONS is not set
+# CONFIG_ARCH_AIROHA is not set
+# CONFIG_ARCH_ALPINE is not set
+# CONFIG_ARCH_APPLE is not set
+# CONFIG_ARCH_ARTPEC is not set
+# CONFIG_ARCH_ASPEED is not set
+# CONFIG_ARCH_AXIADO is not set
+# CONFIG_ARCH_BCM is not set
+# CONFIG_ARCH_BCM2835 is not set
+# CONFIG_ARCH_BCM_IPROC is not set
+# CONFIG_ARCH_BCMBCA is not set
+# CONFIG_ARCH_BRCMSTB is not set
+# CONFIG_ARCH_BERLIN is not set
+# CONFIG_ARCH_BLAIZE is not set
+# CONFIG_ARCH_BST is not set
+# CONFIG_ARCH_CIX is not set
+# CONFIG_ARCH_EXYNOS is not set
+# CONFIG_ARCH_K3 is not set
+# CONFIG_ARCH_LG1K is not set
+# CONFIG_ARCH_HISI is not set
+# CONFIG_ARCH_KEEMBAY is not set
+# CONFIG_ARCH_MEDIATEK is not set
+# CONFIG_ARCH_MESON is not set
+# CONFIG_ARCH_MICROCHIP is not set
+# CONFIG_ARCH_SPARX5 is not set
+# CONFIG_ARCH_MVEBU is not set
+# CONFIG_ARCH_NXP is not set
+# CONFIG_ARCH_LAYERSCAPE is not set
+# CONFIG_ARCH_MXC is not set
+# CONFIG_ARCH_S32 is not set
+# CONFIG_ARCH_MA35 is not set
+# CONFIG_ARCH_NPCM is not set
+# CONFIG_ARCH_QCOM is not set
+# CONFIG_ARCH_REALTEK is not set
+# CONFIG_ARCH_RENESAS is not set
+# CONFIG_ARCH_SEATTLE is not set
+# CONFIG_ARCH_INTEL_SOCFPGA is not set
+# CONFIG_ARCH_STM32 is not set
+# CONFIG_ARCH_SYNQUACER is not set
+# CONFIG_ARCH_TEGRA is not set
+# CONFIG_ARCH_TESLA_FSD is not set
+# CONFIG_ARCH_SPRD is not set
+# CONFIG_ARCH_THUNDER is not set
+# CONFIG_ARCH_THUNDER2 is not set
+# CONFIG_ARCH_UNIPHIER is not set
+# CONFIG_ARCH_VEXPRESS is not set
+# CONFIG_ARCH_VISCONTI is not set
+# CONFIG_ARCH_XGENE is not set
+# CONFIG_ARCH_ZYNQMP is not set
+CONFIG_ARCH_SUNXI=y
+CONFIG_ARCH_ROCKCHIP=y
+CONFIG_ARCH_SOPHGO=y
+
+# --- Ethernet: keep STMMAC (sunxi/rockchip/sophgo) and PCIe Realtek ---
+# CONFIG_NET_VENDOR_ALIBABA is not set
+# CONFIG_NET_VENDOR_AMAZON is not set
+# CONFIG_NET_VENDOR_AMD is not set
+# CONFIG_NET_VENDOR_ATHEROS is not set
+# CONFIG_NET_VENDOR_BROADCOM is not set
+# CONFIG_NET_VENDOR_CADENCE is not set
+# CONFIG_NET_VENDOR_CAVIUM is not set
+# CONFIG_NET_VENDOR_FREESCALE is not set
+# CONFIG_NET_VENDOR_HISILICON is not set
+# CONFIG_NET_VENDOR_I825XX is not set
+# CONFIG_NET_VENDOR_INTEL is not set
+# CONFIG_NET_VENDOR_MARVELL is not set
+# CONFIG_NET_VENDOR_MEDIATEK is not set
+# CONFIG_NET_VENDOR_MELLANOX is not set
+# CONFIG_NET_VENDOR_MICROSEMI is not set
+# CONFIG_NET_VENDOR_PENSANDO is not set
+# CONFIG_NET_VENDOR_QUALCOMM is not set
+# CONFIG_NET_VENDOR_RENESAS is not set
+# CONFIG_NET_VENDOR_SMSC is not set
+# CONFIG_NET_VENDOR_SOCIONEXT is not set
+# CONFIG_NET_VENDOR_TI is not set
+# CONFIG_NET_VENDOR_XILINX is not set
+# CONFIG_NET_VENDOR_ZTE is not set
+CONFIG_NET_VENDOR_STMICRO=y
+CONFIG_NET_VENDOR_REALTEK=y
+
+# --- WLAN: the common SBC radios; AIC8800 is out-of-tree ---
+# CONFIG_WLAN_VENDOR_ADMTEK is not set
+# CONFIG_WLAN_VENDOR_ATH is not set
+# CONFIG_WLAN_VENDOR_ATMEL is not set
+# CONFIG_WLAN_VENDOR_INTEL is not set
+# CONFIG_WLAN_VENDOR_INTERSIL is not set
+# CONFIG_WLAN_VENDOR_MARVELL is not set
+# CONFIG_WLAN_VENDOR_MICROCHIP is not set
+# CONFIG_WLAN_VENDOR_MORSEMICRO is not set
+# CONFIG_WLAN_VENDOR_NXP is not set
+# CONFIG_WLAN_VENDOR_PURELIFI is not set
+# CONFIG_WLAN_VENDOR_RALINK is not set
+# CONFIG_WLAN_VENDOR_RSI is not set
+# CONFIG_WLAN_VENDOR_SILABS is not set
+# CONFIG_WLAN_VENDOR_ST is not set
+# CONFIG_WLAN_VENDOR_TI is not set
+# CONFIG_WLAN_VENDOR_ZYDAS is not set
+# CONFIG_WLAN_VENDOR_QUANTENNA is not set
+CONFIG_WLAN_VENDOR_BROADCOM=y
+CONFIG_WLAN_VENDOR_MEDIATEK=y
+CONFIG_WLAN_VENDOR_REALTEK=y
+
+# --- headless router: no display, GPU, audio, media, IIO/hwmon ---
+# CONFIG_DRM is not set
+# CONFIG_FB is not set
+# CONFIG_SOUND is not set
+# CONFIG_SND is not set
+# CONFIG_MEDIA_SUPPORT is not set
+# CONFIG_IIO is not set
+# CONFIG_HWMON is not set
+
+# --- firmware/VM/host-only bloat ---
+# CONFIG_ACPI is not set
+# CONFIG_EFI is not set
+# CONFIG_XEN is not set
+# CONFIG_KVM is not set
+# CONFIG_HYPERV is not set
+# CONFIG_VIRTIO is not set
+# CONFIG_VIRTUALIZATION is not set
+# CONFIG_HIBERNATION is not set
+# CONFIG_KEXEC is not set
+# CONFIG_CRASH_DUMP is not set
+# CONFIG_COMPAT is not set
+
+# --- filesystems: ext4/vfat/squashfs/overlay/tmpfs only ---
+# CONFIG_BTRFS_FS is not set
+# CONFIG_XFS_FS is not set
+# CONFIG_OCFS2_FS is not set
+# CONFIG_GFS2_FS is not set
+# CONFIG_REISERFS_FS is not set
+# CONFIG_JFS_FS is not set
+# CONFIG_F2FS_FS is not set
+# CONFIG_UBIFS_FS is not set
+# CONFIG_EROFS_FS is not set
+# CONFIG_NILFS2_FS is not set
+# CONFIG_9P_FS is not set
+# CONFIG_CEPH_FS is not set
+# CONFIG_AFS_FS is not set
+# CONFIG_NFS_FS is not set
+# CONFIG_NFSD is not set
+# CONFIG_CIFS is not set
+# CONFIG_SMB_SERVER is not set
+# CONFIG_ECRYPT_FS is not set
+# CONFIG_FUSE_FS is not set
+# CONFIG_ISO9660_FS is not set
+# CONFIG_UDF_FS is not set
+
+# --- no RAID/device-mapper, no tracing/kprobes/BPF ---
+# CONFIG_MD is not set
+# CONFIG_BLK_DEV_DM is not set
+# CONFIG_FTRACE is not set
+# CONFIG_KPROBES is not set
+# CONFIG_UPROBES is not set
+# CONFIG_BPF_SYSCALL is not set
+# CONFIG_PROFILING is not set
+# CONFIG_PERF_EVENTS is not set
+
+# --- SBC essentials from the base config (explicit for clarity) ---
+CONFIG_PINCTRL_SUNXI=y
+CONFIG_PINCTRL_ROCKCHIP=y
+CONFIG_PINCTRL_SOPHGO_SG2000=y
+CONFIG_MMC_SUNXI=y
+CONFIG_MMC_DW_ROCKCHIP=y
+CONFIG_MMC_SDHCI_OF_ARASAN=y
+CONFIG_MMC_SDHCI_OF_DWCMSHC=y
+CONFIG_STMMAC_ETH=y
+CONFIG_STMMAC_PLATFORM=y
+CONFIG_PHYLIB=y
+CONFIG_NET_VENDOR_STMICRO=y
+CONFIG_DWMAC_SUN8I=y
+CONFIG_DWMAC_ROCKCHIP=y
+CONFIG_DWMAC_SOPHGO=y
+CONFIG_PHY_SUN4I_USB=y
+CONFIG_PHY_ROCKCHIP_INNO_USB2=y
+CONFIG_PHY_SOPHGO_CV1800_USB2=y
+CONFIG_USB_DWC2=y
+CONFIG_USB_DWC3=y
+CONFIG_USB_XHCI_HCD=y
+CONFIG_USB_EHCI_HCD=y
+CONFIG_USB_OHCI_HCD=y
+CONFIG_REGULATOR_AXP20X=y
+CONFIG_REGULATOR_RK808=y
+CONFIG_RTC_DRV_SUN6I=y
+CONFIG_RTC_DRV_RK808=y
+CONFIG_SUN8I_THERMAL=y
+CONFIG_ROCKCHIP_THERMAL=y
+CONFIG_CPUFREQ_DT=y
+CONFIG_SUNXI_WATCHDOG=y
+CONFIG_DW_WATCHDOG=y
+CONFIG_I2C_MV64XXX=y
+CONFIG_I2C_DESIGNWARE_PLATFORM=y
+CONFIG_SPI_SUN6I=y
+CONFIG_SPI_ROCKCHIP=y
+CONFIG_PCIE_ROCKCHIP_HOST=m
+CONFIG_PCIE_DW_ROCKCHIP=m
+CONFIG_BLK_DEV_NVME=m
+CONFIG_SATA_AHCI=m
+CONFIG_AHCI_ROCKCHIP=m
+
+# smaller Image for the router image
+CONFIG_CC_OPTIMIZE_FOR_SIZE=y

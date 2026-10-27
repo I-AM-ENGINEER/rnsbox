@@ -1,0 +1,257 @@
+From: rnsbox <rnsbox@localhost>
+Subject: [PATCH] arm64: dts: sophgo: add the LicheeRV Nano B board
+
+The ARM64 tree has no SG2002 board DTS upstream (only the SG2000 Duo S
+and Duo Module 01 EVB). This is the RISC-V board file ported over: it
+only pulls the shared RISC-V SoC dtsi (the same cross-tree include the
+SG2000 arm64 boards use) and carries the RNSBox deltas — USB gadget mode
+for the portal, UART1 for the HaLow SLIP line, gmac0, the WiFi SDIO with
+its pwrseq, the user LED and key.
+
+---
+diff --git a/arch/arm64/boot/dts/sophgo/Makefile b/arch/arm64/boot/dts/sophgo/Makefile
+--- a/arch/arm64/boot/dts/sophgo/Makefile
++++ b/arch/arm64/boot/dts/sophgo/Makefile
+@@ -1,3 +1,4 @@
+ # SPDX-License-Identifier: GPL-2.0
+ dtb-$(CONFIG_ARCH_SOPHGO) += sg2000-milkv-duo-module-01-evb.dtb
+ dtb-$(CONFIG_ARCH_SOPHGO) += sg2000-milkv-duo-s.dtb
++dtb-$(CONFIG_ARCH_SOPHGO) += sg2002-licheerv-nano-b.dtb
+diff --git a/arch/arm64/boot/dts/sophgo/sg2002-licheerv-nano-b.dts b/arch/arm64/boot/dts/sophgo/sg2002-licheerv-nano-b.dts
+new file mode 100644
+--- /dev/null
++++ b/arch/arm64/boot/dts/sophgo/sg2002-licheerv-nano-b.dts
+@@ -0,0 +1,233 @@
++// SPDX-License-Identifier: (GPL-2.0 OR MIT)
++/*
++ * Copyright (C) 2024 Thomas Bonnefille <thomas.bonnefille@bootlin.com>
++ *
++ * RNSBox: LicheeRV Nano B (SG2002) for the Cortex-A53 build.  There is no
++ * SG2002 arm64 SoC description upstream, and the RISC-V sg2002.dtsi carries
++ * the C906 PLIC/CLINT model, which is wrong for this core.  SG2000 and
++ * SG2002 are the same die, so this board reuses the arm64 sg2000.dtsi
++ * (A53 cluster, GIC, PSCI, arch timer) and applies the SG2002 deltas:
++ * 256 MiB of DRAM and the sg2002 pinctrl/clk/sdhci compatibles.  The board
++ * nodes are the RISC-V board file with the RNSBox deltas: USB gadget mode
++ * for the portal, UART1 for the HaLow SLIP line, gmac0, WiFi SDIO with the
++ * board pwrseq, the user LED and key.
++ */
++
++/dts-v1/;
++
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/linux-event-codes.h>
++#include <dt-bindings/pinctrl/pinctrl-sg2002.h>
++#include "sg2000.dtsi"
++
++/ {
++	model = "LicheeRV Nano B";
++	compatible = "sipeed,licheerv-nano-b", "sipeed,licheerv-nano", "sophgo,sg2002";
++
++	aliases {
++		gpio0 = &gpio0;
++		gpio1 = &gpio1;
++		gpio2 = &gpio2;
++		gpio3 = &gpio3;
++		serial0 = &uart0;
++		serial1 = &uart1;
++		serial2 = &uart2;
++		serial3 = &uart3;
++		serial4 = &uart4;
++	};
++
++	chosen {
++		stdout-path = "serial0:115200n8";
++	};
++
++	wifi_pwrseq: wifi-pwrseq {
++		compatible = "mmc-pwrseq-simple";
++		reset-gpios = <&porta 26 GPIO_ACTIVE_LOW>;
++		power-off-delay-us = <50000>;
++		post-power-on-delay-ms = <200>;
++	};
++
++	leds {
++		compatible = "gpio-leds";
++
++		user-led {
++			label = "licheerv-nano:blue:user";
++			gpios = <&porta 14 GPIO_ACTIVE_HIGH>;
++			default-state = "off";
++		};
++	};
++
++	gpio-keys {
++		compatible = "gpio-keys";
++
++		user-button {
++			label = "user";
++			linux,code = <KEY_DISPLAYTOGGLE>;
++			debounce-interval = <10>;
++			gpios = <&porta 30 GPIO_ACTIVE_LOW>;
++		};
++	};
++};
++
++&osc {
++	clock-frequency = <25000000>;
++};
++
++&gmac0 {
++	status = "okay";
++};
++
++&mdio {
++	status = "okay";
++};
++
++&pinctrl {
++	sdhci1_cfg: sdhci1-cfg {
++		sdhci1-clk-pins {
++			pinmux = <PINMUX(PIN_SD1_CLK, 0)>;
++			bias-pull-down;
++			power-source = <3300>;
++		};
++
++		sdhci1-cmd-pins {
++			pinmux = <PINMUX(PIN_SD1_CMD, 0)>;
++			bias-pull-up;
++			power-source = <3300>;
++		};
++
++		sdhci1-data-pins {
++			pinmux = <PINMUX(PIN_SD1_D0, 0)>,
++				 <PINMUX(PIN_SD1_D1, 0)>,
++				 <PINMUX(PIN_SD1_D2, 0)>,
++				 <PINMUX(PIN_SD1_D3, 0)>;
++			bias-pull-up;
++			power-source = <3300>;
++		};
++	};
++
++	uart0_cfg: uart0-cfg {
++		uart0-pins {
++			pinmux = <PINMUX(PIN_UART0_TX, 0)>,
++				 <PINMUX(PIN_UART0_RX, 0)>;
++			bias-pull-up;
++			drive-strength-microamp = <10800>;
++			power-source = <3300>;
++		};
++	};
++
++	sdhci0_cfg: sdhci0-cfg {
++		sdhci0-clk-pins {
++			pinmux = <PINMUX(PIN_SD0_CLK, 0)>;
++			bias-pull-up;
++			drive-strength-microamp = <16100>;
++			power-source = <3300>;
++		};
++
++		sdhci0-cmd-pins {
++			pinmux = <PINMUX(PIN_SD0_CMD, 0)>;
++			bias-pull-up;
++			drive-strength-microamp = <10800>;
++			power-source = <3300>;
++		};
++
++		sdhci0-data-pins {
++			pinmux = <PINMUX(PIN_SD0_D0, 0)>,
++				 <PINMUX(PIN_SD0_D1, 0)>,
++				 <PINMUX(PIN_SD0_D2, 0)>,
++				 <PINMUX(PIN_SD0_D3, 0)>;
++			bias-pull-up;
++			drive-strength-microamp = <10800>;
++			power-source = <3300>;
++		};
++
++		sdhci0-cd-pins {
++			pinmux = <PINMUX(PIN_SD0_CD, 0)>;
++			bias-pull-up;
++			drive-strength-microamp = <10800>;
++			power-source = <3300>;
++		};
++	};
++};
++
++&sdhci0 {
++	compatible = "sophgo,sg2002-dwcmshc";
++	pinctrl-0 = <&sdhci0_cfg>;
++	pinctrl-names = "default";
++	status = "okay";
++	bus-width = <4>;
++	no-1-8-v;
++	no-mmc;
++	no-sdio;
++	disable-wp;
++};
++
++&sdhci1 {
++	clocks = <&clk CLK_SD1>, <&clk CLK_AXI4_SD1>;
++	clock-names = "core", "bus";
++	assigned-clocks = <&clk CLK_SD1>;
++	assigned-clock-parents = <&clk CLK_FPLL>;
++	assigned-clock-rates = <375000000>;
++	bus-width = <4>;
++	no-1-8-v;
++	cap-sdio-irq;
++	keep-power-in-host;
++	non-removable;
++	no-mmc;
++	no-sd;
++	max-frequency = <25000000>;
++	mmc-pwrseq = <&wifi_pwrseq>;
++	pinctrl-0 = <&sdhci1_cfg>;
++	pinctrl-names = "default";
++	status = "okay";
++};
++
++&uart0 {
++	pinctrl-0 = <&uart0_cfg>;
++	pinctrl-names = "default";
++	status = "okay";
++};
++
++&saradc {
++	status = "okay";
++};
++
++&usb {
++	dr_mode = "peripheral";
++	status = "okay";
++};
++
++/* UART1 is on XGPIOA[28]/[29] (the IIC0 pads, function 1). The slug
++ * between the controller and the header is the only board-specific part;
++ * S31slip and the portal then just use /dev/ttyS1 at the modem baud.
++ */
++&pinctrl {
++	uart1_cfg: uart1-cfg {
++		uart1-pins {
++			pinmux = <PINMUX(PIN_IIC0_SCL, 1)>,
++				 <PINMUX(PIN_IIC0_SDA, 1)>;
++			bias-pull-up;
++			drive-strength-microamp = <10800>;
++			power-source = <3300>;
++		};
++	};
++};
++
++&uart1 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&uart1_cfg>;
++	status = "okay";
++};
++
++/* ---- SG2002 deltas over the shared SG2000 arm64 SoC description ---- */
++
++&{/memory@80000000} {
++	reg = <0x80000000 0x10000000>;	/* 256 MiB */
++};
++
++&pinctrl {
++	compatible = "sophgo,sg2002-pinctrl";
++};
++
++&clk {
++	compatible = "sophgo,sg2002-clk", "sophgo,sg2000-clk";
++};

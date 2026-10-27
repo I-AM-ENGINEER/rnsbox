@@ -1,0 +1,53 @@
+/*
+ * RNSBox boot.sd FIT for the LicheeRV Nano B (SG2002, Cortex-A53).
+ * Same scheme as board/sg2000-duomodule01-arm64/boot.its: the vendor
+ * ARM64 u-boot boots the FIT's default configuration, Image is loaded at
+ * 0x80200000.
+ *
+ * The vendor u-boot blob is the A53 one from the Sipeed LicheeRV-Nano-Build
+ * release image (2024-03-26, board sg2002_licheea53nano_sd; sha256 in
+ * fip.bin.sha256). It names its boot config after the board directory, so
+ * the default and the named config both use that name.
+ */
+/dts-v1/;
+
+/ {
+	description = "RNSBox (sg2002 licheerv-nano arm64)";
+	#address-cells = <2>;
+
+	images {
+		kernel-1 {
+			description = "linux arm64 Image";
+			data = /incbin/("./Image");
+			type = "kernel";
+			arch = "arm64";
+			os = "linux";
+			compression = "none";
+			load = <0x0 0x80200000>;
+			entry = <0x0 0x80200000>;
+			hash-1 {
+				algo = "crc32";
+			};
+		};
+
+		fdt-sg2002_licheea53nano_sd {
+			description = "sg2002-licheerv-nano-b device tree";
+			data = /incbin/("./sg2002-licheerv-nano-b.dtb");
+			type = "flat_dt";
+			arch = "arm64";
+			compression = "none";
+			hash-1 {
+				algo = "crc32";
+			};
+		};
+	};
+
+	configurations {
+		default = "config-sg2002_licheea53nano_sd";
+		config-sg2002_licheea53nano_sd {
+			description = "RNSBox sg2002 arm64 (vendor u-boot name)";
+			kernel = "kernel-1";
+			fdt = "fdt-sg2002_licheea53nano_sd";
+		};
+	};
+};

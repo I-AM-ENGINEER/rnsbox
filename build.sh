@@ -45,7 +45,7 @@ for a in "$@"; do
 done
 BOARD="${BOARD:-rpi-universal}"
 
-BOARDS="rpi-universal pc-x86_64 orangepi-r1 milkv-duo-cv1800b-rv64 sg2000-duomodule01-arm64 sg2000-duo-s-arm64 sg2000-duomodule01-rv64 sg2002-licheerv-nano-rv64 sg2002-duo256m-rv64 sg2000-duo-s-rv64"
+BOARDS="rpi-universal pc-x86_64 orangepi-r1 milkv-duo-cv1800b-rv64 sg2002-licheerv-nano-arm64 sg2000-duomodule01-arm64 sg2000-duo-s-arm64 sg2000-duomodule01-rv64 sg2002-licheerv-nano-rv64 sg2002-duo256m-rv64 sg2000-duo-s-rv64"
 
 if [ "$BOARD" = all ]; then
     for b in $BOARDS; do
@@ -67,6 +67,7 @@ case "$BOARD" in
     orangepi-r1)               DEFCONFIG=rnsbox_orangepi_r1_defconfig ;;
     milkv-duo-cv1800b-rv64)    DEFCONFIG=rnsbox_milkv_duo_cv1800b_defconfig ;;
     sg2000-duo-s-arm64)        DEFCONFIG=rnsbox_duo_s_arm64_defconfig ;;
+    sg2002-licheerv-nano-arm64) DEFCONFIG=rnsbox_sg2002_licheerv_nano_arm64_defconfig ;;
     sg2000-duomodule01-arm64)  DEFCONFIG=rnsbox_sg2000_duomodule01_arm64_defconfig ;;
     sg2000-duomodule01-rv64)   DEFCONFIG=rnsbox_sg2000_duomodule01_defconfig ;;
     sg2002-licheerv-nano-rv64) DEFCONFIG=rnsbox_licheerv_nano_defconfig ;;

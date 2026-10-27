@@ -40,6 +40,8 @@ BR2_CCACHE_INITIAL_SETUP="--max-size=1200M"
 BR2_PACKAGE_BUSYBOX_SHOW_OTHERS=y
 BR2_PACKAGE_KMOD=y
 BR2_PACKAGE_KMOD_TOOLS=y
+# Process/VM view for field debugging over rnsh/console (ncurses, small).
+BR2_PACKAGE_HTOP=y
 
 # --- router data plane ---
 BR2_PACKAGE_DNSMASQ=y
