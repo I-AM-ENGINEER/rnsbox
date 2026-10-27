@@ -1,0 +1,180 @@
+From: rnsbox <rnsbox@localhost>
+Subject: [PATCH] arm64: dts: sophgo: module-01-evb: AIC8800 SDIO1, eMMC, UART2-4
+
+The RISC-V EVB board dts (board/sg2000, hardware-verified) carries the
+module's eMMC, the AIC8800D80 SDIO radio (slot SD1, WL_REG_ON = porta 15)
+and UART2-4 with the header pad mux; the ARM64 in-tree board dts has
+none of them, so on the ARM64 image WiFi never scanned (wifi.sh's
+4320000.mmc unbind/bind hit "No such device" and aic8800_fdrv refused to
+insmod), the HaLow SLIP modem on /dev/ttyS2 hit a dead serial8250
+placeholder (stty: I/O error - uart2 is status = disabled) and the eMMC
+failed to init on the default pins.
+
+Port the nodes from the RISC-V EVB dts (patches 0001/0004/0005 there),
+plus vmmc-supply on sdhci1 so Linux itself raises WL_REG_ON: the ARM64
+fip does not necessarily power the radio the way the RISC-V one does,
+and CONFIG_REGULATOR_FIXED_VOLTAGE is already enabled. UART2 is muxed on
+header pins 11/13 (VIVO_D10/D9, fmux 7) in the pinctrl state because
+CONFIG_DEVMEM is off and S31slip cannot mux pads itself.
+
+---
+--- a/arch/arm64/boot/dts/sophgo/sg2000-milkv-duo-module-01-evb.dts
++++ b/arch/arm64/boot/dts/sophgo/sg2000-milkv-duo-module-01-evb.dts
+@@ -83,3 +83,157 @@
+ &uart1 {
+ 	status = "okay";
+ };
++
++/*
++ * Ported from the hardware-verified RISC-V EVB board dts (board/sg2000):
++ * the module's eMMC, the AIC8800D80 "W" radio on the dedicated SDIO slot
++ * (SD1, WL_REG_ON = porta 15) and UART2-4. The ARM64 in-tree board dts
++ * carries none of these, so WiFi, the SLIP modem line (/dev/ttyS2 on the
++ * header) and the eMMC were all missing while the RISC-V build had them.
++ */
++/ {
++	wl_reg_on: regulator-wlregon {
++		compatible = "regulator-fixed";
++		regulator-name = "wl-reg-on";
++		regulator-min-microvolt = <3300000>;
++		regulator-max-microvolt = <3300000>;
++		gpio = <&porta 15 GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++		startup-delay-us = <100000>;
++	};
++};
++
++&pinctrl {
++	/* Header pins 11/13 are XGPIOB[11]/[12] (pads VIVO_D10/VIVO_D9);
++	 * UART2_TX/RX is mux 7 there, not the dedicated K15/K13 pads. */
++	uart2_cfg: uart2-cfg {
++		uart2-pins {
++			pinmux = <PINMUX(PIN_VIVO_D10, 7)>,
++				 <PINMUX(PIN_VIVO_D9, 7)>;
++			bias-pull-up;
++			drive-strength-microamp = <10800>;
++			power-source = <3300>;
++		};
++	};
++
++	sdhci1_cfg: sdhci1-cfg {
++		/* Vendor U-Boot cvi_sdio1_pad_setting: CLK pull-down, CMD/DAT
++		 * pull-up, drive strength left at the weakest default. */
++		sdhci1-clk-pins {
++			pinmux = <PINMUX(PIN_SD1_CLK, 0)>;
++			bias-pull-down;
++			power-source = <3300>;
++		};
++
++		sdhci1-cmd-pins {
++			pinmux = <PINMUX(PIN_SD1_CMD, 0)>;
++			bias-pull-up;
++			power-source = <3300>;
++		};
++
++		sdhci1-data-pins {
++			pinmux = <PINMUX(PIN_SD1_D0, 0)>,
++				 <PINMUX(PIN_SD1_D1, 0)>,
++				 <PINMUX(PIN_SD1_D2, 0)>,
++				 <PINMUX(PIN_SD1_D3, 0)>;
++			bias-pull-up;
++			power-source = <3300>;
++		};
++	};
++
++	emmc_cfg: emmc-cfg {
++		/* The module's eMMC is 3.3 V, so the pin group is the minimal
++		 * CLK/CMD/DAT0-3 set with power-source 3300 (the reset pin and
++		 * the 1800 rail kept the controller from binding). */
++		emmc-clk-pins {
++			pinmux = <PINMUX(PIN_EMMC_CLK, 0)>;
++			bias-pull-up;
++			drive-strength-microamp = <10800>;
++			power-source = <3300>;
++		};
++
++		emmc-cmd-pins {
++			pinmux = <PINMUX(PIN_EMMC_CMD, 0)>;
++			bias-pull-up;
++			drive-strength-microamp = <10800>;
++			power-source = <3300>;
++		};
++
++		emmc-data-pins {
++			pinmux = <PINMUX(PIN_EMMC_DAT0, 0)>,
++				 <PINMUX(PIN_EMMC_DAT1, 0)>,
++				 <PINMUX(PIN_EMMC_DAT2, 0)>,
++				 <PINMUX(PIN_EMMC_DAT3, 0)>;
++			bias-pull-up;
++			drive-strength-microamp = <10800>;
++			power-source = <3300>;
++		};
++	};
++};
++
++&emmc {
++	clocks = <&clk CLK_AXI4_EMMC>, <&clk CLK_EMMC>;
++	clock-names = "core", "bus";
++	bus-width = <4>;
++	no-1-8-v;
++	cap-mmc-hw-reset;
++	no-sd;
++	no-sdio;
++	non-removable;
++	pinctrl-0 = <&emmc_cfg>;
++	pinctrl-names = "default";
++	status = "okay";
++};
++
++&sdhci1 {
++	/* WiFi: AIC8800D80 combo on the dedicated SDIO slot (the EVB "W"
++	 * radio). The SDHCI divider base is the CARD clock input, which on
++	 * cv18xx is CLK_SD1 (bypass mux + divider), not CLK_AXI4_SD1 (an
++	 * AXI gate) that the SoC dtsi lists as "core". Feed the driver the
++	 * real card clock and pin it to FPLL/4 = 375 MHz, the vendor
++	 * src-frequency. */
++	clocks = <&clk CLK_SD1>, <&clk CLK_AXI4_SD1>;
++	clock-names = "core", "bus";
++	assigned-clocks = <&clk CLK_SD1>;
++	assigned-clock-parents = <&clk CLK_FPLL>;
++	assigned-clock-rates = <375000000>;
++	bus-width = <4>;
++	no-1-8-v;
++	cap-sdio-irq;
++	keep-power-in-host;
++	non-removable;
++	no-mmc;
++	no-sd;
++	/* Reliability over throughput: 50 MHz HS re-init is marginal here
++	 * (DATA CRC on reads). */
++	max-frequency = <25000000>;
++	/* Power the chip from Linux (the ARM64 fip does not necessarily
++	 * raise WL_REG_ON the way the RISC-V one does). */
++	vmmc-supply = <&wl_reg_on>;
++	pinctrl-0 = <&sdhci1_cfg>;
++	pinctrl-names = "default";
++	status = "okay";
++};
++
++/*
++ * UART2-4. The HaLow SLIP modem sits on /dev/ttyS2; header pins 11/13
++ * are the VIVO_D10/D9 pads muxed by uart2_cfg above (the dedicated
++ * UART2 pads are not wired to the header, and UART1's RX pad is shared
++ * with the blue LED). CONFIG_DEVMEM is off, so S31slip cannot mux pads
++ * itself - without the pinctrl state the controller ran but nothing
++ * reached the modem. Without uart2 enabled at all, /dev/ttyS2 is a dead
++ * serial8250 placeholder and S31slip's stty fails with an I/O error.
++ */
++&uart2 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&uart2_cfg>;
++	status = "okay";
++};
++
++&uart3 {
++	status = "okay";
++};
++
++&uart4 {
++	status = "okay";
++};
